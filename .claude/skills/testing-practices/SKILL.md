@@ -225,8 +225,9 @@ Two of those deserve singling out as reusable warnings:
   to a `NESTED-FLOOR:` **parity** check comparing a child run's count to the
   parent's for equality — and `0 == 0` satisfies it perfectly. This defect had
   already been closed once as "already fixed" on the strength of those grep hits.
-  See § *A grep that matches your vocabulary has not necessarily found your
-  mechanism*; this is that lesson's live instance, and it was still live.
+  See the rule *"a grep that matches your vocabulary has not necessarily found your
+  mechanism"* in § *Claims about code, and claims about claims*; this is that
+  lesson's live instance, and it was still live.
 * The leak harness is the sharpest case of § *Negative assertions*: it printed
   `PASS` for "no orphan processes, no stale sockets, no residual dirs" in a run
   where the scenario never started. The fix is a positive control (`saw_sandbox`)
@@ -414,12 +415,14 @@ failure is indistinguishable from success at the point of observation.** Differe
 mechanisms, one property — which is why each row needs its *own* remedy, and why
 mis-identifying the row means applying a fix that cannot work.
 
-The fifth row is `ratz`'s entry, deliberately positioned next to § *Mutate along the
-axis your assertion constrains* — the rule it inverts — rather than at this family's
-tail, because its author grepped for this then-unmerged section and moved off the
-natural placement to avoid colliding with it. The row was added by whoever merged
-second (here, this entry); the row states the shape in full, so it does not depend on
-the section for meaning.
+The fifth row points at `ratz`'s entry. **The row sits at this table's tail; the
+*section* does not sit at this family's** — it was deliberately placed next to
+§ *Mutate along the axis your assertion constrains*, the rule it inverts, because its
+author grepped for this then-unmerged section and moved off the natural placement to
+avoid colliding with it. Row placement and section placement are separate decisions
+here, and only the second was deliberate. The row itself was added by whoever merged
+second (here, this entry), and states the shape in full, so it does not depend on the
+section for meaning.
 
 ### Indistinguishable from success at the point of observation (QUM-1047)
 
@@ -437,10 +440,11 @@ is always to observe something else.
 
 **Ignore the counts; they are the least durable part.** Two tallies appear near
 this section and they are *different families*: the table above counts **assertion
-shapes** (five as of writing), and § *Seven surfaces, one property* below counts the
+shapes** (five as of writing), and § *Eight surfaces, one property* below counts the
 **surfaces** on which the property has been observed — mechanisms, not shapes, and
 they overlap only partly. Both numbers were smaller yesterday, both grew while this
-section was being written, and both grew again before it merged. The property is the claim; the tallies are just how much of it
+section was being written, and the surfaces tally grew once more during the review
+that preceded merge. The property is the claim; the tallies are just how much of it
 has been written down so far, so prefer the named list to the number.
 
 It is also what the table above is *for*: read it as one property with several
@@ -464,7 +468,7 @@ The assertion is well-formed, the predicate is tight, the provenance is clean �
 and the run you are reading **did not happen**:
 
 ```
-ok  github.com/dmotles/sprawl/internal/runtime  (cached)
+ok  	github.com/dmotles/sprawl/internal/runtime	(cached)
 ```
 
 This is the fourth shape in the table above, and the only one that needs **no
@@ -485,7 +489,7 @@ naming them together rather than leaving a reader to sort near-identical section
 | axis | question | the failure |
 |---|---|---|
 | **who** (§ *Provenance of the observed string*) | who minted the artifact? | you assert on a string your own process produced |
-| **whether** (§ *Negative assertions*) | could your instrument have seen it at all? | a null result that is a statement about your *search*, not the code |
+| **whether** (§ *A null result is a statement about your search*; the general principle is § *Negative assertions*) | could your instrument have seen it at all? | a null result that is a statement about your *search*, not the code |
 | **when** (this section) | when was the input produced? | a green from a run that already happened |
 
 One phrasing unifies all three: **a predicate that returns the same answer
@@ -567,8 +571,11 @@ section names:
    PACKAGES CHANGED`** and exited 0 — a message asserting a fact the script had not
    established. Hence the explicit `|| exit 2`.
 
-Two escapes of the same shape in one recipe, in a section *about* that shape, both
-caught by a reviewer rather than by its author re-reading it. Ordering matters too:
+**Three** instances of that shape in one recipe, in a section *about* that shape —
+count the numbered list, not this sentence's earlier drafts, which said "two" by
+silently scoping to the reviewer-caught ones. Item 1 was the author's own and the
+author found it; items 2 and 3 were caught by a reviewer rather than by the author
+re-reading it, which is the part worth keeping. Ordering matters too:
 `""` must precede the globs, and `FAIL*` must precede `*"(cached)"*`.
 
 **Portability, since this is meant to be copy-pasted:** `[^[:space:]]` rather than
@@ -584,7 +591,12 @@ rather than that one's: a diagnostic nobody has watched fire is the same uncheck
 claim as an assertion nobody has watched fail, and publishing an unexercised recipe
 *in this particular section* would be self-refuting. The text above was extracted
 from this file with `awk` and run; the transcript is verbatim, tabs and all, with
-only the module path elided as `…`:
+two elisions, both stated because a sentence claiming verbatim-ness is the last
+place to leave one implicit: the module path is shortened to `…`, and the last leg
+drops roughly a hundred lines of `git diff --no-index` usage text that git prints to
+**stderr** before the diagnostic. (Only stdout is shown. Add `2>/dev/null` to the
+recipe's `git diff` if the noise bothers you — behaviour and exit codes are
+unaffected.)
 
 ```
 $ check-cached log internal/runtime internal/backend    # one of each, SAME log
@@ -640,7 +652,7 @@ first counterexample gets used to dismiss the entry.
 
 But do not over-read that immunity: it is immunity to the **mechanism**, not to the
 **property**. A shell suite reaches the same place by a different route — see the
-`pipefail` row in § *Seven surfaces, one property* below, where a real failure exits
+`pipefail` row in § *Eight surfaces, one property* below, where a real failure exits
 0 because the verdict was lost in a pipe. Scope claims to mechanisms; the property
 travels.
 
@@ -657,11 +669,19 @@ property you control**, so a clean run is not evidence of a clean habit. And
 **none of the three was found by review — all three by someone re-reading their
 own evidence.**
 
-#### Seven surfaces, one property
+#### Eight surfaces, one property
 
 The build cache is not the claim. The claim is the property, and it has now been
-observed on seven different surfaces in this repo — which is a stronger statement
-than any of them individually, because it predicts the *next* one:
+observed on eight different surfaces in this repo — which is a stronger statement
+than any of them individually, because it predicts the *next* one.
+
+**The number counts table rows, and the prose below the table exceeds it.** Two
+further instances are developed there — an empty durable path (a generalisation of
+the null-grep row) and a correct practice paired with a wrong rule (which
+generalises no row at all) — and they are deliberately not tabled, because the table
+lists *surfaces* and those two are instances on a surface already named, or on none.
+Said plainly because this section tells you to prefer the named list to the number:
+**the named list is longer than eight, and it is the authority.**
 
 | surface | mechanism | what looked like success |
 |---|---|---|
@@ -671,7 +691,8 @@ than any of them individually, because it predicts the *next* one:
 | a documentation reference | a cited SHA that has rotted | a SHA that still resolves — to the wrong tree |
 | **shared tooling** | `merge` rebasing onto the *caller's* stale base (QUM-1050) | `Merged agent zone`, exit success, no warning |
 | **a null grep** | searched a worktree that predates the code | zero hits, exit 0, no error at all |
-| **a tracker title** | hypothesis in the body, stated as fact in the title (QUM-752) | a title that reads as a finding — and was cited as one for eight weeks |
+| **a tracker title** | hypothesis in the body, stated as fact in the title (QUM-752) | a title that reads as a finding — and stood as one, uncorrected, for eight weeks |
+| **a relayed measurement** | a `grep` result forwarded through four agents, re-run by none of them | a measurement, quoted verbatim, still carrying the authority of a run nobody repeated |
 
 **The null grep is the purest instance, and it is worse than the build cache.** A
 cached green at least leaves a `(cached)` token in the log for anyone who looks; a
@@ -684,17 +705,11 @@ when the honest reading was *"not on my branch."* **Three agents acted on that n
 result before anyone ran the one-command positive control.**
 
 Note it is simultaneously a staleness failure and a negative-assertion failure —
-the search was clean, the *base* was old — which is why the axes above compose:
-
-> **An absence in a worktree of unknown base is not evidence about the code.** A
-> claim resting on a null grep needs a positive control before it leaves the
-> worktree.
-
-The control is one command (grep for something you *know* is there, or check the
-base), which is the same shape as `-count=1` here: cheap, mechanical, and skipped
-because the result looked conclusive. The class is developed on its own terms in
-§ *A null result is a statement about your search* — read that for the rule; this
-row is only its appearance as a surface.
+the search was clean, the *base* was old — which is why the axes above compose.
+**The rule, its positive control, and the worked instances live in § *A null result
+is a statement about your search*; go there.** This row records only that the
+property shows up on this surface too, and that here it shows up in its purest
+form.
 
 **It generalises past `grep`, which is worth one instance because the surface does
 not look like a search.** A manager checked a QA agent's durable evidence path,
@@ -728,22 +743,39 @@ lied**, and the success message was not evidence of a correct merge.
 hypothesis from a finding. QUM-752's body is honest — *"Hypothesis: under fleet load
 …"* — its **title** states fleet load as fact, and **no load figure was ever
 recorded**: no loadavg, no agent count, just "5–10+ agents were in flight,
-therefore load." **Titles are what get cited; bodies get read once**, so eight weeks
-later the recommended fix was a timeout bump *"with a comment documenting the
-fleet-load rationale"* — writing the unmeasured cause into the tree, where it would
-then be cited as established. So: **a hypothesis stated in a title is a finding by
+therefore load." **Titles are what get cited; bodies get read once**, and the
+recommended fix — filed with the issue and still standing unchallenged eight weeks
+later — was a timeout bump *"with a comment documenting the fleet-load rationale"*,
+which would write the unmeasured cause into the tree, where it would then be cited as
+established. Note precisely what the eight weeks measure: not that anyone re-derived
+the claim, but that nobody had to. **An unchallenged title accrues authority by
+sitting still.** So: **a hypothesis stated in a title is a finding by
 the time anyone cites it — keep the uncertainty in the part that travels.** The
 mechanical tell, which is checkable without knowing the subject: **if a claim names
 a cause, the artifact should contain the measurement; if it doesn't, the claim is a
-title.** Worth recording that the same load reflex was proposed independently three
-times in one day and refuted by data on its first contact with a measurement — the
-failing run's loadavg was **0.22** while the two passes were **2.10** and **4.24**.
+title.** Worth recording that the same load reflex was proposed independently by two
+managers in one day, and that on the one occasion anyone measured it, it inverted:
+QA measured **QUM-1053**'s analogous hypothesis about a *different* row
+(`idle-interrupt-inject`) and found the failure at loadavg **0.22** while the two
+passes sat at **2.10** and **4.24**.
+
+**Those figures do not refute QUM-752**, and the comment that recorded them says so
+in as many words — *"that is not proof this row's cause is also not load — different
+rows, different failures."* They are quoted here for the narrower thing they do
+establish: that "concurrent agents were running, therefore contention" is a
+conclusion this fleet has now been wrong about at least once when someone finally
+measured. Reporting them as a refutation of QUM-752 would be this section's own
+defect — a measurement from one artifact promoted into a finding about another — so
+the row they belong to is named every time they are cited.
 
 **The hardest instance to catch is a correct practice paired with a wrong rule**,
-because nothing downstream of the practice ever misbehaves. An agent corrected where
-retire-time evidence should be preserved and, in the same message, wrote a rule that
-named the wrong *source* for it — when it had actually preserved that evidence, it
-searched the worktree, which the rule does not say. The action was right; the
+because nothing downstream of the practice ever misbehaves. Recorded on **QUM-1055**,
+which carries the artifact: an agent corrected where retire-time evidence should be
+preserved and, in the same message, wrote a rule that named the wrong *source* for it
+— when it had actually preserved that evidence, it searched the worktree, which the
+rule does not say. (The issue records the consequence directly: a second agent
+following the stated rule checked the named durable path, found it empty, and would
+have concluded there was nothing to preserve while 460 KB sat in the worktree.) The action was right; the
 generalisation drawn from it was not. **The rule is the part that propagates**: the
 author keeps doing the right thing (so no failure ever surfaces to them, and they are
 structurally the least likely person to notice), while the next reader inherits the
@@ -751,9 +783,39 @@ defective abstraction and has nothing to check it against. The remedy is the sam
 everywhere else in this section — do not derive the rule from memory of the action;
 re-read what you actually did, and state the rule from that.
 
-Note what these last two shapes have in common with the mechanical ones above:
-**nobody failed a check.** A title promoted a hypothesis with no error anywhere, and
-a correct action produced an incorrect rule. The property holds across the whole
+**A measurement decays into an assertion by being transmitted, and every link looks
+identical to the one before.** This is its own shape — not an instrument that failed,
+not a spec that under-required, not an expired claim, not a wrong rule generalised
+from a right action. The measurement was **correct when it was made**; what degraded
+was its evidentiary status, and nothing in the text records the degradation. The
+chain, with the actual links, because a named chain argues better than a
+hypothetical:
+
+> `audit` ran the grep and reported *"neither QUM-1033 nor QUM-1028 is cited
+> anywhere in the tree (grep = 0)"* → **`command`** forwarded it as fact → **`weave`**
+> forwarded it to **the human**, in its own words, as a finding → and the only
+> re-derivation happened when **`zone`** re-ran it, *after* it had reached the person
+> who would act on it. It was **half wrong**: QUM-1028 had three pre-existing
+> citations, so the finding applied to QUM-1033 alone.
+
+**Four links, three forwards, zero re-derivations until the end.** The rule:
+
+> **A claim of the form "grep returns N" must be re-run by whoever repeats it.** A
+> grep's entire authority comes from having been run. A relay strips exactly that
+> while preserving the appearance — the quoted string is identical, so the second
+> speaker sounds precisely as authoritative as the first and has done none of the
+> work. Forwarding it unverified converts a measurement back into a rumour.
+
+Note the cost profile is the reverse of the mechanical shapes: re-running a grep is
+the cheapest verification in this entire document — seconds, no setup, no
+judgement — which is exactly why it gets skipped. **The relay is cheap and the
+re-run is cheap, so nothing about the economics warns you.** File it under
+transmission, not under carelessness; three of the four links were being careful.
+
+Note what these last three shapes have in common with the mechanical ones above:
+**nobody failed a check.** A title promoted a hypothesis with no error anywhere, a
+correct action produced an incorrect rule, and a true measurement stayed
+word-for-word intact while quietly ceasing to be evidence. The property holds across the whole
 list — **indistinguishable from success at the point of observation**, where the
 "observation" is sometimes a reader citing a title rather than a run printing `ok`.
 (Prefer the named list to a count; both tallies in this section grew after they were
@@ -802,6 +864,42 @@ order (§ *Provenance of the observed string* records that one); two cited a rot
 SHA inside the rule against rotted SHAs. **Inattention is not available as the
 explanation**, which is precisely the argument for a named mechanical check over
 more careful review: the check works when you are wrong about being careful.
+
+#### The second detection method: audit a green on purpose
+
+Everything above was found while investigating something else — a failure, a
+suspicious claim, a review already under way. That is a real limitation of the
+footprint check and of every tell in this section: **they all need you to already be
+looking.** This one does not, which is why it is worth stating as a procedure rather
+than counted as another instance:
+
+> **Pick a test whose name asserts a coupling. Then ask whether it reaches its
+> precondition *through* the code under test, or *around* it.**
+
+A precondition built *around* the code — hand-assembled by the test to resemble what
+the real code would have produced — is the mechanism. The test then pins the
+behaviour of **a fixture** rather than of the code it appears to guard, so it
+survives any divergence in that code. It is green, it is *correctly* green, and it
+is green about the wrong subject. Nothing distinguishes it from a test that means
+something, which is this section's property arriving where a reader is least likely
+to look: a passing test.
+
+**Worked example**, and the only confirmed catch so far — say that plainly, because
+a detection method with one instance is a lead, not a track record.
+`TestWeaveRuntimeHandle_ConsumedStateStaysSuppressed` names the coupling in its own
+doc comment (*"this matters for QUM-1000's `settleNeverAcked` sweep"*), so it reads
+as the guard on it. It never invokes the sweep. It reaches the sweep's end state via
+`mock.echoReplay(...)` against a handle with a nil `OnDelivered` — a hand-built
+`stateConsumed` entry that *resembles* the sweep's output. So it would stay green
+through every divergence it appears to protect against: the sweep widening its kind
+predicate, adopting a new state value, or beginning to call `OnDelivered`. Recorded
+as a defect in its own right on QUM-1056.
+
+The procedure's value is directional: it tells a reader **where to look** when
+nothing is failing, which is the state most of this file's failures were discovered
+in and none of its other tells can be run from. The cost is that it is not
+mechanical — `grep` cannot tell a proxy precondition from a real one — so it is a
+reading habit, not a check, and it should not be cited as though it were one.
 
 ### How to demonstrate a red
 
@@ -1219,8 +1317,11 @@ fallback*: that shape has **no failure arm**, this one has a real failure arm
 whose **predicate is too weak** — so it fails loudly for the wrong inputs and
 silently accepts the defect. (A third, § *Provenance of the observed string*, has a
 fine predicate pointed at the wrong process; a fourth, § *Indistinguishable from
-success*, has both right and reads a run that never happened.) All read as
-coverage; none is.
+success*, has both right and reads a run that never happened; a fifth, § *A null
+result is a statement about your search*, has nothing wrong with it at all and an
+instrument that could not have observed the thing.) The canonical table of all five
+is in § *Provenance of the observed string*; this list is a pointer to it, so if the
+two ever disagree the table wins. All read as coverage; none is.
 
 For a **styling** requirement, assert the specific SGR parameter set — not that
 two renders differ. QUM-925 asked that a pending row render *dimmer*; six tests
