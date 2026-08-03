@@ -396,10 +396,10 @@ turned out provenance-correct by luck. The check is what makes that reliable.
 > this one is *the guard against that says nothing.* **A check that cannot itself be
 > verified is not a check.**
 
-Four neighbouring shapes now, and they are distinguished by **where** the defect
-sits, not by how they read — all four read as coverage. This is the family's one
+Five neighbouring shapes now, and they are distinguished by **where** the defect
+sits, not by how they read — all five read as coverage. This is the family's one
 canonical **tabular** listing (§ *Mutate along the axis your assertion constrains*
-names the four in prose as a pointer, but no other section restates the table):
+names the shapes in prose as a pointer, but no other section restates the table):
 
 | shape | what's wrong | remedy |
 |---|---|---|
@@ -407,11 +407,19 @@ names the four in prose as a pointer, but no other section restates the table):
 | § *Mutate along the axis your assertion constrains* | real failure arm, predicate too weak | tighten the predicate |
 | **provenance (this section)** | predicate is fine — **it observes the wrong process** | assert on an artifact only the other side can mint |
 | § *Indistinguishable from success* | assertion and predicate both fine — **the input is stale** | force a fresh run; don't trust the summary |
+| § *A null result is a statement about your search* | nothing wrong with the check — **the instrument could not have observed it** | positive control: probe for something you know is there |
 
-What the four have in common is stated in the fourth: **the failure is
-indistinguishable from success at the point of observation.** Different mechanisms,
-one property — which is why each row needs its *own* remedy, and why mis-identifying
-the row means applying a fix that cannot work.
+What the five have in common is stated in § *Indistinguishable from success*: **the
+failure is indistinguishable from success at the point of observation.** Different
+mechanisms, one property — which is why each row needs its *own* remedy, and why
+mis-identifying the row means applying a fix that cannot work.
+
+The fifth row is `ratz`'s entry, deliberately positioned next to § *Mutate along the
+axis your assertion constrains* — the rule it inverts — rather than at this family's
+tail, because its author grepped for this then-unmerged section and moved off the
+natural placement to avoid colliding with it. The row was added by whoever merged
+second (here, this entry); the row states the shape in full, so it does not depend on
+the section for meaning.
 
 ### Indistinguishable from success at the point of observation (QUM-1047)
 
@@ -428,16 +436,23 @@ observation* can separate them. That is why the remedy is never "look harder"; i
 is always to observe something else.
 
 **Ignore the counts; they are the least durable part.** Two tallies appear near
-this section and they are *different families*: the table above counts **four
-assertion shapes**, and § *Six surfaces, one property* below counts the **surfaces**
-on which the property has been observed — mechanisms, not shapes, and they overlap
-only partly. Both numbers were smaller yesterday and both grew while this section
-was being written. The property is the claim; the tallies are just how much of it
+this section and they are *different families*: the table above counts **assertion
+shapes** (five as of writing), and § *Seven surfaces, one property* below counts the
+**surfaces** on which the property has been observed — mechanisms, not shapes, and
+they overlap only partly. Both numbers were smaller yesterday, both grew while this
+section was being written, and both grew again before it merged. The property is the claim; the tallies are just how much of it
 has been written down so far, so prefer the named list to the number.
 
 It is also what the table above is *for*: read it as one property with several
 entry points, not as a list of unrelated pitfalls — each row's remedy differs
 because each mechanism differs.
+
+**Three adjacent axes, one per section, easy to conflate** — this one asks **when**
+the artifact was produced; § *Provenance of the observed string* asks **who**
+produced it; `ratz`'s § *A null result is a statement about your search* asks
+**whether the instrument could have observed it at all**. That section states the
+same three-way split from its side; this clause exists so a reader arriving here
+can navigate, not to restate it.
 
 The rest of this section is the **worked example**: Go's build cache, which is the
 most industrialised instance because it produces the property automatically,
@@ -625,7 +640,7 @@ first counterexample gets used to dismiss the entry.
 
 But do not over-read that immunity: it is immunity to the **mechanism**, not to the
 **property**. A shell suite reaches the same place by a different route — see the
-`pipefail` row in § *Six surfaces, one property* below, where a real failure exits
+`pipefail` row in § *Seven surfaces, one property* below, where a real failure exits
 0 because the verdict was lost in a pipe. Scope claims to mechanisms; the property
 travels.
 
@@ -642,10 +657,10 @@ property you control**, so a clean run is not evidence of a clean habit. And
 **none of the three was found by review — all three by someone re-reading their
 own evidence.**
 
-#### Six surfaces, one property
+#### Seven surfaces, one property
 
 The build cache is not the claim. The claim is the property, and it has now been
-observed on six different surfaces in this repo — which is a stronger statement
+observed on seven different surfaces in this repo — which is a stronger statement
 than any of them individually, because it predicts the *next* one:
 
 | surface | mechanism | what looked like success |
@@ -656,6 +671,7 @@ than any of them individually, because it predicts the *next* one:
 | a documentation reference | a cited SHA that has rotted | a SHA that still resolves — to the wrong tree |
 | **shared tooling** | `merge` rebasing onto the *caller's* stale base (QUM-1050) | `Merged agent zone`, exit success, no warning |
 | **a null grep** | searched a worktree that predates the code | zero hits, exit 0, no error at all |
+| **a tracker title** | hypothesis in the body, stated as fact in the title (QUM-752) | a title that reads as a finding — and was cited as one for eight weeks |
 
 **The null grep is the purest instance, and it is worse than the build cache.** A
 cached green at least leaves a `(cached)` token in the log for anyone who looks; a
@@ -676,7 +692,17 @@ the search was clean, the *base* was old — which is why the axes above compose
 
 The control is one command (grep for something you *know* is there, or check the
 base), which is the same shape as `-count=1` here: cheap, mechanical, and skipped
-because the result looked conclusive.
+because the result looked conclusive. The class is developed on its own terms in
+§ *A null result is a statement about your search* — read that for the rule; this
+row is only its appearance as a surface.
+
+**It generalises past `grep`, which is worth one instance because the surface does
+not look like a search.** A manager checked a QA agent's durable evidence path,
+found it empty, and read that as *the agent has no evidence* — when what was
+established is only *nothing was written where I looked*. **An empty durable path is
+not evidence that an agent has no evidence.** Same rule, no code involved: the
+instrument was a directory listing rather than a regex, and it was equally
+unexercised.
 
 **The documentation-reference row** is the one that generalises the entry beyond
 testing: **a stale SHA either resolves to something or fails silently, and either
@@ -696,6 +722,42 @@ produced **one commit, authored by the caller, containing two slices of someone
 else's issue and two unrelated commits besides** — then printed `Merged agent
 zone` and exited success. The resulting tree was byte-correct. **Only the history
 lied**, and the success message was not evidence of a correct merge.
+
+**The tracker-title row is the property one layer further out**: it acts on the
+*claim* rather than on a run, and what is indistinguishable is not a green but a
+hypothesis from a finding. QUM-752's body is honest — *"Hypothesis: under fleet load
+…"* — its **title** states fleet load as fact, and **no load figure was ever
+recorded**: no loadavg, no agent count, just "5–10+ agents were in flight,
+therefore load." **Titles are what get cited; bodies get read once**, so eight weeks
+later the recommended fix was a timeout bump *"with a comment documenting the
+fleet-load rationale"* — writing the unmeasured cause into the tree, where it would
+then be cited as established. So: **a hypothesis stated in a title is a finding by
+the time anyone cites it — keep the uncertainty in the part that travels.** The
+mechanical tell, which is checkable without knowing the subject: **if a claim names
+a cause, the artifact should contain the measurement; if it doesn't, the claim is a
+title.** Worth recording that the same load reflex was proposed independently three
+times in one day and refuted by data on its first contact with a measurement — the
+failing run's loadavg was **0.22** while the two passes were **2.10** and **4.24**.
+
+**The hardest instance to catch is a correct practice paired with a wrong rule**,
+because nothing downstream of the practice ever misbehaves. An agent corrected where
+retire-time evidence should be preserved and, in the same message, wrote a rule that
+named the wrong *source* for it — when it had actually preserved that evidence, it
+searched the worktree, which the rule does not say. The action was right; the
+generalisation drawn from it was not. **The rule is the part that propagates**: the
+author keeps doing the right thing (so no failure ever surfaces to them, and they are
+structurally the least likely person to notice), while the next reader inherits the
+defective abstraction and has nothing to check it against. The remedy is the same as
+everywhere else in this section — do not derive the rule from memory of the action;
+re-read what you actually did, and state the rule from that.
+
+Note what these last two shapes have in common with the mechanical ones above:
+**nobody failed a check.** A title promoted a hypothesis with no error anywhere, and
+a correct action produced an incorrect rule. The property holds across the whole
+list — **indistinguishable from success at the point of observation**, where the
+"observation" is sometimes a reader citing a title rather than a run printing `ok`.
+(Prefer the named list to a count; both tallies in this section grew after they were
+written down.)
 
 #### The detection generalises too: check the footprint, not the content
 
