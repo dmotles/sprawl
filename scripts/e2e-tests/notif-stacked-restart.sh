@@ -131,8 +131,12 @@ test_run() {
     # LoadTranscript → replay.go, which peels the same <system-notification>
     # frames through the shared classifier. A double-render would resurface the
     # raw tag or a duplicate citation.
+    # QUM-948: no fixed sleep here. kill-session only signals the pane; weave's
+    # flock on .sprawl/memory/weave.lock is released when the dying process's fd
+    # closes, which under load takes longer than any constant we could pick.
+    # e2e_launch_tui below polls for the release (e2e_wait_weave_lock_free) and
+    # fails loudly if the lock is genuinely leaked.
     _stmux kill-session -t "$SESSION" 2>/dev/null || true
-    sleep 2
 
     local SESSION2="${SESSION}-r"
     if ! e2e_launch_tui "$SESSION2" 200 50; then

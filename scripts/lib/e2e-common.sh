@@ -265,11 +265,130 @@ wait_for_substring_fast() {
     return 1
 }
 
+# _e2e_weave_lock_diagnostic LOCK ATTEMPTS — explain who is still holding the
+# lock. The file body is the last PID that successfully ACQUIRED (rootinit
+# writes it after locking), which is not necessarily the current holder, so the
+# live holder is reported separately and best-effort.
+_e2e_weave_lock_diagnostic() {
+    local lock="$1" attempts="$2"
+    echo "  weave.lock still held: $lock (attempts=$attempts)" >&2
+    local recorded=""
+    [ -r "$lock" ] && recorded=$(tr -dc '0-9' <"$lock" 2>/dev/null | head -c 12)
+    if [ -n "$recorded" ]; then
+        echo "  recorded PID (lock file body): $recorded" >&2
+        if command -v ps >/dev/null 2>&1; then
+            ps -o pid=,ppid=,etime=,args= -p "$recorded" >&2 2>/dev/null || \
+                echo "    (PID $recorded is gone — the body is stale)" >&2
+        fi
+    else
+        echo "  recorded PID: none (lock file body empty or unreadable)" >&2
+    fi
+    local live=""
+    if command -v fuser >/dev/null 2>&1; then
+        live=$(fuser "$lock" 2>/dev/null | tr -s ' ')
+    fi
+    if [ -z "$live" ] && command -v lsof >/dev/null 2>&1; then
+        live=$(lsof -t -- "$lock" 2>/dev/null | tr '\n' ' ')
+    fi
+    if [ -n "$live" ]; then
+        echo "  live holder PID(s): $live" >&2
+        local p
+        for p in $live; do
+            command -v ps >/dev/null 2>&1 && ps -o pid=,ppid=,etime=,args= -p "$p" >&2 2>/dev/null
+        done
+    else
+        echo "  live holder PID(s): unknown (fuser/lsof unavailable or reported nothing)" >&2
+    fi
+    return 0
+}
+
+# e2e_wait_weave_lock_free [ROOT] [TIMEOUT_SECS] — QUM-948. Block until
+# `<ROOT>/.sprawl/memory/weave.lock` is acquirable, or fail.
+#
+# Why a poll and not a sleep: `tmux kill-session` only signals the pane, while
+# the flock rootinit.AcquireWeaveLock holds is released by the kernel when the
+# dying process's fd closes. A kill-then-relaunch path that sleeps a fixed 2s
+# and then launches loses the race whenever teardown takes longer than that,
+# and `sprawl enter` dies with "another weave session is already running".
+# Lengthening the sleep would only trade a fast flake for a slow one and would
+# hide a genuinely leaked lock; so we retry with backoff to a bounded deadline
+# and FAIL loudly (never hang, never silently succeed) if the lock outlives it.
+#
+# Probe-only: `flock -n` releases immediately, so this holds nothing itself and
+# cannot become the blocker for the launch it precedes.
+e2e_wait_weave_lock_free() {
+    local root="${1:-${SPRAWL_ROOT:-}}"
+    local timeout="${2:-${SPRAWL_E2E_LOCK_WAIT_SECS:-30}}"
+    if [ -z "$root" ]; then
+        echo "  WARN: e2e_wait_weave_lock_free called with no root — skipping weave.lock wait" >&2
+        return 0
+    fi
+    # A non-numeric timeout would reach `$((SECONDS + timeout))`, where bash
+    # treats it as a VARIABLE NAME: under the driver's `set -u` that aborts the
+    # whole ROW with a bare "10s: unbound variable" naming neither the knob nor
+    # the row. "10s" and "1e3" are exactly what an operator reaches for.
+    if ! [[ "$timeout" =~ ^[0-9]+$ ]]; then
+        echo "  WARN: SPRAWL_E2E_LOCK_WAIT_SECS='$timeout' is not a whole number of seconds — using 30" >&2
+        timeout=30
+    fi
+    local lock="$root/.sprawl/memory/weave.lock"
+    # Absent lock file (or absent memory dir) means nothing can be holding it.
+    # Checked rather than probed on purpose: `flock -n` would CREATE the file,
+    # and fails with a distinct "cannot open" status when the dir is missing.
+    [ -f "$lock" ] || return 0
+    if ! command -v flock >/dev/null 2>&1; then
+        echo "  WARN: flock(1) not found — cannot wait for weave.lock release; relaunch may race teardown" >&2
+        return 0
+    fi
+
+    local start="$SECONDS"
+    local end=$((SECONDS + timeout))
+    local delay="0.2" attempts=0 rc=0
+    while :; do
+        attempts=$((attempts + 1))
+        # -E 9 separates "held by someone else" (9) from "cannot open" (66):
+        # without it both are 1 and an unprobeable path would look like
+        # contention forever.
+        rc=0
+        flock -n -E 9 -x "$lock" true 2>/dev/null || rc=$?
+        if [ "$rc" -eq 0 ]; then
+            echo "WEAVE_LOCK_WAIT_ELAPSED $((SECONDS - start))s attempts=${attempts} path=${lock}"
+            return 0
+        fi
+        if [ "$rc" -ne 9 ]; then
+            echo "  WARN: flock probe on $lock exited $rc (not contention) — not waiting" >&2
+            return 0
+        fi
+        [ "$SECONDS" -lt "$end" ] || break
+        sleep "$delay"
+        # Exponential backoff capped at 2s: responsive on the common fast
+        # release, cheap over a long wait.
+        case "$delay" in
+        0.2) delay="0.4" ;;
+        0.4) delay="0.8" ;;
+        0.8) delay="1.6" ;;
+        *) delay="2" ;;
+        esac
+    done
+    # Report what we actually waited, not just the nominal deadline: the last
+    # backoff sleep can carry us up to 2s past it.
+    echo "  FAIL: weave.lock not released within the ${timeout}s deadline (waited $((SECONDS - start))s) — treating as a leaked lock, not waiting further" >&2
+    _e2e_weave_lock_diagnostic "$lock" "$attempts"
+    return 1
+}
+
 e2e_launch_tui() {
     local session="$1"
     local cols="${2:-200}"
     local rows="${3:-50}"
     local stderr_log="${SPRAWL_ROOT}/.sprawl/tui-stderr.log"
+    # QUM-948: a relaunch on a root whose previous weave is still tearing down
+    # would die with "another weave session is already running". Wait for the
+    # flock to actually be released instead of guessing with a fixed sleep.
+    if ! e2e_wait_weave_lock_free "$SPRAWL_ROOT"; then
+        echo "  FAIL: weave.lock still held before launching session $session — refusing to launch into a doomed acquire" >&2
+        return 1
+    fi
     _stmux new-session -d -s "$session" -x "$cols" -y "$rows" \
         "SPRAWL_ROOT='$SPRAWL_ROOT' '$SPRAWL_BIN' enter 2>'$stderr_log'"
     _stmux set-option -t "$session" window-size manual >/dev/null
@@ -283,6 +402,13 @@ e2e_launch_tui() {
         capture_pane "$session" | tail -30 >&2
         echo "  stderr log tail:" >&2
         [ -f "$stderr_log" ] && tail -20 "$stderr_log" >&2
+        # QUM-948: a residual TOCTOU between our probe and sprawl's own acquire
+        # would otherwise present as 45s of blank pane with no explanation.
+        if [ -f "$stderr_log" ] && grep -qF "already running" "$stderr_log"; then
+            echo "  NOTE: stderr says another weave session is already running — the weave.lock" >&2
+            echo "        was released after our probe but before sprawl acquired it, or a" >&2
+            echo "        second session is using this SPRAWL_ROOT." >&2
+        fi
         return 1
     fi
     return 0
