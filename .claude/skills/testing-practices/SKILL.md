@@ -306,6 +306,105 @@ otherwise a 7+1 attribution reads as three-for-three. **Report the attribution,
 not the count:** a single fixture that happens to exercise two properties produces
 the same total while proving neither.
 
+### Provenance of the observed string: who mints the artifact? (QUM-925)
+
+> **An assertion that observes an artifact your own process produces cannot be
+> evidence about another process.** Before citing a cross-process assertion, ask
+> **who mints the artifact.** If your side can produce it, the assertion is about
+> your side.
+>
+> **Provenance is a property of the individual assertion, not of the row.** A row can
+> be sound overall while the sentence you quote from it is not evidence for the claim
+> you are making.
+
+This earns a named check rather than a line in the two sections above because it is
+a **mechanical question with a grepable answer** — *who writes this text, us or the
+thing we're testing?* — and it catches a class that careful reading provably does
+not. Three confirmed instances on QUM-925, **none caught by reading the assertion
+and reasoning about it:**
+
+| # | assertion | claimed | actually proved | caught by |
+|---|---|---|---|---|
+| 1 | the pre-`assertDimIsFaintDelta` tests | pending renders dim | *some* SGR changed — `Underline(true)` passed | adversarial reviewer |
+| 2 | the strip-SGR fallback as first specified | distinction survives a faint-blind terminal | plain text differs — a ZWSP gutter passed | adversarial reviewer |
+| 3 | `notif-stacked-restart` L1 pane citation | an idle weave took a turn | sprawl wrote and rendered a frame | engineer attacking its own **new** assertion |
+
+All three observed something weaker than the claim; in #3 that something is an
+artifact **the asserting side minted**, which is the form a grep settles. It greps
+weave's pane for `From <agent> — mcp__sprawl__messages_read(id=…)`, a string minted
+by **sprawl** (`internal/inboxprompt/inboxprompt.go:121`) which, since QUM-925,
+renders from sprawl's own `EventUserMessageSent` publish — and L1 has **no upstream
+cross-process gate**, so it **passes with the CLI subprocess dead.** Proven by
+mutation: suppress the `kind:system` stdin write, keep the publish → L1 PASS, L2
+FAIL, same run.
+
+**The contrast case, which is where the granularity rule earns its keep.**
+`drain-row-inject:162` greps for the *same self-minted string* — but it sits behind
+two unforgeable upstream assertions: a non-weave `state` file appearing (`:116`,
+minted by weave's CLI calling `spawn`) and the child's `messages_send` envelope
+landing in weave's maildir (`:144`, minted by the child's CLI). With a dead CLI the
+row dies at `:116` and never reaches `:162`. So the row is **sound**; the citation
+was still wrong — `:162` alone does not support *"weave acted on the notification"*,
+and `:116`/`:144` prove the CLI acted on the **spawn prompt**, which is a different
+claim. Remedy is a **citation fix — quote `:116`/`:144`** — not distrust of the row.
+
+The positive form is what licenses trust. L2 observes a `"kind":"result"` entry,
+which has exactly one producer chain, ending at `session.runReader` reading from
+`transport.Recv` — and `grep -rn 'protocol.Message{' --include=*.go internal/` is
+**empty outside tests**, so sprawl *cannot* mint one. That is an **impossibility
+argument**, not an absence-of-evidence one, and only the former is evidence.
+
+Four things that do not follow from the rule itself:
+
+* **Careful reading is not the mechanism.** Three of us propagated the (false) claim
+  that the contrast row was hollow too: one asserted it from a QA report without
+  reading the row's assertion order, one relayed it onward, and the third caught it
+  by reading the mint sites — then withdrew half its own sentence after checking.
+  Reading failed three times consecutively on people writing this very guidance; the
+  mechanical question (*who mints this, and what gates it?*) caught it.
+* **Correcting one instance does not sweep the class.** The contrast case went
+  un-examined through the first correction because only L1 was revisited. When you
+  find one of these, grep for its siblings.
+* **Plausibility is the trap.** These assertions convince *because* the text names a
+  child agent and reads like the notification arriving — but the naming is sprawl's
+  own prose template, so the most persuasive detail is the one your side supplied.
+* **Not only a testing concern.** The general form is *reasoning carefully about a
+  mechanism without checking whether the mechanism is exercised* — the same shape
+  produced a filed issue describing a "user-visible semantics change" on a code path
+  that is structurally unreachable (an ancestor gate that can never pass for the
+  root).
+
+**A provenance-correct artifact is necessary, not sufficient — prove it was being
+produced.** The wire log has its own false-green mode: if
+`SprawlRoot`/`Identity`/`SessionID` is empty the path is never built
+(`internal/backend/claude/adapter.go:133-135`), and if `newWireLog` fails capture is
+disabled with only a stderr line (`:308-311`) — so a harness pointed at the wrong
+path counts **zero frames and passes every assertion vacuously.** Note also that the
+switch from pane to wire log here was made for an unrelated reason (the property was
+unrecoverable off-pane; *any* off-pane artifact with the right fields would do) and
+turned out provenance-correct by luck. The check is what makes that reliable.
+
+> **A liveness gate must announce itself on success, or it is unverifiable from the
+> outside.** Presence is greppable; *firing* is not — a gate inside a branch that
+> never ran, or after an early return, reads identically in source to one that
+> executed, so a reviewer performs the greppable half and feels satisfied. Print on
+> the success path (`WIRELOG_LIVENESS_OK in-user-frames=<n> out-frames=<n>
+> log=<path>`) so execution, counts, and resolved artifact are all observable. And a
+> liveness gate that **warns and continues is strictly worse than no gate** — it
+> manufactures the appearance of coverage. This is the family one level up: the
+> false-green modes above are all *the run says nothing and silence reads as fine*;
+> this one is *the guard against that says nothing.* **A check that cannot itself be
+> verified is not a check.**
+
+Three neighbouring shapes now, and they are distinguished by **where** the defect
+sits, not by how they read — all three read as coverage:
+
+| shape | what's wrong | remedy |
+|---|---|---|
+| § *The non-asserting fallback* | no failure arm — silently succeeds | add the else branch |
+| § *Mutate along the axis your assertion constrains* | real failure arm, predicate too weak | tighten the predicate |
+| **provenance (this section)** | predicate is fine — **it observes the wrong process** | assert on an artifact only the other side can mint |
+
 ### How to demonstrate a red
 
 **Red-first.** Write the assertion, run it against the unfixed tree, and keep the
@@ -720,7 +819,8 @@ when you least want the guard rewritten by whoever is changing it.
 Companion to the previous section, and the counterpart to § *The non-asserting
 fallback*: that shape has **no failure arm**, this one has a real failure arm
 whose **predicate is too weak** — so it fails loudly for the wrong inputs and
-silently accepts the defect. Both read as coverage; neither is.
+silently accepts the defect. (A third, § *Provenance of the observed string*, has a
+fine predicate pointed at the wrong process.) All read as coverage; none is.
 
 For a **styling** requirement, assert the specific SGR parameter set — not that
 two renders differ. QUM-925 asked that a pending row render *dimmer*; six tests
