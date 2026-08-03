@@ -1912,8 +1912,6 @@ func (r *Real) SendMessage(ctx context.Context, to, body string, interrupt, wake
 		body = inboxprompt.WrapForDeadTarget(caller, originalTo, deadChain, body)
 	}
 
-	runtime, runtimeBacked := r.startedRuntime(to)
-
 	shortID, err := messages.Send(r.sprawlRoot, caller, to, "", body)
 	if err != nil {
 		return nil, err
@@ -1936,8 +1934,16 @@ func (r *Real) SendMessage(ctx context.Context, to, body string, interrupt, wake
 	// QUM-821: both interrupt=true and interrupt=false deliver via the same
 	// cooperative wake. Urgency for interrupt=true is carried by the enqueued
 	// ClassInterrupt entry, which drainPendingToStdin writes at priority `now`
-	// (cancel-and-replace). The bare interrupt frame is reserved for Esc-abort.
-	if runtimeBacked {
+	// (cancel-and-replace) for children. The bare interrupt frame is reserved for
+	// Esc-abort.
+	//
+	// QUM-925: resolved HERE, not before messages.Send above. startedRuntime gates on
+	// Liveness == Running, so evaluating it before the enqueue was a TOCTOU: a
+	// recipient that became Running in between got no poke for an entry that is
+	// already durably queued. That used to be harmless because weave's 2s TUI poll
+	// swept it up; that poll is gone, so the missed poke is now the difference
+	// between instant delivery and waiting for unrelated traffic.
+	if runtime, runtimeBacked := r.startedRuntime(to); runtimeBacked {
 		_ = runtime.WakeForDelivery()
 	}
 

@@ -3,8 +3,11 @@ package runtime
 import (
 	"context"
 	"sort"
+	"strings"
 	"testing"
 	"time"
+
+	"github.com/dmotles/sprawl/internal/protocol"
 )
 
 // writePendingUser writes a kind:user prompt and configures the mock to return
@@ -355,5 +358,95 @@ func TestSendAllNow_OnlyCancelledTextConcatenated(t *testing.T) {
 	}
 	if got := rt.Outstanding()[b].state; got != stateConsumed {
 		t.Errorf("B state = %v, want stateConsumed", got)
+	}
+}
+
+// TestSendAllNow_IgnoresSystemKind is the QUM-925 twin of
+// TestRecall_IgnoresSystemKind: Ctrl+G must promote ONLY user prompts to
+// priority `now`. A pending system frame must be neither cancelled nor
+// re-written — the user cannot displace or promote a notification.
+func TestSendAllNow_IgnoresSystemKind(t *testing.T) {
+	// The root system write arms guardSubmitted once the fast path widens.
+	withShortSubmittedTimeout(t, 40*time.Millisecond)
+	mock := &mockUnifiedSession{cancelResults: map[string]bool{}}
+	rt := New(RuntimeConfig{Name: "weave", IsRoot: true, Session: mock})
+
+	sysUUID, err := rt.WriteSystemMessage(context.Background(), "<system-notification>x</system-notification>", "next", nil)
+	if err != nil {
+		t.Fatalf("write system: %v", err)
+	}
+	mock.mu.Lock()
+	mock.cancelResults[sysUUID] = true // would cancel IF it were ever attempted
+	mock.mu.Unlock()
+	userUUID := writePendingUser(t, rt, mock, "typed", "next")
+
+	if err := rt.SendAllNow(context.Background()); err != nil {
+		t.Fatalf("SendAllNow: %v", err)
+	}
+
+	got := mock.cancelledUUIDs()
+	if len(got) != 1 || got[0] != userUUID {
+		t.Errorf("cancel calls = %v, want only the user uuid [%s] (system frames are not promotable)", got, userUUID)
+	}
+	if st := rt.Outstanding()[sysUUID].state; st != statePending {
+		t.Errorf("system entry state = %v, want statePending (untouched by send-all-now)", st)
+	}
+
+	var nowText string
+	mock.mu.Lock()
+	for _, w := range mock.writes {
+		if w.Priority == "now" {
+			nowText = w.Message.Content
+		}
+	}
+	mock.mu.Unlock()
+	if nowText != "typed" {
+		t.Errorf("coalesced now-write text = %q, want %q (must not include the system frame)", nowText, "typed")
+	}
+}
+
+// TestSendAllNow_SystemFrame_StaysNextPriority asserts the literal AC ("system
+// frames stay at `next`") rather than a proxy: after Ctrl+G, the system frame's
+// original write is still the only write carrying its text, and it is still at
+// priority `next`.
+func TestSendAllNow_SystemFrame_StaysNextPriority(t *testing.T) {
+	// The root system write arms guardSubmitted once the fast path widens.
+	withShortSubmittedTimeout(t, 40*time.Millisecond)
+	mock := &mockUnifiedSession{cancelResults: map[string]bool{}}
+	rt := New(RuntimeConfig{Name: "weave", IsRoot: true, Session: mock})
+
+	const sysText = "<system-notification>keep-me</system-notification>"
+	sysUUID, err := rt.WriteSystemMessage(context.Background(), sysText, "next", nil)
+	if err != nil {
+		t.Fatalf("write system: %v", err)
+	}
+	// The mock would report this frame as successfully cancelled IF send-all-now
+	// ever attempted it — without this the test would pass vacuously even against
+	// a runtime that promotes system frames (cancelled:false ⇒ text dropped).
+	mock.mu.Lock()
+	mock.cancelResults[sysUUID] = true
+	mock.mu.Unlock()
+	writePendingUser(t, rt, mock, "typed", "next")
+
+	if err := rt.SendAllNow(context.Background()); err != nil {
+		t.Fatalf("SendAllNow: %v", err)
+	}
+
+	mock.mu.Lock()
+	writes := append([]protocol.UserMessage(nil), mock.writes...)
+	mock.mu.Unlock()
+
+	seen := 0
+	for _, w := range writes {
+		if !strings.Contains(w.Message.Content, sysText) {
+			continue
+		}
+		seen++
+		if w.Priority != "next" {
+			t.Errorf("write carrying the system frame has Priority = %q, want %q", w.Priority, "next")
+		}
+	}
+	if seen != 1 {
+		t.Errorf("writes carrying the system frame = %d, want exactly 1 (never re-written at `now`)", seen)
 	}
 }

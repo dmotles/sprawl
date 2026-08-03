@@ -140,34 +140,87 @@ func TestUserMessageConsumed_StackedNotifications_DistinctEntries(t *testing.T) 
 	}
 }
 
-// T4 — InboxDrainMsg no longer eager-appends; render happens on consume.
-func TestInboxDrainMsg_NoEagerSystemAppend_RendersOnConsume(t *testing.T) {
-	app, fake := idleTrackingApp(t)
+// QUM-925: the former TestInboxDrainMsg_NoEagerSystemAppend_RendersOnConsume
+// lived here. It drove the (now deleted) InboxDrainMsg reducer — weave's
+// TUI-resident, idle-gated drain. Its user-visible contract (a drained
+// notification renders system-styled, exactly once, on the consume ack) is
+// unchanged and is asserted by
+// TestUserMessageConsumed_SystemNotification_SystemStyledOnce_NotRawBubble above,
+// which exercises the SAME sent→consume reducers via the route that replaces it:
+// a bare pump-delivered UserMessageSentMsg published by the supervisor-side
+// WriteSystemMessage. No coverage is lost; the producer moved out of the TUI.
 
-	app = deliver(t, app, InboxDrainMsg{Prompt: notifFrameA, EntryIDs: []string{"e1"}, Class: "async"})
+// TestSystemZoneEntry_SurvivesRecall is AC 3 at the reducer level: Ctrl+U
+// (recall) must not remove a pending system notification. The runtime half is
+// already excluded by construction (snapshotPendingUser filters kind:user, so no
+// UserMessageCancelledMsg is ever produced for a system frame), and
+// TestChatList_ZoneDrop_SystemEntry_Refused pins the ChatList primitive. What is
+// NOT otherwise covered — and what this asserts — is the reducer ROUTE: that
+// UserMessageCancelledMsg reaches ZoneDrop (which refuses system entries) rather
+// than some other path that would evict them.
+func TestSystemZoneEntry_SurvivesRecall(t *testing.T) {
+	app, _ := idleTrackingApp(t)
+
+	app = deliver(t, app, UserMessageSentMsg{UUID: "n1", Text: notifFrameA})
+	app = deliver(t, app, UserMessageSentMsg{UUID: "u1", Text: "typed prompt"})
+	if got := rootChat(app).ZoneLen(); got != 2 {
+		t.Fatalf("ZoneLen() = %d, want 2 (one system + one user pending)", got)
+	}
+
+	// Ctrl+U cancels the user prompt only — the runtime never cancels a system
+	// frame, so only the user uuid arrives here.
+	app = deliver(t, app, UserMessageCancelledMsg{UUID: "u1"})
+
 	cl := rootChat(app)
-	if cl.Len() != 0 {
-		t.Fatalf("committed Len = %d immediately after InboxDrainMsg, want 0 (no eager AppendSystemNotification)", cl.Len())
+	if got := cl.ZoneUserCount(); got != 0 {
+		t.Errorf("ZoneUserCount() = %d, want 0 (the typed prompt was recalled)", got)
 	}
-	if fake.sendCalls != 1 {
-		t.Fatalf("SendMessage calls = %d, want 1 (drain still writes to stdin)", fake.sendCalls)
+	if got := cl.ZoneLen(); got != 1 {
+		t.Errorf("ZoneLen() = %d, want 1 (the pending system notification must survive recall)", got)
+	}
+	// A recall DROPS the prompt — it must not be settled into the transcript
+	// (that is the ZoneSettle-instead-of-ZoneDrop mutation, which leaves the
+	// counts above identical but commits a bubble the user just took back).
+	if got := countUserItems(cl); got != 0 {
+		t.Errorf("committed user items = %d, want 0 (a recalled prompt is dropped, never settled)", got)
+	}
+	if got := countSystemItems(cl); got != 0 {
+		t.Errorf("committed system items = %d, want 0 (the notification is still pending, not settled)", got)
 	}
 
-	// Drive the sent ack: the drain wrote with the bridge-minted uuid (u1); the
-	// fake mints "u<sendCalls>".
-	app = deliver(t, app, UserMessageSentMsg{UUID: "u1", Text: notifFrameA})
-	if rootChat(app).Len() != 0 {
-		t.Fatalf("committed Len = %d after sent, want 0 (still pending in zone)", rootChat(app).Len())
-	}
-	app = deliver(t, app, UserMessageConsumedMsg{UUID: "u1"})
-
+	// And it still settles normally afterwards — recall did not orphan it.
+	app = deliver(t, app, UserMessageConsumedMsg{UUID: "n1"})
 	cl = rootChat(app)
-	if countSystemItems(cl) != 1 {
-		t.Fatalf("system items = %d after consume, want 1", countSystemItems(cl))
+	if got := countSystemItems(cl); got != 1 {
+		t.Errorf("system items after consume = %d, want 1 (survived recall AND settled)", got)
+	}
+	if got := cl.ZoneLen(); got != 0 {
+		t.Errorf("ZoneLen() after settle = %d, want 0", got)
+	}
+}
+
+// TestSystemZoneEntry_SurvivesEscInterrupt is AC 5 at the reducer level: Esc
+// aborts the turn, but a pending system frame stays queued and is consumed on the
+// next trigger. An interrupt terminal must not evict the zone entry.
+func TestSystemZoneEntry_SurvivesEscInterrupt(t *testing.T) {
+	app, _ := idleTrackingApp(t)
+
+	app = deliver(t, app, UserMessageSentMsg{UUID: "n1", Text: notifFrameA})
+	app = deliver(t, app, InterruptCompletedMsg{})
+
+	if got := rootChat(app).ZoneLen(); got != 1 {
+		t.Fatalf("ZoneLen() after interrupt = %d, want 1 (system frames survive Esc queued)", got)
+	}
+
+	// Consumed on the next trigger — it renders then, exactly once.
+	app = deliver(t, app, UserMessageConsumedMsg{UUID: "n1"})
+	cl := rootChat(app)
+	if got := countSystemItems(cl); got != 1 {
+		t.Errorf("system items = %d, want 1 (consumed on the next trigger after Esc)", got)
 	}
 	out := stripAnsi(cl.Render(100))
 	if c := strings.Count(out, "alpha → working"); c != 1 {
-		t.Errorf("notification body rendered %d times, want 1 (no eager + consume double):\n%s", c, out)
+		t.Errorf("notification body rendered %d times, want 1:\n%s", c, out)
 	}
 }
 
@@ -384,5 +437,46 @@ func TestSessionRestarting_ClearsZone(t *testing.T) {
 	}
 	if !statusBarContains(app, "queued message") {
 		t.Errorf("status bar should carry the dropped-queue banner after restart")
+	}
+}
+
+// TestUserMessageConsumed_InterruptFlaggedNotification_PreservesFlag is the
+// reducer-level replacement for the deleted
+// TestAppModel_InboxDrainMsg_SystemNotificationInterruptFlag. After that deletion
+// SystemNotificationItem.Interrupt() would be asserted nowhere in internal/tui:
+// stripSystemNotificationTag's parse is unit-tested, but nothing pinned that the
+// flag survives the sent→consume reducer route into the committed item.
+func TestUserMessageConsumed_InterruptFlaggedNotification_PreservesFlag(t *testing.T) {
+	app, _ := idleTrackingApp(t)
+
+	// notifFrameB carries interrupt="true".
+	app = deliver(t, app, UserMessageSentMsg{UUID: "n1", Text: notifFrameB})
+	app = deliver(t, app, UserMessageConsumedMsg{UUID: "n1"})
+
+	cl := rootChat(app)
+	if got := countSystemItems(cl); got != 1 {
+		t.Fatalf("system items = %d, want 1", got)
+	}
+	var found *SystemNotificationItem
+	for _, it := range cl.Items() {
+		if si, ok := it.(*SystemNotificationItem); ok {
+			found = si
+		}
+	}
+	if found == nil {
+		t.Fatal("no SystemNotificationItem committed")
+	}
+	if !found.Interrupt() {
+		t.Error(`Interrupt() = false, want true — the interrupt="true" flag was lost crossing the pending zone`)
+	}
+	// Control: a non-interrupt frame must NOT report the flag, so the assertion
+	// above cannot pass by the field defaulting true.
+	app2, _ := idleTrackingApp(t)
+	app2 = deliver(t, app2, UserMessageSentMsg{UUID: "n2", Text: notifFrameA})
+	app2 = deliver(t, app2, UserMessageConsumedMsg{UUID: "n2"})
+	for _, it := range rootChat(app2).Items() {
+		if si, ok := it.(*SystemNotificationItem); ok && si.Interrupt() {
+			t.Error("a non-interrupt notification reported Interrupt() = true")
+		}
 	}
 }

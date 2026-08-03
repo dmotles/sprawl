@@ -39,6 +39,11 @@ type fakeBackendSession struct {
 	interrupted int32
 	writes      []protocol.UserMessage                    // QUM-817: stdin user messages written
 	router      func(*protocol.Message, backend.TurnInfo) // QUM-817: captured frame router
+	// cancelResults maps a uuid to the {cancelled} value CancelAsyncMessage
+	// returns for it. Absent uuids return false — which means "already dequeued
+	// for execution", so a test that wants a genuinely-recallable prompt MUST
+	// register it here or Recall silently returns "" (QUM-925).
+	cancelResults map[string]bool
 
 	// waitBlock, when non-nil, makes Wait() block until the channel is closed
 	// (or until the test cleanup closes it). Used by the QUM-542 bounded-wait
@@ -140,8 +145,30 @@ func (f *fakeBackendSession) Interrupt(context.Context) error {
 	return nil
 }
 
-func (f *fakeBackendSession) CancelAsyncMessage(context.Context, string) (bool, error) {
-	return false, nil
+func (f *fakeBackendSession) CancelAsyncMessage(_ context.Context, uuid string) (bool, error) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	return f.cancelResults[uuid], nil
+}
+
+// setCancelResult registers the {cancelled} ack CancelAsyncMessage returns for
+// uuid. Without it Recall treats the entry as already-executing and drops it.
+func (f *fakeBackendSession) setCancelResult(uuid string, cancelled bool) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	if f.cancelResults == nil {
+		f.cancelResults = map[string]bool{}
+	}
+	f.cancelResults[uuid] = cancelled
+}
+
+// settledWrites waits for at least n stdin writes, then waits a further settle
+// window and returns the final snapshot. Unlike waitForWrites this can observe
+// an UNWANTED extra write, so "exactly n" assertions are meaningful.
+func (f *fakeBackendSession) settledWrites(n int, timeout, settle time.Duration) []protocol.UserMessage {
+	f.waitForWrites(n, timeout)
+	time.Sleep(settle)
+	return f.writesSnapshot()
 }
 
 func (f *fakeBackendSession) Close() error {

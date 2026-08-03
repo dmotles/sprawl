@@ -70,6 +70,8 @@ type UnifiedRuntime struct {
 	liveness livenesspkg.State
 	started  bool
 	stopped  bool
+	// postStartHook runs at the end of Start (QUM-925). Guarded by mu.
+	postStartHook func()
 	// phase is the QUM-903 3-state in_turn machine (idle / submitted / running)
 	// and the sole in_turn authority: State().InTurn == (phase != phaseIdle).
 	// Driven by an optimistic submit-from-idle set (human prompts only) and the
@@ -763,7 +765,29 @@ func (rt *UnifiedRuntime) writeMessage(ctx context.Context, text, priority strin
 	// FROM idle, hiding the ~2–10ms submit→running wire latency. Only from idle:
 	// a submit while already submitted/running just queues (no new synthetic).
 	// kind:system deliveries (spawn prompt, inbox, task) never synthesize —
-	// passively-observed agents are driven purely by their wire.
+	// passively-observed agents are driven purely by their wire. This holds for the
+	// ROOT too; pinned by TestPhase_SystemMessageFromIdleDoesNotSetInTurn.
+	//
+	// QUM-925 CONSIDERED AND REJECTED widening this to
+	// `kindUser || (kindSystem && cfg.IsRoot)` so an idle weave would enter the
+	// synthetic submitted phase on an injected notification. It is not needed and it
+	// is not safe:
+	//
+	//   - Not needed. The synthetic phase does not make the CLI take a turn. The CLI
+	//     turns on any queued stdin user message when idle — that is already how a
+	//     child's spawn prompt (a kindSystem `next` write in Start) opens its first
+	//     turn. QUM-925's "the frame triggers a turn" is satisfied by the stdin
+	//     write itself. And nothing reads the result: the only production reader of
+	//     UnifiedRuntime.State() is runtime_launcher.go's Liveness check, and the
+	//     in_turn the TUI renders for weave comes from WeaveRuntimeHandle.InTurn()
+	//     => session.InTurn() — the backend session, not this phase.
+	//   - Not safe. This branch calls retireUnclaimedNextArmLocked, whose contract
+	//     (see its doc) is a SUPERSEDING USER SUBMIT — an identity signal about the
+	//     arm's own submit. A background child ping is not that, and retiring a live
+	//     next-turn arm on one resurrects the empty "Session Error" of QUM-927 /
+	//     QUM-935. It would also flip inTurnLocked() for weave, changing
+	//     armInterruptLocked's answer for an Esc pressed while idle-but-just-poked,
+	//     and spawn a guardSubmitted goroutine per notification.
 	if kind == kindUser && rt.phase == phaseIdle {
 		// Trigger (1): a genuinely NEW user turn (from idle) supersedes an aborted
 		// prompt's unclaimed arm. Deliberately keyed on a real new submit rather than
@@ -773,7 +797,80 @@ func (rt *UnifiedRuntime) writeMessage(ctx context.Context, text, priority strin
 		rt.setPhaseLocked(phaseSubmitted)
 	}
 	rt.mu.Unlock()
+
+	// QUM-925: a kind:system frame must reach the TUI pending zone, and its only
+	// channel is EventUserMessageSent — the zone is uuid-keyed, so without this
+	// publish the later isReplay consume ack settles nothing (untracked uuid) and
+	// the notification never renders. kind:user writes are published by their
+	// caller instead (the TUI's own SendMessage path, and SendAllNow for the
+	// coalesced now-write), so publishing here would double them.
+	//
+	// Published AFTER a successful write, mirroring SendAllNow: publishing first
+	// would leave a phantom pending entry on a write error, and ZoneDrop refuses to
+	// remove system entries, so that phantom would be permanent. The theoretical
+	// inverse — the CLI's isReplay echo racing ahead of this publish — needs a full
+	// round-trip to beat ~3 instructions on this goroutine.
+	if kind == kindSystem {
+		rt.eventBus.Publish(RuntimeEvent{Type: EventUserMessageSent, UUID: uuid, Prompt: text})
+	}
 	return uuid, nil
+}
+
+// InFlightSystemEntryIDs returns the set of durable entry IDs carried by
+// kind:system messages this runtime has written and not yet finished delivering
+// (QUM-925). The supervisor delivery path uses it to skip re-injecting an entry
+// that is already in flight: a maildir entry stays in pending/ until its isReplay
+// echo drives OnDelivered → MarkDelivered, so a poke arriving inside that window
+// would otherwise re-drain and re-write it — the unbounded stdin write storm
+// measured on the child path (see runtime_launcher.go's
+// ConfirmDeliveredWithoutReplay comment).
+//
+// "In flight" deliberately spans statePending AND stateConsumed, not just
+// statePending. markConsumed flips the state under outMu, RELEASES it, and only
+// then calls OnDelivered → agentloop.MarkDelivered — a rename on a shared
+// filesystem. A statePending-only filter goes blind exactly inside that window
+// while ListPending still returns the entry, so a concurrent poke writes the same
+// notification to stdin twice. Pinned by
+// TestWeaveRuntimeHandle_WakeForDelivery_ConsumedButNotYetDelivered_NoDuplicateWrite.
+//
+// Over-suppression is not a risk FOR A NORMALLY-CONSUMED ENTRY: maildir entry IDs
+// are unique and never reused, so an ID that reached stateConsumed via the isReplay
+// echo (markConsumed → OnDelivered → MarkDelivered) has been delivered exactly once
+// and must never be written again.
+//
+// SCOPE — read this before relying on the sentence above. stateConsumed reached
+// WITHOUT OnDelivered is NOT evidence of delivery, and QUM-1000's settleNeverAcked
+// manufactures exactly that: it flips a never-acked entry to stateConsumed
+// deliberately without calling OnDelivered, so as not to durably mark an inbox
+// message delivered that the CLI never consumed. Such an entry is stateConsumed
+// having never been delivered at all, so this filter keeps excluding it and it is
+// SUPPRESSED rather than redelivered for the life of the process.
+//
+// That is correct-by-design here, not a limitation to work around: this filter
+// cannot distinguish a genuine echo from a sweep's synthetic flip, and on the
+// normal path stateConsumed means the content is already in the conversation, so
+// suppressing is the safe answer. And nothing is lost — the outstanding map is
+// IN-MEMORY, so a restart clears the marker, WeaveRuntimeHandle's post-start drain
+// re-emits the entry, and MarkDelivered never ran, so it is still in pending/.
+// "Permanently undeliverable" would be wrong.
+//
+// Pinned by TestWeaveRuntimeHandle_..._ConsumedStateStaysSuppressed and
+// ..._StrandedSystemEntry_SuppressedThenRedeliveredOnRestart. See QUM-1000 and
+// QUM-1028. Do not "fix" this by narrowing the predicate back to statePending —
+// that reintroduces the duplicate-write window above.
+func (rt *UnifiedRuntime) InFlightSystemEntryIDs() map[string]struct{} {
+	rt.outMu.Lock()
+	defer rt.outMu.Unlock()
+	out := make(map[string]struct{})
+	for _, e := range rt.outstanding {
+		if e.kind != kindSystem || e.state == stateCancelled {
+			continue
+		}
+		for _, id := range e.entryIDs {
+			out[id] = struct{}{}
+		}
+	}
+	return out
 }
 
 // Outstanding returns a snapshot copy of the outstanding map (QUM-817). Used by
@@ -1017,7 +1114,35 @@ func (rt *UnifiedRuntime) Start(_ context.Context) error {
 		}
 	}
 
+	// QUM-925: weave's handle registers an inbox drain here. Start (not handle
+	// construction) is the correct anchor: the TUI's Initialize cmd calls Start,
+	// which is strictly after NewTUIAdapter subscribed to the EventBus, so the
+	// drained frame's EventUserMessageSent is observed and renders. Draining at
+	// construction would inject it into the model with nothing watching.
+	rt.mu.Lock()
+	hook := rt.postStartHook
+	rt.mu.Unlock()
+	if hook != nil {
+		hook()
+	}
+
 	return nil
+}
+
+// SetPostStartHook registers a callback invoked at the end of a SUCCESSFUL Start,
+// after the initial-prompt seed. Must be called before Start. Used by
+// WeaveRuntimeHandle to drain an inbox that was already non-empty at startup —
+// no producer poke will ever fire for those entries (QUM-925).
+//
+// Not invoked if the initial-prompt write fails and Start returns early; that
+// session's stdin is already broken, so a drain would fail too (and would destroy
+// status lines — see drainPendingToStdin). It runs SYNCHRONOUSLY on the Start
+// goroutine, which for weave is TUIAdapter.Initialize's tea.Cmd, so a large
+// startup inbox delays SessionInitializedMsg by at most one bounded stdin write.
+func (rt *UnifiedRuntime) SetPostStartHook(fn func()) {
+	rt.mu.Lock()
+	rt.postStartHook = fn
+	rt.mu.Unlock()
 }
 
 // StopOptions tunes UnifiedRuntime.StopWithOptions. The zero value matches

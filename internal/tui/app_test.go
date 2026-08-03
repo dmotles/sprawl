@@ -2246,311 +2246,33 @@ func TestAppModel_AgentTreeMsg_NoBannerWhenUnreadUnchanged(t *testing.T) {
 	}
 }
 
-// --- Tests for QUM-323: InboxDrainMsg wires the drained flush prompt into
-//     Claude's next user turn, with pendingDrainIDs committed after the send
-//     succeeds. ---
-
-func TestAppModel_InboxDrainMsg_NoBridge_NoOp(t *testing.T) {
-	m := newTestAppModel(t)
-	resized, _ := m.Update(tea.WindowSizeMsg{Width: 120, Height: 40})
-	app := resized.(AppModel)
-	// bridge is nil in newTestAppModel; handler must short-circuit.
-	updated, cmd := app.Update(InboxDrainMsg{
-		Prompt: "[inbox] hi", EntryIDs: []string{"a1"},
-	})
-	app = updated.(AppModel)
-	if cmd != nil {
-		t.Errorf("expected nil cmd when bridge is nil, got %v", cmd)
-	}
-	if len(app.pendingDrainIDs) != 0 {
-		t.Errorf("expected pendingDrainIDs empty, got %v", app.pendingDrainIDs)
-	}
-}
-
-func TestAppModel_InboxDrainMsg_EmptyPrompt_NoOp(t *testing.T) {
-	ms := newFakeSessionBackend()
-	bridge := ms
-	app := newTestAppModelWithBridge(t, bridge)
-	resized, _ := app.Update(tea.WindowSizeMsg{Width: 120, Height: 40})
-	app = resized.(AppModel)
-
-	updated, cmd := app.Update(InboxDrainMsg{Prompt: "", EntryIDs: []string{"a1"}})
-	app = updated.(AppModel)
-	if cmd != nil {
-		t.Errorf("expected nil cmd for empty prompt, got %v", cmd)
-	}
-	if len(app.pendingDrainIDs) != 0 {
-		t.Errorf("expected pendingDrainIDs empty, got %v", app.pendingDrainIDs)
-	}
-}
-
-func TestAppModel_InboxDrainMsg_DroppedWhenMidTurn(t *testing.T) {
-	ms := newFakeSessionBackend()
-	bridge := ms
-	app := newTestAppModelWithBridge(t, bridge)
-	resized, _ := app.Update(tea.WindowSizeMsg{Width: 120, Height: 40})
-	app = resized.(AppModel)
-	app.turnState = TurnStreaming // mid-turn
-
-	updated, cmd := app.Update(InboxDrainMsg{
-		Prompt: "[inbox] body", EntryIDs: []string{"a1"},
-	})
-	app = updated.(AppModel)
-	if cmd != nil {
-		t.Errorf("expected nil cmd when not idle, got non-nil")
-	}
-	if len(app.pendingDrainIDs) != 0 {
-		t.Errorf("pending IDs should remain empty (entries stay in queue), got %v", app.pendingDrainIDs)
-	}
-}
-
-func TestAppModel_InboxDrainMsg_IdleAppendsBannerAndStashesIDs(t *testing.T) {
-	ms := newFakeSessionBackend()
-	bridge := ms
-	app := newTestAppModelWithBridge(t, bridge)
-	resized, _ := app.Update(tea.WindowSizeMsg{Width: 120, Height: 40})
-	app = resized.(AppModel)
-
-	updated, cmd := app.Update(InboxDrainMsg{
-		Prompt:   "[inbox] You received 1 message(s)...",
-		EntryIDs: []string{"a1", "a2"},
-		Class:    "async",
-	})
-	app = updated.(AppModel)
-
-	if cmd == nil {
-		t.Fatal("expected non-nil cmd (bridge.SendMessage)")
-	}
-	// QUM-675 S5: the draining banner is on the statusbar transient label,
-	// not the viewport.
-	if sb := stripAnsi(app.statusBar.View()); !strings.Contains(sb, "inbox: draining 2 async message(s) into next prompt") {
-		t.Errorf("expected draining banner on statusbar, got:\n%s", sb)
-	}
-	if app.turnState != TurnThinking {
-		t.Errorf("turnState = %v, want TurnThinking", app.turnState)
-	}
-	if len(app.pendingDrainIDs) != 2 || app.pendingDrainIDs[0] != "a1" || app.pendingDrainIDs[1] != "a2" {
-		t.Errorf("pendingDrainIDs = %v, want [a1 a2]", app.pendingDrainIDs)
-	}
-
-	// QUM-693: post-deletion the ChatList drops raw MessageSystem entries
-	// (contract violators routed to the statusbar transient label). The
-	// remaining structural guarantee is that the drain prompt does NOT
-	// surface as a UserItem.
-	weaveVP := app.viewportFor("weave")
-	const wantPrompt = "[inbox] You received 1 message(s)..."
-	for _, it := range weaveVP.ChatList().Items() {
-		if u, ok := it.(*UserItem); ok && u.Text() == wantPrompt {
-			t.Errorf("drained prompt should not be a UserItem, got: %+v", u)
-		}
-	}
-}
-
-// QUM-557: when the drained prompt is wrapped in <system-notification> tags,
-// the AppModel must emit a MessageSystemNotification entry (not MessageSystem),
-// so the live path matches the replay path on restart.
-func TestAppModel_InboxDrainMsg_SystemNotificationEmitsNotificationEntry(t *testing.T) {
-	ms := newFakeSessionBackend()
-	bridge := ms
-	app := newTestAppModelWithBridge(t, bridge)
-	resized, _ := app.Update(tea.WindowSizeMsg{Width: 120, Height: 40})
-	app = resized.(AppModel)
-
-	const wrapped = "<system-notification>From finn — msg id=9v6</system-notification>"
-	updated, _ := app.Update(InboxDrainMsg{
-		Prompt:   wrapped,
-		EntryIDs: []string{"a1"},
-		Class:    "async",
-	})
-	app = updated.(AppModel)
-	// QUM-833: InboxDrainMsg no longer eager-renders; the notification is written
-	// to stdin and renders when its write is acked. The default fake bridge emits
-	// an empty-uuid UserMessageSentMsg, which the classifier commits directly as a
-	// system-styled entry (the live tracking path renders on consume instead).
-	updated, _ = app.Update(UserMessageSentMsg{UUID: "", Text: wrapped})
-	app = updated.(AppModel)
-
-	weaveVP := app.viewportFor("weave")
-	entries := weaveVP.ChatList().Items()
-	var found *SystemNotificationItem
-	for _, it := range entries {
-		if n, ok := it.(*SystemNotificationItem); ok {
-			found = n
-			break
-		}
-	}
-	if found == nil {
-		t.Fatalf("expected a SystemNotificationItem, got entries: %+v", entries)
-	}
-	if found.Interrupt() {
-		t.Errorf("entry.Interrupt = true, want false (async)")
-	}
-	if found.Content() != "From finn — msg id=9v6" {
-		t.Errorf("entry.Content = %q, want stripped body %q", found.Content(), "From finn — msg id=9v6")
-	}
-	// QUM-693: MessageSystem can never enter ChatList — negative deleted.
-}
-
-func TestAppModel_InboxDrainMsg_SystemNotificationInterruptFlag(t *testing.T) {
-	ms := newFakeSessionBackend()
-	bridge := ms
-	app := newTestAppModelWithBridge(t, bridge)
-	resized, _ := app.Update(tea.WindowSizeMsg{Width: 120, Height: 40})
-	app = resized.(AppModel)
-
-	const wrapped = "<system-notification>[interrupt] From finn — msg id=9v6</system-notification>"
-	updated, _ := app.Update(InboxDrainMsg{
-		Prompt:   wrapped,
-		EntryIDs: []string{"i1"},
-		Class:    "interrupt",
-	})
-	app = updated.(AppModel)
-	// QUM-833: render happens on the write ack, not eagerly (see the sibling
-	// EmitsNotificationEntry test).
-	updated, _ = app.Update(UserMessageSentMsg{UUID: "", Text: wrapped})
-	app = updated.(AppModel)
-
-	entries := app.viewportFor("weave").ChatList().Items()
-	var found *SystemNotificationItem
-	for _, it := range entries {
-		if n, ok := it.(*SystemNotificationItem); ok {
-			found = n
-			break
-		}
-	}
-	if found == nil {
-		t.Fatalf("expected a SystemNotificationItem, got entries: %+v", entries)
-	}
-	if !found.Interrupt() {
-		t.Errorf("entry.Interrupt = false, want true ([interrupt] body)")
-	}
-}
-
-func TestAppModel_InboxDrainMsg_InterruptClassBanner(t *testing.T) {
-	ms := newFakeSessionBackend()
-	bridge := ms
-	app := newTestAppModelWithBridge(t, bridge)
-	resized, _ := app.Update(tea.WindowSizeMsg{Width: 120, Height: 40})
-	app = resized.(AppModel)
-
-	updated, _ := app.Update(InboxDrainMsg{
-		Prompt: "[interrupt] x", EntryIDs: []string{"i1"}, Class: "interrupt",
-	})
-	app = updated.(AppModel)
-	// QUM-675 S5: routed to statusbar transient label.
-	if sb := stripAnsi(app.statusBar.View()); !strings.Contains(sb, "inbox: draining 1 interrupt message(s)") {
-		t.Errorf("expected interrupt-class banner on statusbar, got:\n%s", sb)
-	}
-}
-
-func TestAppModel_UserMessageSentMsg_ClearsPendingDrainIDs(t *testing.T) {
-	// After a drained prompt is on the wire, UserMessageSentMsg must clear
-	// pendingDrainIDs so subsequent turns don't re-commit the same entries.
-	ms := newFakeSessionBackend()
-	bridge := ms
-	app := newTestAppModelWithBridge(t, bridge)
-	resized, _ := app.Update(tea.WindowSizeMsg{Width: 120, Height: 40})
-	app = resized.(AppModel)
-	app.pendingDrainIDs = []string{"a1"}
-
-	updated, _ := app.Update(UserMessageSentMsg{})
-	app = updated.(AppModel)
-	if len(app.pendingDrainIDs) != 0 {
-		t.Errorf("pendingDrainIDs should be cleared after UserMessageSentMsg, got %v", app.pendingDrainIDs)
-	}
-}
-
-func TestPeekAndDrainCmd_EmptyQueue_ReturnsNil(t *testing.T) {
-	tmpDir := t.TempDir()
-	msg := peekAndDrainCmd(tmpDir, "weave", nil)()
-	if msg != nil {
-		t.Errorf("expected nil msg for empty queue, got %v", msg)
-	}
-}
-
-func TestPeekAndDrainCmd_AsyncEntries_ReturnsDrainMsg(t *testing.T) {
-	tmpDir := t.TempDir()
-	if _, err := agentloop.Enqueue(tmpDir, "weave", agentloop.Entry{
-		Class: agentloop.ClassAsync, From: "ghost",
-		Subject: "s", Body: "RED-FLAG-BODY",
-	}); err != nil {
-		t.Fatalf("enqueue: %v", err)
-	}
-	msg := peekAndDrainCmd(tmpDir, "weave", nil)()
-	drain, ok := msg.(InboxDrainMsg)
-	if !ok {
-		t.Fatalf("expected InboxDrainMsg, got %T: %v", msg, msg)
-	}
-	if drain.Class != "async" {
-		t.Errorf("expected async class, got %q", drain.Class)
-	}
-	// Post-QUM-555/QUM-556: the flush prompt is a single
-	// `<system-notification>` line per entry citing the MCP tool name.
-	// Assert on the sender citation in the new function-call shape.
-	if !strings.Contains(drain.Prompt, "From ghost — mcp__sprawl__messages_read(id=") {
-		t.Errorf("expected sender citation in prompt, got:\n%s", drain.Prompt)
-	}
-	if len(drain.EntryIDs) != 1 {
-		t.Errorf("expected 1 entry ID, got %d", len(drain.EntryIDs))
-	}
-}
-
-func TestPeekAndDrainCmd_InterruptPriority(t *testing.T) {
-	tmpDir := t.TempDir()
-	if _, err := agentloop.Enqueue(tmpDir, "weave", agentloop.Entry{
-		Class: agentloop.ClassAsync, From: "a", Subject: "s", Body: "async-body",
-	}); err != nil {
-		t.Fatalf("enqueue async: %v", err)
-	}
-	if _, err := agentloop.Enqueue(tmpDir, "weave", agentloop.Entry{
-		Class: agentloop.ClassInterrupt, From: "b", Subject: "s2", Body: "interrupt-body",
-	}); err != nil {
-		t.Fatalf("enqueue interrupt: %v", err)
-	}
-	msg := peekAndDrainCmd(tmpDir, "weave", nil)()
-	drain, ok := msg.(InboxDrainMsg)
-	if !ok {
-		t.Fatalf("expected InboxDrainMsg, got %T", msg)
-	}
-	if drain.Class != "interrupt" {
-		t.Errorf("expected interrupt to take priority, got class=%q", drain.Class)
-	}
-	// Post-QUM-555/QUM-556: assert on the interrupt-tagged notification
-	// shape (with MCP tool citation) rather than the inlined body (which is
-	// no longer emitted).
-	if !strings.Contains(drain.Prompt, "[interrupt] From b — mcp__sprawl__messages_read(id=") {
-		t.Errorf("expected interrupt notification in prompt, got:\n%s", drain.Prompt)
-	}
-}
-
-func TestCommitDrainCmd_MovesEntriesToDelivered(t *testing.T) {
-	tmpDir := t.TempDir()
-	e, err := agentloop.Enqueue(tmpDir, "weave", agentloop.Entry{
-		Class: agentloop.ClassAsync, From: "x", Subject: "s", Body: "b",
-	})
-	if err != nil {
-		t.Fatalf("enqueue: %v", err)
-	}
-	commitDrainCmd(tmpDir, "weave", []string{e.ID})()
-
-	pending, _ := agentloop.ListPending(tmpDir, "weave")
-	if len(pending) != 0 {
-		t.Errorf("expected pending empty after commit, got %d", len(pending))
-	}
-	delivered, _ := agentloop.ListDelivered(tmpDir, "weave")
-	if len(delivered) != 1 {
-		t.Errorf("expected 1 delivered entry, got %d", len(delivered))
-	}
-}
-
-func TestCommitDrainCmd_MissingIDsNotFatal(t *testing.T) {
-	tmpDir := t.TempDir()
-	// Should not panic / return non-nil msg for nonexistent IDs.
-	msg := commitDrainCmd(tmpDir, "weave", []string{"does-not-exist"})()
-	if msg != nil {
-		t.Errorf("expected nil msg, got %v", msg)
-	}
-}
+// QUM-925 deleted the QUM-323 InboxDrainMsg / peekAndDrainCmd / commitDrainCmd
+// block that lived here (7 reducer tests + 4 cmd tests). Weave's inbox drain moved
+// out of the TUI into WeaveRuntimeHandle.WakeForDelivery, so the reducer and both
+// cmds no longer exist. Where each pin went — recorded because retiring a pin is a
+// deliberate act, not an accidental coverage loss:
+//
+//   - TestAppModel_InboxDrainMsg_DroppedWhenMidTurn pinned the DEFECT (drop the
+//     frame when turnState != TurnIdle). It is deliberately INVERTED by
+//     TestWeaveRuntimeHandle_WakeForDelivery_StatusChangeWhileInTurn_NotLost
+//     (internal/supervisor), which asserts a mid-turn ping reaches stdin.
+//   - _NoBridge_NoOp / _EmptyPrompt_NoOp: the reducer is gone. The empty-inbox
+//     no-write case is TestWeaveRuntimeHandle_WakeForDelivery_EmptyInbox_NoWrite.
+//   - _SystemNotificationEmitsNotificationEntry and the exactly-once render:
+//     TestUserMessageConsumed_SystemNotification_SystemStyledOnce_NotRawBubble
+//     (app_pendingzone_test.go), same reducers, new producer.
+//   - _SystemNotificationInterruptFlag:
+//     TestUserMessageConsumed_InterruptFlaggedNotification_PreservesFlag.
+//   - _IdleAppendsBannerAndStashesIDs / _InterruptClassBanner pinned the
+//     "inbox: draining N …" transient status-bar label, which QUM-925 drops on
+//     purpose — the notification now renders immediately as a pending-zone entry.
+//   - _UserMessageSentMsg_ClearsPendingDrainIDs: pendingDrainIDs is gone.
+//   - TestPeekAndDrainCmd_* prompt shape: internal/inboxprompt tests. The
+//     interrupt-vs-async PRECEDENCE became ordering-within-one-frame; pinned by
+//     TestWeaveRuntimeHandle_WakeForDelivery_MixedClass_OneNextFrame_InterruptFirst.
+//   - TestCommitDrainCmd_MovesEntriesToDelivered: the pending/ → delivered/ move is
+//     now asserted end-to-end through the isReplay ack in
+//     TestWeaveRuntimeHandle_WakeForDelivery_TracksEntryIDsAsSystemKind.
 
 // QUM-335: Ctrl+O flips the global toolInputsExpanded flag and propagates
 // the new state to every per-agent viewport so already-rendered tool calls

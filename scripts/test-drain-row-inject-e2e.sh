@@ -337,6 +337,15 @@ else
 fi
 
 # --- Sanity: maildir banner rises (post-QUM-565 watcher still works) ---
+#
+# KNOWN-BOGUS FAILURE (QUM-925): this gate waits on the TRANSIENT "inbox: N new
+# message" status-bar banner. QUM-925 made delivery instant, so the banner no
+# longer persists long enough to be observed and this check fails even though the
+# row's primary drain-row assertion below passes. The matrix row
+# scripts/e2e-tests/drain-row-inject.sh — the maintained path per CLAUDE.md, of
+# which this script is only the soak-period fallback — replaced it with a durable
+# maildir-sentinel poll. If you are running THIS script and it dies here, that is
+# why; use the row instead, or mirror its wait_for_maildir_sentinel helper.
 
 echo ""
 echo "=== Waiting for inbox banner (sanity check, maildir watcher) ==="

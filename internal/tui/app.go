@@ -11,9 +11,7 @@ import (
 
 	tea "charm.land/bubbletea/v2"
 
-	"github.com/dmotles/sprawl/internal/agentloop"
 	"github.com/dmotles/sprawl/internal/attach"
-	"github.com/dmotles/sprawl/internal/inboxprompt"
 	"github.com/dmotles/sprawl/internal/memory"
 	"github.com/dmotles/sprawl/internal/messages"
 	sprawlrt "github.com/dmotles/sprawl/internal/runtime"
@@ -203,13 +201,6 @@ type AppModel struct {
 	// cleared when the tick observes no working pill (mirrors mcpOpTickPending).
 	treePulseFrame   int
 	treePulseTicking bool
-
-	// pendingDrainIDs is populated by the InboxDrainMsg handler and consumed
-	// by UserMessageSentMsg: once the drained prompt has been successfully
-	// written to the bridge, these IDs are moved from weave's queue pending/
-	// to delivered/. Stored on the model so the commit happens strictly AFTER
-	// the send succeeds (crash-safety per QUM-323 §5).
-	pendingDrainIDs []string
 
 	// attachTurnInFlight is true while an attachment turn is executing — armed
 	// when the turn is CONSUMED (its isReplay echo, i.e. the turn actually
@@ -1159,30 +1150,18 @@ func (m AppModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		}
 		return m, m.bridge.SendAttachment(msg.Paths, msg.Prompt)
 
-	case InboxDrainMsg:
-		// QUM-323: drain weave's harness queue into Claude's next prompt.
-		// Dropped if mid-turn (the entries stay in pending/ and the next
-		// AgentTreeMsg backstop will re-peek when idle) or if no bridge.
-		if msg.Prompt == "" || m.bridge == nil || m.turnState != TurnIdle {
-			return m, nil
-		}
-		label := "async"
-		if msg.Class == "interrupt" {
-			label = "interrupt"
-		}
-		// QUM-833: do NOT eagerly render here. The drained frame is written to
-		// stdin via SendMessage below; its UserMessageSentMsg ack creates a
-		// uuid-keyed pending-zone entry (classified + peeled, system-styled), and
-		// its consume ack relocates it into the committed transcript — rendered
-		// EXACTLY ONCE. The former eager AppendSystemNotification here, combined
-		// with the blind AppendUser(raw) on consume, was the QUM-833 double-render
-		// (one system-styled, one raw user bubble).
-		m.pendingDrainIDs = append([]string(nil), msg.EntryIDs...)
-		m.setTurnState(TurnThinking)
-		// QUM-675 S5: set transient AFTER setTurnState — the Idle→Thinking
-		// transition inside setTurnState clears the label.
-		m.statusBar.SetTransientLabel(fmt.Sprintf("inbox: draining %d %s message(s) into next prompt", len(msg.EntryIDs), label))
-		return m, m.bridge.SendMessage(msg.Prompt)
+	// QUM-925: the InboxDrainMsg reducer used to live here — weave's TUI-resident,
+	// idle-gated inbox drain. It is DELETED. Delivery is now event-driven in the
+	// supervisor (WeaveRuntimeHandle.WakeForDelivery), which writes the frame to
+	// stdin as kind:system at priority `next` the instant the notification arrives,
+	// regardless of turn state. The two gates it replaced were the QUM-925 defect:
+	// this reducer dropped the frame outright when `turnState != TurnIdle`, and
+	// because inboxprompt.DrainStatusChangeLines is DESTRUCTIVE, a status ping
+	// caught by that turn-start race was permanently LOST, not merely deferred.
+	//
+	// The "inbox: draining N …" transient status-bar label went with it, by design:
+	// the notification itself now renders immediately as a pending-zone entry, which
+	// is a strictly better affordance than a transient label about it.
 
 	case SubmitMsg:
 		if msg.Text == "" {
@@ -1277,19 +1256,17 @@ func (m AppModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		default:
 			buf.AppendUser(msg.Text)
 		}
-		// QUM-323: if the user turn we just sent was a drained inbox frame,
-		// commit the drained entries to delivered/ now that the send is on
-		// the wire. Doing this AFTER SendMessage (which is synchronous in the
-		// current bridge impl) preserves the crash-safety invariant.
-		var commitCmd tea.Cmd
-		if len(m.pendingDrainIDs) > 0 {
-			commitCmd = commitDrainCmd(m.sprawlRoot, m.rootAgent, m.pendingDrainIDs)
-			m.pendingDrainIDs = nil
-		}
+		// QUM-925: the pendingDrainIDs → commitDrainCmd hop is gone. Delivery is
+		// confirmed by the CLI's isReplay consumption ack (markConsumed →
+		// OnDelivered → agentloop.MarkDelivered, wired in cmd/enter.go), which is a
+		// stronger guarantee than committing on a successful stdin write.
+		//
+		// QUM-826: this msg is pump-delivered and must re-arm WaitForEvent, or the
+		// bubbletea event pump parks here and live render freezes.
 		if m.bridge != nil {
-			return m, tea.Batch(m.bridge.WaitForEvent(), commitCmd)
+			return m, m.bridge.WaitForEvent()
 		}
-		return m, commitCmd
+		return m, nil
 
 	case UserMessageConsumedMsg:
 		// QUM-833: the CLI consumed (isReplay) a tracked frame — it's now part of
@@ -1827,24 +1804,14 @@ func (m AppModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 				delete(m.agentBuffers, name)
 			}
 		}
-		// QUM-323: backstop drain. Every 2s the tree polls weave's unread
-		// counts; piggyback on that cadence to peek the harness queue and
-		// (when idle + non-empty) schedule an InboxDrainMsg. This covers both
-		// out-of-process senders (external processes writing maildir directly)
-		// and in-process senders (MCP send_message) with a single codepath.
-		//
-		// QUM-399: this path is shared with the unified-runtime bridge. The
-		// resulting InboxDrainMsg → bridge.SendMessage either streams the
-		// drained prompt directly to claude (legacy bridge) or enqueues a
-		// ClassUser item via the TUIAdapter (unified bridge). Keeping a
-		// single drain pipeline preserves the user-facing AppendSystemMessage
-		// rendering and the commitDrainCmd MarkDelivered timing for both
-		// modes.
-		var drainCmd tea.Cmd
-		if m.turnState == TurnIdle && m.sprawlRoot != "" && m.bridge != nil {
-			drainCmd = peekAndDrainCmd(m.sprawlRoot, m.rootAgent, m.supervisor)
-		}
-
+		// QUM-925: the 2s backstop drain (peekAndDrainCmd, gated on TurnIdle) used
+		// to run here. Deleted — the supervisor pokes WakeForDelivery on every
+		// child report_status / send_message, so delivery is event-driven and
+		// unconditional. Keeping a second drainer would double-consume: the
+		// agentloop peek is non-destructive until its much-later ack, and
+		// messages.DrainStatusChange is an unlocked read/remove. Startup and
+		// restart (a pending/ that predates this process, for which no poke ever
+		// fires) are covered by WeaveRuntimeHandle's post-start drain.
 		// QUM-805: flash the transient HUD + fire a toast for each spawned /
 		// retired agent. Skip the very first poll (treeSeeded=false) so the
 		// initial agent set isn't reported as a wave of spawns. The HUD flash
@@ -1877,7 +1844,6 @@ func (m AppModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		}
 		m.treeSeeded = true
 
-		cmds = append(cmds, drainCmd)
 		if m.supervisor != nil {
 			cmds = append(cmds, scheduleAgentTick(m.supervisor, m.sprawlRoot))
 		}
@@ -2838,8 +2804,9 @@ func (m AppModel) renderView(useCache bool) tea.View {
 //     transient label for the new turn MUST call setTurnState(TurnThinking)
 //     BEFORE m.statusBar.SetTransientLabel(...). The reverse order silently
 //     wipes the just-set label. See InjectPromptMsg (the "/handoff dispatched"
-//     path) and InboxDrainMsg (the "inbox: draining N…" path) for the
-//     load-bearing call-site ordering. QUM-690 tracks this hazard; QUM-649
+//     path) for the load-bearing call-site ordering. (The InboxDrainMsg
+//     "inbox: draining N…" example was deleted by QUM-925 along with that
+//     reducer.) QUM-690 tracks this hazard; QUM-649
 //     (toast subsystem) is the natural future resolution that will obviate it.
 //     QUM-831 added another Idle→Thinking edge in the UserMessageConsumedMsg
 //     reducer (re-arming the spinner when a queued message's turn begins); it
@@ -2855,10 +2822,9 @@ func (m *AppModel) setTurnState(state TurnState) {
 	// SEQUENCING HAZARD (QUM-690): callers that want to set a transient label
 	// for the new turn MUST call setTurnState(TurnThinking) BEFORE
 	// m.statusBar.SetTransientLabel(...), or the label gets wiped here.
-	// Existing load-bearing examples: InjectPromptMsg ("/handoff dispatched —
-	// see output below") and InboxDrainMsg ("inbox: draining N async
-	// message(s) into next prompt"). QUM-649 (toast subsystem) is the natural
-	// future resolution that will obviate this hazard.
+	// Existing load-bearing example: InjectPromptMsg ("/handoff dispatched —
+	// see output below"). QUM-649 (toast subsystem) is the natural future
+	// resolution that will obviate this hazard.
 	if m.turnState == TurnIdle && state == TurnThinking {
 		m.statusBar.SetTransientLabel("")
 	}
@@ -3435,73 +3401,6 @@ func (m *AppModel) dispatchPopoverSelection() tea.Cmd {
 	m.cmdPopover.highlight = 0
 	routed, _ := m.routeSlashCommand(cmd.Name)
 	return routed
-}
-
-// peekAndDrainCmd reads weave's harness queue and, if non-empty, returns an
-// InboxDrainMsg with the rendered prompt and entry IDs. Disk mutation
-// (MarkDelivered) happens later, in UserMessageSentMsg, strictly after the
-// bridge.SendMessage returns success. Returns nil msg if queue is empty or
-// unreadable. QUM-323.
-//
-// QUM-614: in addition to the on-disk async/interrupt queue, drain weave's
-// type=status_change envelopes from the maildir (replaces the in-process
-// per-recipient ring drained pre-QUM-614). Drained status lines are
-// PREPENDED to the rendered prompt so report_status notifications surface
-// before any queued maildir messages on the next turn. If only status
-// lines exist, emit a standalone async-class InboxDrainMsg with no entry
-// IDs (nothing to MarkDelivered).
-func peekAndDrainCmd(sprawlRoot, rootName string, _ supervisor.Supervisor) tea.Cmd {
-	return func() tea.Msg {
-		pending, _ := agentloop.ListPending(sprawlRoot, rootName)
-		statusLines := inboxprompt.DrainStatusChangeLines(sprawlRoot, rootName)
-		if len(pending) == 0 && len(statusLines) == 0 {
-			return nil
-		}
-		interrupts, asyncs := agentloop.SplitByClass(pending)
-		// QUM-559: status lines are pre-rendered <system-notification>
-		// strings independent of delivery class — prepend them to whichever
-		// flush prompt we're about to emit so they never get dropped on the
-		// floor when interrupts pre-empt asyncs in the same tick window.
-		var statusPrefix strings.Builder
-		for _, line := range statusLines {
-			statusPrefix.WriteString(line)
-		}
-		// Interrupts take priority; delivery of asyncs happens on the next
-		// tick after the interrupt turn settles.
-		if len(interrupts) > 0 {
-			ids := make([]string, 0, len(interrupts))
-			for _, e := range interrupts {
-				ids = append(ids, e.ID)
-			}
-			return InboxDrainMsg{
-				Prompt:   statusPrefix.String() + agentloop.BuildInterruptFlushPrompt(interrupts),
-				EntryIDs: ids,
-				Class:    "interrupt",
-			}
-		}
-		ids := make([]string, 0, len(asyncs))
-		for _, e := range asyncs {
-			ids = append(ids, e.ID)
-		}
-		return InboxDrainMsg{
-			Prompt:   statusPrefix.String() + agentloop.BuildQueueFlushPrompt(asyncs),
-			EntryIDs: ids,
-			Class:    "async",
-		}
-	}
-}
-
-// commitDrainCmd moves the given entry IDs from pending/ to delivered/ in
-// weave's harness queue. Errors are swallowed (logged by agentloop); missing
-// IDs are not fatal (a racing drainer may have already committed). Emits no
-// message — this is a fire-and-forget cleanup. QUM-323.
-func commitDrainCmd(sprawlRoot, rootName string, ids []string) tea.Cmd {
-	return func() tea.Msg {
-		for _, id := range ids {
-			_ = agentloop.MarkDelivered(sprawlRoot, rootName, id)
-		}
-		return nil
-	}
 }
 
 // handleHistoryArrow drives Up/Down history navigation for the input panel

@@ -9,6 +9,27 @@ test_metadata() {
     echo "needs_claude=1 needs_tmux=1 needs_jq=1"
 }
 
+# wait_for_maildir_sentinel <mailbox_dir> <sentinel> <timeout_secs>
+# Polls for a maildir envelope whose body carries <sentinel>. Searches the WHOLE
+# mailbox root, not just new/ + cur/: the read path renames new/ -> cur/
+# (messages markRead) and messages_archive renames cur/ -> archive/, and weave's
+# claude may call messages_archive unprompted after following the drain-row
+# citation. Scanning only new/+cur/ would reintroduce a narrower version of the
+# very race this gate was rewritten to avoid. Over the whole root the surface is
+# genuinely monotone: no path deletes the envelope.
+# Returns 0 on found, 1 on timeout — never 0 on a missing directory.
+wait_for_maildir_sentinel() {
+    local dir="$1" sentinel="$2" timeout="$3" elapsed=0
+    while [ "$elapsed" -lt "$timeout" ]; do
+        if grep -rqF -- "$sentinel" "$dir" 2>/dev/null; then
+            return 0
+        fi
+        sleep 2
+        elapsed=$((elapsed + 2))
+    done
+    return 1
+}
+
 test_run() {
     e2e_recover_oauth_token
     unset SPRAWL_AGENT_IDENTITY
@@ -102,11 +123,30 @@ test_run() {
     fi
 
     echo ""
-    echo "=== Waiting for inbox banner (sanity check, maildir watcher) ==="
-    if wait_for_pattern_fast "$SESSION" "inbox: [0-9]+ new message" 60; then
-        pass "inbox banner appeared in weave's viewport (maildir watcher still alive)"
+    echo "=== Sanity gate: the child's message became durable in weave's maildir ==="
+    # QUM-925: this gate used to wait on the "inbox: N new message" status-bar
+    # banner. That banner is TRANSIENT — it is a SetTransientLabel, cleared not by a
+    # timer but by the next turn start (setTurnState's Idle->Thinking edge), which
+    # the injected frame now triggers immediately — and QUM-925 made delivery
+    # INSTANT (producer poke straight to stdin
+    # instead of a 2s idle-gated TUI poll), so the banner now routinely comes and
+    # goes inside one poll interval. The gate raced a label whose lifetime our own
+    # change shortened, and failed while the primary assertion below still passed.
+    #
+    # It is still a real gate — it checks exactly what its failure message claims,
+    # that the child called messages_send — but against a DURABLE surface instead
+    # of a transient one: messages.Send writes the envelope tmp/ -> new/ (an atomic
+    # rename) and no path ever deletes it, only renames it within the mailbox root
+    # (new/ -> cur/ on read, cur/ -> archive/ on messages_archive). So the
+    # sentinel's presence under the root is monotone once true and cannot be raced
+    # by fast delivery. Note this gate covers no sprawl DELIVERY code — that is the
+    # primary assertion's job, immediately below.
+    if wait_for_maildir_sentinel "$SPRAWL_ROOT/.sprawl/messages/weave" "$PROBE" 60; then
+        pass "child's messages_send envelope landed durably in weave's maildir (sentinel $PROBE)"
     else
-        fail "inbox banner never appeared within 60s — child may not have called messages_send"
+        fail "no maildir envelope carrying $PROBE within 60s — child may not have called messages_send"
+        echo "  weave maildir:" >&2
+        find "$SPRAWL_ROOT/.sprawl/messages/weave" -type f >&2 2>/dev/null || echo "    <missing>" >&2
         echo "  pane tail:" >&2
         capture_pane "$SESSION" | tail -40 >&2
         echo "  child state:" >&2

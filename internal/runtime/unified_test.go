@@ -38,14 +38,20 @@ type mockUnifiedSession struct {
 	cancelCalls []string
 	// cancelHook, if set, runs inside CancelAsyncMessage before recording.
 	cancelHook func(uuid string)
+	// writeErr, if non-nil, is returned by WriteUserMessage instead of writing
+	// (QUM-925 — drives the failed-write / no-phantom-event path).
+	writeErr error
 }
 
 // WriteUserMessage records the written stdin user message (QUM-817 — replaces
 // the old StartTurn drive path).
 func (m *mockUnifiedSession) WriteUserMessage(_ context.Context, msg protocol.UserMessage) error {
 	m.mu.Lock()
+	defer m.mu.Unlock()
+	if m.writeErr != nil {
+		return m.writeErr
+	}
 	m.writes = append(m.writes, msg)
-	m.mu.Unlock()
 	return nil
 }
 
