@@ -1050,20 +1050,55 @@ func (rt *UnifiedRuntime) turnAcked(turnID uint64) bool {
 // WHY NOT markConsumed. markConsumed fires cfg.OnDelivered(entryIDs), which
 // durably marks maildir entries delivered. kind:system entries (inbox drains)
 // carry entryIDs, so sweeping one would record an inbox message as delivered that
-// the CLI never consumed. This sweep is kind:user-only (which today also means
-// entryIDs-free) and never calls OnDelivered; publishing EventUserMessageConsumed
-// is all the TUI settle needs.
+// the CLI never consumed. This sweep is kind:user-only, and since QUM-925 slice A
+// moved inbox drains onto kind:system WITH entryIDs, kind:user entries are
+// entryIDs-free BY CONSTRUCTION rather than by coincidence: no OnDelivered call and
+// no maildir-delivery path is reachable from this sweep at all. Flipping state and
+// publishing EventUserMessageConsumed is all the TUI settle needs.
 //
-// Accepted residuals, stated rather than hidden. All three are a DELAYED settle —
-// the ghost survives until a later turn that acks nothing sweeps it — which is the
-// safe direction, since the alternative costs recallability:
+// The cost of that scoping, named so it is not rediscovered as a surprise: a
+// never-acked kind:system entry is OUT OF SCOPE here and can strand as a permanent
+// dim pending row (QUM-1028 — deliberately parked, and note its obvious fix,
+// flipping such an entry to stateConsumed, CEMENTS the wedge because
+// InFlightSystemEntryIDs treats stateConsumed as in-flight; see that comment).
+//
+// Accepted residuals, stated rather than hidden. They are NOT all in the same
+// direction, and that difference is the whole risk — do not read the safe class as
+// covering the list.
+//
+// DELAYED settle. The ghost survives until some later turn that acks nothing
+// sweeps it. This is the safe direction: nothing the CLI still holds is settled, so
+// no prompt loses recallability.
 //
 //   - a turn that ends with only a wire `idle` and no routed `result` does not
 //     sweep;
 //   - a turn that acked something else (e.g. an inbox drain delivered in the same
-//     turn as a refused command) does not sweep;
+//     turn as a refused command) does not sweep.
+//
+// EARLY settle. The sweep settles an entry the CLI still holds, which silently
+// removes it from Ctrl+U recall and Ctrl+G send-all-now, since snapshotPendingUser
+// only sees statePending. This is NOT the safe direction. Both cases are bounded to
+// one entry, the oldest, by (3):
+//
 //   - an isReplay echo observed with no frame turn open records no ack, so such a
-//     turn may still sweep — bounded to one entry, the oldest, by (3).
+//     turn may still sweep;
+//   - QUM-1033, the one with real recall harm. outSeq is kind-blind, so a kind:user
+//     prompt queued BEFORE a kind:system inbox write lands UNDER the watermark as
+//     soon as the injected turn goes running. What keeps it safe is not the
+//     watermark but discriminator (2), via the system entry's OWN isReplay echo:
+//     routeFrame calls noteTurnAcked for any UserFrame uuid regardless of kind, so
+//     the turn "acked something" and the sweep is skipped. If a system turn ends
+//     WITHOUT consuming its notification there is no ack, the sweep runs, and the
+//     only entry under the watermark is the innocent user prompt. Observed, not
+//     reasoned about. Reachable independently of QUM-925 slice A, which raises the
+//     exposure (drains are the common kind:system turn) without creating the
+//     mechanism. Closing it needs per-turn uuid attribution — WHICH uuid the turn
+//     acked, not merely THAT it acked — a change to the ack bookkeeping, not a
+//     tightening of a predicate. Do NOT "fix" it by widening snapshotPendingUser to
+//     return stateConsumed entries: that converts a recall gap into real message
+//     loss, because Ctrl+U would then issue cancel_async_message for a message the
+//     CLI is about to execute (QUM-1033's mutation M5, observed). The harm as it
+//     stands is DELIVERED-but-unrecallable, not lost.
 //
 // One delivery caveat on the ordering contract: EventUserMessageConsumed is not in
 // isTerminalEvent, so unlike the terminal it is droppable under subscriber

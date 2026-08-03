@@ -789,13 +789,31 @@ func TestQUM1000_NoRunningTransition_NothingSwept(t *testing.T) {
 // when a kind:system entry and a pending kind:user prompt are alive together — a
 // combination no other test in this package constructs. Nothing here fails today.
 //
-// PROSPECTIVE, and say so in the present tense: QUM-925 slice A — which WOULD let
-// a kind:system inbox drain drive a turn on an idle runtime — is NOT in this tree.
-// `grep -rn QUM-925 internal/` matches only this comment. Today writeMessage reads
-// `if kind == kindUser && rt.phase == phaseIdle`, and its own comment says
-// kind:system deliveries never synthesize a turn. So do not read the paragraphs
-// below as describing current behaviour, and if you are here because you grepped
-// QUM-925 and found nothing: slice A was never merged, not reverted.
+// WHAT IT GUARDS, stated as an invariant rather than as an inventory of the tree:
+// a kind:system write must not, by itself, move lastRunningMark; and the ack that
+// suppresses the sweep must stay KIND-BLIND. Narrowing that ack to kind:user is
+// the change this test exists to fail on. Both hold today and both are checkable
+// from this file alone, so the guard does not depend on what else is merged.
+//
+// The configuration is LIVE, not prospective. QUM-925 slice A — which routes inbox
+// drains through kind:system stdin writes — is in this tree, as this work's own
+// base (664ff74 when written; a SHA is itself rebase-perishable, so the durable
+// form of the claim is the predicate named next, which you can read in the file).
+// Slice A deliberately did NOT widen the synthetic-phase
+// predicate: writeMessage still reads `if kind == kindUser && rt.phase ==
+// phaseIdle`, and the comment there records that widening it was CONSIDERED AND
+// REJECTED, because the CLI takes a turn on any queued stdin message when idle, so
+// the write alone drives the turn. Read the paragraphs below in the present tense.
+//
+// Recorded rather than silently corrected, because it is this file's own subject:
+// an earlier version of this comment said slice A "is NOT in this tree", that
+// `grep -rn QUM-925 internal/` "matches only this comment", and that slice A "was
+// never merged". All three were true when written; all three were falsified by a
+// rebase onto slice A, without one character of this file changing (that grep
+// returns 64 hits here, across internal/runtime, internal/tui, internal/supervisor).
+// The claims did not rot — their BASE moved. Any claim here about what the rest of
+// the tree contains is a claim about a moving target; claims about the invariants
+// above are not, which is why the guard is stated that way.
 //
 // Both subtests assert the same observable property — a queued prompt stays
 // PENDING and RECALLABLE — rather than reading lastRunningMark. That is
@@ -808,7 +826,7 @@ func TestQUM1000_NoRunningTransition_NothingSwept(t *testing.T) {
 // likelihoods, and crediting them equally would overstate the second:
 //
 //   - "a kind:system write must not move the watermark" is structurally true
-//     today and could NOT be broken by the widening itself. lastRunningMark has
+//     today and was NOT broken by slice A's system path. lastRunningMark has
 //     one writer (noteRunningTransition) with one caller, reachable only from
 //     routeFrame's StateChange==running branch; widening that site would set
 //     phaseSubmitted instead of phaseIdle, and the `fresh` gate tests
@@ -819,25 +837,30 @@ func TestQUM1000_NoRunningTransition_NothingSwept(t *testing.T) {
 //
 //     The present-tense reason to keep it: A and B are a matched pair that makes
 //     the watermark's role checkable from the tests alone — A (no transition →
-//     safe), B (transition + ack → safe), and residual #2 below (transition, no
-//     ack → settles) bracket it. That is checkable today; "guards a widening that
-//     does not exist yet" is not. A is NOT a control for B — they differ in two
-//     variables (the running transition AND the echo), so it cannot serve as one.
+//     safe), B (transition + ack → safe), and the QUM-1033 residual below
+//     (transition, no ack → settles) bracket it. That is checkable today; "guards a
+//     change that has not landed" would not be. A is NOT a control for B — they
+//     differ in two variables (the running transition AND the echo), so it cannot
+//     serve as one.
 //
 //   - the KIND-BLIND ACK is the live exposure. outSeq is kind-blind, so a prompt
 //     queued before an inbox write lands UNDER the watermark once the injected
 //     turn goes running. What keeps it recallable is discriminator (2): the
 //     system entry's own isReplay echo calls noteTurnAcked, so the turn "acked
 //     something" and the sweep is skipped. That ack is kind-blind today, and
-//     narrowing it to kind:user — a plausible tidy-up for someone widening the
-//     system path — strands the prompt. Subtest B is the one that earns its keep.
+//     narrowing it to kind:user — a plausible tidy-up for someone maintaining the
+//     kind:system path slice A landed — strands the prompt. Subtest B earns its keep.
 //
 // Residual, stated rather than implied: if a system-injected turn ends WITHOUT
-// consuming the notification (no echo, hence no ack) while a user prompt sits
-// under the watermark, the sweep DOES settle that prompt and costs Ctrl+U
-// recall. That is documented residual #2 on settleNeverAcked, is reachable
-// today without slice A, and needs per-turn uuid attribution to close — a design
-// change, not a test. Subtest B pins the common case; it does not remove that.
+// consuming the notification (no echo, hence no ack) while a user prompt sits under
+// the watermark, the sweep DOES settle that prompt and costs Ctrl+U recall. That is
+// QUM-1033, listed by that key under settleNeverAcked's EARLY-settle residuals
+// (referenced by key, not by position in that list — an earlier version of this
+// comment pointed at "documented residual #2", which was a DELAYED-settle item, so
+// the pointer named the wrong hazard class). It is reachable without slice A, which
+// raises the exposure by making kind:system turns common rather than an edge, and
+// needs per-turn uuid attribution to close — a design change, not a test. Subtest B
+// pins the common case; it does not remove that.
 func TestQUM1000_SystemInjectionDoesNotStrandUserPrompt(t *testing.T) {
 	t.Run("system write alone does not advance the watermark", func(t *testing.T) {
 		f := newQUM1000Fixture(t)
@@ -854,8 +877,8 @@ func TestQUM1000_SystemInjectionDoesNotStrandUserPrompt(t *testing.T) {
 		//
 		// Swapping feedInit for runningTransition here makes all three legs fail,
 		// but do NOT read that as this test guarding the transition: that
-		// configuration (running, no echo) is residual #2 in the doc above, NOT
-		// subtest B — B is running PLUS the echo. In that configuration this
+		// configuration (running, no echo) is the QUM-1033 residual in the doc
+		// above, NOT subtest B — B is running PLUS the echo. In that configuration this
 		// subtest's own failure message would also be wrong, since the running
 		// transition moved the watermark, not the kind:system write.
 		feedInit(f.rt)
@@ -953,7 +976,7 @@ func assertOnlyQCancelled(t *testing.T, cancelled []string, promptP, promptQ str
 
 // TestQUM1000_WrongfulSweep_LosesRecallNotDelivery answers the question the
 // land was gated on: when the sweep WRONGLY settles a queued kind:user prompt
-// — documented residual #2, a system-injected turn that acks nothing while a
+// — the QUM-1033 residual, a system-injected turn that acks nothing while a
 // user prompt sits under the watermark — is that prompt still delivered to the
 // model, or is it LOST? Those are opposite harms: a false render plus a silent
 // loss of Ctrl+U/Ctrl+G is degraded UX; a dropped prompt is data loss in a path
@@ -1059,7 +1082,7 @@ func assertOnlyQCancelled(t *testing.T, cancelled []string, promptP, promptQ str
 //	                                           while printing an EMPTY cancel list.
 //	M5 snapshotPendingUser also returns      — RECALL and SENDALLNOW. NOT unique:
 //	   stateConsumed entries (the tempting     it also fails TestRecall_OnlyPending-
-//	   "fix" for residual #2)                  UserRehydrates_TwoAckModels, the
+//	   "fix" for QUM-1033)                     UserRehydrates_TwoAckModels, the
 //	                                           older and more direct guard. Listed
 //	                                           anyway because it is the highest-
 //	                                           consequence mutation of the three:
