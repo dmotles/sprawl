@@ -52,6 +52,18 @@ type Item interface {
 	RawMarkdown() string
 }
 
+// pendingStyler is implemented by zone-held items whose styling differs while
+// pending (dim) vs committed (bright): *UserItem (QUM-832) and
+// *SystemNotificationItem (QUM-925). ZoneSettle flips every relocated item that
+// implements it, so a future dim-capable item kind needs no ZoneSettle edit.
+//
+// The method is named SetZonePending, not SetPending, precisely because this is
+// a STRUCTURAL contract: *ToolCallItem already has a `pending` field and a
+// Pending() getter meaning "still in flight", so a plain SetPending would be a
+// method name someone could add there in good faith and silently satisfy this
+// interface — at which point ZoneSettle would mark a tool call finished.
+type pendingStyler interface{ SetZonePending(bool) }
+
 // Expandable is implemented by items whose rendering depends on a
 // per-item expanded flag (currently ToolCallItem only — QUM-677 S7 pivot
 // removed ThinkingItem from this set; the marker has no body to expand).
@@ -126,7 +138,7 @@ type UserItem struct {
 }
 
 // NewUserItem constructs a UserItem with the given content. Defaults to the
-// committed (bright) styling; the pending-zone path flips it via SetPending.
+// committed (bright) styling; the pending-zone path flips it via SetZonePending.
 func NewUserItem(ctx *itemRenderCtx, text string) *UserItem {
 	return &UserItem{ctx: ctx, text: text}
 }
@@ -141,10 +153,10 @@ func NewUserItemWithAttachments(ctx *itemRenderCtx, text string, chips []Attachm
 // without re-parsing the rendered output.
 func (i *UserItem) Text() string { return i.text }
 
-// SetPending toggles the dim (pending) vs bright (committed) styling. Callers
+// SetZonePending toggles the dim (pending) vs bright (committed) styling. Callers
 // that flip a cached item must invalidate the owning envelope's render cache —
 // pending is not part of the (width, expanded) cache key. QUM-832.
-func (i *UserItem) SetPending(pending bool) { i.pending = pending }
+func (i *UserItem) SetZonePending(pending bool) { i.pending = pending }
 
 // Render draws the chevron-prefixed user prompt block (QUM-664 styling), dimmed
 // when pending (QUM-832). When the turn carries attachments (QUM-860), one 📎
@@ -546,14 +558,34 @@ func (i *ToolCallItem) renderNested(width int) string {
 // ---------------------------------------------------------------------------
 
 // SystemNotificationItem renders one peeled `<system-notification>`
-// envelope (QUM-557/562). Mirrors viewport.notificationGlyphAndStyle
-// branching. Always Finished on creation — envelopes arrive whole.
+// envelope (QUM-557/562). Glyph and style come from the shared
+// notificationGlyphAndStyle selector in messages.go. Always Finished on
+// creation — envelopes arrive whole.
+//
+// QUM-925: a SystemNotificationItem held in the ChatList pending zone (written
+// to stdin, not yet echoed back as consumed) carries pending=true and renders
+// DIM with a dashed `┊` gutter; ZoneSettle flips it to false so it brightens to
+// the solid `│` gutter when it joins the committed transcript. Both committed
+// constructors — AppendSystemNotification and the Reset replay backfill —
+// default to pending=false (bright). The gutter is not decoration: per the F3
+// amendment the pending/consumed distinction must not depend on SGR 2 (see
+// Render).
 type SystemNotificationItem struct {
 	ctx              *itemRenderCtx
 	content          string
 	notificationType string
 	interrupt        bool
+	pending          bool
 }
+
+// The gutter marker distinguishing a pending (un-consumed) notification row from
+// a committed one. Structural, not stylistic: one cell, same display width, and
+// orthogonal to the per-class glyph, so it neither collapses the classes nor
+// depends on a terminal honoring SGR 2 (QUM-925 F3).
+const (
+	committedGutter = "│"
+	pendingGutter   = "┊"
+)
 
 // NewSystemNotificationItem constructs a finished system-notification item.
 func NewSystemNotificationItem(ctx *itemRenderCtx, content, notifType string, interrupt bool) *SystemNotificationItem {
@@ -574,6 +606,11 @@ func (i *SystemNotificationItem) Interrupt() bool { return i.interrupt }
 // NotificationType returns the envelope's type attribute (kind).
 func (i *SystemNotificationItem) NotificationType() string { return i.notificationType }
 
+// SetZonePending toggles the dim (pending) vs bright (committed) styling. Callers
+// mutating a rendered item must nil the envelope's render cache too, since
+// pending is not part of the (width, expanded) cache key. QUM-925.
+func (i *SystemNotificationItem) SetZonePending(pending bool) { i.pending = pending }
+
 // Render produces the accent-prefixed envelope row.
 func (i *SystemNotificationItem) Render(width int) string {
 	if width <= 0 {
@@ -583,8 +620,23 @@ func (i *SystemNotificationItem) Render(width int) string {
 	// selector verbatim without duplicating its lookup-table.
 	stub := MessageEntry{NotificationType: i.notificationType, Interrupt: i.interrupt}
 	glyph, style := notificationGlyphAndStyle(i.ctx.theme, stub)
+	gutter := committedGutter
+	if i.pending {
+		// QUM-925: an un-consumed notification held in the pending zone renders
+		// DIM. Faint is applied to whichever class style the selector picked, so
+		// it keeps the class's own foreground (dimming cannot flatten the classes
+		// into one gray) and is total over the selector's branch — a new
+		// notification class cannot ship without its dim variant.
+		style = style.Faint(true)
+		// QUM-925 F3 (dmotles): faint alone is not enough. SGR 2 is advisory, so
+		// on a terminal that ignores it a faint-only delta degrades to NOTHING and
+		// a LOCKED requirement is silently void. The gutter marker is structural —
+		// it survives any terminal, is orthogonal to the per-class glyph, and is
+		// single-site, so it cannot drift per class.
+		gutter = pendingGutter
+	}
 	formatted := formatSystemMessage(i.content, width)
-	return style.Render("│ " + glyph + " " + formatted)
+	return style.Render(gutter + " " + glyph + " " + formatted)
 }
 
 // Finished always returns true.

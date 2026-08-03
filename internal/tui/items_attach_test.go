@@ -62,14 +62,14 @@ func TestUserItem_EmptyPromptStillShowsChip(t *testing.T) {
 }
 
 // The chip composes with the QUM-832 pending dim/bright flip: a pending chip
-// renders differently (dim) from a committed (bright) chip, and SetPending(false)
+// renders differently (dim) from a committed (bright) chip, and SetZonePending(false)
 // brightens it to the committed rendering.
 func TestUserItem_ChipComposesWithPendingDimBright(t *testing.T) {
 	ctx := newTestCtx()
 	chips := []AttachmentChip{{Name: "mock.png", MediaType: "image/png", Size: "320 KB"}}
 
 	pending := NewUserItemWithAttachments(ctx, "hi", chips)
-	pending.SetPending(true)
+	pending.SetZonePending(true)
 	bright := NewUserItemWithAttachments(ctx, "hi", chips)
 
 	pOut := pending.Render(80)
@@ -78,8 +78,8 @@ func TestUserItem_ChipComposesWithPendingDimBright(t *testing.T) {
 		t.Errorf("pending (dim) and committed (bright) chip renders must differ")
 	}
 	// Flipping pending→committed yields the bright rendering.
-	pending.SetPending(false)
+	pending.SetZonePending(false)
 	if pending.Render(80) != bOut {
-		t.Errorf("SetPending(false) must brighten chip to committed rendering")
+		t.Errorf("SetZonePending(false) must brighten chip to committed rendering")
 	}
 }

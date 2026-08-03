@@ -18,8 +18,13 @@ package tui
 import "strings"
 
 // pendingKind distinguishes a user-submitted prompt from a system-notification
-// envelope. System entries are born final-styled and are never recall-droppable
-// (LOCKED invariant 5); user entries are recallable.
+// envelope. System entries are never recall-droppable (LOCKED invariant 5); user
+// entries are recallable.
+//
+// System entries render DIM while pending and brighten on settle. This
+// supersedes QUM-833's "born final-styled" clause: an un-consumed notification
+// is not yet a settled fact, and distinct styling for un-consumed vs consumed
+// frames is a LOCKED requirement of QUM-925. Invariant 5 is unaffected.
 type pendingKind int
 
 const (

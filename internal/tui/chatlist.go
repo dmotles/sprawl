@@ -517,7 +517,7 @@ func (c *ChatList) AppendSystemNotification(text string) {
 // and brightens it (QUM-832). QUM-833.
 func (c *ChatList) ZoneAddUser(uuid, text string) {
 	item := NewUserItem(&c.ctx, text)
-	item.SetPending(true)
+	item.SetZonePending(true)
 	c.zone.add(&pendingEntry{
 		uuid:  uuid,
 		kind:  pendingUser,
@@ -533,7 +533,7 @@ func (c *ChatList) ZoneAddUser(uuid, text string) {
 // chip alongside the bubble.
 func (c *ChatList) ZoneAddUserWithAttachments(uuid, text string, chips []AttachmentChip) {
 	item := NewUserItemWithAttachments(&c.ctx, text, chips)
-	item.SetPending(true)
+	item.SetZonePending(true)
 	c.zone.add(&pendingEntry{
 		uuid:  uuid,
 		kind:  pendingUser,
@@ -543,9 +543,11 @@ func (c *ChatList) ZoneAddUserWithAttachments(uuid, text string, chips []Attachm
 }
 
 // ZoneAddSystem peels a (possibly stacked) system-notification frame into N
-// system-styled items held as one uuid-keyed zone entry. Born final-styled —
-// notifications are already-settled facts. Mirrors AppendSystemNotification's
-// peel-loop but targets the zone. QUM-833.
+// system-styled items held as one uuid-keyed zone entry. Every peeled item is
+// born DIM (pending): an un-consumed notification is not yet a settled fact, and
+// QUM-925 makes that state visible until the CLI's consume echo settles it and
+// ZoneSettle brightens it. Mirrors AppendSystemNotification's peel-loop but
+// targets the zone. QUM-833.
 func (c *ChatList) ZoneAddSystem(uuid, rawText string) {
 	var items []*itemEnvelope
 	rest := rawText
@@ -554,9 +556,9 @@ func (c *ChatList) ZoneAddSystem(uuid, rawText string) {
 		if !ok {
 			break
 		}
-		items = append(items, &itemEnvelope{
-			item: NewSystemNotificationItem(&c.ctx, stripped, notifType, isInterrupt),
-		})
+		item := NewSystemNotificationItem(&c.ctx, stripped, notifType, isInterrupt)
+		item.SetZonePending(true)
+		items = append(items, &itemEnvelope{item: item})
 		rest = remaining
 	}
 	if len(items) == 0 {
@@ -583,15 +585,15 @@ func (c *ChatList) ZoneSettle(uuid string) bool {
 		return false
 	}
 	c.beginContentAppend()
-	// QUM-832: brighten the settled entry. A pending user bubble rendered dim
-	// while in the zone; on settle it joins the committed transcript with normal
-	// styling. The per-envelope render cache is keyed only on (width, expanded)
-	// and UserItem.Finished() is always true, so the cached dim string would be
-	// served stale — nil every relocated envelope's cache to force a fresh
-	// (bright) render.
+	// QUM-832/QUM-925: brighten the settled entry. A pending user bubble or
+	// system notification rendered dim while in the zone; on settle it joins the
+	// committed transcript with normal styling. The per-envelope render cache is
+	// keyed only on (width, expanded) and both item kinds' Finished() is always
+	// true, so the cached dim string would be served stale — nil every relocated
+	// envelope's cache to force a fresh (bright) render.
 	for _, env := range e.items {
-		if u, ok := env.item.(*UserItem); ok {
-			u.SetPending(false)
+		if p, ok := env.item.(pendingStyler); ok {
+			p.SetZonePending(false)
 		}
 		env.cache = nil
 	}

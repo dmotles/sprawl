@@ -715,6 +715,48 @@ particular `init` frame does or does not clear a particular flag. A mechanism
 assertion has to be rewritten every time the mechanism changes, which is exactly
 when you least want the guard rewritten by whoever is changing it.
 
+### Mutate along the axis your assertion constrains
+
+Companion to the previous section, and the counterpart to § *The non-asserting
+fallback*: that shape has **no failure arm**, this one has a real failure arm
+whose **predicate is too weak** — so it fails loudly for the wrong inputs and
+silently accepts the defect. Both read as coverage; neither is.
+
+For a **styling** requirement, assert the specific SGR parameter set — not that
+two renders differ. QUM-925 asked that a pending row render *dimmer*; six tests
+asserted `dim != bright`, which `Underline(true)` also satisfies while making
+pending **more** prominent than committed — the exact inverse of the requirement.
+
+The transferable part is *why the controls missed it*: **three mutation controls
+all mutated colour, while the hazard was attribute.** A control that varies a
+different axis than the one your assertion constrains proves nothing about it. So
+pick controls on the requirement's own axis, and assert the parameter, not the
+difference. Reusable shape — `assertDimIsFaintDelta` in
+`internal/tui/items_dim_test.go` — is a **bidirectional set diff** over SGR
+params: exactly `{2}` added, nothing dropped. That rejects `Underline`, `Reverse`,
+a foreground shift, and a no-op alike.
+
+Corollary from the same issue (F3): an assertion of the form "X was added" cannot
+detect that **X is the only differentiator**, which matters when X is advisory —
+SGR 2 is ignored by some terminals, so a faint-only delta degrades to nothing and
+a locked requirement is silently void. Pair it with its complement: strip all SGR
+from both renders and assert the plain text still differs. The two are in tension
+by design; both holding is the requirement.
+
+### New render-affecting state is a stale-cache bug by default
+
+`renderEnvelope`'s cache key is `(width, expanded)` and every item reports
+`Finished() == true`, so **any newly added state that affects rendering is served
+stale from cache unless something explicitly invalidates it.** `ZoneSettle`'s
+unconditional `env.cache = nil` is load-bearing and was **untested** — deleting
+that line stayed green until QUM-925 added a test that renders before and after
+the flip.
+
+General form: a cache whose key omits a render input needs an explicit
+invalidation *and* a test that fails when the invalidation is removed. Removing
+the line is the control; if it stays green, the test is measuring the flag, not
+the render.
+
 ### A rationale you were given is a claim about intent, not about the code
 
 > **When you transcribe a rationale you were handed, state what is true in the
