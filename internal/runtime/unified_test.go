@@ -91,6 +91,17 @@ func (m *mockUnifiedSession) writeCount() int {
 	return len(m.writes)
 }
 
+// writeTrace copies the full ordered stdin write history. `writes` is
+// append-only, so for detecting THAT something was written this is no stronger
+// than writeCount; the value is in what a mismatch shows — uuid, content and
+// priority of every frame, diffable in the failure output — and in pinning the
+// payload of a write rather than only its existence.
+func (m *mockUnifiedSession) writeTrace() []protocol.UserMessage {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	return append([]protocol.UserMessage(nil), m.writes...)
+}
+
 func (m *mockUnifiedSession) lastWrite() (protocol.UserMessage, bool) {
 	m.mu.Lock()
 	defer m.mu.Unlock()

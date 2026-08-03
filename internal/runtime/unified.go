@@ -146,6 +146,12 @@ type UnifiedRuntime struct {
 	turnSeq           uint64
 	openTurnID        uint64
 	interruptedTurnID uint64
+	// ackedTurnID is the id of the frame turn in which an isReplay consumption ack
+	// was last observed, or 0 (QUM-1000). settleNeverAcked's gate: a turn that
+	// acked a submission executed that submission, so nothing else may be settled
+	// on its behalf. Same id-matching discipline as interruptedTurnID — a stale id
+	// is inherently a no-op, so there is no clear path to get wrong. Guarded by mu.
+	ackedTurnID uint64
 
 	cancel        context.CancelFunc
 	doneWG        sync.WaitGroup
@@ -162,6 +168,13 @@ type UnifiedRuntime struct {
 	// writeMessage, giving recall / send-all-now a stable submit order (the
 	// outstanding map's iteration order is random). Guarded by outMu.
 	outSeq uint64
+	// lastRunningMark is the outSeq watermark captured at the most recent
+	// →phaseRunning TRANSITION, i.e. the submit order at the instant the CLI
+	// confirmed a new live turn (QUM-1000). settleNeverAcked settles only entries
+	// at or below it; that comparison is the identity signal that makes a
+	// turn-terminal sweep safe. Guarded by outMu — the same lock as outSeq, so the
+	// watermark and the counter can never be read torn.
+	lastRunningMark uint64
 }
 
 // turnPhase is the QUM-903 3-state in_turn machine.
@@ -343,6 +356,9 @@ func (rt *UnifiedRuntime) routeFrame(msg *protocol.Message, turn backend.TurnInf
 			rt.eventBus.Publish(RuntimeEvent{Type: EventProtocolMessage, Message: msg})
 			var uf protocol.UserFrame
 			if protocol.ParseAs(msg, &uf) == nil && uf.UUID != "" {
+				// QUM-1000: record that THIS frame turn acked a submission, so its
+				// terminal does not sweep (see settleNeverAcked's gate).
+				rt.noteTurnAcked(rt.currentFrameTurn())
 				rt.markConsumed(uf.UUID)
 			}
 		}
@@ -358,7 +374,27 @@ func (rt *UnifiedRuntime) routeFrame(msg *protocol.Message, turn backend.TurnInf
 	if turn.StateChange != "" {
 		switch turn.StateChange {
 		case protocol.SessionStateRunning:
-			rt.setPhase(phaseRunning)
+			// QUM-1000: fix the submit-order watermark on a genuine running
+			// TRANSITION only — never on a `running` that lands INSIDE an already
+			// open frame turn, which would drag the watermark past a prompt queued
+			// mid-turn at priority `next`. Two shapes reach that second case: the
+			// QUM-903 resume-boundary running→init→running doublet (caught by the
+			// phase check) and a mid-turn wire `idle` followed by another `running`
+			// while the frame turn stays open (caught by the openTurnID check — the
+			// phase check alone would read "fresh" there). At a genuine turn's first
+			// `running` no frame turn is open yet: the wire order is
+			// running → command_lifecycle → init.
+			//
+			// Read-and-set under ONE lock, as the rest of this file does for phase.
+			// noteRunningTransition then takes outMu with mu released, so outMu stays
+			// an obvious leaf.
+			rt.mu.Lock()
+			fresh := rt.phase != phaseRunning && rt.openTurnID == 0
+			rt.setPhaseLocked(phaseRunning)
+			rt.mu.Unlock()
+			if fresh {
+				rt.noteRunningTransition()
+			}
 		case protocol.SessionStateIdle:
 			rt.setPhase(phaseIdle)
 		}
@@ -451,8 +487,35 @@ func (rt *UnifiedRuntime) routeFrame(msg *protocol.Message, turn backend.TurnInf
 		// EventTurnCompleted — whose is_error interrupted result would surface
 		// as a spurious "Session Error" dialog.
 		if rt.consumeInterrupt(turnID) {
+			// QUM-1000 deliberately does NOT sweep here. A user Esc / QUM-830
+			// now-write preempt leaves genuinely UNEXECUTED prompts pending, and
+			// Ctrl+U recall (QUM-824) can only rehydrate a still-statePending entry
+			// (snapshotPendingUser) — settling them would silently make them
+			// unrecallable. The discriminator is "did a user abort claim this turn",
+			// not "was the result an error": an unarmed is_error terminal DOES sweep,
+			// because the CLI ran that turn to completion without acking the entry.
 			rt.eventBus.Publish(RuntimeEvent{Type: EventInterrupted, Result: &r})
 		} else {
+			// QUM-1000: settle never-acked prompts BEFORE the terminal event.
+			// ORDERING IS LOAD-BEARING, and the constraint is the TUI's, not ours:
+			// internal/tui/app.go's UserMessageConsumedMsg reducer flips
+			// TurnIdle→TurnThinking (QUM-831, "a consume means a turn is starting"),
+			// and NOTHING in the TUI clears that spuriously — there is no turn
+			// watchdog; the only routes back to TurnIdle are finalizeTurn
+			// (SessionResultMsg / InterruptCompletedMsg / SessionErrorMsg), a session
+			// restart, or the QUM-669 gap/resync path. Publishing consumed first
+			// guarantees the next pump event the TUI sees is this terminal →
+			// finalizeTurn → TurnIdle, so the spinner cannot be left lit. EventBus
+			// serializes Publish and each subscriber has one FIFO channel, so this is
+			// the order the TUI observes.
+			//
+			// Gated on this turn having acked NOTHING: an ack proves the turn executed
+			// a submission, and everything still pending is queued for a later turn —
+			// settling one of those would remove it from Ctrl+U recall. See
+			// settleNeverAcked's discriminator (2).
+			if !rt.turnAcked(turnID) {
+				rt.settleNeverAcked()
+			}
 			rt.eventBus.Publish(RuntimeEvent{Type: EventTurnCompleted, Result: &r})
 		}
 		// QUM-903 running-side teardown guard: a terminal `result` clears in_turn
@@ -918,6 +981,118 @@ func (rt *UnifiedRuntime) markConsumed(uuid string) {
 		rt.cfg.OnDelivered(entryIDs)
 	}
 	rt.eventBus.Publish(RuntimeEvent{Type: EventUserMessageConsumed, UUID: uuid})
+}
+
+// noteRunningTransition fixes the QUM-1000 submit-order watermark at the current
+// outSeq. Called from routeFrame on a genuine →phaseRunning transition only.
+func (rt *UnifiedRuntime) noteRunningTransition() {
+	rt.outMu.Lock()
+	rt.lastRunningMark = rt.outSeq
+	rt.outMu.Unlock()
+}
+
+// noteTurnAcked records that frame turn turnID acked a submission (QUM-1000).
+func (rt *UnifiedRuntime) noteTurnAcked(turnID uint64) {
+	if turnID == 0 {
+		return
+	}
+	rt.mu.Lock()
+	rt.ackedTurnID = turnID
+	rt.mu.Unlock()
+}
+
+// turnAcked reports whether frame turn turnID acked a submission (QUM-1000).
+func (rt *UnifiedRuntime) turnAcked(turnID uint64) bool {
+	rt.mu.RLock()
+	defer rt.mu.RUnlock()
+	return turnID != 0 && rt.ackedTurnID == turnID
+}
+
+// settleNeverAcked settles the OLDEST still-pending kind:user stdin message
+// submitted at or before the last running-transition watermark, publishing
+// EventUserMessageConsumed for it (QUM-1000). Called from routeFrame's terminal
+// leg ONLY when the completing turn acked nothing.
+//
+// WHY. A slash command the CLI REFUSES — an unknown `/qum1000-nope`, or a real
+// builtin the sdk-cli entrypoint declines ("/status isn't available in this
+// environment.") — is answered with an ordinary `assistant` refusal text and NO
+// isReplay echo, inside an otherwise normal running…result…idle envelope. That
+// echo is the ONLY consumption ack (QUM-817), so markConsumed never fires, the
+// TUI pending zone never gets its ZoneSettle (QUM-833), and a ghost `› /status`
+// row sits in the prompt area indefinitely. Nothing can predict this at submit
+// time: `system`/`local_command` is a transcript-only artifact that never reaches
+// sprawl, and no predicate over the text separates refused from accepted
+// (`/model` and `/context` DO echo; `/etc/hosts is broken…` is prose that
+// echoes). So detect after the fact.
+//
+// THE THREE DISCRIMINATORS, and why each is load-bearing. Settling an entry the
+// CLI still holds is not a cosmetic error: snapshotPendingUser only sees
+// statePending, so an early settle silently removes the prompt from Ctrl+U recall
+// and Ctrl+G send-all-now. Each condition below closes one way to do that.
+//
+//  1. `seq <= lastRunningMark`. A bare "settle everything pending at turn-end" is
+//     the QUM-927/QUM-935 premise class — see the scar on
+//     retireUnclaimedNextArmLocked: a turn-end / phase signal is not an identity
+//     signal. A prompt submitted at a turn boundary is legitimately still pending
+//     when THIS turn's terminal lands.
+//  2. THIS TURN ACKED NOTHING (the caller's turnAcked gate). The watermark alone
+//     is not enough, because writeMessage stamps seq at SUBMIT time: two prompts
+//     typed back-to-back before the wire `running` arrives BOTH land at or below
+//     the mark, while the CLI executes them across two turns. Without this gate
+//     the first turn's terminal settled the second prompt early and made it
+//     unrecallable. An ack proves the turn executed a submission, so nothing else
+//     may be settled on its behalf.
+//  3. OLDEST ONLY. A turn consumes one queued submission, so at most one entry can
+//     have been silently dropped by it. Settling the rest would be the same
+//     unrecallability bug for every prompt still queued behind the refused one
+//     (e.g. `/status` typed, then a real prompt, both before `running`).
+//
+// WHY NOT markConsumed. markConsumed fires cfg.OnDelivered(entryIDs), which
+// durably marks maildir entries delivered. kind:system entries (inbox drains)
+// carry entryIDs, so sweeping one would record an inbox message as delivered that
+// the CLI never consumed. This sweep is kind:user-only (which today also means
+// entryIDs-free) and never calls OnDelivered; publishing EventUserMessageConsumed
+// is all the TUI settle needs.
+//
+// Accepted residuals, stated rather than hidden. All three are a DELAYED settle —
+// the ghost survives until a later turn that acks nothing sweeps it — which is the
+// safe direction, since the alternative costs recallability:
+//
+//   - a turn that ends with only a wire `idle` and no routed `result` does not
+//     sweep;
+//   - a turn that acked something else (e.g. an inbox drain delivered in the same
+//     turn as a refused command) does not sweep;
+//   - an isReplay echo observed with no frame turn open records no ack, so such a
+//     turn may still sweep — bounded to one entry, the oldest, by (3).
+//
+// One delivery caveat on the ordering contract: EventUserMessageConsumed is not in
+// isTerminalEvent, so unlike the terminal it is droppable under subscriber
+// backpressure. The ORDER relative to the terminal is guaranteed; delivery is not,
+// and a dropped consume leaves the ghost until a QUM-669 resync.
+//
+// Lock discipline: the state flip is under outMu (a leaf lock); the Publish
+// happens after it is released.
+func (rt *UnifiedRuntime) settleNeverAcked() {
+	rt.outMu.Lock()
+	oldest := pendingUserSnapshot{}
+	for uuid, e := range rt.outstanding {
+		if e.kind != kindUser || e.state != statePending || e.seq > rt.lastRunningMark {
+			continue
+		}
+		// The outstanding map iterates randomly, so pick by seq rather than by
+		// iteration order.
+		if oldest.uuid == "" || e.seq < oldest.seq {
+			oldest = pendingUserSnapshot{uuid: uuid, seq: e.seq}
+		}
+	}
+	if oldest.uuid != "" {
+		rt.outstanding[oldest.uuid].state = stateConsumed
+	}
+	rt.outMu.Unlock()
+	if oldest.uuid == "" {
+		return
+	}
+	rt.eventBus.Publish(RuntimeEvent{Type: EventUserMessageConsumed, UUID: oldest.uuid})
 }
 
 // ConfirmDeliveredWithoutReplay marks an outstanding stdin write consumed
