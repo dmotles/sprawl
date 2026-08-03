@@ -548,6 +548,22 @@ This project uses [golangci-lint v2](https://golangci-lint.run/) with `gofumpt` 
 
    > **Reading older transcripts:** before QUM-952 a skipped row was reported as `PASS` and exited 0, with no skipped bucket at all — so `SPRAWL_E2E_SKIP_NO_CLAUDE=1` with no `claude` on PATH printed a fully green `Matrix: N/N passed` while asserting nothing. **A skip proves nothing — never cite a skipped run as evidence a row passed**, and treat any historical green matrix summary from an environment without `claude` as vacuous. The `wake-live` row requires the `sprawl_test` build tag — the driver (`scripts/e2e-matrix.sh`) handles this automatically via `needs_build_tags=sprawl_test`. The original per-test Makefile targets (`make test-notify-tui-e2e`, `make test-handoff-e2e`, `make test-merge-reuse-e2e`, `make test-ask-user-question-e2e`, `make test-drain-row-inject-e2e`, `make test-paste-coalesce-e2e`, `make test-wake-live-e2e`) and their underlying `scripts/test-*-e2e.sh` scripts remain available as a fallback during the soak period; they will be removed in a follow-up issue once the matrix rows have proven flake-free for a few days.
 
+   **Relaunch waits for `weave.lock`, it does not sleep (QUM-948).** Every
+   `e2e_launch_tui` first blocks until `<SPRAWL_ROOT>/.sprawl/memory/weave.lock`
+   is acquirable, before `tmux new-session`. This is load-bearing for any row
+   that kills and relaunches a session on the same root: `tmux kill-session`
+   only signals the pane, while the flock is released by the kernel when the
+   dying process's fd closes — so a fixed sleep races teardown and `sprawl
+   enter` dies with `another weave session is already running`. Tune the
+   deadline with **`SPRAWL_E2E_LOCK_WAIT_SECS`** (default **30**); a
+   non-numeric value warns and falls back to 30 rather than aborting the row.
+   A lock that outlives the deadline **fails the row** (`FAIL: weave.lock not
+   released within the …s deadline`) plus a holder diagnostic — it never hangs
+   and never passes, because a lock still held at that point is a leak, not
+   slow teardown. Covered by `make test-e2e-lockwait-unit`
+   (`scripts/test-e2e-lockwait-unit.sh` — pure shell, needs `flock(1)`, no
+   `claude`/`tmux`).
+
    | files touched | matrix row | guards |
    |---|---|---|
    | `cmd/enter.go`, `cmd/enter_notify.go`, `internal/tui/app.go`, `internal/tui/messages.go`, or `internal/tui/tree.go` | `notify-tui` | QUM-311/QUM-312 |
