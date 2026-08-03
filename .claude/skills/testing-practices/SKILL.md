@@ -396,14 +396,350 @@ turned out provenance-correct by luck. The check is what makes that reliable.
 > this one is *the guard against that says nothing.* **A check that cannot itself be
 > verified is not a check.**
 
-Three neighbouring shapes now, and they are distinguished by **where** the defect
-sits, not by how they read — all three read as coverage:
+Four neighbouring shapes now, and they are distinguished by **where** the defect
+sits, not by how they read — all four read as coverage. This is the family's one
+canonical **tabular** listing (§ *Mutate along the axis your assertion constrains*
+names the four in prose as a pointer, but no other section restates the table):
 
 | shape | what's wrong | remedy |
 |---|---|---|
 | § *The non-asserting fallback* | no failure arm — silently succeeds | add the else branch |
 | § *Mutate along the axis your assertion constrains* | real failure arm, predicate too weak | tighten the predicate |
 | **provenance (this section)** | predicate is fine — **it observes the wrong process** | assert on an artifact only the other side can mint |
+| § *Indistinguishable from success* | assertion and predicate both fine — **the input is stale** | force a fresh run; don't trust the summary |
+
+What the four have in common is stated in the fourth: **the failure is
+indistinguishable from success at the point of observation.** Different mechanisms,
+one property — which is why each row needs its *own* remedy, and why mis-identifying
+the row means applying a fix that cannot work.
+
+### Indistinguishable from success at the point of observation (QUM-1047)
+
+If this section carries one idea, it is this one — and it is the property the
+whole family shares, not a fact about caching:
+
+> **Different mechanisms, one property: the failure is indistinguishable from
+> success at the point of observation.**
+
+A cached test result, a swallowed exit code, and a stale SHA have nothing in common
+mechanically. What they share is that **the observation you make is identical in
+the good case and the bad case** — so no amount of care applied *at that
+observation* can separate them. That is why the remedy is never "look harder"; it
+is always to observe something else.
+
+**Ignore the counts; they are the least durable part.** Two tallies appear near
+this section and they are *different families*: the table above counts **four
+assertion shapes**, and § *Six surfaces, one property* below counts the **surfaces**
+on which the property has been observed — mechanisms, not shapes, and they overlap
+only partly. Both numbers were smaller yesterday and both grew while this section
+was being written. The property is the claim; the tallies are just how much of it
+has been written down so far, so prefer the named list to the number.
+
+It is also what the table above is *for*: read it as one property with several
+entry points, not as a list of unrelated pitfalls — each row's remedy differs
+because each mechanism differs.
+
+The rest of this section is the **worked example**: Go's build cache, which is the
+most industrialised instance because it produces the property automatically,
+continuously, and by design. The subject is the property; caching is the specimen.
+
+#### The specimen: a genuine green over a cached result
+
+The assertion is well-formed, the predicate is tight, the provenance is clean —
+and the run you are reading **did not happen**:
+
+```
+ok  github.com/dmotles/sprawl/internal/runtime  (cached)
+```
+
+This is the fourth shape in the table above, and the only one that needs **no
+defect anywhere**: the code is correct, the assertion is correct, and the
+*evidence* is corrupt.
+
+**The seam against § *Provenance of the observed string*, which is the distinction
+most easily lost:**
+
+> **Provenance is about *who produced* the artifact; this is about *when* it was
+> produced.** They **compose rather than overlap** — a provenance-clean assertion
+> still reports a green from a cached run, and a fresh run proves nothing if the
+> string it greps is self-minted.
+
+There is a **third** axis, and all three have to hold independently, so it is worth
+naming them together rather than leaving a reader to sort near-identical sections:
+
+| axis | question | the failure |
+|---|---|---|
+| **who** (§ *Provenance of the observed string*) | who minted the artifact? | you assert on a string your own process produced |
+| **whether** (§ *Negative assertions*) | could your instrument have seen it at all? | a null result that is a statement about your *search*, not the code |
+| **when** (this section) | when was the input produced? | a green from a run that already happened |
+
+One phrasing unifies all three: **a predicate that returns the same answer
+everywhere hasn't been tested, it's been unexercised.** Whether it is the same
+answer because you minted it, because you could not have seen otherwise, or
+because you are reading a cached verdict, the observation carries no information —
+which is the property this whole section is about.
+
+**This is not the cache in § *New render-affecting state is a stale-cache bug by
+default*.** That one is a **render** cache *inside the product* — a real bug in
+shipped code, fixable by an invalidation. This is Go's **build/test** cache,
+*outside* the product. Nothing here is fixable by a code change, which is why it
+needs a named check instead: conflating the two sends you looking for a defect
+that does not exist.
+
+**Mechanism.** Agent worktrees share a filesystem and a `GOCACHE`. `go test`
+reuses a prior run's *result* for any package whose inputs are unchanged. So when
+a manager re-runs `make validate` on a child's branch **to verify rather than
+relay**, most packages print `(cached)` — and in the bad case that includes the
+package the child changed, because the child already ran it. The re-run then
+re-asserts the child's own result.
+
+**Why the obvious check fails.** Exit 0 is genuine. Matching assertion counts are
+genuine. Both are true properties of a run that did not happen for the package
+under change, and nothing in a summary line distinguishes the two cases. That
+makes this structurally worse than the harness false-greens audited under
+QUM-997: those require a **defect in a harness**; this requires only a shared
+filesystem and a warm cache — the fleet's normal operating condition.
+
+**Remedy.** `go test -count=1` on the package under change (`-count=1` is the
+documented cache bypass; **`-race` does not imply it**), and read the log for
+`(cached)` rather than trusting the summary:
+
+```bash
+#!/usr/bin/env bash
+# Did this green actually exercise the packages I changed?
+# usage: check-cached <validate.log> [pkg-dir ...]   (default: dirs changed vs main)
+# Deliberately NO `set -e`: a non-matching grep must be reported, not abort the run.
+log=$1; shift
+if [ $# -gt 0 ]; then
+  changed=$(printf '%s\n' "$@")
+else
+  files=$(git diff --name-only main...HEAD) \
+    || { echo "CANNOT DETERMINE CHANGED SET — git failed"; exit 2; }
+  changed=$(printf '%s\n' "$files" | sed -n 's|/[^/]*\.go$||p' | sort -u)
+fi
+[ -n "$changed" ] || { echo "NO GO PACKAGES CHANGED vs main — nothing to check"; exit 0; }
+rc=0
+while IFS= read -r p; do
+  [ -n "$p" ] || continue
+  line=$(grep -E "^(ok|FAIL)[[:space:]]+[^[:space:]]*/$p[[:space:]]" "$log")
+  case $line in
+    "")           echo "MISSING  $p — no result line at all: this run never tested it"; rc=1 ;;
+    FAIL*)        echo "FAILED   $p — this run DID test it, and it FAILED: $line";      rc=1 ;;
+    *"(cached)"*) echo "CACHED   $p — NOT run by this log: $line";                      rc=1 ;;
+    *)            echo "RAN      $p — $line" ;;
+  esac
+done <<<"$changed"
+exit $rc
+```
+
+**Every arm here was added because the previous draft passed silently without it**,
+and the sequence is worth recording, because the recipe kept committing the sin the
+section names:
+
+1. The **first** draft was a bare `for p in $changed; do grep …; done` — it printed
+   nothing and exited 0 both when a package was never tested and when the changed
+   set was empty. That is § *The non-asserting fallback*, inside the recipe for
+   detecting false greens.
+2. The **second** draft added `MISSING` and the empty-set guard — and a reviewer
+   found it still **exited 0 on a log where the package had FAILED**, because
+   `FAIL` matched the `*)` arm and was reported as `RAN`. A reader would have read
+   exit 0 as "this log is trustworthy" over a genuine test failure. Hence the
+   explicit `FAIL*` arm, ordered before `(cached)` so a cached *failure* still
+   headlines as a failure.
+3. The same review found the changed-set computation could not fail *visibly*:
+   `$(git diff …)` inside a `${:-}` default discards git's exit status, so "not a
+   git repository", a missing `main`, or a bad revspec all printed **`NO GO
+   PACKAGES CHANGED`** and exited 0 — a message asserting a fact the script had not
+   established. Hence the explicit `|| exit 2`.
+
+Two escapes of the same shape in one recipe, in a section *about* that shape, both
+caught by a reviewer rather than by its author re-reading it. Ordering matters too:
+`""` must precede the globs, and `FAIL*` must precede `*"(cached)"*`.
+
+**Portability, since this is meant to be copy-pasted:** `[^[:space:]]` rather than
+`\S`, and no `xargs -r` — both of those are GNU-only, and on BSD/macOS `grep -E`
+the `\S` form matches a literal `S`, which turns every package into a spurious
+`MISSING` and makes the recipe a false-*alarm* generator. `$p` is interpolated into
+an ERE, so a package path containing regex metacharacters is matched loosely; for
+this repo's paths that is harmless.
+
+**Exercised in every direction before being written down** — extending § *How to
+demonstrate a red* from assertions to diagnostics, which is this section's claim
+rather than that one's: a diagnostic nobody has watched fire is the same unchecked
+claim as an assertion nobody has watched fail, and publishing an unexercised recipe
+*in this particular section* would be self-refuting. The text above was extracted
+from this file with `awk` and run; the transcript is verbatim, tabs and all, with
+only the module path elided as `…`:
+
+```
+$ check-cached log internal/runtime internal/backend    # one of each, SAME log
+RAN      internal/runtime — ok<TAB>…/internal/runtime<TAB>23.261s
+CACHED   internal/backend — NOT run by this log: ok<TAB>…/internal/backend<TAB>(cached)
+exit=1
+$ check-cached log internal/state                       # a FAIL line in the log
+FAILED   internal/state — this run DID test it, and it FAILED: FAIL<TAB>…/internal/state<TAB>1.204s
+exit=1
+$ check-cached log internal/messages                    # absent from the log
+MISSING  internal/messages — no result line at all: this run never tested it
+exit=1
+$ check-cached log            # on a branch whose diff vs main has no .go files
+NO GO PACKAGES CHANGED vs main — nothing to check
+exit=0
+$ cd /tmp && check-cached log                           # not a git repository
+CANNOT DETERMINE CHANGED SET — git failed
+exit=2
+```
+
+Provenance of that transcript, since the section demands it: the `RAN` and `CACHED`
+lines come from **one real log** (`internal/runtime` forced with `-count=1`,
+`internal/backend` left warm), which is the load-bearing part — it rules out "the
+run was configured differently" as the explanation for the difference. The `FAIL`
+line is a **hand-written fixture** appended to that log rather than a broken test,
+and the last two were run in a scratch repo and outside any repo. Say which are
+synthetic; a fixture is fine, a fixture presented as a live run is not.
+
+**And the demonstration re-demonstrated the finding while being re-run.** On the
+first pass `internal/tui` reported `RAN … 13.525s`; on the second, from a
+byte-identical invocation, it reported `(cached)` — because the first pass had
+warmed it. Nothing about the command changed. That is instance 3 below happening
+live in the act of documenting instance 3, and it is the entry's own evidence for
+its central claim: **cache state is not an input you control, so a green is not a
+property of your invocation.**
+
+**Diagnostic: a recompile has a runtime signature; a cache hit is instant.**
+Worked examples, all `internal/runtime`: a child reported **22.363s**; the
+manager's verifying `make validate` printed `(cached)` behind a genuine exit 0;
+forcing `-count=1 -race` gave **22.366s**. Later, on a rebased tree, **23.328s**
+claimed against an independent **23.275s / 23.280s**, and **23.332s / 23.277s** on
+the two runs made while writing this section. The child's "genuinely recompiled, not cached"
+claim was **true every time** — but the green never established it; the
+milliseconds-apart timings did. State that plainly, because it is the operational
+rule: **a child's "not cached" claim is not verifiable from a green.** Only a
+timing comparison or a `-count=1` re-run establishes it.
+
+**Scope the *specimen* to `go test` package results.** Staleness-by-build-cache is
+*not* a general property of "re-running the child's command yourself." A **shell**
+suite has no build cache and is structurally immune to *this mechanism* — one
+verification the same day was unaffected for exactly that reason. Say so, or the
+first counterexample gets used to dismiss the entry.
+
+But do not over-read that immunity: it is immunity to the **mechanism**, not to the
+**property**. A shell suite reaches the same place by a different route — see the
+`pipefail` row in § *Six surfaces, one property* below, where a real failure exits
+0 because the verdict was lost in a pipe. Scope claims to mechanisms; the property
+travels.
+
+**Three independent instances, three subtrees, one day:**
+
+| # | package | detail |
+|---|---|---|
+| 1 | `internal/runtime` | caught by a manager **on itself**, re-reading its own log after claiming independent verification |
+| 2 | `internal/tui` | **41 cached packages**, including the exact package the change under review touched, in a run already reported upward as independent |
+| 3 | `internal/runtime` | clean **but only by luck** — the changed package genuinely recompiled while **34 others** in the same run were `(cached)`. Nothing about the invocation differed; the package simply happened not to be warm |
+
+Instance 3 is the one that makes the check non-optional: **cache state is not a
+property you control**, so a clean run is not evidence of a clean habit. And
+**none of the three was found by review — all three by someone re-reading their
+own evidence.**
+
+#### Six surfaces, one property
+
+The build cache is not the claim. The claim is the property, and it has now been
+observed on six different surfaces in this repo — which is a stronger statement
+than any of them individually, because it predicts the *next* one:
+
+| surface | mechanism | what looked like success |
+|---|---|---|
+| a test harness | aggregator with no assertion-count floor (QUM-1029, QUM-1044) | `0 passed / 0 failed`, exit 0 |
+| a shell pipeline | verdict lost when piped, `pipefail` unset (QUM-1038) | exit 0 for a failed run |
+| **a build cache** | `(cached)` result reused across agents (this entry) | genuine exit 0, matching counts |
+| a documentation reference | a cited SHA that has rotted | a SHA that still resolves — to the wrong tree |
+| **shared tooling** | `merge` rebasing onto the *caller's* stale base (QUM-1050) | `Merged agent zone`, exit success, no warning |
+| **a null grep** | searched a worktree that predates the code | zero hits, exit 0, no error at all |
+
+**The null grep is the purest instance, and it is worse than the build cache.** A
+cached green at least leaves a `(cached)` token in the log for anyone who looks; a
+null grep leaves **nothing** — no error, no warning, no token — and it *feels like
+evidence*, because a search that ran to completion and found nothing is
+indistinguishable from a search that ran to completion over the wrong tree. Live
+instance: `grep -rn "NewTicker\|redrain"` returned zero hits on a branch that
+**predates the code being searched for**, and was reported as *"no seam exists"*
+when the honest reading was *"not on my branch."* **Three agents acted on that null
+result before anyone ran the one-command positive control.**
+
+Note it is simultaneously a staleness failure and a negative-assertion failure —
+the search was clean, the *base* was old — which is why the axes above compose:
+
+> **An absence in a worktree of unknown base is not evidence about the code.** A
+> claim resting on a null grep needs a positive control before it leaves the
+> worktree.
+
+The control is one command (grep for something you *know* is there, or check the
+base), which is the same shape as `-count=1` here: cheap, mechanical, and skipped
+because the result looked conclusive.
+
+**The documentation-reference row** is the one that generalises the entry beyond
+testing: **a stale SHA either resolves to something or fails silently, and either
+way it does not announce that it is out of date.** Two instances in one day, both
+*inside the artifact written to prevent them* — a `(cached)`-trap draft whose own
+recovery instruction pointed at a commit predating a correction to that same
+draft, and a manager citing a SHA the merge had already rewritten **in the same
+exchange in which it merged the rule against citing rotted SHAs** (§ *Which tree
+is your claim about?* — "quote it with the SHA it was measured on"). Both times the
+**author of the rule** caught it, not the party citing it.
+
+**The shared-tooling row is the sharpest, because the tool was reporting on
+itself.** `merge` rebases the child's commits onto the **caller's** base. With the
+caller seven commits behind `main` and the child based on a newer integration
+commit, it replayed four of another agent's commits through the caller's squash and
+produced **one commit, authored by the caller, containing two slices of someone
+else's issue and two unrelated commits besides** — then printed `Merged agent
+zone` and exited success. The resulting tree was byte-correct. **Only the history
+lied**, and the success message was not evidence of a correct merge.
+
+#### The detection generalises too: check the footprint, not the content
+
+That one was caught by a **file-level** check, which is the transferable part:
+
+```bash
+git diff --stat main...HEAD -- internal/    # which files does my branch claim to touch?
+```
+
+It keys on **files rather than content**, and that is precisely why it works where
+a diff review does not. Someone reading 5,684 insertions *for correctness* sees
+correct code — because the code **was** correct. Asking instead *"which files has
+this issue any business touching?"* surfaced three wrong ones (`items_dim_test.go`,
+`pendingzone.go`, `tuiadapter_test.go`) immediately. Content review scales with
+diff size; footprint review is O(number of files) and answers a different question.
+
+The confirming tell was a **memorised expected value**: `unified.go` at `+302/−2`
+where the reviewer knew the audited figure was `+176/−1`. Record both halves,
+because they are two instruments — the cheap file-level instrument, and the fact
+that *a number you have audited often enough to know by heart is itself an
+instrument.* An expected value you have to look up cannot fire on sight; one you
+have internalised fires without being invoked. That is the only member of this
+family that catches the failure **at** the point of observation, and it works by
+having brought a second observation with you.
+
+**The manager-side framing, which is the part to internalise:** on a shared
+filesystem, a manager verifying a child's work is **by default reading the child's
+cache back to itself** — verification that is indistinguishable from relaying, and
+that reports as independent. The practice that actually worked here was
+child-side: the engineer flagged `(cached)` density as "the bit worth checking" on
+its own run, which is the only reason its claim survived the manager's check.
+**Flagging the weakness in your own evidence is what makes it checkable by someone
+else** — and across every instance above, the mechanical question beat the careful
+reading.
+
+That last point is the section's reason for existing, and it is not a claim about
+anyone's diligence. Every instance here was propagated by someone writing this
+guidance, reasoning carefully, at the time they were most alert to the failure mode:
+three agents acted on a null grep before anyone ran the control; three more
+propagated an unverified claim *about verification* before anyone read the assertion
+order (§ *Provenance of the observed string* records that one); two cited a rotted
+SHA inside the rule against rotted SHAs. **Inattention is not available as the
+explanation**, which is precisely the argument for a named mechanical check over
+more careful review: the check works when you are wrong about being careful.
 
 ### How to demonstrate a red
 
@@ -820,7 +1156,9 @@ Companion to the previous section, and the counterpart to § *The non-asserting
 fallback*: that shape has **no failure arm**, this one has a real failure arm
 whose **predicate is too weak** — so it fails loudly for the wrong inputs and
 silently accepts the defect. (A third, § *Provenance of the observed string*, has a
-fine predicate pointed at the wrong process.) All read as coverage; none is.
+fine predicate pointed at the wrong process; a fourth, § *Indistinguishable from
+success*, has both right and reads a run that never happened.) All read as
+coverage; none is.
 
 For a **styling** requirement, assert the specific SGR parameter set — not that
 two renders differ. QUM-925 asked that a pending row render *dimmer*; six tests
