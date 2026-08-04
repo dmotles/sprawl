@@ -946,8 +946,10 @@ first shipped as an absolute — *reaches its precondition around the code under
 false green* — and that absolute is **false**. It is falsified by the counterexample
 in the worked example below: leg 2 of
 `internal/runtime/qum1056_sweep_inflight_disjoint_test.go` is structurally the same
-construction (`echoReplay` → the production `markConsumed` → assert a consumed
-`kind:system` entry is still in flight) and is a sound, mutation-killing check.
+construction (a real replay-echo → the production `markConsumed` route to a consumed
+`kind:system` entry, then assert it is still in flight; the delivery callbacks differ
+— leg 2's `OnDelivered` fires, the supervisor test's is nil) and is a sound,
+mutation-killing check.
 Reaching a precondition by a different real route is ordinary and usually fine. What
 separates the two is **what the test claims about itself**: leg 2 claims to guard the
 *filter*, which is exactly what its route reaches; the test below claimed to guard the
@@ -967,12 +969,15 @@ printed:
 
 ```
 --- FAIL: TestWeaveRuntimeHandle_WakeForDelivery_ConsumedButNotYetDelivered_NoDuplicateWrite (0.27s)
-    weave_handle_test.go:718: entry written 2 times across 2 stdin writes, want exactly 1
-    — a poke inside the consumed-but-not-yet-delivered window duplicated the notification
+    weave_handle_test.go:718: entry written 2 times across 2 stdin writes, want exactly 1 — a poke inside the consumed-but-not-yet-delivered window duplicated the notification
 --- FAIL: TestWeaveRuntimeHandle_ConsumedStateStaysSuppressed (1.12s)
-    weave_handle_test.go:931: a consumed entry left the in-flight set — a poke would now
-    re-write content already in the conversation
+    weave_handle_test.go:931: a consumed entry left the in-flight set — a poke would now re-write content already in the conversation
 ```
+
+(Long lines left unwrapped on purpose: each `t.Errorf` is emitted as **one** line, and
+a reflowed paste is not verbatim — the em-dash continuation would read as a separate
+diagnostic. A quotation that cannot be located by its own wording is item 2 of § *Three
+defects in this entry* one level down.)
 
 Its assertions are live, and it kills the same mutation that leg 2 of
 `internal/runtime/qum1056_sweep_inflight_disjoint_test.go` kills.
@@ -982,13 +987,11 @@ provenance comment in that test (`weave_handle_test.go:918`) calls the state it
 constructs *"exactly the state a `settleNeverAcked` sweep leaves behind"*. It cannot
 be: the sweep is `kindUser`-only (`internal/runtime/unified.go`) and the entry here is
 `kind:system`. The sentence claims the test speaks for the **sweep**; it speaks for
-the **filter**, which it genuinely guards. What the test's route substitutes is the
-*route*, not the data — `echoReplay` → the production `markConsumed` with
-`OnDelivered` nil, which has the opposite delivery semantics from the sweep's. So the
-catch is real and strictly smaller than published: **a mislabelled provenance
-sentence.** That is a class worth a detection method, because nothing else in this
-file catches one — but it is not a false green, and the difference is the whole point
-of the corrected discriminator above.
+the **filter**, which it genuinely guards. What it substitutes is the *route*, not the
+data — the supervisor mock's `echoReplay` → the production `markConsumed`, with
+`OnDelivered` nil, which has the opposite delivery semantics from the sweep's. **A
+mislabelled provenance sentence** is a class worth a detection method, because nothing
+else in this file catches one.
 
 **The failure chain has three named links, and each one skipped a one-command check.**
 Naming them is deliberate: *"someone didn't verify"* is forgettable, a chain with
@@ -1025,10 +1028,13 @@ while the rule guarded the stronger class. Hence:
 > rule; analytically-derived claims feel like reasoning and so invite agreement. The
 > second is where the rule is actually needed.
 
-QUM-1056 carries the assertion that closes the underlying gap: the mutation above was
-the **only** failure in `./internal/runtime` before that file existed, so the
-cross-package coverage claim survived the retraction even though the false-green claim
-did not.
+QUM-1056 carries the assertion that closes the underlying gap, and that claim survived
+the retraction: under the mutation above, leg 2 is the **only** failure in
+`./internal/runtime` — and before that file existed there were **none at all**, which
+is the coverage gap itself. So the cross-package claim stands even though the
+false-green claim does not. (Measured **with** the file present, obviously; a
+pre-existence measurement of a test that lives in the file would be incoherent, and an
+earlier draft of this sentence compressed the two clauses into exactly that.)
 
 The procedure's value is directional: it tells a reader **where to look** when
 nothing is failing, which is the state most of this file's failures were discovered
@@ -1068,15 +1074,25 @@ fabricated, one of them naming a heading plainly present in the file; the mechan
 a broken `while read` over process substitution plus title truncation, so every
 reference to § *Provenance of the observed string* (heading: *"…: who mints the
 artifact? (QUM-925)"*) read as dangling. Re-run with whitespace normalisation and
-prefix matching: **0 dangling across 33 references, and the negative control fired** —
-an injected reference to a deliberately nonexistent heading was reported, exactly once.
-(The two bad references named in this subsection are written in prose rather than in
-`§`-reference form on purpose, so that a future run of such a checker over this file
-does not flag the paragraph describing the defect.)
-The class is not a slip: a second, hastily written checker independently reproduced
-both mistakes (11 fabricated reports) before the same two fixes, so this is the default
-behaviour of a naive title matcher. Two halves, and this section had only ever
-exercised one of them:
+prefix matching: **0 dangling, and the negative control fired** — an injected reference
+to a deliberately nonexistent heading was reported, exactly once. The class is not a
+slip: a second, hastily written checker independently reproduced both mistakes (11
+fabricated reports) before the same two fixes, so this is the default behaviour of a
+naive title matcher.
+
+Three notes, all self-applications of rules above. **The verdict is quoted without a
+reference count on purpose**: the count moves with every edit to this file — 33 before
+the commit that added this subsection, 40 at that commit, 42 one review round later —
+and a draft of this sentence published the pre-edit **33** *after* the edit, i.e. a real
+measurement of a tree that no longer existed. Quote the verdict; re-derive the count.
+§ *Which tree is your claim about?* is the rule, and its *"a suite-size figure is
+branch-relative and rots within hours"* blockquote is the same shape one artifact over.
+**Second:** that clause first cited the blockquote *as a heading* — the exact defect of
+item 1 above — and the checker described in this paragraph caught it before the commit
+landed, which is the loud failure mode working as advertised. **Third:** the two bad
+references named in this subsection are written in prose rather than in `§`-reference
+form on purpose, so a future run of such a checker does not flag the paragraph
+describing the defect. Two halves, and this section had only ever exercised one of them:
 
 > **A negative control proves the instrument *can* fire; a positive control proves it
 > can *stay quiet*.** A false-green instrument fails the first; a false-alarm
@@ -1097,8 +1113,9 @@ absolutes. Two confirmed and fixed: the *"reaches its precondition around the co
 false green"* absolute in § *The second detection method* (falsified by its own worked
 counterexample), and the *"never accept a cached line"* shape, restated as a check in
 § *The specimen* above. Two further absolutes were reviewed and **kept** — *"the remedy
-is never 'look harder'"* and *"a warn-and-continue liveness gate is strictly worse than
-no gate"* — because each is a claim about a mechanism for which no exception has been
+is never 'look harder'"* and *"a liveness gate that **warns and continues is strictly
+worse than no gate**"* (quoted as written, so the wording is greppable) — because each
+is a claim about a mechanism for which no exception has been
 found, not a prohibition on a common legitimate case; if you find the exception, weaken
 them the same way. Scope stated because it bounds the claim: **that day's entries only**
 — this is not an audit of the rest of this file.
