@@ -443,7 +443,7 @@ not decoration.
 | someone told you a grep returned N | a relayed measurement | re-run it yourself; a relay strips the authority and keeps the appearance |
 | a cited SHA, doc, or issue title that "reads as" a finding | a rotted reference or a promoted hypothesis | resolve it on **your** tree; check the body, not the title |
 | a merge/tool reported success and the tree looks right | shared tooling on a stale base | check the *history*, not the tree — `git log`, not `git diff` |
-| nothing is failing and you want to find something | audit a green on purpose | pick a test naming a coupling; ask if it reaches its precondition *through* the code or *around* it |
+| nothing is failing and you want to find something | audit a green on purpose | pick a test naming a coupling; ask what it *claims* to guard and whether its route reaches that — then run the mutation before you publish the catch |
 
 Two cross-cutting rules that apply whichever row you landed on: **the remedy is never
 "look harder"** — it is always to observe something else; and **a claim is only as
@@ -669,6 +669,28 @@ milliseconds-apart timings did. State that plainly, because it is the operationa
 rule: **a child's "not cached" claim is not verifiable from a green.** Only a
 timing comparison or a `-count=1` re-run establishes it.
 
+**Rule design: state the remedy as a check, not a prohibition.** The defect is never
+`(cached)` itself — it is an **unexamined** `(cached)`. A cache hit on a package your
+branch did not change is correct, and a rule phrased as *"never accept a cached
+line"* is wrong often enough that the first reader to meet a legitimate exception
+discards it wholesale. **An over-strict rule does not fail safe; it trains the reader
+to discard the whole rule** — which costs you the true positives too. So phrase it as
+a decision procedure:
+
+```bash
+git diff --name-only A..B -- '*.go' go.mod go.sum    # then decide
+```
+
+Empty output ⇒ every `(cached)` line in that run is legitimately cached and the green
+stands. Non-empty ⇒ the packages under those files must show a real timing. Evidence
+from this entry's own merge: the doc-only integration printed `(cached)` where the
+cache was **legitimately valid** (0 Go files changed), the merging manager forced a
+fresh run anyway, and `internal/runtime` came back **23.293s** — inside the
+23.2–23.4s band recorded above. The check would have licensed the cached line; the
+forced run bought 23s of nothing. Re-run first-hand while writing this paragraph
+(`go test -count=1 -race ./internal/runtime/`): **23.298s**, same band, so the
+"identical signature" claim is not being relayed here.
+
 **Scope the *specimen* to `go test` package results.** Staleness-by-build-cache is
 *not* a general property of "re-running the child's command yourself." A **shell**
 suite has no build cache and is structurally immune to *this mechanism* — one
@@ -831,6 +853,12 @@ hypothetical:
 > speaker sounds precisely as authoritative as the first and has done none of the
 > work. Forwarding it unverified converts a measurement back into a rumour.
 
+**That scoping is too narrow, and § *The second detection method* below records the
+instance that proved it: an *analytically*-derived claim is weaker evidence than a
+grep, and this rule did not cover it.** Read the widened form stated there — *a relay
+rule must scale with the claim's fragility, not with its apparent precision* — as the
+governing one.
+
 Note the cost profile is the reverse of the mechanical shapes: re-running a grep is
 the cheapest verification in this entire document — seconds, no setup, no
 judgement — which is exactly why it gets skipped. **The relay is cheap and the
@@ -913,35 +941,167 @@ is green about the wrong subject. Nothing distinguishes it from a test that mean
 something, which is this section's property arriving where a reader is least likely
 to look: a passing test.
 
-**Worked example**, and the only confirmed catch so far — say that plainly, because
-a detection method with one instance is a lead, not a track record.
-`TestWeaveRuntimeHandle_ConsumedStateStaysSuppressed` names the coupling in its own
-doc comment (*"this matters for QUM-1000's `settleNeverAcked` sweep"*), so it reads
-as the guard on it. It does not invoke the sweep — and **it could not**: at the time
-of writing `settleNeverAcked` is not in this tree at all (`grep -rn settleNeverAcked
---include='*.go'` → four hits, every one a comment), because it lives on an unmerged
-branch. Say that rather than implying a choice was made; § *Which tree is your claim
-about?* is the rule that wants it said, and it is also the honest limit on applying
-the procedure here at all — you cannot ask whether a test reaches its precondition
-through code that is not present.
+**Post-merge correction: the construction is not the discriminator.** This paragraph
+first shipped as an absolute — *reaches its precondition around the code under test ⇒
+false green* — and that absolute is **false**. It is falsified by the counterexample
+in the worked example below: leg 2 of
+`internal/runtime/qum1056_sweep_inflight_disjoint_test.go` is structurally the same
+construction (`echoReplay` → the production `markConsumed` → assert a consumed
+`kind:system` entry is still in flight) and is a sound, mutation-killing check.
+Reaching a precondition by a different real route is ordinary and usually fine. What
+separates the two is **what the test claims about itself**: leg 2 claims to guard the
+*filter*, which is exactly what its route reaches; the test below claimed to guard the
+*sweep*, which its route does not reach. So the procedure's question is two-part —
+*what do the name and doc comment say this guards, and does the construction reach
+that?* — and the finding is the **mismatch**, not the substitution. Widened this way
+it survives contact with the common case, which the absolute did not.
 
-What the test does instead is reach `stateConsumed` by a **different real route** —
-`echoReplay` → the production `markConsumed`, with `OnDelivered` nil. Not a
-hand-assembled fixture (an earlier draft of this paragraph said "hand-built" and that
-overstates it); the substitution is in the *route*, not the data, and the route it
-takes has the opposite delivery semantics from the sweep's. That is enough for the
-point. The three divergences it would then survive — the sweep widening its kind
-predicate, adopting a new state value, or beginning to call `OnDelivered` — are
-**analytic, derived from reading both predicates, and not exercised**, because the
-sweep is not here to mutate. Flagged as unexercised on purpose: this section's own
-rule is that a diagnostic nobody has watched fire is an unchecked claim, and these
-have not fired. QUM-1056 carries the finding and the assertion that would close it.
+**Worked example — and read it as a retraction, because the method's first published
+catch was wrong about its own catch.** The first version of this subsection called
+`internal/supervisor/weave_handle_test.go`'s
+`TestWeaveRuntimeHandle_ConsumedStateStaysSuppressed` a recorded false green. **It is
+not one, and the error was this document's signature error: nobody ran the mutation.**
+Run it — narrow `InFlightSystemEntryIDs`'s predicate from `e.state == stateCancelled`
+to `e.state != statePending` — and **two** supervisor tests fail. Verbatim, as
+printed:
+
+```
+--- FAIL: TestWeaveRuntimeHandle_WakeForDelivery_ConsumedButNotYetDelivered_NoDuplicateWrite (0.27s)
+    weave_handle_test.go:718: entry written 2 times across 2 stdin writes, want exactly 1
+    — a poke inside the consumed-but-not-yet-delivered window duplicated the notification
+--- FAIL: TestWeaveRuntimeHandle_ConsumedStateStaysSuppressed (1.12s)
+    weave_handle_test.go:931: a consumed entry left the in-flight set — a poke would now
+    re-write content already in the conversation
+```
+
+Its assertions are live, and it kills the same mutation that leg 2 of
+`internal/runtime/qum1056_sweep_inflight_disjoint_test.go` kills.
+
+**The real defect is one sentence, and it is a mislabel, not a vacuous assertion.** A
+provenance comment in that test (`weave_handle_test.go:918`) calls the state it
+constructs *"exactly the state a `settleNeverAcked` sweep leaves behind"*. It cannot
+be: the sweep is `kindUser`-only (`internal/runtime/unified.go`) and the entry here is
+`kind:system`. The sentence claims the test speaks for the **sweep**; it speaks for
+the **filter**, which it genuinely guards. What the test's route substitutes is the
+*route*, not the data — `echoReplay` → the production `markConsumed` with
+`OnDelivered` nil, which has the opposite delivery semantics from the sweep's. So the
+catch is real and strictly smaller than published: **a mislabelled provenance
+sentence.** That is a class worth a detection method, because nothing else in this
+file catches one — but it is not a false green, and the difference is the whole point
+of the corrected discriminator above.
+
+**The failure chain has three named links, and each one skipped a one-command check.**
+Naming them is deliberate: *"someone didn't verify"* is forgettable, a chain with
+three named links is not.
+
+1. **`zone`** (engineer) derived three surviving divergences — the sweep widening its
+   kind predicate, adopting a new state value, or beginning to call `OnDelivered` —
+   **analytically, from reading both predicates**, and labelled them unexercised. An
+   accurate label on a claim that should not have been made.
+2. **`command`** (manager) relayed it upward as **measured**.
+3. **`weave`** (root) converted it into a **named detection method** with a written
+   procedure, directed it into this file, and reported it to the human.
+
+So the escalation was relay **with generalisation**: one unverified observation became
+a method, which is a strictly larger claim than the one received. The engineer's own
+sentence on retracting it, verbatim, because it is the shortest statement of the
+failure:
+
+> **"Flagging a claim as unexercised is not the same as not making it."**
+
+The rule and its violation are two consecutive commits apart **in this file**: the
+relayed-measurement row above landed at `81f028e`; the unexercised-flag sentence
+landed at `83a154e`, the very next commit.
+
+**And the relay rule needs widening, because it was scoped exactly backwards.**
+§ *Eight surfaces, one property*'s rule covers *"grep returns N"* — a claim whose
+authority comes from having been **run** — and explicitly not *"I read two predicates
+and concluded X."* But a grep **was** run. An analytic derivation never was: it is
+strictly weaker evidence, and it travelled with *more* confidence than its author had,
+while the rule guarded the stronger class. Hence:
+
+> **A relay rule must scale with the claim's fragility, not with its apparent
+> precision.** Mechanically-derived claims *feel* checkable and so invite a re-run
+> rule; analytically-derived claims feel like reasoning and so invite agreement. The
+> second is where the rule is actually needed.
+
+QUM-1056 carries the assertion that closes the underlying gap: the mutation above was
+the **only** failure in `./internal/runtime` before that file existed, so the
+cross-package coverage claim survived the retraction even though the false-green claim
+did not.
 
 The procedure's value is directional: it tells a reader **where to look** when
 nothing is failing, which is the state most of this file's failures were discovered
 in and none of its other tells can be run from. The cost is that it is not
 mechanical — `grep` cannot tell a proxy precondition from a real one — so it is a
-reading habit, not a check, and it should not be cited as though it were one.
+reading habit, not a check, and it should not be cited as though it were one. **One
+confirmed catch, and it turned out to be a mislabel rather than a false green: this
+is a lead, not a track record.** Its one non-negotiable step is the one that was
+skipped — **run the mutation before publishing the catch**, since the method's output
+is a suspicion and the mutation is what converts it into a finding or kills it.
+
+#### Three defects in this entry, found after it merged
+
+Recorded rather than quietly fixed. All three are defects **in the artifact about
+defects**, found by **three different readers**, *after* the entry merged — the
+retraction in § *The second detection method* above plus the two below. **An entry
+that carries its own post-merge corrections is more credible than one that arrived
+clean**, and it is the honest record.
+
+**1. A fix can relocate a defect outside its own detector's range.** A dangling
+cross-reference in this file — it pointed at *"A grep that matches your vocabulary has
+not necessarily found your mechanism"*, which is a blockquote, not a heading — was
+repaired at `81f028e` by repointing it at § *Claims about code, and claims about
+claims*. That heading is real; it is also the **wrong** one — the quoted rule lives in
+§ *Which tree is your claim about?*, where `83a154e` finally pointed it. Watch what
+happened to the measurement: dangling refs went **down**, and any checker that
+resolves references against the heading list now reports the file **clean**. Dangling
+is **loud**; resolves-to-wrong is **silent**. *The fix made the failure quieter while
+the failure survived, and the metric improved on the way out.* Corrective, and it is
+mechanical: when repairing a reference, **derive the target from the containing
+heading of the quoted text** — locate the text, walk up to its nearest `###` — rather
+than picking the heading that sounds right.
+
+**2. The family's first false *alarm*, and it was in the checker.** A `§`-reference
+checker written to audit this file reported **ten** dangling references. All ten were
+fabricated, one of them naming a heading plainly present in the file; the mechanism was
+a broken `while read` over process substitution plus title truncation, so every
+reference to § *Provenance of the observed string* (heading: *"…: who mints the
+artifact? (QUM-925)"*) read as dangling. Re-run with whitespace normalisation and
+prefix matching: **0 dangling across 33 references, and the negative control fired** —
+an injected reference to a deliberately nonexistent heading was reported, exactly once.
+(The two bad references named in this subsection are written in prose rather than in
+`§`-reference form on purpose, so that a future run of such a checker over this file
+does not flag the paragraph describing the defect.)
+The class is not a slip: a second, hastily written checker independently reproduced
+both mistakes (11 fabricated reports) before the same two fixes, so this is the default
+behaviour of a naive title matcher. Two halves, and this section had only ever
+exercised one of them:
+
+> **A negative control proves the instrument *can* fire; a positive control proves it
+> can *stay quiet*.** A false-green instrument fails the first; a false-alarm
+> instrument fails the second — and everything else in this section is about the
+> first.
+
+The cost profile is inverted from every other instance here, which is why it gets its
+own paragraph: a false green costs *confidence*, silently and on the author's side; a
+false alarm costs *someone else's time*, loudly — this alarm was handed to another
+agent to chase. And the tell was not a control:
+
+> **"I caught it only because the result was implausible — and implausibility is not a
+> detector."** — `command`
+
+**3. Unqualified-prohibition audit (bounded).** Prompted by defect 1, every entry added
+to `/testing-practices` and `CLAUDE.md` on the same day was re-read for rules stated as
+absolutes. Two confirmed and fixed: the *"reaches its precondition around the code ⇒
+false green"* absolute in § *The second detection method* (falsified by its own worked
+counterexample), and the *"never accept a cached line"* shape, restated as a check in
+§ *The specimen* above. Two further absolutes were reviewed and **kept** — *"the remedy
+is never 'look harder'"* and *"a warn-and-continue liveness gate is strictly worse than
+no gate"* — because each is a claim about a mechanism for which no exception has been
+found, not a prohibition on a common legitimate case; if you find the exception, weaken
+them the same way. Scope stated because it bounds the claim: **that day's entries only**
+— this is not an audit of the rest of this file.
 
 ### How to demonstrate a red
 
