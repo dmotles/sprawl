@@ -10,9 +10,11 @@ import (
 	"crypto/rand"
 	"errors"
 	"fmt"
+	"log/slog"
 	"sort"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"time"
 
 	"github.com/dmotles/sprawl/internal/backend"
@@ -157,6 +159,13 @@ type UnifiedRuntime struct {
 	doneWG        sync.WaitGroup
 	done          chan struct{}
 	closeDoneOnce sync.Once
+
+	// livenessNudge is the QUM-730 supervisor heartbeat's pending-nudge flag.
+	// Deliberately a boolean rather than a queued message — see
+	// RequestLivenessNudge for why the durable form was a category error. Written
+	// by the heartbeat goroutine, read+cleared by whichever goroutine drains, so
+	// it must be atomic.
+	livenessNudge atomic.Bool
 
 	// outstanding is the ONLY client-side message state (QUM-817): a map of
 	// every stdin user message we've written, keyed by uuid, flipped to consumed
@@ -758,13 +767,158 @@ func (rt *UnifiedRuntime) WriteUserBlocks(ctx context.Context, text string, bloc
 	return rt.writeMessage(ctx, text, priority, kindUser, nil, blocks)
 }
 
+// RequestLivenessNudge arms a pending liveness nudge for this runtime (QUM-730).
+// The next inbox drain renders it as exactly one heartbeat notification line and
+// clears it.
+//
+// WHY A FLAG AND NOT A MESSAGE. A liveness check is a content-free edge signal —
+// it asks "are you alive NOW". It used to be written as a durable maildir
+// envelope, which is a category error: a durable queue promises at-least-once
+// delivery of everything ever written, so a missing consumer accumulates a
+// backlog by design rather than by defect. Weave had exactly that missing
+// consumer, ~2m of envelopes piled up unseen (the type is filtered out of
+// messages_list), and the first drain after QUM-925 wired one up delivered all
+// 123 of them in a single 38,673-byte stdin frame.
+//
+// A boolean cannot accumulate. N nudges between drains are one nudge, staleness
+// is impossible because nothing outlives the process, and there is no TTL to tune.
+//
+// ACCEPTED CONSEQUENCE, stated so it is not rediscovered as a bug: the flag dies
+// with the runtime, so a nudge armed moments before a restart/wake is lost rather
+// than redelivered. That is correct for this signal — "are you alive NOW" cannot
+// be answered by the next process — and the heartbeat re-evaluates on its next
+// tick anyway. It is also not reachable in practice: tickAgent only nudges an
+// agent whose liveness is Running.
+func (rt *UnifiedRuntime) RequestLivenessNudge() { rt.livenessNudge.Store(true) }
+
+// ConsumeLivenessNudge reports whether a liveness nudge is pending and clears it
+// in one atomic step, so two concurrent drains cannot both render the line.
+func (rt *UnifiedRuntime) ConsumeLivenessNudge() bool { return rt.livenessNudge.Swap(false) }
+
+// maxSystemFrameBytes caps one kind:system stdin frame. Applies to the
+// supervisor-originated notification channel ONLY — never to a kind:user prompt,
+// which is the human's own words and is never truncated or deduped.
+//
+// WHY A CAP EXISTS AT ALL. Every layer above WriteSystemMessage concatenates
+// whatever its drain happened to find, so before this the frame size was a
+// function of how long a consumer had been broken. That is not a theoretical
+// bound: a restart of the root weave wrote ONE 38,673-byte frame carrying 123
+// identical liveness-check lines and destroyed the session's context. 64 KiB (the
+// stdin pipe buffer) is not a backstop either — the frame fit under it comfortably
+// and would have at twice the size.
+//
+// The value is chosen to be far above any legitimate batch (a busy fleet drain is
+// a few hundred bytes) and far below a context-destroying one. It is not tuned;
+// if a real batch ever approaches it, the batch is the defect.
+const maxSystemFrameBytes = 8192
+
+// systemFrameTruncationMarker is appended when a frame is cut at
+// maxSystemFrameBytes. Truncating silently would make a partial batch
+// indistinguishable from a complete one at the point the recipient reads it.
+const systemFrameTruncationMarker = "<system-notification type=\"truncated\">Some notifications were dropped because the batch exceeded the size limit. Call mcp__sprawl__messages_list to see anything you may have missed.</system-notification>\n"
+
 // WriteSystemMessage writes a sprawl-originated message (kind:system, not
 // recallable) to the CLI stdin (QUM-817). Used by the supervisor delivery path
 // for inbox/status/task/liveness notifications.
 // entryIDs link the message to durable maildir/task records for delivery
 // tracking via the isReplay consumption ack.
 func (rt *UnifiedRuntime) WriteSystemMessage(ctx context.Context, text, priority string, entryIDs []string) (string, error) {
-	return rt.writeMessage(ctx, text, priority, kindSystem, entryIDs, nil)
+	return rt.writeMessage(ctx, boundSystemFrame(text), priority, kindSystem, entryIDs, nil)
+}
+
+// boundSystemFrame collapses duplicate lines and caps the total size of a
+// kind:system frame. Applied at this single choke point on purpose: both drain
+// paths (WeaveRuntimeHandle and unifiedHandle) and every future notification
+// channel funnel through WriteSystemMessage, so the bound cannot be bypassed by
+// adding a channel that forgets to bound itself — which is exactly how the
+// QUM-730 flood happened.
+//
+// Two mechanisms, in order, because they defend different failure shapes:
+//
+//  1. DEDUP is lossless. A repeated identical notification line carries no
+//     information the first copy did not, so collapsing is free. This is the
+//     mechanism that would have reduced the incident's 123 copies to 1.
+//  2. TRUNCATION is lossy and therefore second. Distinct lines (the
+//     `status_change` shape carries agent + state + summary) cannot be
+//     collapsed, so a genuinely large batch is still bounded — but the frame
+//     says so, and the dropped bodies are WARN-logged by the callers that
+//     perform destructive drains.
+//
+// Both are deliberately absent from WriteUserPrompt / WriteUserBlocks: a human
+// typing the same prompt twice means it twice, and a truncated user prompt is a
+// corrupted instruction rather than a shortened notice.
+//
+// INTERACTION WITH entryIDs, stated rather than discovered later. The caller
+// passes maildir entry IDs alongside the text, and those entries are marked
+// delivered on the consumption ack — for the WHOLE batch, with no per-line
+// correspondence. So a TRUNCATED batch can mark an entry delivered whose citation
+// line was cut. Two things bound that: dedup runs first and is lossless, so the
+// only way to reach truncation is a genuinely large batch of DISTINCT lines; and
+// the truncation marker tells the recipient to call messages_list, where the
+// message is still readable (MarkDelivered moves the queue entry, it does not
+// delete the mail). It is a "you must go look" degradation, not message loss.
+// Dedup cannot hit this at all: mail citations embed a unique per-entry id, so
+// two entries can never render the same line.
+func boundSystemFrame(text string) string {
+	if text == "" {
+		return text
+	}
+
+	// SplitAfter keeps the trailing newline on each element, so re-joining is
+	// exact and a frame with no duplicates round-trips byte-identically.
+	parts := strings.SplitAfter(text, "\n")
+	seen := make(map[string]struct{}, len(parts))
+	var b strings.Builder
+	b.Grow(len(text))
+	dropped := 0
+	for _, ln := range parts {
+		if ln == "" {
+			// SplitAfter's empty tail after a final newline.
+			continue
+		}
+		// Blank/whitespace-only separators are structural, not content — keep
+		// every one rather than collapsing a blank line out of a batch.
+		if strings.TrimSpace(ln) != "" {
+			if _, dup := seen[ln]; dup {
+				dropped++
+				continue
+			}
+			seen[ln] = struct{}{}
+		}
+		b.WriteString(ln)
+	}
+	out := b.String()
+	if dropped > 0 {
+		// The multiplicity is no longer recoverable from the frame, and the
+		// liveness type is filtered out of messages_list, so this log line is the
+		// only place a pathological backlog becomes observable. It is what SHOULD
+		// have made a 123-deep pile visible for two months.
+		slog.Default().Info(
+			"runtime: collapsed duplicate lines in system frame",
+			slog.Int("dropped", dropped),
+			slog.Int("bytes_after", len(out)),
+		)
+	}
+	if len(out) <= maxSystemFrameBytes {
+		return out
+	}
+
+	budget := maxSystemFrameBytes - len(systemFrameTruncationMarker)
+	if budget < 0 {
+		budget = 0
+	}
+	head := out[:budget]
+	// Cut on a line boundary so the recipient never sees half a notification tag.
+	if i := strings.LastIndexByte(head, '\n'); i >= 0 {
+		head = head[:i+1]
+	}
+	slog.Default().Warn(
+		"runtime: truncated oversized system frame — notifications were DROPPED and are not redelivered",
+		slog.Int("bytes_before", len(out)),
+		slog.Int("bytes_after", len(head)+len(systemFrameTruncationMarker)),
+		slog.String("dropped_bodies", out[len(head):]),
+	)
+	return head + systemFrameTruncationMarker
 }
 
 // writeMessage writes one user message to the CLI stdin with the given priority

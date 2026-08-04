@@ -533,6 +533,25 @@ func (r *AgentRuntime) NotifyWake() error {
 
 // WakeForDelivery notifies a runtime cooperatively that newly-persisted work
 // is available. Updates the WakeCount snapshot counter. See QUM-549/QUM-550.
+// livenessNudgeTarget is the optional interface a RuntimeHandle may implement to
+// accept a QUM-730 liveness nudge. Deliberately NOT added to RuntimeHandle: a
+// nudge is best-effort telemetry, and forcing every handle (including test
+// doubles) to implement it would buy nothing.
+type livenessNudgeTarget interface{ RequestLivenessNudge() }
+
+// RequestLivenessNudge arms a pending liveness nudge on the underlying runtime,
+// to be rendered as one notification line by the next inbox drain (QUM-730). A
+// no-op when the runtime is not started or its handle predates the seam — a
+// missed nudge is a missed nudge, never an error worth failing a tick over.
+func (r *AgentRuntime) RequestLivenessNudge() {
+	r.mu.RLock()
+	handle := r.handle
+	r.mu.RUnlock()
+	if t, ok := handle.(livenessNudgeTarget); ok {
+		t.RequestLivenessNudge()
+	}
+}
+
 func (r *AgentRuntime) WakeForDelivery() error {
 	r.mu.RLock()
 	handle := r.handle

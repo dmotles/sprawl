@@ -1047,3 +1047,88 @@ func withShortInboxRedrainInterval(t *testing.T, d time.Duration) {
 	weaveInboxRedrainInterval.set(d)
 	t.Cleanup(func() { weaveInboxRedrainInterval.set(prev) })
 }
+
+// --- QUM-730 D1: the liveness nudge cannot accumulate ----------------------
+
+// TestWeaveRuntimeHandle_LivenessNudge_ManyArmsRenderOneLine is the regression
+// guard for the incident. Before this, a nudge was a durable maildir envelope, so
+// N nudges arriving while nothing drained produced N byte-identical lines
+// concatenated into ONE stdin frame — measured at 123 copies / 38,673 bytes,
+// which destroyed the root session's context.
+//
+// The nudge is now an in-memory flag, so "arm it 123 times" is indistinguishable
+// from "arm it once" BY CONSTRUCTION rather than by a coalescing rule that could
+// be got wrong. Asserted at the handle, through the real drain, so this covers the
+// production path rather than the flag's own setter.
+//
+// SCOPE, measured rather than assumed: this test is satisfied by EITHER of two
+// independent defences and cannot tell them apart. Mutating the flag back into an
+// accumulating counter left it GREEN, because boundSystemFrame (unified.go) then
+// deduped the 123 identical lines at the frame layer. That is defence in depth
+// working, but it means the flag itself is constrained by
+// TestLivenessNudge_ManyArmsOneConsume in internal/runtime, not by this. Keep both.
+func TestWeaveRuntimeHandle_LivenessNudge_ManyArmsRenderOneLine(t *testing.T) {
+	h, rt, mock, _ := newWeaveHandleForTest(t, nil)
+
+	for i := 0; i < 123; i++ {
+		rt.RequestLivenessNudge()
+	}
+	h.drainPendingToStdin()
+
+	mock.mu.Lock()
+	defer mock.mu.Unlock()
+	if len(mock.writes) != 1 {
+		t.Fatalf("got %d stdin writes for a 123-deep nudge backlog, want exactly 1", len(mock.writes))
+	}
+	body := mock.writes[0].Message.Content
+	// Positive control: the notification must actually be there. Without this leg
+	// a drain that emitted nothing at all would satisfy the count below.
+	if !strings.Contains(body, "automated liveness check") {
+		t.Fatalf("the heartbeat notification is absent from the drained frame entirely (got %q)", body)
+	}
+	if n := strings.Count(body, "automated liveness check"); n != 1 {
+		t.Errorf("drained frame carries the notification %d times, want exactly 1", n)
+	}
+	if len(body) > 2048 {
+		t.Errorf("drained frame is %d bytes; a liveness notification batch has no business "+
+			"exceeding 2048 (the incident was 38,673)", len(body))
+	}
+}
+
+// TestWeaveRuntimeHandle_LivenessNudge_ConsumedExactlyOnce pins the clear half:
+// the flag must not re-render on every subsequent drain. Without the swap-clear
+// the 5s redrain ticker alone would inject a notification every 5 seconds forever.
+func TestWeaveRuntimeHandle_LivenessNudge_ConsumedExactlyOnce(t *testing.T) {
+	h, rt, mock, _ := newWeaveHandleForTest(t, nil)
+
+	rt.RequestLivenessNudge()
+	h.drainPendingToStdin()
+	h.drainPendingToStdin()
+	h.drainPendingToStdin()
+
+	mock.mu.Lock()
+	defer mock.mu.Unlock()
+	total := 0
+	for _, w := range mock.writes {
+		total += strings.Count(w.Message.Content, "automated liveness check")
+	}
+	if total != 1 {
+		t.Errorf("one armed nudge rendered %d notification lines across %d drains, want exactly 1 — "+
+			"the flag is not being cleared, so every redrain tick re-injects it", total, len(mock.writes))
+	}
+}
+
+// TestWeaveRuntimeHandle_NoNudge_WritesNothing is the negative control for both
+// tests above: with no nudge armed and an empty inbox the drain must be silent,
+// so "exactly one line" cannot be satisfied by a drain that always emits one.
+func TestWeaveRuntimeHandle_NoNudge_WritesNothing(t *testing.T) {
+	h, _, mock, _ := newWeaveHandleForTest(t, nil)
+
+	h.drainPendingToStdin()
+
+	mock.mu.Lock()
+	defer mock.mu.Unlock()
+	if len(mock.writes) != 0 {
+		t.Errorf("drain wrote %d stdin frames with nothing pending and no nudge armed, want 0", len(mock.writes))
+	}
+}

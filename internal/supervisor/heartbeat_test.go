@@ -166,12 +166,12 @@ type liveCheckRecorder struct {
 	calls []string // recipient names, in order
 }
 
-func (r *liveCheckRecorder) fn() func(sprawlRoot, to string) (string, error) {
-	return func(_ string, to string) (string, error) {
+func (r *liveCheckRecorder) fn() func(name string) error {
+	return func(name string) error {
 		r.mu.Lock()
 		defer r.mu.Unlock()
-		r.calls = append(r.calls, to)
-		return "id-" + to, nil
+		r.calls = append(r.calls, name)
+		return nil
 	}
 }
 
@@ -179,6 +179,21 @@ func (r *liveCheckRecorder) Count() int {
 	r.mu.Lock()
 	defer r.mu.Unlock()
 	return len(r.calls)
+}
+
+// CountFor returns how many nudges were addressed to a specific agent. Needed by
+// the QUM-730 root-gate tests, which assert zero for the root and non-zero for a
+// child in the SAME run — a bare Count() cannot express that discriminator.
+func (r *liveCheckRecorder) CountFor(name string) int {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	n := 0
+	for _, c := range r.calls {
+		if c == name {
+			n++
+		}
+	}
+	return n
 }
 
 // toastRecorder captures toast emissions for root-weave escalation.
@@ -289,20 +304,20 @@ func newHeartbeatForTest(
 	clk *clock,
 	ticker *manualTicker,
 	send func(ctx context.Context, to, body string, interrupt bool) (*SendMessageResult, error),
-	sendLive func(sprawlRoot, to string) (string, error),
+	sendLive func(name string) error,
 	loadAgent func(sprawlRoot, name string) (*state.AgentState, error),
 	readTail func(string, int) ([]agentloop.ActivityEntry, error),
 	toast func(format string, args ...any),
 ) *heartbeat {
 	t.Helper()
 	hb := newHeartbeat(heartbeatDeps{
-		Cfg:               cfg,
-		SprawlRoot:        "/tmp/fake-root",
-		Registry:          lister,
-		SendMessage:       send,
-		SendLivenessCheck: sendLive,
-		LoadAgent:         loadAgent,
-		ReadActivityTail:  readTail,
+		Cfg:                  cfg,
+		SprawlRoot:           "/tmp/fake-root",
+		Registry:             lister,
+		SendMessage:          send,
+		RequestLivenessNudge: sendLive,
+		LoadAgent:            loadAgent,
+		ReadActivityTail:     readTail,
 		ActivityPath: func(_, name string) string {
 			// Sentinel path the readTail fake matches on.
 			return "/activity/" + name + "/activity.ndjson"
@@ -639,25 +654,53 @@ func TestHeartbeat_ActivityAfterNudge_ResetsCounters(t *testing.T) {
 	send := &sendMessageRecorder{}
 	hb := newHeartbeatForTest(t, cfg, lister, clk, newManualTicker(), send.fn(), live.fn(), nil, tail.fn(), nil)
 
-	// Tick 1 — tier-1 nudge fires.
+	// QUM-730 false-green repair. The original body advanced the clock 5 minutes
+	// against an IdleThreshold of 10, so tick 2 returned at the
+	// `idle < IdleThreshold` gate BEFORE reaching any nudge logic. Its assertion
+	// ("no new nudge") was satisfied by the idle gate, not by the counter reset the
+	// test is named for — it passed with the reset deleted.
+	//
+	// The reset is only observable through ESCALATION TIMING, so that is what this
+	// now measures: idle is held ABOVE the threshold throughout, and the discriminating
+	// assertion is that escalation does NOT fire on the tick where an unreset counter
+	// would have reached EscalationThreshold. Watched failing with the reset branch
+	// deleted: "escalated after 3 nudges even though activity was observed".
+
+	// Ticks 1-2 — tier-1 nudges, no escalation yet (threshold is 3).
 	runOneTick(t, hb, clk.Now())
-	if got := live.Count(); got != 1 {
-		t.Fatalf("after tick 1: nudges = %d, want 1", got)
+	clk.Set(clk.Now().Add(cfg.HeartbeatInterval))
+	runOneTick(t, hb, clk.Now())
+	clk.Set(clk.Now().Add(cfg.HeartbeatInterval))
+	if got := live.Count(); got != 2 {
+		t.Fatalf("after ticks 1-2: nudges = %d, want 2", got)
+	}
+	if got := len(send.Calls()); got != 0 {
+		t.Fatalf("escalated after 2 nudges, want 0 (EscalationThreshold is %d)", cfg.EscalationThreshold)
 	}
 
-	// Simulate activity AFTER the nudge.
-	probe.setLastActivity(clk.Now().Add(1 * time.Second))
-	// Replace tail with a fresh clean result — also resets stickiness.
-	tail.set("alice", []agentloop.ActivityEntry{
-		{TS: clk.Now().Add(1 * time.Second), Kind: "assistant_text", Summary: "I'm back"},
-	})
-	// Advance idle threshold again, but with the new lastAct, idle < threshold
-	// (only 5 minutes elapsed). The counter for tier-2 / escalation must reset.
-	clk.Set(clk.Now().Add(5 * time.Minute))
+	// Observed activity: lastAct advances, but stays well past IdleThreshold so the
+	// agent remains a nudge candidate. This is the ONLY difference from a run that
+	// escalates on tick 3.
+	probe.setLastActivity(clk.Now().Add(-15 * time.Minute))
 
+	// Tick 3 — counters reset first, so this is nudge #1 of a fresh run.
 	runOneTick(t, hb, clk.Now())
-	if got := live.Count(); got != 1 {
-		t.Fatalf("after tick 2: nudges = %d, want 1 (no new nudge — activity reset counters)", got)
+	clk.Set(clk.Now().Add(cfg.HeartbeatInterval))
+	if got := live.Count(); got != 3 {
+		t.Fatalf("after tick 3: nudges = %d, want 3 (still idle, so still nudged)", got)
+	}
+	if got := len(send.Calls()); got != 0 {
+		t.Fatalf("escalated after 3 nudges even though activity was observed in between; "+
+			"the counter reset did not fire (escalations = %d)", got)
+	}
+
+	// Ticks 4-5 — the fresh run reaches the threshold and escalates.
+	runOneTick(t, hb, clk.Now())
+	clk.Set(clk.Now().Add(cfg.HeartbeatInterval))
+	runOneTick(t, hb, clk.Now())
+	if got := len(send.Calls()); got != 1 {
+		t.Fatalf("escalations = %d, want exactly 1 — the post-activity run should reach "+
+			"EscalationThreshold two ticks after the reset", got)
 	}
 }
 
@@ -815,6 +858,15 @@ func TestHeartbeat_Escalation_RootWeaveUsesToastNotSendMessage(t *testing.T) {
 	if got := toast.Count(); got < 1 {
 		t.Fatalf("root weave escalation must invoke toastFn at least once; got %d", got)
 	}
+	// QUM-730 false-green repair: `live` was constructed and wired into the
+	// heartbeat here from the start and NEVER asserted on, so this test passed
+	// identically whether or not the root was nudged — it could not detect D2 in
+	// either direction. Watched failing with the root gate absent: "the root was
+	// nudged 3 times".
+	if got := live.CountFor("weave"); got != 0 {
+		t.Errorf("the root was nudged %d times; the root must escalate by toast ONLY, never by "+
+			"an injected liveness envelope", got)
+	}
 }
 
 // --- config disabled ---------------------------------------------------------
@@ -956,3 +1008,161 @@ func TestNewReal_StartsAndShutsDownHeartbeatGoroutine(t *testing.T) {
 
 // Compile-time sanity: ensure fakeProbe satisfies runtimeProbe.
 var _ runtimeProbe = (*fakeProbe)(nil)
+
+// --- D2: the root agent must never receive a liveness envelope (QUM-730) ---
+//
+// Root idle means "waiting for the human user" — its normal resting state, not a
+// wedge. No nudge can produce work there, so the injected envelope buys nothing
+// and costs a woken no-op turn, its context, and its spend. The DETECTION half
+// (toast + WARN) is still wanted: a root really can wedge.
+
+// TestHeartbeat_RootAgent_NeverNudged_StillEscalatesByToast pins both halves at
+// once — zero envelopes, but the toast still fires — and carries a child probe in
+// the same run as the discriminator, so the root's zero cannot come from a dead
+// harness.
+func TestHeartbeat_RootAgent_NeverNudged_StillEscalatesByToast(t *testing.T) {
+	t.Parallel()
+	cfg := defaultLivenessConfigForTests()
+	now := time.Date(2026, 6, 9, 12, 0, 0, 0, time.UTC)
+	clk := &clock{now: now}
+
+	root := &fakeProbe{name: "weave"}
+	root.setLiveness(liveness.Running)
+	root.setLastActivity(now.Add(-30 * time.Minute))
+	root.snapshot.Name = "weave"
+	root.snapshot.Type = "root"
+	root.snapshot.Parent = ""
+
+	child := &fakeProbe{name: "alice"}
+	child.setLiveness(liveness.Running)
+	child.setLastActivity(now.Add(-30 * time.Minute))
+	child.snapshot.Name = "alice"
+	child.snapshot.Parent = "weave"
+
+	lister := &fakeLister{probes: []*fakeProbe{root, child}}
+	tail := &readActivityTailFake{}
+	// Tier-1 tail for both: genuinely stuck, which is exactly what the toast is for.
+	for _, n := range []string{"weave", "alice"} {
+		tail.set(n, []agentloop.ActivityEntry{
+			{TS: now.Add(-30 * time.Minute), Kind: "rate_limit", Summary: "status=throttled"},
+		})
+	}
+	live := &liveCheckRecorder{}
+	send := &sendMessageRecorder{}
+	toast := &toastRecorder{}
+	hb := newHeartbeatForTest(t, cfg, lister, clk, newManualTicker(), send.fn(), live.fn(), nil, tail.fn(), toast.fn())
+
+	for i := 0; i < cfg.EscalationThreshold+2; i++ {
+		runOneTick(t, hb, clk.Now())
+		clk.Set(clk.Now().Add(cfg.HeartbeatInterval))
+	}
+
+	// Discriminator: the harness is live and DOES nudge a child.
+	if got := live.CountFor("alice"); got < 1 {
+		t.Fatalf("the child got %d nudges — the harness is not nudging anyone, so the root's "+
+			"zero below would prove nothing", got)
+	}
+	if got := live.CountFor("weave"); got != 0 {
+		t.Errorf("the root agent received %d liveness nudges, want 0 — a root idle is waiting for "+
+			"the human, and the envelope wakes it for a no-op turn that costs context and spend", got)
+	}
+	// The detection half must survive the suppression.
+	if got := toast.Count(); got < 1 {
+		t.Errorf("root escalation raised %d toasts, want >= 1 — suppressing the envelope must not "+
+			"delete the WARN/toast path, which is the useful half", got)
+	}
+	// The child's own escalation to "weave" is legitimate and expected here, so
+	// count only escalations ABOUT the root (its name appears in the body).
+	rootEscalations := 0
+	for _, c := range send.Calls() {
+		if strings.Contains(c.Body, "Agent weave appears stuck") {
+			rootEscalations++
+		}
+	}
+	if rootEscalations != 0 {
+		t.Errorf("root escalation sent %d messages, want 0 (a root has no parent to escalate to)", rootEscalations)
+	}
+}
+
+// TestHeartbeat_RootAgent_CleanIdle_NoToastNoNudge covers the root's NORMAL
+// state: a clean `result` tail (tier 2) — finished a turn, waiting for the human.
+// Without a tier gate the tier-2 ramp would toast "appears stuck" roughly every
+// 6h at production defaults, which is a false alarm about the expected condition.
+func TestHeartbeat_RootAgent_CleanIdle_NoToastNoNudge(t *testing.T) {
+	t.Parallel()
+	cfg := defaultLivenessConfigForTests()
+	now := time.Date(2026, 6, 9, 12, 0, 0, 0, time.UTC)
+	clk := &clock{now: now}
+
+	root := &fakeProbe{name: "weave"}
+	root.setLiveness(liveness.Running)
+	root.setLastActivity(now.Add(-30 * time.Minute))
+	root.snapshot.Name = "weave"
+	root.snapshot.Type = "root"
+	root.snapshot.Parent = ""
+
+	lister := &fakeLister{probes: []*fakeProbe{root}}
+	tail := &readActivityTailFake{}
+	// Clean result — the root finished a turn and is waiting. Tier 2.
+	tail.set("weave", []agentloop.ActivityEntry{
+		{TS: now.Add(-30 * time.Minute), Kind: "result", Summary: "success"},
+	})
+	live := &liveCheckRecorder{}
+	send := &sendMessageRecorder{}
+	toast := &toastRecorder{}
+	hb := newHeartbeatForTest(t, cfg, lister, clk, newManualTicker(), send.fn(), live.fn(), nil, tail.fn(), toast.fn())
+
+	for i := 0; i < 20; i++ {
+		runOneTick(t, hb, clk.Now())
+		clk.Set(clk.Now().Add(cfg.HeartbeatInterval))
+	}
+
+	if got := live.CountFor("weave"); got != 0 {
+		t.Errorf("an idle-waiting-for-human root got %d nudges over 20 ticks, want 0", got)
+	}
+	if got := toast.Count(); got != 0 {
+		t.Errorf("an idle-waiting-for-human root raised %d 'appears stuck' toasts over 20 ticks, "+
+			"want 0 — tier-2 clean-result IS the root's normal resting state", got)
+	}
+}
+
+// TestHeartbeat_ChildTier2_StillNudgedAndEscalates is the scope control for the
+// two tests above: the root gate must not suppress children. Without it, a gate
+// accidentally applied in tickAgent (or in the registry adapter) would satisfy
+// both root tests while silently disabling the whole heartbeat.
+func TestHeartbeat_ChildTier2_StillNudgedAndEscalates(t *testing.T) {
+	t.Parallel()
+	cfg := defaultLivenessConfigForTests()
+	now := time.Date(2026, 6, 9, 12, 0, 0, 0, time.UTC)
+	clk := &clock{now: now}
+
+	child := &fakeProbe{name: "alice"}
+	child.setLiveness(liveness.Running)
+	child.setLastActivity(now.Add(-30 * time.Minute))
+	child.snapshot.Name = "alice"
+	child.snapshot.Parent = "weave"
+
+	lister := &fakeLister{probes: []*fakeProbe{child}}
+	tail := &readActivityTailFake{}
+	tail.set("alice", []agentloop.ActivityEntry{
+		{TS: now.Add(-30 * time.Minute), Kind: "result", Summary: "success"},
+	})
+	live := &liveCheckRecorder{}
+	send := &sendMessageRecorder{}
+	toast := &toastRecorder{}
+	hb := newHeartbeatForTest(t, cfg, lister, clk, newManualTicker(), send.fn(), live.fn(), nil, tail.fn(), toast.fn())
+
+	// Tier-2 needs Tier2ConsecutiveTicks per nudge, and EscalationThreshold nudges
+	// to escalate.
+	for i := 0; i < cfg.Tier2ConsecutiveTicks*cfg.EscalationThreshold+2; i++ {
+		runOneTick(t, hb, clk.Now())
+		clk.Set(clk.Now().Add(cfg.HeartbeatInterval))
+	}
+
+	if got := live.CountFor("alice"); got < 1 {
+		t.Errorf("a tier-2 child got %d nudges, want >= 1 — the root gate must not suppress children", got)
+	}
+	if got := len(send.Calls()); got < 1 {
+		t.Errorf("a tier-2 child escalated %d times to its parent, want >= 1", got)
+	}
+}

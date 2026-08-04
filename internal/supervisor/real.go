@@ -407,8 +407,13 @@ func NewReal(cfg Config) (*Real, error) {
 			// Heartbeat liveness-checks never wake an offline target.
 			return r.SendMessage(ctx, to, body, interrupt, false)
 		},
-		SendLivenessCheck: func(sprawlRoot, to string) (string, error) {
-			return messages.SendLivenessCheck(sprawlRoot, r.callerName, to)
+		RequestLivenessNudge: func(name string) error {
+			rt, ok := r.runtimeRegistry.Get(name)
+			if !ok || rt == nil {
+				return fmt.Errorf("no live runtime for %q", name)
+			}
+			rt.RequestLivenessNudge()
+			return nil
 		},
 		LoadAgent:        state.LoadAgent,
 		ReadActivityTail: agentloop.ReadActivityTail,

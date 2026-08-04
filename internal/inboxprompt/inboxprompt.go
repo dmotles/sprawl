@@ -185,34 +185,6 @@ func BuildHeartbeatNotification() string {
 	return heartbeatNotificationBody
 }
 
-// DrainLivenessCheckLines pulls all type=liveness_check envelopes from the
-// recipient's maildir (QUM-730) and renders them as repeated copies of
-// BuildHeartbeatNotification, in FIFO order. The envelopes are removed
-// from disk by the drain — liveness checks are ephemeral and not
-// retrievable via messages_read.
-//
-// Returns nil on empty/missing recipient or on drain error (errors are
-// logged at debug and swallowed; liveness_check is best-effort telemetry).
-func DrainLivenessCheckLines(sprawlRoot, recipient string) []string {
-	envs, err := messages.DrainLivenessCheck(sprawlRoot, recipient)
-	if err != nil {
-		slog.Default().Debug(
-			"inboxprompt: DrainLivenessCheck failed",
-			slog.String("recipient", recipient),
-			slog.Any("err", err),
-		)
-		return nil
-	}
-	if len(envs) == 0 {
-		return nil
-	}
-	lines := make([]string, 0, len(envs))
-	for range envs {
-		lines = append(lines, BuildHeartbeatNotification())
-	}
-	return lines
-}
-
 // DrainStatusChangeLines pulls all type=status_change envelopes from the
 // recipient's maildir (QUM-614) and renders them as the same one-line
 // `<system-notification type="status_change">…</system-notification>` strings

@@ -2,9 +2,19 @@
 //
 // The heartbeat periodically scans the runtime registry for agents that
 // appear stuck and either nudges them with an ephemeral system-notification
-// (delivered through the maildir status-class drain channel) or escalates
-// to the agent's parent. See docs/designs/qum-730-supervisor-heartbeat.md
-// and the contract pinned by internal/supervisor/heartbeat_test.go.
+// or escalates to the agent's parent. See
+// docs/designs/qum-730-supervisor-heartbeat.md and the contract pinned by
+// internal/supervisor/heartbeat_test.go.
+//
+// Two things changed after the design doc was written; it has NOT been updated,
+// so prefer this file:
+//
+//   - The nudge is an IN-MEMORY FLAG on the runtime
+//     (UnifiedRuntime.RequestLivenessNudge), not a maildir envelope. Persisting a
+//     content-free edge signal in a durable queue let ~2 months of undelivered
+//     nudges accumulate for the root and land as one 38,673-byte stdin frame.
+//   - The ROOT is never nudged, only toasted, and only on a tier-1 tail. See the
+//     gate in maybeNudge.
 package supervisor
 
 import (
@@ -151,15 +161,24 @@ func (r *AgentRuntime) Name() string {
 // newHeartbeat: NowFn → time.Now, NewTicker → real ticker, Logger →
 // slog.Default.
 type heartbeatDeps struct {
-	Cfg               LivenessConfig
-	SprawlRoot        string
-	Registry          runtimeLister
-	SendMessage       func(ctx context.Context, to, body string, interrupt bool) (*SendMessageResult, error)
-	SendLivenessCheck func(sprawlRoot, to string) (string, error)
-	LoadAgent         func(sprawlRoot, name string) (*state.AgentState, error)
-	ReadActivityTail  func(string, int) ([]agentloop.ActivityEntry, error)
-	ActivityPath      func(sprawlRoot, name string) string
-	WakeForDelivery   func(*AgentRuntime) error
+	Cfg         LivenessConfig
+	SprawlRoot  string
+	Registry    runtimeLister
+	SendMessage func(ctx context.Context, to, body string, interrupt bool) (*SendMessageResult, error)
+	// RequestLivenessNudge arms a pending liveness nudge on the named agent's
+	// runtime (QUM-730). Keyed on NAME rather than on *AgentRuntime so the
+	// heartbeat's fakeProbe-based tests can observe it — the concrete-type
+	// requirement is what made the old WakeForDelivery seam untestable.
+	//
+	// It replaced messages.SendLivenessCheck, which wrote a durable maildir
+	// envelope: see UnifiedRuntime.RequestLivenessNudge for why persisting a
+	// content-free edge signal produced a two-month backlog and a
+	// context-destroying 38,673-byte frame.
+	RequestLivenessNudge func(name string) error
+	LoadAgent            func(sprawlRoot, name string) (*state.AgentState, error)
+	ReadActivityTail     func(string, int) ([]agentloop.ActivityEntry, error)
+	ActivityPath         func(sprawlRoot, name string) string
+	WakeForDelivery      func(*AgentRuntime) error
 	// RefreshBlurb, when non-nil, is invoked once per tick per named agent with
 	// the runtime-derived last-activity time so the supervisor can decide
 	// (dirty-check + 15-min floor) whether to regenerate the agent's capability
@@ -367,7 +386,7 @@ func (h *heartbeat) tickAgent(ctx context.Context, probe runtimeProbe, now time.
 	switch tier {
 	case 1:
 		st.tier2Ramp = 0
-		h.maybeNudge(ctx, probe, snap, st, name, now, idle, lastKind, lastSummary)
+		h.maybeNudge(ctx, probe, snap, st, name, now, idle, tier, lastKind, lastSummary)
 	case 2:
 		st.tier2Ramp++
 		if st.tier2Ramp < h.deps.Cfg.Tier2ConsecutiveTicks {
@@ -376,7 +395,7 @@ func (h *heartbeat) tickAgent(ctx context.Context, probe runtimeProbe, now time.
 		// Tier-2 ramp complete — reset ramp counter so it has to
 		// re-accumulate after each nudge.
 		st.tier2Ramp = 0
-		h.maybeNudge(ctx, probe, snap, st, name, now, idle, lastKind, lastSummary)
+		h.maybeNudge(ctx, probe, snap, st, name, now, idle, tier, lastKind, lastSummary)
 	default:
 		// Not a candidate.
 		st.tier2Ramp = 0
@@ -423,27 +442,85 @@ func (h *heartbeat) classify(name string) (tier int, lastKind, lastSummary strin
 	}
 }
 
-func (h *heartbeat) maybeNudge(ctx context.Context, probe runtimeProbe, snap RuntimeSnapshot, st *agentTickState, name string, now time.Time, idle time.Duration, lastKind, lastSummary string) {
+// resolveParent returns the agent's parent name, falling back to an on-disk
+// lookup when the snapshot's Parent is empty (it is populated lazily after
+// NewReal). Best-effort — a failed lookup yields "". Extracted from escalate so
+// the root predicate can use it too (QUM-730).
+func (h *heartbeat) resolveParent(snap RuntimeSnapshot, name string) string {
+	if snap.Parent != "" {
+		return snap.Parent
+	}
+	if h.deps.LoadAgent == nil {
+		return ""
+	}
+	if a, err := h.deps.LoadAgent(h.deps.SprawlRoot, name); err == nil && a != nil {
+		return a.Parent
+	}
+	return ""
+}
+
+func (h *heartbeat) maybeNudge(ctx context.Context, probe runtimeProbe, snap RuntimeSnapshot, st *agentTickState, name string, now time.Time, idle time.Duration, tier int, lastKind, lastSummary string) {
 	if st.escalated {
 		// Sticky silence — escalation already sent; wait for activity
 		// to clear the flag (handled in tickAgent's counter-reset).
 		return
 	}
 
-	// Fire one nudge.
-	if h.deps.SendLivenessCheck != nil {
-		if _, err := h.deps.SendLivenessCheck(h.deps.SprawlRoot, name); err != nil {
+	// QUM-730 D2: the root agent is never nudged.
+	//
+	// An idle root means "waiting for the human user" — its NORMAL resting state,
+	// not a wedge — so no injected notification can produce work. What it does
+	// produce is a woken no-op turn: wasted context, wasted spend, roughly every
+	// 2h of idleness. The DETECTION half stays: a root really can wedge (a parked
+	// event pump), and the toast + WARN in escalate is how that surfaces.
+	//
+	// GATED HERE, not in tickAgent and not in the registry adapter. escalate has
+	// exactly one caller — below, past the threshold check — so an early return
+	// one level up would silently delete the toast/WARN path (the useful half) and
+	// QUM-899's RefreshBlurb along with it. This is the narrowest point that
+	// suppresses exactly the useless action.
+	//
+	// Type is canonical for the root; the Parent == "" disjunct is required
+	// because existing test fakes set snapshot.Parent and never Type.
+	isRoot := snap.Type == "root" || h.resolveParent(snap, name) == ""
+	if isRoot {
+		// Tier 2 (clean `result` — finished a turn, waiting) IS the root's normal
+		// state and must never toast. Only a tier-1 tail (result error /
+		// rate_limit / stalled init) is genuinely stuck, which is what the toast is
+		// for. Without this an idle root would toast "appears stuck" roughly every
+		// 6h at production defaults.
+		if tier != 1 {
+			return
+		}
+		// For the root, consecutiveNudges counts QUALIFYING OBSERVATIONS rather
+		// than delivered nudges — nothing is delivered. The escalation predicate
+		// is therefore "still tier-1 idle on N consecutive checks", which is what
+		// the toast means anyway. (escalate's buildEscalationBody, which says
+		// "after N liveness nudges", is computed and then discarded on the
+		// parent == "" branch, so the wording never reaches a reader.)
+		st.consecutiveNudges++
+		st.lastNudgeAt = now
+		if st.consecutiveNudges < h.deps.Cfg.EscalationThreshold {
+			return
+		}
+		h.escalate(ctx, snap, name, now, idle, lastKind, lastSummary)
+		st.escalated = true
+		return
+	}
+
+	// Fire one nudge. In-memory flag, not a persisted envelope (QUM-730).
+	if h.deps.RequestLivenessNudge != nil {
+		if err := h.deps.RequestLivenessNudge(name); err != nil {
 			h.deps.Logger.Debug(
-				"heartbeat: SendLivenessCheck failed",
+				"heartbeat: RequestLivenessNudge failed",
 				slog.String("agent", name),
 				slog.Any("err", err),
 			)
 		}
 	}
-	// Wake the runtime so it drains the liveness_check on its next
-	// turn. The Registry's runtimeProbe is implemented by both
-	// *AgentRuntime and the test fakeProbe; we only have a *AgentRuntime
-	// to pass to WakeForDelivery when the probe is concrete.
+	// Wake the runtime so it drains the pending nudge. The Registry's runtimeProbe
+	// is implemented by both *AgentRuntime and the test fakeProbe; we only have a
+	// *AgentRuntime to pass to WakeForDelivery when the probe is concrete.
 	if h.deps.WakeForDelivery != nil {
 		if rt, ok := probe.(*AgentRuntime); ok {
 			_ = h.deps.WakeForDelivery(rt)
@@ -462,15 +539,7 @@ func (h *heartbeat) maybeNudge(ctx context.Context, probe runtimeProbe, snap Run
 }
 
 func (h *heartbeat) escalate(ctx context.Context, snap RuntimeSnapshot, name string, _ time.Time, idle time.Duration, lastKind, lastSummary string) {
-	parent := snap.Parent
-	// Resolve from disk if missing on the snapshot (parent may be
-	// populated lazily after NewReal). Best-effort — ignore lookup
-	// failures and fall back to snap.Parent.
-	if parent == "" && h.deps.LoadAgent != nil {
-		if a, err := h.deps.LoadAgent(h.deps.SprawlRoot, name); err == nil && a != nil {
-			parent = a.Parent
-		}
-	}
+	parent := h.resolveParent(snap, name)
 
 	body := buildEscalationBody(name, idle, lastKind, lastSummary, h.deps.Cfg.EscalationThreshold)
 

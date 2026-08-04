@@ -219,6 +219,10 @@ func (h *WeaveRuntimeHandle) Wake() error {
 	return nil
 }
 
+// RequestLivenessNudge arms a pending liveness nudge on the underlying runtime
+// (QUM-730). Rendered as one notification line by the next drain.
+func (h *WeaveRuntimeHandle) RequestLivenessNudge() { h.rt.RequestLivenessNudge() }
+
 // WakeForDelivery is the cooperative-wake path, fired unconditionally by the
 // producer side on every child report_status / send_message (see Real.SendMessage
 // and Real.ReportStatus). It drains weave's inbox straight to the CLI stdin the
@@ -295,12 +299,14 @@ func (h *WeaveRuntimeHandle) drainPendingToStdin() {
 	// (runtime_launcher.go) has the identical shape. Tracked as a follow-up; the
 	// mitigation here is that the bodies are recoverable from the log.
 	statusLines := inboxprompt.DrainStatusChangeLines(h.sprawlRoot, h.name)
-	// QUM-730: liveness_check envelopes ride the same status-class channel as
-	// status_change — drained off-band and written to stdin. NOTE (QUM-925): the
-	// deleted TUI poll drained only the status_change channel, so weave's own
-	// liveness_check envelopes accumulated undelivered forever. Draining them here
-	// gives weave parity with children and fixes that silently.
-	statusLines = append(statusLines, inboxprompt.DrainLivenessCheckLines(h.sprawlRoot, h.name)...)
+	// QUM-730: a pending liveness nudge is an in-memory flag, not a drained
+	// envelope, so N nudges between drains render exactly one line and nothing can
+	// accumulate on disk. (Weave is no longer nudged at all — see the root gate in
+	// heartbeat.go — but the drain stays symmetric with the child path so a future
+	// root-directed nudge cannot resurrect the backlog.)
+	if h.rt.ConsumeLivenessNudge() {
+		statusLines = append(statusLines, inboxprompt.BuildHeartbeatNotification())
+	}
 	if len(pending) == 0 && len(statusLines) == 0 {
 		return
 	}
