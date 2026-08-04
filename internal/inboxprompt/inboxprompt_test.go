@@ -6,12 +6,18 @@
 package inboxprompt_test
 
 import (
+	"bytes"
+	"encoding/json"
+	"fmt"
+	"log/slog"
 	"os"
 	"path/filepath"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/dmotles/sprawl/internal/inboxprompt"
+	"github.com/dmotles/sprawl/internal/messages"
 )
 
 func TestBuildQueueFlushPrompt_Empty(t *testing.T) {
@@ -377,5 +383,376 @@ func TestBuildHeartbeatNotification_VerbatimBody(t *testing.T) {
 	}
 	if !strings.Contains(got, `type="liveness_check"`) {
 		t.Errorf("must carry type=\"liveness_check\" attribute: %q", got)
+	}
+}
+
+// --- QUM-1064: status_change last-wins-per-agent coalescing ---------------
+
+// statusSeed is one status_change envelope to write in a test fixture.
+type statusSeed struct{ from, state, summary string }
+
+// seedStatusChanges writes the given envelopes into recipient's maildir under
+// root, one second apart on a backdated clock.
+//
+// The messages.NowFunc override is load-bearing, not cosmetic: DrainStatusChange
+// sorts by Timestamp parsed as RFC3339 (second resolution) with a non-stable
+// sort.Slice, so envelopes written within the same wall-clock second have an
+// arbitrary relative order — and under last-wins coalescing that decides which
+// payload survives. Stepping the clock makes "newest" well-defined.
+//
+// Mutates the process-global messages.NowFunc, so callers must not t.Parallel().
+func seedStatusChanges(t *testing.T, root, recipient string, seeds []statusSeed) {
+	t.Helper()
+	base := time.Date(2026, 8, 4, 12, 0, 0, 0, time.UTC)
+	orig := messages.NowFunc
+	t.Cleanup(func() { messages.NowFunc = orig })
+	for i, s := range seeds {
+		messages.NowFunc = func() time.Time { return base.Add(time.Duration(i) * time.Second) }
+		if _, err := messages.SendStatusChange(root, s.from, recipient, messages.StatusChangePayload{
+			State:   s.state,
+			Summary: s.summary,
+		}); err != nil {
+			t.Fatalf("seeding status envelope %d (%s/%s): %v", i, s.from, s.summary, err)
+		}
+	}
+}
+
+// countStatusOnDisk reports how many status_change envelopes are sitting in
+// recipient's maildir. messages.List is non-destructive, so it can be called
+// on both sides of the drain.
+func countStatusOnDisk(t *testing.T, root, recipient string) int {
+	t.Helper()
+	msgs, err := messages.List(root, recipient, "status")
+	if err != nil {
+		t.Fatalf("listing status envelopes for %s: %v", recipient, err)
+	}
+	return len(msgs)
+}
+
+// assertSeededOnDisk is the positive control: it proves the fixture actually
+// landed n status envelopes before the destructive drain runs. Without it, a
+// broken seed yields 0 envelopes → 0 lines, and a "collapsed to one line"
+// assertion is satisfiable vacuously by an empty maildir.
+func assertSeededOnDisk(t *testing.T, root, recipient string, n int) {
+	t.Helper()
+	pre, err := messages.List(root, recipient, "status")
+	if err != nil {
+		t.Fatalf("positive control: pre-drain List: %v", err)
+	}
+	if len(pre) != n {
+		t.Fatalf("positive control failed: seeded %d status envelopes but %d are on disk pre-drain; "+
+			"a post-drain line count would prove nothing", n, len(pre))
+	}
+}
+
+// TestDrainStatusChangeLines_CoalescesPerAgentLastWins is the primary red-first
+// test for QUM-1064: five envelopes from one agent must render one line
+// carrying the newest state and summary.
+//
+// Note this is NOT already covered by the 7639e0f frame dedup: those payloads
+// all differ, so boundSystemFrame's byte-identical collapse cannot touch them.
+func TestDrainStatusChangeLines_CoalescesPerAgentLastWins(t *testing.T) {
+	root := t.TempDir()
+	seedStatusChanges(t, root, "alice", []statusSeed{
+		{"bob", "working", "s0"},
+		{"bob", "working", "s1"},
+		{"bob", "working", "s2"},
+		{"bob", "working", "s3"},
+		{"bob", "complete", "s4"},
+	})
+	assertSeededOnDisk(t, root, "alice", 5)
+
+	lines := inboxprompt.DrainStatusChangeLines(root, "alice")
+	if len(lines) != 1 {
+		t.Fatalf("expected 5 envelopes from one agent to coalesce to 1 line, got %d: %q", len(lines), lines)
+	}
+	want := inboxprompt.BuildStatusNotification("bob", "complete", "s4")
+	if lines[0] != want {
+		t.Errorf("survivor line mismatch\n got: %q\nwant: %q", lines[0], want)
+	}
+	// The superseded envelopes must be gone from disk, not merely omitted from
+	// this batch: a coalescer that peeks and then drains only the survivor
+	// satisfies every line-count assertion above while leaving the backlog to
+	// re-render on the next turn — the exact failure QUM-1064 exists to fix.
+	if left := countStatusOnDisk(t, root, "alice"); left != 0 {
+		t.Errorf("coalesced-away envelopes left on disk: %d remain after the drain, want 0", left)
+	}
+}
+
+// TestDrainStatusChangeLines_DistinctAgentsAllSurvive is the discriminator:
+// without it, "one line" is satisfiable by a rule that keeps only the newest
+// envelope overall. Green before the change too — a no-regression guard, not a
+// red-first test.
+func TestDrainStatusChangeLines_DistinctAgentsAllSurvive(t *testing.T) {
+	root := t.TempDir()
+	seedStatusChanges(t, root, "alice", []statusSeed{
+		{"bob", "working", "b"},
+		{"carol", "working", "c"},
+		{"dave", "working", "d"},
+	})
+	assertSeededOnDisk(t, root, "alice", 3)
+
+	want := []string{
+		inboxprompt.BuildStatusNotification("bob", "working", "b"),
+		inboxprompt.BuildStatusNotification("carol", "working", "c"),
+		inboxprompt.BuildStatusNotification("dave", "working", "d"),
+	}
+	got := inboxprompt.DrainStatusChangeLines(root, "alice")
+	if len(got) != len(want) {
+		t.Fatalf("expected %d distinct agents to yield %d lines, got %d: %q", len(want), len(want), len(got), got)
+	}
+	for i := range want {
+		if got[i] != want[i] {
+			t.Errorf("line[%d] mismatch\n got: %q\nwant: %q", i, got[i], want[i])
+		}
+	}
+}
+
+// TestDrainStatusChangeLines_SurvivorOrderIsFirstAppearance pins the ordering
+// contract. QUM-1064 leaves the choice between first-appearance and
+// last-appearance to the implementer but requires it be pinned; first-appearance
+// is what we chose, because it gives each agent a stable slot regardless of how
+// chatty it is and is byte-identical to the pre-QUM-1064 output whenever every
+// sender is distinct. The sole alternative — last-appearance, which under this
+// fixture's monotonic clock is identical to surviving-envelope-timestamp order —
+// would emit bob, dave, carol, frank, erin, so the goldens below distinguish the
+// two.
+//
+// Six senders in an interleaved seed make the map-iteration failure mode
+// structural rather than lucky: a coalescer emitting by ranging over its map
+// would have to hit 1 of 120 orderings to pass.
+//
+// The golden comparison pins both dimensions at once: order is first-appearance
+// and content is last-wins.
+func TestDrainStatusChangeLines_SurvivorOrderIsFirstAppearance(t *testing.T) {
+	root := t.TempDir()
+	seedStatusChanges(t, root, "alice", []statusSeed{
+		{"bob", "working", "s1"},
+		{"carol", "working", "s2"},
+		{"bob", "working", "s3"},
+		{"dave", "working", "s4"},
+		{"erin", "working", "s5"},
+		{"carol", "working", "s6"},
+		{"frank", "working", "s7"},
+		{"erin", "complete", "s8"},
+	})
+	assertSeededOnDisk(t, root, "alice", 8)
+
+	want := []string{
+		inboxprompt.BuildStatusNotification("bob", "working", "s3"),
+		inboxprompt.BuildStatusNotification("carol", "working", "s6"),
+		inboxprompt.BuildStatusNotification("dave", "working", "s4"),
+		inboxprompt.BuildStatusNotification("erin", "complete", "s8"),
+		inboxprompt.BuildStatusNotification("frank", "working", "s7"),
+	}
+	got := inboxprompt.DrainStatusChangeLines(root, "alice")
+	if len(got) != len(want) {
+		t.Fatalf("expected %d survivors, got %d: %q", len(want), len(got), got)
+	}
+	for i := range want {
+		if got[i] != want[i] {
+			t.Errorf("survivor[%d] mismatch\n got: %q\nwant: %q\nfull output: %q", i, got[i], want[i], got)
+		}
+	}
+}
+
+// captureSlog swaps the process-global default logger for a JSON handler over a
+// buffer and restores it on cleanup. Callers must not t.Parallel().
+func captureSlog(t *testing.T) *bytes.Buffer {
+	t.Helper()
+	var buf bytes.Buffer
+	orig := slog.Default()
+	slog.SetDefault(slog.New(slog.NewJSONHandler(&buf, &slog.HandlerOptions{Level: slog.LevelInfo})))
+	t.Cleanup(func() { slog.SetDefault(orig) })
+	return &buf
+}
+
+// findLogRecords returns every JSON log record in buf whose "msg" equals msg.
+func findLogRecords(t *testing.T, buf *bytes.Buffer, msg string) []map[string]any {
+	t.Helper()
+	var out []map[string]any
+	for _, line := range strings.Split(strings.TrimSpace(buf.String()), "\n") {
+		if line == "" {
+			continue
+		}
+		var rec map[string]any
+		if err := json.Unmarshal([]byte(line), &rec); err != nil {
+			t.Fatalf("log line is not JSON: %q (%v)", line, err)
+		}
+		if rec["msg"] == msg {
+			out = append(out, rec)
+		}
+	}
+	return out
+}
+
+const coalesceLogMsg = "inboxprompt: coalesced status_change lines"
+
+// TestDrainStatusChangeLines_LogsWhenCoalesced pins the observability
+// requirement: once lines are collapsed, the log is the only place the backlog
+// depth is visible. Fields are parsed from JSON rather than substring-matched
+// so a rename fails here.
+func TestDrainStatusChangeLines_LogsWhenCoalesced(t *testing.T) {
+	root := t.TempDir()
+	seedStatusChanges(t, root, "alice", []statusSeed{
+		{"bob", "working", "s0"},
+		{"bob", "working", "s1"},
+		{"bob", "working", "s2"},
+		{"bob", "complete", "s3"},
+	})
+	assertSeededOnDisk(t, root, "alice", 4)
+
+	buf := captureSlog(t)
+	lines := inboxprompt.DrainStatusChangeLines(root, "alice")
+
+	recs := findLogRecords(t, buf, coalesceLogMsg)
+	if len(recs) != 1 {
+		t.Fatalf("expected exactly 1 Info record %q, got %d; logs:\n%s", coalesceLogMsg, len(recs), buf.String())
+	}
+	rec := recs[0]
+	if rec["level"] != "INFO" {
+		t.Errorf("log level = %v, want INFO", rec["level"])
+	}
+	if rec["recipient"] != "alice" {
+		t.Errorf("log recipient = %v, want alice", rec["recipient"])
+	}
+	// Cross-check the counts against reality rather than against the constants
+	// the fixture used: a log that reports drained=4/emitted=1 while returning 4
+	// lines is a lie the field assertions alone cannot catch.
+	if rec["drained"] != float64(4) {
+		t.Errorf("log drained = %v, want 4 (the seeded envelope count)", rec["drained"])
+	}
+	if rec["emitted"] != float64(len(lines)) {
+		t.Errorf("log emitted = %v but the drain returned %d lines", rec["emitted"], len(lines))
+	}
+	if len(lines) != 1 {
+		t.Errorf("expected 4 envelopes from one agent to coalesce to 1 line, got %d: %q", len(lines), lines)
+	}
+}
+
+// TestDrainStatusChangeLines_NoLogWhenNothingCoalesced is the negative control
+// for the test above: an unconditional log would satisfy that one.
+func TestDrainStatusChangeLines_NoLogWhenNothingCoalesced(t *testing.T) {
+	root := t.TempDir()
+	seedStatusChanges(t, root, "alice", []statusSeed{
+		{"bob", "working", "b"},
+		{"carol", "working", "c"},
+		{"dave", "working", "d"},
+	})
+	assertSeededOnDisk(t, root, "alice", 3)
+
+	buf := captureSlog(t)
+	lines := inboxprompt.DrainStatusChangeLines(root, "alice")
+	if len(lines) != 3 {
+		t.Fatalf("precondition: expected 3 lines, got %d", len(lines))
+	}
+	if recs := findLogRecords(t, buf, coalesceLogMsg); len(recs) != 0 {
+		t.Errorf("no coalesce log expected when nothing was collapsed, got: %v", recs)
+	}
+}
+
+// TestDrainStatusChangeLines_EmptyReturnsNil keeps the coalesce assertions from
+// being satisfiable by an implementation that always emits one line.
+func TestDrainStatusChangeLines_EmptyReturnsNil(t *testing.T) {
+	if lines := inboxprompt.DrainStatusChangeLines(t.TempDir(), "alice"); lines != nil {
+		t.Errorf("empty drain must return nil, got %#v", lines)
+	}
+}
+
+// writeRawStatusEnvelope drops a status_change envelope onto disk with an
+// arbitrary (possibly non-JSON) body. messages.SendStatusChange can only
+// produce well-formed bodies, so this is the only way to exercise the
+// corrupt-envelope path.
+func writeRawStatusEnvelope(t *testing.T, root, recipient, from, body string, ts time.Time) {
+	t.Helper()
+	dir := filepath.Join(root, ".sprawl", "messages", recipient, "new")
+	if err := os.MkdirAll(dir, 0o755); err != nil {
+		t.Fatalf("mkdir %s: %v", dir, err)
+	}
+	env := map[string]string{
+		"id":        fmt.Sprintf("%d.%s.deadbeef", ts.UnixNano(), from),
+		"from":      from,
+		"to":        recipient,
+		"body":      body,
+		"timestamp": ts.UTC().Format(time.RFC3339),
+		"type":      "status_change",
+	}
+	blob, err := json.Marshal(env)
+	if err != nil {
+		t.Fatalf("marshalling raw envelope: %v", err)
+	}
+	path := filepath.Join(dir, fmt.Sprintf("%d.%s.deadbeef.json", ts.UnixNano(), from))
+	if err := os.WriteFile(path, blob, 0o600); err != nil {
+		t.Fatalf("writing raw envelope: %v", err)
+	}
+}
+
+// TestDrainStatusChangeLines_CorruptEnvelopeDoesNotEraseValidStatus pins that a
+// body which fails to decode is skipped rather than winning the last-wins race.
+//
+// Before coalescing, a corrupt envelope rendered one garbled line among N and
+// the agent's real states still reached the recipient. Under last-wins a corrupt
+// newest envelope would be the ONLY thing the recipient ever sees for that
+// agent — a strictly worse outcome than the behaviour it replaced. Skipping the
+// undecodable envelope keeps the last *valid* snapshot.
+func TestDrainStatusChangeLines_CorruptEnvelopeDoesNotEraseValidStatus(t *testing.T) {
+	root := t.TempDir()
+	base := time.Date(2026, 8, 4, 12, 0, 0, 0, time.UTC)
+	seedStatusChanges(t, root, "alice", []statusSeed{{"bob", "complete", "done"}})
+	// Newest envelope for bob, and undecodable.
+	writeRawStatusEnvelope(t, root, "alice", "bob", "{not json", base.Add(time.Hour))
+	assertSeededOnDisk(t, root, "alice", 2)
+
+	lines := inboxprompt.DrainStatusChangeLines(root, "alice")
+	want := inboxprompt.BuildStatusNotification("bob", "complete", "done")
+	if len(lines) != 1 || lines[0] != want {
+		t.Fatalf("corrupt newest envelope must not displace the last valid snapshot\n got: %q\nwant: [%q]", lines, want)
+	}
+	// The corrupt envelope is still consumed — skipping it must not leave it on
+	// disk to be re-read every turn.
+	if left := countStatusOnDisk(t, root, "alice"); left != 0 {
+		t.Errorf("%d envelopes left on disk after the drain, want 0", left)
+	}
+}
+
+// TestDrainStatusChangeLines_SameSecondBurstKeepsNewest guards the ordering
+// dependency QUM-1064 made load-bearing. DrainStatusChange sorts on an RFC3339
+// timestamp, which is second-resolution: a burst of reports inside one wall-clock
+// second carries identical timestamps, so every one of them is a sort tie. That
+// used to be cosmetic (all N lines were emitted regardless of order); under
+// last-wins the tie-break decides which payload survives, and the drain is
+// destructive, so the losers are gone.
+//
+// This cannot be made red-first: the pre-existing sort.Slice happened to leave
+// this input alone. That is an accident of pdqsort and of ReadDir returning
+// lexically sorted names that are also numerically ordered — not a contract —
+// so DrainStatusChange now uses sort.SliceStable and this pins it.
+//
+// Mutation control (recorded): reversing `found` immediately before the stable
+// sort in messages.DrainStatusChange makes this fail, printing survivor "s00"
+// instead of "s49". So the assertion does observe the tie-break order rather
+// than passing on any arrangement.
+func TestDrainStatusChangeLines_SameSecondBurstKeepsNewest(t *testing.T) {
+	root := t.TempDir()
+	const n = 50
+	orig := messages.NowFunc
+	t.Cleanup(func() { messages.NowFunc = orig })
+	// Every envelope shares one wall-clock second: all timestamps tie.
+	frozen := time.Date(2026, 8, 4, 12, 0, 0, 0, time.UTC)
+	for i := 0; i < n; i++ {
+		messages.NowFunc = func() time.Time { return frozen.Add(time.Duration(i) * time.Nanosecond) }
+		if _, err := messages.SendStatusChange(root, "bob", "alice", messages.StatusChangePayload{
+			State:   "working",
+			Summary: fmt.Sprintf("s%02d", i),
+		}); err != nil {
+			t.Fatalf("seeding envelope %d: %v", i, err)
+		}
+	}
+	assertSeededOnDisk(t, root, "alice", n)
+
+	lines := inboxprompt.DrainStatusChangeLines(root, "alice")
+	want := inboxprompt.BuildStatusNotification("bob", "working", fmt.Sprintf("s%02d", n-1))
+	if len(lines) != 1 || lines[0] != want {
+		t.Fatalf("same-second burst must coalesce to the newest write-order envelope\n got: %q\nwant: [%q]", lines, want)
 	}
 }

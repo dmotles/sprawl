@@ -518,9 +518,12 @@ func TestWeaveRuntimeHandle_WakeForDelivery_RedrainBeforeAck_NoDuplicateWrite(t 
 // then read the same envelope twice — the notification would appear twice in
 // weave's context and twice in the transcript. Serialised by drainMu.
 //
-// Mutation control (recorded): deleting the drainMu lock/unlock makes this go red
-// on the FIRST iteration under `-race -count=20` — every summary appeared 4x. So
-// drainMu is demonstrably load-bearing, not defensive. The deterministic
+// Mutation control (recorded, and re-verified after the QUM-1064 reseed below):
+// deleting the drainMu lock/unlock makes this go red on the FIRST iteration.
+// Under the original single-sender seeding that printed every summary 4x; re-run
+// under the current per-sender seeding at `-race -count=5` it prints ping-* 2-4x
+// and id-async-* 4x. So drainMu is demonstrably load-bearing, not defensive, and
+// the reseed did not cost the signal. The deterministic
 // (non-timing-dependent) sibling guard is
 // TestWeaveRuntimeHandle_WakeForDelivery_RedrainBeforeAck_NoDuplicateWrite above.
 func TestWeaveRuntimeHandle_ConcurrentWakeForDelivery_NoDuplicateWrite(t *testing.T) {
@@ -530,7 +533,12 @@ func TestWeaveRuntimeHandle_ConcurrentWakeForDelivery_NoDuplicateWrite(t *testin
 	for i := 0; i < n; i++ {
 		// Both channels: the destructive status_change drain AND the
 		// peek-then-ack agentloop maildir, which is the one that can duplicate.
-		if _, err := messages.SendStatusChange(sprawlRoot, "child", "weave", messages.StatusChangePayload{
+		// QUM-1064 forces the sender to vary: DrainStatusChangeLines coalesces
+		// last-wins per reporting agent, so 8 envelopes from one "child" now
+		// legitimately render a single line and 7 of the 8 exactly-once checks
+		// below fail loudly on a correct implementation. Distinct senders keep
+		// all 8 alive, which is what makes a double-read observable.
+		if _, err := messages.SendStatusChange(sprawlRoot, fmt.Sprintf("child-%d", i), "weave", messages.StatusChangePayload{
 			State:   "working",
 			Summary: fmt.Sprintf("ping-%d", i),
 		}); err != nil {

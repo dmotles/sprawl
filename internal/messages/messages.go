@@ -350,7 +350,15 @@ func DrainStatusChange(sprawlRoot, recipient string) ([]Message, error) {
 		return nil, nil
 	}
 
-	sort.Slice(found, func(i, j int) bool {
+	// Stable, not sort.Slice: Timestamp is RFC3339 (second resolution), so a
+	// burst of reports inside one wall-clock second is entirely ties. `found` is
+	// already in ascending-ID order — os.ReadDir sorts by name and the envelope
+	// name is a fixed-width UnixNano prefix — so a stable sort preserves the
+	// true nanosecond write order for those ties. That order used to be
+	// cosmetic; since QUM-1064 coalesces last-wins per agent it selects which
+	// payload survives a destructive drain, so it must not rest on the sort
+	// implementation happening to leave sorted input alone.
+	sort.SliceStable(found, func(i, j int) bool {
 		ti, _ := time.Parse(time.RFC3339, found[i].msg.Timestamp)
 		tj, _ := time.Parse(time.RFC3339, found[j].msg.Timestamp)
 		return ti.Before(tj)
