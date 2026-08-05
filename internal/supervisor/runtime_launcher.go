@@ -531,10 +531,6 @@ func (h *unifiedHandle) Wake() error {
 	return nil
 }
 
-// RequestLivenessNudge arms a pending liveness nudge on the underlying runtime
-// (QUM-730). Rendered as one notification line by the next drain.
-func (h *unifiedHandle) RequestLivenessNudge() { h.rt.RequestLivenessNudge() }
-
 // WakeForDelivery is the sole delivery poke for send_message (both interrupt=
 // false and interrupt=true). QUM-817/QUM-821: it writes pending entries to the
 // CLI stdin — async-class at priority `next`, interrupt-class at priority `now`
@@ -546,7 +542,7 @@ func (h *unifiedHandle) WakeForDelivery() error {
 	return nil
 }
 
-// drainPendingToStdin reads the durable maildir + status/liveness envelopes and
+// drainPendingToStdin reads the durable maildir + status_change envelopes and
 // writes each, tag-wrapped (§3.2) and priority `next`, to the CLI stdin
 // (QUM-817). The isReplay echo of each write later confirms delivery
 // (OnDelivered → MarkDelivered). Replaces the old Go-queue enqueue path.
@@ -560,12 +556,6 @@ func (h *unifiedHandle) drainPendingToStdin() {
 		)
 	}
 	statusLines := inboxprompt.DrainStatusChangeLines(h.sprawlRoot, h.name)
-	// QUM-730: a pending liveness nudge is an in-memory flag, not a drained
-	// envelope — see UnifiedRuntime.RequestLivenessNudge. N nudges between drains
-	// render exactly one line.
-	if h.rt.ConsumeLivenessNudge() {
-		statusLines = append(statusLines, inboxprompt.BuildHeartbeatNotification())
-	}
 	if len(pending) == 0 && len(statusLines) == 0 {
 		return
 	}

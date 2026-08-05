@@ -6,6 +6,10 @@ not strictly semver while we are pre-1.0.
 
 ## [Unreleased]
 
+### Removed
+
+- **Supervisor heartbeat and liveness checks** (QUM-1071) — the QUM-730 background liveness scan, its nudge plumbing, and the `liveness:` block in `.sprawl/config.yaml` (`enabled`, `heartbeat_interval`, `idle_threshold`, `tier2_consecutive_ticks`, `escalation_threshold`) are gone. Measured across 196 structured stderr logs spanning ~two months, the feature had emitted 32 "appears stuck" warnings — 31 of them the same overnight-idle false positive, already gated off — and had escalated to a parent **zero** times, which analysis showed was structural rather than luck: any agent that answers a nudge resets the escalation counter, and any agent that does not is already excluded by an earlier gate. Its one genuinely useful output, a root-wedged toast, was never wired to a user-visible surface. **Remove the `liveness:` block from `.sprawl/config.yaml` when upgrading.** The typed config ignores unknown keys, so the block causes no parse error — but it is a *nested* block, and that breaks `config.Load`'s second unmarshal into its flat dotted-key map, whose error path discards the whole map. The effect is silent and not confined to `liveness:`: `worktree.setup` stops resolving, so the QUM-808 pre-commit and QUM-837 reference-transaction commit guards are no longer installed on new agent worktrees, with no error or warning. That parser defect is pre-existing rather than introduced here — any nested block triggers it — and this repo's own config uses only flat keys, so it is unaffected; but this removal is what leaves such a block behind. Tracked as QUM-1078. The capability-blurb refresher that rode along on the heartbeat now has its own 30-minute ticker with unchanged behaviour.
+
 ## [v0.5.4] - 2026-07-30
 
 ### Added

@@ -219,10 +219,6 @@ func (h *WeaveRuntimeHandle) Wake() error {
 	return nil
 }
 
-// RequestLivenessNudge arms a pending liveness nudge on the underlying runtime
-// (QUM-730). Rendered as one notification line by the next drain.
-func (h *WeaveRuntimeHandle) RequestLivenessNudge() { h.rt.RequestLivenessNudge() }
-
 // WakeForDelivery is the cooperative-wake path, fired unconditionally by the
 // producer side on every child report_status / send_message (see Real.SendMessage
 // and Real.ReportStatus). It drains weave's inbox straight to the CLI stdin the
@@ -240,7 +236,7 @@ func (h *WeaveRuntimeHandle) WakeForDelivery() error {
 	return nil
 }
 
-// drainPendingToStdin reads the durable maildir + status/liveness envelopes and
+// drainPendingToStdin reads the durable maildir + status_change envelopes and
 // writes them, tag-wrapped, as ONE kind:system priority-`next` stdin frame
 // carrying the maildir entry IDs (QUM-925). The isReplay echo of the write later
 // confirms delivery (markConsumed → OnDelivered → MarkDelivered).
@@ -289,24 +285,16 @@ func (h *WeaveRuntimeHandle) drainPendingToStdin() {
 		pending = kept
 	}
 
-	// WARNING, and the reason the failure path below logs the bodies: both of these
-	// are DESTRUCTIVE reads — messages.DrainStatusChange removes the envelope from
+	// WARNING, and the reason the failure path below logs the bodies: this is a
+	// DESTRUCTIVE read — messages.DrainStatusChange removes the envelope from
 	// the maildir. Unlike the agentloop entries above (a non-destructive peek, safe
-	// to re-drain), a status/liveness line that is drained here and then fails to
+	// to re-drain), a status_change line that is drained here and then fails to
 	// reach stdin is GONE. That is the same permanent-loss class QUM-925 exists to
 	// fix, one layer down, and it cannot be closed by reordering: whether any lines
 	// exist is only knowable by draining them. The child path
 	// (runtime_launcher.go) has the identical shape. Tracked as a follow-up; the
 	// mitigation here is that the bodies are recoverable from the log.
 	statusLines := inboxprompt.DrainStatusChangeLines(h.sprawlRoot, h.name)
-	// QUM-730: a pending liveness nudge is an in-memory flag, not a drained
-	// envelope, so N nudges between drains render exactly one line and nothing can
-	// accumulate on disk. (Weave is no longer nudged at all — see the root gate in
-	// heartbeat.go — but the drain stays symmetric with the child path so a future
-	// root-directed nudge cannot resurrect the backlog.)
-	if h.rt.ConsumeLivenessNudge() {
-		statusLines = append(statusLines, inboxprompt.BuildHeartbeatNotification())
-	}
 	if len(pending) == 0 && len(statusLines) == 0 {
 		return
 	}
@@ -340,7 +328,7 @@ func (h *WeaveRuntimeHandle) drainPendingToStdin() {
 	defer cancel()
 	if _, err := h.rt.WriteSystemMessage(ctx, prompt.String(), "next", ids); err != nil {
 		slog.Default().Warn(
-			"weave-runtime: drainPendingToStdin write failed — maildir entries stay in pending/ for the next poke, but any status/liveness lines in this batch are LOST (destructive drain); their bodies follow so they are recoverable from this log",
+			"weave-runtime: drainPendingToStdin write failed — maildir entries stay in pending/ for the next poke, but any status_change lines in this batch are LOST (destructive drain); their bodies follow so they are recoverable from this log",
 			slog.String("agent", h.name),
 			slog.Int("lost_status_lines", len(statusLines)),
 			slog.String("lost_status_bodies", strings.Join(statusLines, "")),

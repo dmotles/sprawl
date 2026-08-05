@@ -30,13 +30,16 @@ const TypeStatusChange = "status_change"
 // TypeLivenessCheck marks a maildir envelope as a supervisor heartbeat
 // liveness-check nudge (QUM-730).
 //
-// LEGACY ONLY — nothing writes this type any more. The nudge is an in-memory
-// flag on the runtime (UnifiedRuntime.RequestLivenessNudge); the SendLivenessCheck
-// / DrainLivenessCheck helpers that produced and consumed these envelopes were
-// deleted, because a durable queue promises at-least-once delivery of everything
-// ever written, and a content-free "are you alive NOW" signal accumulated ~2
-// months of undelivered copies for the root before landing as one 38,673-byte
-// stdin frame.
+// LEGACY ONLY — nothing writes this type any more, and as of QUM-1071 nothing
+// produces the signal at all. The SendLivenessCheck / DrainLivenessCheck helpers
+// that produced and consumed these envelopes were deleted first (QUM-730),
+// because a durable queue promises at-least-once delivery of everything ever
+// written, and a content-free "are you alive NOW" signal accumulated ~2 months of
+// undelivered copies for the root before landing as one 38,673-byte stdin frame.
+// The nudge became an in-memory flag, which cannot accumulate; QUM-1071 then
+// deleted the heartbeat that armed it. Do not reintroduce a maildir type for any
+// signal whose value does not survive delay — see the durable-queue category-error
+// note in the file header of internal/runtime/unified.go.
 //
 // The constant and the List() filters below are retained so an installation
 // upgrading across that change keeps hiding any envelope still on disk rather

@@ -155,10 +155,6 @@ type Real struct {
 	// realGitCurrentBranch is used. See QUM-837 (AgentState.Branch refresh).
 	gitCurrentBranch func(dir string) (string, error)
 
-	// heartbeat is the QUM-730 supervisor liveness-check goroutine. Started
-	// by NewReal when LivenessConfig.Enabled, stopped by Shutdown.
-	heartbeat *heartbeat
-
 	// --- QUM-899 capability blurb seams ---
 	// blurbInvoker runs the cheap background Claude call that produces a
 	// blurb. Defaults to memory.NewCLIInvoker() in NewReal; tests inject a
@@ -175,6 +171,10 @@ type Real struct {
 	dispatchBlurb func(name string, kind blurb.TriggerKind)
 	// blurbNow is the clock used to stamp BlurbAt. Defaults to time.Now.
 	blurbNow func() time.Time
+	// blurbTicker is the QUM-1071 standalone 30-minute blurb-refresh loop,
+	// extracted out of the (since-deleted) QUM-730 heartbeat. Started by
+	// NewReal, stopped by Shutdown.
+	blurbTicker *blurbTicker
 }
 
 // realGitRevParseHEAD shells out to `git -C <dir> rev-parse HEAD`. stdio is
@@ -396,59 +396,14 @@ func NewReal(cfg Config) (*Real, error) {
 	r.blurbNow = time.Now
 	r.dispatchBlurb = r.asyncGenerateBlurb
 
-	// QUM-730: install the heartbeat goroutine. Defaults enable it; the
-	// project config can disable or tune via the `liveness:` YAML block.
-	livenessCfg := ResolveLivenessConfig(loadRawLiveness(cfg.SprawlRoot))
-	r.heartbeat = newHeartbeat(heartbeatDeps{
-		Cfg:        livenessCfg,
-		SprawlRoot: cfg.SprawlRoot,
-		Registry:   &registryListerAdapter{reg: r.runtimeRegistry},
-		SendMessage: func(ctx context.Context, to, body string, interrupt bool) (*SendMessageResult, error) {
-			// Heartbeat liveness-checks never wake an offline target.
-			return r.SendMessage(ctx, to, body, interrupt, false)
-		},
-		RequestLivenessNudge: func(name string) error {
-			rt, ok := r.runtimeRegistry.Get(name)
-			if !ok || rt == nil {
-				return fmt.Errorf("no live runtime for %q", name)
-			}
-			rt.RequestLivenessNudge()
-			return nil
-		},
-		LoadAgent:        state.LoadAgent,
-		ReadActivityTail: agentloop.ReadActivityTail,
-		ActivityPath:     agentloop.ActivityPath,
-		WakeForDelivery: func(rt *AgentRuntime) error {
-			if rt == nil {
-				return nil
-			}
-			return rt.WakeForDelivery()
-		},
+	// QUM-1071: the blurb refresher is its own ticker on a fixed 30-minute
+	// cadence, with no config knob.
+	r.blurbTicker = newBlurbTicker(blurbTickerDeps{
+		Registry:     &blurbRegistryAdapter{reg: r.runtimeRegistry},
 		RefreshBlurb: r.maybeRefreshBlurb,
-		Logger:       slog.Default(),
 	})
-	r.heartbeat.Start()
+	r.blurbTicker.Start()
 	return r, nil
-}
-
-// loadRawLiveness reads `.sprawl/config.yaml`'s `liveness:` block. Errors
-// (or absent file) yield nil so ResolveLivenessConfig applies defaults.
-func loadRawLiveness(sprawlRoot string) *LivenessConfigRaw {
-	if sprawlRoot == "" {
-		return nil
-	}
-	c, err := config.Load(sprawlRoot)
-	if err != nil || c == nil || c.Liveness == nil {
-		return nil
-	}
-	raw := c.Liveness
-	return &LivenessConfigRaw{
-		Enabled:               raw.Enabled,
-		HeartbeatInterval:     raw.HeartbeatInterval,
-		IdleThreshold:         raw.IdleThreshold,
-		Tier2ConsecutiveTicks: raw.Tier2ConsecutiveTicks,
-		EscalationThreshold:   raw.EscalationThreshold,
-	}
 }
 
 // RegisterRootRuntime attaches a pre-built RuntimeHandle to the runtime
@@ -1418,10 +1373,10 @@ func bfsByParent(eligible []*state.AgentState, root string) []*state.AgentState 
 }
 
 func (r *Real) Shutdown(ctx context.Context) error {
-	// QUM-730: stop the heartbeat first so it can't fire a stray nudge
-	// against a runtime that's about to be torn down.
-	if r.heartbeat != nil {
-		r.heartbeat.Stop()
+	// QUM-1071: stop the blurb ticker first — don't refresh a blurb for a
+	// runtime that's about to be torn down.
+	if r.blurbTicker != nil {
+		r.blurbTicker.Stop()
 	}
 	// Release any in-flight AskUserQuestion callers with OutcomeSessionEnded
 	// BEFORE tearing down runtimes. (QUM-527 slice 1.)

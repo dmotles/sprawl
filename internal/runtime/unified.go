@@ -2,6 +2,41 @@
 // behind a single supervised lifecycle (QUM-817: the Go MessageQueue and
 // TurnLoop were deleted; every turn is now router-driven from the stdout
 // stream). See docs/designs/unified-runtime.md sections 3.1, 3.6, and 4.
+//
+// WHY THE kind:system CHANNEL IS BOUNDED — the durable-queue category error.
+//
+// This file implements the supervisor-originated notification channel
+// (WriteSystemMessage → boundSystemFrame → maxSystemFrameBytes). The reasoning
+// below is why that channel has a structural bound at all, and it is recorded
+// here because the feature that produced the incident — the QUM-730 supervisor
+// liveness check — was deleted by QUM-1071. The analysis outlived its subject
+// and is what constrains whatever gets added to this channel next.
+//
+// A liveness check is a content-free EDGE signal — it asks "are you alive NOW".
+// It was once written as a durable maildir envelope, which is a category error
+// rather than an implementation bug: a durable queue promises at-least-once
+// delivery of everything ever written, so a MISSING CONSUMER accumulates a
+// backlog by design rather than by defect. Weave had exactly that missing
+// consumer. ~2 months of envelopes piled up unseen (the type is filtered out of
+// messages_list, so nothing surfaced them), and the first drain after QUM-925
+// finally wired a consumer up delivered all 123 of them in a single 38,673-byte
+// stdin frame, destroying the root session's context.
+//
+// The fix at the time was to demote the signal to an in-memory boolean, which
+// cannot accumulate: N arms between drains are one arm, staleness is impossible
+// because nothing outlives the process, and there is no TTL to tune. Its
+// deliberate consequence, stated then so it would not be rediscovered as a bug,
+// was that a signal armed moments before a restart is LOST rather than
+// redelivered — correct for this class, since "are you alive NOW" cannot be
+// answered by the next process, so redelivery is worse than loss.
+//
+// The general lesson outlives its subject: match the storage to the signal.
+// Durable, replayable transport is for signals whose value survives delay. An
+// edge signal about the present moment must be ephemeral. And a channel with no
+// consumer is not idle, it is filling — so any new notification channel must
+// name its consumer at the moment it is added. The frame bound and dedup are the
+// structural defence that holds even when it doesn't, which is why they live at
+// the single WriteSystemMessage choke point rather than in each producer.
 
 package runtime
 
@@ -14,7 +49,6 @@ import (
 	"sort"
 	"strings"
 	"sync"
-	"sync/atomic"
 	"time"
 
 	"github.com/dmotles/sprawl/internal/backend"
@@ -159,13 +193,6 @@ type UnifiedRuntime struct {
 	doneWG        sync.WaitGroup
 	done          chan struct{}
 	closeDoneOnce sync.Once
-
-	// livenessNudge is the QUM-730 supervisor heartbeat's pending-nudge flag.
-	// Deliberately a boolean rather than a queued message — see
-	// RequestLivenessNudge for why the durable form was a category error. Written
-	// by the heartbeat goroutine, read+cleared by whichever goroutine drains, so
-	// it must be atomic.
-	livenessNudge atomic.Bool
 
 	// outstanding is the ONLY client-side message state (QUM-817): a map of
 	// every stdin user message we've written, keyed by uuid, flipped to consumed
@@ -767,34 +794,6 @@ func (rt *UnifiedRuntime) WriteUserBlocks(ctx context.Context, text string, bloc
 	return rt.writeMessage(ctx, text, priority, kindUser, nil, blocks)
 }
 
-// RequestLivenessNudge arms a pending liveness nudge for this runtime (QUM-730).
-// The next inbox drain renders it as exactly one heartbeat notification line and
-// clears it.
-//
-// WHY A FLAG AND NOT A MESSAGE. A liveness check is a content-free edge signal —
-// it asks "are you alive NOW". It used to be written as a durable maildir
-// envelope, which is a category error: a durable queue promises at-least-once
-// delivery of everything ever written, so a missing consumer accumulates a
-// backlog by design rather than by defect. Weave had exactly that missing
-// consumer, ~2m of envelopes piled up unseen (the type is filtered out of
-// messages_list), and the first drain after QUM-925 wired one up delivered all
-// 123 of them in a single 38,673-byte stdin frame.
-//
-// A boolean cannot accumulate. N nudges between drains are one nudge, staleness
-// is impossible because nothing outlives the process, and there is no TTL to tune.
-//
-// ACCEPTED CONSEQUENCE, stated so it is not rediscovered as a bug: the flag dies
-// with the runtime, so a nudge armed moments before a restart/wake is lost rather
-// than redelivered. That is correct for this signal — "are you alive NOW" cannot
-// be answered by the next process — and the heartbeat re-evaluates on its next
-// tick anyway. It is also not reachable in practice: tickAgent only nudges an
-// agent whose liveness is Running.
-func (rt *UnifiedRuntime) RequestLivenessNudge() { rt.livenessNudge.Store(true) }
-
-// ConsumeLivenessNudge reports whether a liveness nudge is pending and clears it
-// in one atomic step, so two concurrent drains cannot both render the line.
-func (rt *UnifiedRuntime) ConsumeLivenessNudge() bool { return rt.livenessNudge.Swap(false) }
-
 // maxSystemFrameBytes caps one kind:system stdin frame. Applies to the
 // supervisor-originated notification channel ONLY — never to a kind:user prompt,
 // which is the human's own words and is never truncated or deduped.
@@ -810,6 +809,9 @@ func (rt *UnifiedRuntime) ConsumeLivenessNudge() bool { return rt.livenessNudge.
 // The value is chosen to be far above any legitimate batch (a busy fleet drain is
 // a few hundred bytes) and far below a context-destroying one. It is not tuned;
 // if a real batch ever approaches it, the batch is the defect.
+//
+// For why the incident happened at all — the durable-queue category error — see
+// the file header at the top of unified.go.
 const maxSystemFrameBytes = 8192
 
 // systemFrameTruncationMarker is appended when a frame is cut at

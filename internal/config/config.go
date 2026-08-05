@@ -13,10 +13,9 @@ import (
 
 // Config represents .sprawl/config.yaml project-level settings.
 type Config struct {
-	Validate                  string             `yaml:"validate"`
-	ValidateTimeout           string             `yaml:"validate_timeout"`
-	ValidatePopupAfterSeconds int                `yaml:"validate_popup_after_seconds"`
-	Liveness                  *LivenessConfigRaw `yaml:"liveness"`
+	Validate                  string `yaml:"validate"`
+	ValidateTimeout           string `yaml:"validate_timeout"`
+	ValidatePopupAfterSeconds int    `yaml:"validate_popup_after_seconds"`
 	// PauseTimeoutSeconds is the default escalation budget (in seconds) for
 	// the `pause` MCP tool. QUM-722. Defaults to DefaultPauseTimeoutSeconds
 	// when not present or non-positive.
@@ -43,22 +42,6 @@ func (c *Config) PauseTimeout() time.Duration {
 		return time.Duration(DefaultPauseTimeoutSeconds) * time.Second
 	}
 	return time.Duration(c.PauseTimeoutSeconds) * time.Second
-}
-
-// LivenessConfigRaw mirrors supervisor.LivenessConfigRaw so the YAML
-// shape can be decoded inside the config package without an import cycle.
-// The supervisor package re-uses this shape verbatim via ResolveLivenessConfig
-// (see internal/supervisor/heartbeat.go). QUM-730.
-type LivenessConfigRaw struct {
-	// Enabled is *bool so an unset YAML value (partial `liveness:` block
-	// with only some keys present) doesn't silently disable the
-	// heartbeat. nil → use default (enabled); non-nil → take at face
-	// value.
-	Enabled               *bool  `yaml:"enabled"`
-	HeartbeatInterval     string `yaml:"heartbeat_interval"`
-	IdleThreshold         string `yaml:"idle_threshold"`
-	Tier2ConsecutiveTicks int    `yaml:"tier2_consecutive_ticks"`
-	EscalationThreshold   int    `yaml:"escalation_threshold"`
 }
 
 // DefaultValidatePopupAfterSeconds is the default threshold after which the

@@ -36,10 +36,9 @@
 # UnifiedRuntime.writeMessage. In this sandbox during the idle window there are no
 # keystrokes, no children (⇒ no maildir/status_change ⇒ drainPendingToStdin and
 # PostTurnSweep early-return), no delegated tasks (⇒ feedTasks writes nothing), and
-# the liveness heartbeat floor is 5m (internal/supervisor/heartbeat.go
-# minHeartbeatInterval) — far outside this ~90s window. If a future sandbox config
-# sets a sub-minute heartbeat_interval, D will fail with a MISLEADING message; fix
-# the config, not the assertion.
+# the supervisor heartbeat that used to be the remaining injector on this path was
+# deleted outright by QUM-1071, so nothing periodic can land inside this ~90s
+# window at all.
 #
 # Wire log: $SPRAWL_ROOT/.sprawl/logs/sessions/weave/*.ndjson, one JSON envelope
 # per line: {"ts":…,"dir":"in"|"out","raw":"<escaped frame>"} — dir:"in" is

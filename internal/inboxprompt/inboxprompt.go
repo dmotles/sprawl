@@ -178,9 +178,16 @@ func BuildTaskNotification(taskID, prompt string) string {
 // updating the test in lockstep.
 const heartbeatNotificationBody = `<system-notification type="liveness_check">This is an automated liveness check from the sprawl system. If there's no work to do just ignore this message. If you're still waiting on something or you were in the middle of something, please continue your work.</system-notification>` + "\n"
 
-// BuildHeartbeatNotification returns the verbatim system-notification line
-// that the supervisor heartbeat injects into a stalled child's next-turn
-// prompt. Always ends with a newline. (QUM-730)
+// BuildHeartbeatNotification returns the verbatim liveness-check
+// system-notification line. Always ends with a newline.
+//
+// NO PRODUCTION CALLER since QUM-1071 deleted the supervisor heartbeat that
+// injected it; its only remaining caller is its own test. Retained as the
+// documented record of the historical wire string, which still appears in
+// archived wire logs and is still rendered from them by
+// internal/tui/messages.go's NotificationKindLivenessCheck. Note that is a
+// documentation link, not a dependency: the parser hardcodes its own
+// "liveness_check" constant and does not call this. (QUM-730/QUM-1071)
 func BuildHeartbeatNotification() string {
 	return heartbeatNotificationBody
 }

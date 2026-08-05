@@ -2926,11 +2926,13 @@ func TestTypeLivenessCheck_ConstantValue(t *testing.T) {
 	}
 }
 
-// TestList_HidesLegacyLivenessEnvelope pins what survives the QUM-730 deletion
-// of SendLivenessCheck / DrainLivenessCheck: nothing writes these envelopes any
-// more (the nudge is an in-memory flag — see UnifiedRuntime.RequestLivenessNudge),
-// but an installation upgrading across the change may still have one on disk, and
-// it must stay hidden from messages_list rather than surfacing as mail.
+// TestList_HidesLegacyLivenessEnvelope pins what survives the removal of the
+// liveness-check envelope: QUM-730 deleted SendLivenessCheck / DrainLivenessCheck
+// and QUM-1071 deleted the heartbeat that produced the signal, so nothing writes
+// these envelopes any more (see the TypeLivenessCheck comment in messages.go for
+// why a durable queue was the wrong home for a content-free edge signal). An
+// installation upgrading across those changes may still have one on disk, and it
+// must stay hidden from messages_list rather than surfacing as mail.
 func TestList_HidesLegacyLivenessEnvelope(t *testing.T) {
 	tmpDir := t.TempDir()
 

@@ -60,7 +60,7 @@ func (r *Real) generateAndPersistBlurb(ctx context.Context, name string, kind bl
 	return r.persistBlurb(name, text)
 }
 
-// maybeRefreshBlurb is the heartbeat RefreshBlurb seam. It applies the pure
+// maybeRefreshBlurb is the blurb ticker's RefreshBlurb seam. It applies the pure
 // DecideTrigger to the agent's persisted watermark + the runtime-derived last
 // activity time and dispatches a generation only when the dirty-check + floor
 // permit (or the agent has no blurb yet).
