@@ -38,6 +38,7 @@ type fakeBackendSession struct {
 	teardown    []string // ordered record of "close"/"kill"/"wait" calls (QUM-543)
 	interrupted int32
 	writes      []protocol.UserMessage                    // QUM-817: stdin user messages written
+	writeErr    error                                     // QUM-1061: when non-nil, WriteUserMessage fails with it
 	router      func(*protocol.Message, backend.TurnInfo) // QUM-817: captured frame router
 	// cancelResults maps a uuid to the {cancelled} value CancelAsyncMessage
 	// returns for it. Absent uuids return false — which means "already dequeued
@@ -50,10 +51,26 @@ type fakeBackendSession struct {
 	// regression test to simulate a child whose stdout pipe never drains after
 	// SIGKILL (stuck Task subshell holding the FD open).
 	waitBlock chan struct{}
+
+	// wedged makes WriteUserMessage block until writeRelease is closed or the
+	// caller's ctx expires — the QUM-1072 full-stdin-pipe shape. See
+	// WriteUserMessage for why the ctx arm is load-bearing.
+	wedged       bool
+	writeRelease chan struct{}
+	released     bool
+
+	// attempted records every write the drain ATTEMPTED, including ones that then
+	// blocked and timed out. `writes` records only writes that SUCCEEDED, so it is
+	// empty under a wedge — which makes it useless for proving the drain got as far
+	// as the wire. Several QUM-1072 assertions would be vacuous without this: a
+	// bounded return is indistinguishable from a poke that never happened.
+	attempted []protocol.UserMessage
 }
 
 func newFakeBackendSession(id string, caps backend.Capabilities) *fakeBackendSession {
-	return &fakeBackendSession{id: id, caps: caps}
+	// writeRelease is allocated up front so a wedged write can never block on a
+	// nil channel forever.
+	return &fakeBackendSession{id: id, caps: caps, writeRelease: make(chan struct{})}
 }
 
 func (f *fakeBackendSession) Start(context.Context) error { return nil }
@@ -81,11 +98,107 @@ func (f *fakeBackendSession) StartTurn(_ context.Context, _ string, _ ...backend
 	return ch, nil
 }
 
-func (f *fakeBackendSession) WriteUserMessage(_ context.Context, msg protocol.UserMessage) error {
+// WriteUserMessage records the write, or — when the QUM-1072 wedge is engaged —
+// blocks exactly the way a full stdin pipe does.
+//
+// TWO THINGS HERE ARE LOAD-BEARING, both easy to get wrong:
+//
+//  1. The wedged branch SELECTS ON ctx.Done(). It models
+//     internal/backend/claude/adapter.go's transport.Send, which runs the blocking
+//     WriteJSON in a goroutine and races it against ctx.Done() — so the caller's
+//     context is the ONLY escape from a full pipe. A fake that ignored ctx (the
+//     shape of session_interrupt_bounded_test.go's wedgingTransport, which models
+//     a wedge BELOW the ctx layer — QUM-600) would be a different defect, and would
+//     make the QUM-1072 test fail even with the deadline correctly in place.
+//
+//     This is NOT circular — the fake does not assume the property under test.
+//     That the real transport honours ctx is pinned independently by
+//     TestTransport_Send_HonorsCtxOnWedgedWrite (internal/backend/claude/
+//     adapter_test.go). What QUM-1072 tests here is the other half: that the
+//     CALLER supplies a context capable of expiring.
+//
+//     One divergence to keep in mind: production's timed-out write leaks a
+//     goroutine that may still land the bytes once the pipe drains; this fake
+//     never writes. So "timed out ⇒ not delivered" is cleaner in the fake than in
+//     reality.
+//
+//  2. It blocks with f.mu RELEASED. writesSnapshot / settledWrites / setWriteErr /
+//     echoReplay all take f.mu, so blocking under it would deadlock the test's own
+//     assertions rather than just the write.
+func (f *fakeBackendSession) WriteUserMessage(ctx context.Context, msg protocol.UserMessage) error {
+	f.mu.Lock()
+	werr, wedged, release := f.writeErr, f.wedged, f.writeRelease
+	// Recorded before any blocking or error return, so it means "the drain reached
+	// the wire", independent of whether the write then succeeded.
+	f.attempted = append(f.attempted, msg)
+	f.mu.Unlock()
+
+	if werr != nil {
+		return werr
+	}
+	if wedged {
+		select {
+		case <-release: // teardown only
+			return nil
+		case <-ctx.Done():
+			return ctx.Err()
+		}
+	}
+
 	f.mu.Lock()
 	defer f.mu.Unlock()
 	f.writes = append(f.writes, msg)
 	return nil
+}
+
+// attemptedSnapshot returns a copy of every ATTEMPTED write (see the `attempted`
+// field). Use it to prove a drain actually reached the wire; use writesSnapshot to
+// prove one succeeded.
+func (f *fakeBackendSession) attemptedSnapshot() []protocol.UserMessage {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	return append([]protocol.UserMessage(nil), f.attempted...)
+}
+
+// engageWriteWedge makes every subsequent WriteUserMessage block until the
+// caller's context expires (QUM-1072). Engage AFTER the handle is started: the
+// launcher's own rt.Start / feedTasks phases write on this session.
+//
+// The t.Cleanup release is not tidiness — make validate runs leak-scan, and a
+// blocked write goroutine that outlives the test would trade a green test for a
+// red scan.
+//
+// ORDERING CAVEAT. A test that does `defer uh.Stop(...)` runs Stop BEFORE this
+// cleanup releases the wedge (defers run before cleanups). That is safe only
+// because unifiedHandle.Stop never writes to stdin — it goes Interrupt/Close/Kill,
+// with unifiedHandleStopWaitTimeout bounding the Wait. If Stop ever gains a flush,
+// those tests would hang; register the wedge via t.Cleanup ordering (as the AC-3
+// test does) or release it explicitly first.
+func (f *fakeBackendSession) engageWriteWedge(t *testing.T) {
+	t.Helper()
+	f.mu.Lock()
+	f.wedged = true
+	f.mu.Unlock()
+	t.Cleanup(func() {
+		// Guarded by `released` under f.mu, not by a select/default on the channel:
+		// two engageWriteWedge calls would register two cleanups that could both
+		// observe an open channel and double-close it, panicking.
+		f.mu.Lock()
+		defer f.mu.Unlock()
+		if !f.released {
+			f.released = true
+			close(f.writeRelease)
+		}
+	})
+}
+
+// setWriteErr makes every subsequent WriteUserMessage fail with err (nil clears
+// it), without recording the write. Used by the QUM-1061 destructive-drain test to
+// observe what a failed stdin write costs.
+func (f *fakeBackendSession) setWriteErr(err error) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	f.writeErr = err
 }
 
 // SetFrameRouter captures the runtime's frame router (QUM-815/817) so tests can
@@ -1024,9 +1137,11 @@ func TestUnifiedHandle_WakeForDelivery_SeparatesInterruptAndAsync(t *testing.T) 
 // QUM-441/817/821: WakeForDelivery wires MarkDelivered. Async-class entries are
 // marked delivered on their isReplay consumption ack (the write alone must NOT
 // mark them). Interrupt-class (now-priority) entries are marked delivered on the
-// write itself, because cancel-and-replace injection yields no isReplay echo —
-// deferring to an echo that never comes would leave the entry pending forever
-// and PostTurnSweep would re-inject it every turn (QUM-821 storm).
+// write itself, because a cancel-and-replace injection's echo is NOT GUARANTEED
+// (QUM-1068 measured 3 of 54 never echoed) — deferring to an echo that may never
+// come would leave the entry pending forever and PostTurnSweep would re-inject it
+// every turn (QUM-821 storm). When the echo does arrive, markConsumed is
+// idempotent and it is a silent no-op.
 // ---------------------------------------------------------------------------
 
 // TestUnifiedHandle_WakeForDelivery_MarksPendingDelivered verifies the split:
@@ -1071,10 +1186,15 @@ func TestUnifiedHandle_WakeForDelivery_MarksPendingDelivered(t *testing.T) {
 		t.Fatalf("delivered before echo = %+v, want exactly [id-int-1] (now-priority delivered on write)", deliveredBefore)
 	}
 
-	// The async entry's isReplay echo flips it to delivered. (echoAllReplays also
-	// re-echoes the now/interrupt uuid; that re-fires markConsumed → OnDelivered,
-	// which tolerates the already-delivered entry — agentloop.MarkDelivered logs a
-	// warning and returns an error, which OnDelivered swallows.)
+	// The async entry's isReplay echo flips it to delivered. echoAllReplays also
+	// re-echoes the now/interrupt uuid — which is the real wire behaviour, not a
+	// harness artefact: a priority:"now" write IS usually echoed (51 of 54 in the
+	// QUM-1068 census). That second ack is now a silent no-op: the entry already
+	// reached stateConsumed via ConfirmDeliveredWithoutReplay, and QUM-1068's
+	// idempotent markConsumed gates OnDelivered on the transition. So there is no
+	// second agentloop.MarkDelivered, no "entry not found in pending" error, and no
+	// WARN on this happy path. (Before QUM-1068 all three fired and were documented
+	// here as tolerated.)
 	fakeSession.echoAllReplays()
 
 	pending, _ := agentloop.ListPending(sprawlRoot, "alice")
@@ -1518,12 +1638,67 @@ func (h *captureSlogHandler) Enabled(_ context.Context, _ slog.Level) bool { ret
 func (h *captureSlogHandler) Handle(_ context.Context, r slog.Record) error {
 	h.mu.Lock()
 	defer h.mu.Unlock()
-	h.records = append(h.records, r)
+	// Clone: slog documents that retaining a Record without cloning is unsafe (the
+	// attr backing array is shared and may be reused by the caller).
+	h.records = append(h.records, r.Clone())
 	return nil
 }
 
 func (h *captureSlogHandler) WithAttrs(_ []slog.Attr) slog.Handler { return h }
 func (h *captureSlogHandler) WithGroup(_ string) slog.Handler      { return h }
+
+// renderSlogRecord renders one record as "LEVEL message key=value …".
+//
+// CONSTRAINT ON PRODUCTION CODE: attrs passed directly to slog.Warn("msg",
+// slog.String(...)) live on the Record and are captured. Attrs bound to a DERIVED
+// logger (slog.Default().With("agent", name)) are not — this handler's WithAttrs
+// returns h and drops them. A test asserting on attrs therefore requires the
+// production call site to pass them inline.
+func renderSlogRecord(r slog.Record) string {
+	var b strings.Builder
+	b.WriteString(r.Level.String())
+	b.WriteString(" ")
+	b.WriteString(r.Message)
+	r.Attrs(func(a slog.Attr) bool {
+		b.WriteString(" ")
+		b.WriteString(a.Key)
+		b.WriteString("=")
+		b.WriteString(a.Value.String())
+		return true
+	})
+	return b.String()
+}
+
+// String renders every captured record. Useful for a failure dump; NOT a sound
+// assertion target on its own — see recordsWithMessage.
+func (h *captureSlogHandler) String() string {
+	h.mu.Lock()
+	defer h.mu.Unlock()
+	var b strings.Builder
+	for _, r := range h.records {
+		b.WriteString(renderSlogRecord(r))
+		b.WriteString("\n")
+	}
+	return b.String()
+}
+
+// recordsWithMessage returns the rendered records whose message contains sub.
+//
+// Assert against THIS, not against String(): the capture handler is installed
+// early and enabled at every level, so the full dump contains unrelated startup
+// and debug records. A strings.Contains against the whole dump for a value like
+// the agent name is satisfied by any of them and asserts approximately nothing.
+func (h *captureSlogHandler) recordsWithMessage(sub string) []string {
+	h.mu.Lock()
+	defer h.mu.Unlock()
+	var out []string
+	for _, r := range h.records {
+		if strings.Contains(r.Message, sub) {
+			out = append(out, renderSlogRecord(r))
+		}
+	}
+	return out
+}
 
 // installCaptureSlog swaps slog.Default() for a capturing handler for the
 // duration of the test and returns the capture sink.

@@ -122,13 +122,18 @@ const (
 	// (TUI) drop its queued indicator.
 	EventUserMessageCancelled
 	// EventUserMessageSent is published when a now-priority (cancel-and-replace)
-	// user message is written to stdin without an isReplay echo (QUM-838 —
-	// send-all-now). A now-write gets NO isReplay echo (QUM-821), so the TUI's
-	// pending zone would never learn the coalesced message's fresh uuid and its
-	// EventUserMessageConsumed settle would be a no-op — the message vanishes
-	// from the transcript. This event lets the TUI track the now-write's uuid
-	// (zone add) before its consume ack settles it (zone relocate). UUID carries
-	// the now-write's uuid; Prompt carries its text. Appended after
+	// user message is written to stdin (QUM-838 — send-all-now). It exists for
+	// ORDERING: the TUI's pending zone must learn the coalesced message's fresh
+	// uuid BEFORE its EventUserMessageConsumed settle arrives, or ZoneSettle is a
+	// no-op against an untracked uuid and the message vanishes from the
+	// transcript. This event is the zone add; the consume ack is the zone
+	// relocate. UUID carries the now-write's uuid; Prompt carries its text.
+	//
+	// QUM-1068: this used to justify itself with "a now-write gets NO isReplay
+	// echo". That premise is false — see ConfirmDeliveredWithoutReplay's doc in
+	// unified.go for the measurement. The ordering argument above is the real and
+	// still-sufficient one: the echo is not GUARANTEED, and even when it arrives
+	// it is the settle, which is exactly what must not come first. Appended after
 	// EventUserMessageCancelled to keep the iota values of the prior events
 	// stable.
 	EventUserMessageSent

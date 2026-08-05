@@ -1122,18 +1122,41 @@ func newUUID() string {
 // markConsumed flips an outstanding entry to consumed on its isReplay echo,
 // fires the delivery callback (QUM-580/579 replacement, keyed on the protocol
 // consumption ack), and publishes EventUserMessageConsumed (QUM-817).
+//
+// IDEMPOTENT (QUM-1068): both side effects are gated on the entry having actually
+// transitioned statePending → stateConsumed, captured inside the outMu critical
+// section. A uuid that already left statePending — or that this runtime never
+// wrote — fires neither. Exactly one OnDelivered and one publish per uuid, for the
+// life of the entry, whichever settle signal arrives first.
+//
+// This is load-bearing, not hygiene. ConfirmDeliveredWithoutReplay is a bare call
+// to this function, and a priority:"now" write IS usually replay-echoed (see that
+// function's doc for the measurement), so before the gate every echoed now-write
+// called OnDelivered twice — a second agentloop.MarkDelivered on an entry no longer
+// in pending/, which fails and logs a WARN on the happy path — and published a
+// second EventUserMessageConsumed, which the TUI turns into a second
+// TurnIdle → TurnThinking flip (QUM-831) with no turn in flight and no route back
+// to idle short of a session restart or the QUM-669 resync.
+//
+// Deliberately NOT gated: routeFrame calls noteTurnAcked BEFORE this function and
+// outside it, so the QUM-1000 ack bookkeeping still counts a late echo for an
+// already-swept entry as its turn's ack, and the no-cascade property holds
+// independently of whether this publish fires.
 func (rt *UnifiedRuntime) markConsumed(uuid string) {
 	rt.outMu.Lock()
 	e := rt.outstanding[uuid]
 	var entryIDs []string
-	if e != nil {
-		if e.state == statePending {
-			e.state = stateConsumed
-		}
+	transitioned := false
+	if e != nil && e.state == statePending {
+		e.state = stateConsumed
 		entryIDs = e.entryIDs
+		transitioned = true
 	}
 	rt.outMu.Unlock()
-	if e != nil && len(entryIDs) > 0 && rt.cfg.OnDelivered != nil {
+	if !transitioned {
+		return
+	}
+	if len(entryIDs) > 0 && rt.cfg.OnDelivered != nil {
 		rt.cfg.OnDelivered(entryIDs)
 	}
 	rt.eventBus.Publish(RuntimeEvent{Type: EventUserMessageConsumed, UUID: uuid})
@@ -1286,15 +1309,34 @@ func (rt *UnifiedRuntime) settleNeverAcked() {
 	rt.eventBus.Publish(RuntimeEvent{Type: EventUserMessageConsumed, UUID: oldest.uuid})
 }
 
-// ConfirmDeliveredWithoutReplay marks an outstanding stdin write consumed
-// WITHOUT an isReplay echo (QUM-821). now-priority (cancel-and-replace) messages
-// are injected directly and are never re-emitted via --replay-user-messages, so
-// the consumption ack that normally drives markConsumed never arrives. The
-// supervisor calls this on a confirmed successful now-priority write to keep the
-// in-memory outstanding map and the durable maildir in sync (flip → consumed +
-// OnDelivered) and to publish EventUserMessageConsumed. No-op for an unknown
-// uuid. Use ONLY for priority="now" writes; next-class writes confirm via the
-// isReplay echo.
+// ConfirmDeliveredWithoutReplay marks an outstanding stdin write consumed without
+// WAITING for an isReplay echo (QUM-821). The supervisor calls it on a confirmed
+// successful now-priority write to keep the in-memory outstanding map and the
+// durable maildir in sync (flip → consumed + OnDelivered) and to publish
+// EventUserMessageConsumed. Use ONLY for priority="now" writes; next-class writes
+// confirm via the echo.
+//
+// "WITHOUT" MEANS NOT-RELIED-UPON, NOT NEVER-ARRIVES (QUM-1068). This doc used to
+// assert that now-priority messages "are injected directly and are never
+// re-emitted via --replay-user-messages". That is false and was load-bearing in
+// three places. A chunk-aware census of the wire logs (766 logs / 46 agents,
+// 2026-08-04) found 51 of 54 now-writes WERE echoed — 94%, spread across log-start
+// dates 2026-06-12 → 2026-07-30, all of them <system-notification> bodies, i.e.
+// exactly this call's own path. Reproduced live: a now-frame injected 6s into a
+// running turn truncated that turn mid-output at 6003ms AND came back with
+// isReplay:true, so it preempts and is echoed.
+//
+// The remedy still stands on the remaining 3 of 54: the echo cannot be RELIED on,
+// so delivery is confirmed on the write. Without that, an un-acked entry stays in
+// pending/ and PostTurnSweep re-drains it every turn — the ~30 writes/s storm
+// QUM-821 measured against real claude 2.1.173.
+//
+// When the echo does arrive it drives markConsumed a second time, which is a
+// no-op: markConsumed is idempotent (gated on the statePending → stateConsumed
+// transition), so exactly one OnDelivered and one publish happen per uuid
+// regardless of which signal lands first, or whether both do. "No-op for an
+// unknown uuid" is likewise true — including for the post-restart replay echoes of
+// uuids written before the in-memory outstanding map was rebuilt.
 func (rt *UnifiedRuntime) ConfirmDeliveredWithoutReplay(uuid string) {
 	rt.markConsumed(uuid)
 }
@@ -1391,9 +1433,10 @@ func (rt *UnifiedRuntime) Recall(ctx context.Context) (string, error) {
 
 // SendAllNow cancels every still-pending kind:user message and resubmits the
 // ones that actually cancelled as ONE priority:"now" message (fresh uuid,
-// cancel-and-replace), then confirms that now-write delivered-without-replay
-// (QUM-821 ack asymmetry: now-writes get no isReplay echo) (QUM-824). A no-op
-// returning nil if nothing was pending / nothing cancelled.
+// cancel-and-replace), then confirms that now-write delivered without waiting
+// for a replay echo (QUM-824; see ConfirmDeliveredWithoutReplay for why the echo
+// cannot be waited on — and, per QUM-1068, why it usually arrives anyway). A
+// no-op returning nil if nothing was pending / nothing cancelled.
 func (rt *UnifiedRuntime) SendAllNow(ctx context.Context) error {
 	texts, err := rt.cancelPendingUser(ctx)
 	if err != nil {
@@ -1407,12 +1450,15 @@ func (rt *UnifiedRuntime) SendAllNow(ctx context.Context) error {
 	if err != nil {
 		return err
 	}
-	// QUM-838: a now-write gets NO isReplay echo (QUM-821), so the TUI pending
-	// zone never learns this fresh uuid on its own. Publish EventUserMessageSent
-	// (carrying the coalesced text) BEFORE ConfirmDeliveredWithoutReplay so the
-	// zone-add lands before the consume settle — otherwise ZoneSettle is a no-op
-	// against an untracked uuid and the Ctrl+G message vanishes from the
-	// transcript. Both publishes happen synchronously on this goroutine, so the
+	// QUM-838: publish EventUserMessageSent (carrying the coalesced text) BEFORE
+	// ConfirmDeliveredWithoutReplay so the zone-add lands before the consume
+	// settle — otherwise ZoneSettle is a no-op against an untracked uuid and the
+	// Ctrl+G message vanishes from the transcript. (QUM-1068: this used to say
+	// "a now-write gets NO isReplay echo, so the zone never learns the uuid on
+	// its own". False — see ConfirmDeliveredWithoutReplay. It changes nothing
+	// here: an echo would arrive as the SETTLE, which is precisely the thing that
+	// must not precede the add.) Both publishes happen synchronously on this
+	// goroutine, so the
 	// EventBus seq-orders sent before consumed.
 	rt.eventBus.Publish(RuntimeEvent{Type: EventUserMessageSent, UUID: uuid, Prompt: joined})
 	rt.ConfirmDeliveredWithoutReplay(uuid)

@@ -43,7 +43,9 @@ func TestRecall_OnlyPendingUserRehydrates_TwoAckModels(t *testing.T) {
 	}
 	rt.markConsumed(nextUUID)
 
-	// now-consumed: written at priority now, acked on write (no isReplay).
+	// now-consumed: written at priority now, acked on write. This fixture
+	// synthesizes no isReplay echo for it — not a claim that none would arrive
+	// (QUM-1068: one usually does, and is a no-op).
 	nowUUID, err := rt.WriteUserPrompt(context.Background(), "now-consumed", "now")
 	if err != nil {
 		t.Fatalf("write now: %v", err)

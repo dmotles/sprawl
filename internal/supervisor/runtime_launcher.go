@@ -8,7 +8,6 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
-	"strings"
 	"sync"
 	"sync/atomic"
 	"time"
@@ -24,6 +23,31 @@ import (
 	"github.com/dmotles/sprawl/internal/supervisor/liveness"
 	"github.com/dmotles/sprawl/internal/usage"
 )
+
+// childDrainWriteTimeout bounds EVERY stdin write made on behalf of a child
+// (QUM-1072): the drain's frames — now written by drain.go's shared
+// writeInjection, which reads this through childDrainPolicy's writeTimeout func
+// seam — AND the task write in feedTasks below. It deliberately shares weave's
+// single literal (weaveDrainWriteTimeout, weave_handle.go): QUM-1062 unified the
+// two drains behind one implementation, and two independent literals would drift
+// back apart.
+//
+// atomicDuration per the repo-wide CLAUDE.md convention rather than a plain
+// time.Duration var: production reads this from several goroutines (the MCP
+// handler goroutine via Real.SendMessage / Real.ReportStatus / Real.Delegate, and
+// the backend reader goroutine via PostTurnSweep → WakeForDelivery), and tests
+// override it. A plain var would be a live data race under -race the moment a
+// test set it.
+//
+// DELIVERY BECOMES AT-LEAST-ONCE, not exactly-once. On timeout the caller unwinds
+// but transport.Send's WriteJSON goroutine stays alive and may still land the
+// bytes once the pipe drains. Meanwhile writeMessage has deleted the outstanding
+// entry, so QUM-1066's in-flight filter does not suppress a retry and the next
+// poke re-drains the same maildir entry. A wedged-then-recovered child can
+// therefore see the notification twice. That is the deliberate trade — a
+// duplicate notification is recoverable, a hung fleet is not — but do not read
+// QUM-1066 as making delivery exactly-once.
+var childDrainWriteTimeout = newAtomicDuration(weaveDrainWriteTimeout)
 
 // isExitError reports whether err wraps an *exec.ExitError. During intentional
 // shutdown the child process typically exits non-zero (exit status 1, signal:
@@ -513,8 +537,32 @@ func (h *unifiedHandle) feedTasks() {
 		// `later`-priority system message wrapped in the §3.2 task tag, so it
 		// defers to AFTER the current turn (a clean task boundary) rather than
 		// splicing mid-turn.
-		_, _ = h.rt.WriteSystemMessage(context.Background(),
+		//
+		// BOUNDED (QUM-1072), for the same reason as the two writes in
+		// drainPendingToStdin — and this one is not merely symmetric, it is the
+		// path the drain's bound could NOT protect. Real.Delegate pokes inline via
+		// `runtime.NotifyWake()` → unifiedHandle.Wake, which calls feedTasks
+		// BEFORE drainPendingToStdin. So an unbounded write here hangs the
+		// DELEGATOR's MCP call forever and never reaches the bounded drain at all.
+		//
+		// Task state is already flipped to "in-progress" above, so a timed-out
+		// write means the task is marked started but its notification never landed
+		// — it is NOT re-fed by a later poke (this loop skips non-"queued" tasks).
+		// That makes the WARN the only record, hence the verbatim task ID.
+		d := childDrainWriteTimeout.get()
+		writeCtx, cancelWrite := context.WithTimeout(context.Background(), d)
+		_, err := h.rt.WriteSystemMessage(writeCtx,
 			inboxprompt.BuildTaskNotification(tk.ID, prompt), "later", []string{"task:" + tk.ID})
+		cancelWrite()
+		if err != nil {
+			slog.Default().Warn(
+				"unified-runtime: feedTasks write failed — the task is already marked in-progress and this loop only feeds `queued` tasks, so its notification will NOT be re-sent by a later poke",
+				slog.String("agent", h.name),
+				slog.String("task_id", tk.ID),
+				slog.Duration("deadline", d),
+				slog.Any("err", err),
+			)
+		}
 	}
 }
 
@@ -542,75 +590,12 @@ func (h *unifiedHandle) WakeForDelivery() error {
 	return nil
 }
 
-// drainPendingToStdin reads the durable maildir + status_change envelopes and
-// writes each, tag-wrapped (§3.2) and priority `next`, to the CLI stdin
-// (QUM-817). The isReplay echo of each write later confirms delivery
-// (OnDelivered → MarkDelivered). Replaces the old Go-queue enqueue path.
+// drainPendingToStdin drains this child's inbox to stdin under the child policy
+// (QUM-1062). The implementation is shared with the root path — see drain.go,
+// and childDrainPolicy for every way the two differ and why, including the
+// deliberately-nil serialising mutex (the QUM-1066 TOCTOU residual).
 func (h *unifiedHandle) drainPendingToStdin() {
-	pending, err := agentloop.ListPending(h.sprawlRoot, h.name)
-	if err != nil {
-		slog.Default().Debug(
-			"unified-runtime: drainPendingToStdin ListPending failed",
-			slog.String("agent", h.name),
-			slog.Any("err", err),
-		)
-	}
-	statusLines := inboxprompt.DrainStatusChangeLines(h.sprawlRoot, h.name)
-	if len(pending) == 0 && len(statusLines) == 0 {
-		return
-	}
-	interrupts, asyncs := inboxprompt.SplitByClass(pending)
-	// QUM-821: interrupt-class inbox messages (send_message(interrupt=true)) are
-	// written at priority `now` (cancel-and-replace urgency); async-class stays
-	// `next`. The `now` priority itself preempts the recipient — no separate bare
-	// interrupt frame is issued (that is reserved for Esc-abort). Each batch is
-	// one stdin message carrying its tag-wrapped lines.
-	if len(interrupts) > 0 {
-		ids := make([]string, 0, len(interrupts))
-		for _, e := range interrupts {
-			ids = append(ids, e.ID)
-		}
-		if uuid, err := h.rt.WriteSystemMessage(context.Background(),
-			inboxprompt.BuildInterruptFlushPrompt(interrupts), "now", ids); err == nil {
-			// QUM-821: a now-priority (cancel-and-replace) message is injected
-			// directly into the model turn and is NOT echoed back via
-			// --replay-user-messages, so the isReplay consumption ack that
-			// normally drives delivery confirmation (markConsumed → OnDelivered)
-			// never arrives. Confirm delivery synchronously on the successful
-			// write. Without this the entry stays in pending/ and PostTurnSweep
-			// (which re-wakes whenever pending/ is non-empty) re-drains and
-			// re-injects it after every turn — an unbounded stdin write storm
-			// against a busy recipient (empirically ~30 writes/s; QUM-821
-			// sandbox finding against real claude 2.1.173).
-			//
-			// Routing through ConfirmDeliveredWithoutReplay (not coord.OnDelivered
-			// directly) also flips the in-memory outstanding entry to consumed —
-			// otherwise a now-uuid would leak as perpetually statePending, wrong
-			// for the Slice-4 recall / queued→sent UI that reads Outstanding().
-			//
-			// Tradeoff (by design): ack-on-write means the urgent content is
-			// considered delivered before the CLI has processed it. If the CLI
-			// dies between the write and processing it is NOT redelivered on
-			// restart — a weaker guarantee than the async (ack-on-isReplay) path,
-			// accepted for the urgency tier.
-			h.rt.ConfirmDeliveredWithoutReplay(uuid)
-		}
-	}
-	// QUM-559: status lines ride along with the async batch, prepended so they
-	// surface before any queued maildir messages. When only status lines exist
-	// (no asyncs), they are written with no entry IDs (nothing to MarkDelivered).
-	if len(asyncs) > 0 || len(statusLines) > 0 {
-		ids := make([]string, 0, len(asyncs))
-		for _, e := range asyncs {
-			ids = append(ids, e.ID)
-		}
-		var prompt strings.Builder
-		for _, line := range statusLines {
-			prompt.WriteString(line)
-		}
-		prompt.WriteString(inboxprompt.BuildQueueFlushPrompt(asyncs))
-		_, _ = h.rt.WriteSystemMessage(context.Background(), prompt.String(), "next", ids)
-	}
+	runDrain(h.rt, h.sprawlRoot, h.name, childDrainPolicy())
 }
 
 // unifiedHandleStopWaitTimeout bounds the post-Kill session.Wait() inside

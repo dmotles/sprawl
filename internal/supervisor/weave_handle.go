@@ -15,17 +15,14 @@ import (
 	"context"
 	"fmt"
 	"io"
-	"log/slog"
 	"os"
 	"path/filepath"
-	"strings"
 	"sync"
 	"sync/atomic"
 	"time"
 
 	"github.com/dmotles/sprawl/internal/agentloop"
 	backendpkg "github.com/dmotles/sprawl/internal/backend"
-	"github.com/dmotles/sprawl/internal/inboxprompt"
 	runtimepkg "github.com/dmotles/sprawl/internal/runtime"
 	"github.com/dmotles/sprawl/internal/usage"
 )
@@ -62,9 +59,15 @@ type WeaveRuntimeHandle struct {
 	stopErr  error
 }
 
-// weaveDrainWriteTimeout bounds the stdin write in drainPendingToStdin. It is a
-// const, not a test-overridable var, so the CLAUDE.md atomicDuration convention
-// does not apply. See the write site for why an unbounded write is fleet-fatal.
+// weaveDrainWriteTimeout bounds each stdin write of weave's drain, and is also the
+// single literal childDrainWriteTimeout derives from (runtime_launcher.go), so the
+// two paths cannot drift apart. QUM-1062 moved the write itself into drain.go's
+// writeInjection — see there for why an unbounded write is fleet-fatal.
+//
+// A const, not a test-overridable var: nothing overrides weave's bound, so the
+// CLAUDE.md atomicDuration convention does not apply here. The child's twin IS
+// overridden, which is why that one is an atomicDuration reached through a func
+// seam on the policy.
 const weaveDrainWriteTimeout = 5 * time.Second
 
 // weaveInboxRedrainInterval is how often the redrain ticker re-drains weave's
@@ -236,105 +239,14 @@ func (h *WeaveRuntimeHandle) WakeForDelivery() error {
 	return nil
 }
 
-// drainPendingToStdin reads the durable maildir + status_change envelopes and
-// writes them, tag-wrapped, as ONE kind:system priority-`next` stdin frame
-// carrying the maildir entry IDs (QUM-925). The isReplay echo of the write later
-// confirms delivery (markConsumed → OnDelivered → MarkDelivered).
+// drainPendingToStdin drains weave's inbox to stdin under the root policy
+// (QUM-1062). The implementation is shared with the child path — see drain.go,
+// and weaveDrainPolicy for every way the two differ and why.
 //
-// Sibling: unifiedHandle.drainPendingToStdin (runtime_launcher.go) for children.
-// It deliberately differs in two ways.
-//
-// 1. PRIORITY. The child path writes interrupt-class entries at priority `now`;
-// weave writes every class at `next`. Two load-bearing reasons: the LOCKED
-// QUM-925 design states system frames are `next` and STAY `next` through Ctrl+G;
-// and a `now` write arms armInterruptLocked (unified.go writeMessage), preempting
-// weave's in-flight turn, which contradicts "Esc interrupts the turn but system
-// frames remain queued" and the dumb-forwarder rule against timing games.
-// (The no-isReplay-echo problem a `now` write also has is NOT part of this
-// rationale — ConfirmDeliveredWithoutReplay solves that, as the child path shows.)
-// Deliberate, documented consequence: an inter-agent send_message(interrupt=true)
-// targeting weave is non-preemptive, an asymmetry vs a child recipient. Restoring
-// preemption would be a follow-up issue, not a defect here.
-//
-// 2. COALESCING. Because both classes share one priority there is nothing for
-// interrupts to preempt, so both are emitted in a single frame — interrupt bodies
-// first, preserving the old class precedence as ordering within the frame rather
-// than as delivery scheduling. Status lines are prepended ahead of both (QUM-559).
+// Kept as a zero-arg method because rt.SetPostStartHook and the redrain ticker
+// both take a func().
 func (h *WeaveRuntimeHandle) drainPendingToStdin() {
-	h.drainMu.Lock()
-	defer h.drainMu.Unlock()
-
-	pending, err := agentloop.ListPending(h.sprawlRoot, h.name)
-	if err != nil {
-		slog.Default().Debug(
-			"weave-runtime: drainPendingToStdin ListPending failed",
-			slog.String("agent", h.name),
-			slog.Any("err", err),
-		)
-	}
-	// Skip entries already written and awaiting their consumption ack. They stay in
-	// pending/ until MarkDelivered, so without this filter every subsequent poke
-	// re-injects them — the unbounded stdin write storm measured on the child path.
-	if inFlight := h.rt.InFlightSystemEntryIDs(); len(inFlight) > 0 {
-		kept := pending[:0]
-		for _, e := range pending {
-			if _, dup := inFlight[e.ID]; !dup {
-				kept = append(kept, e)
-			}
-		}
-		pending = kept
-	}
-
-	// WARNING, and the reason the failure path below logs the bodies: this is a
-	// DESTRUCTIVE read — messages.DrainStatusChange removes the envelope from
-	// the maildir. Unlike the agentloop entries above (a non-destructive peek, safe
-	// to re-drain), a status_change line that is drained here and then fails to
-	// reach stdin is GONE. That is the same permanent-loss class QUM-925 exists to
-	// fix, one layer down, and it cannot be closed by reordering: whether any lines
-	// exist is only knowable by draining them. The child path
-	// (runtime_launcher.go) has the identical shape. Tracked as a follow-up; the
-	// mitigation here is that the bodies are recoverable from the log.
-	statusLines := inboxprompt.DrainStatusChangeLines(h.sprawlRoot, h.name)
-	if len(pending) == 0 && len(statusLines) == 0 {
-		return
-	}
-
-	interrupts, asyncs := inboxprompt.SplitByClass(pending)
-	ids := make([]string, 0, len(pending))
-	var prompt strings.Builder
-	for _, line := range statusLines {
-		prompt.WriteString(line)
-	}
-	if len(interrupts) > 0 {
-		prompt.WriteString(inboxprompt.BuildInterruptFlushPrompt(interrupts))
-		for _, e := range interrupts {
-			ids = append(ids, e.ID)
-		}
-	}
-	if len(asyncs) > 0 {
-		prompt.WriteString(inboxprompt.BuildQueueFlushPrompt(asyncs))
-		for _, e := range asyncs {
-			ids = append(ids, e.ID)
-		}
-	}
-	// BOUNDED write. Session.WriteUserMessage selects on ctx.Done(), so a
-	// context.Background() here would block forever if claude's stdin pipe is full
-	// (64KB kernel buffer, unread) — and because Real.ReportStatus / Real.SendMessage
-	// call WakeForDelivery SYNCHRONOUSLY on the MCP handler goroutine, drainMu would
-	// then be held forever and every child's report_status / send_message tool call
-	// would wedge fleet-wide behind it. A bound degrades to "this notification is
-	// late" instead.
-	ctx, cancel := context.WithTimeout(context.Background(), weaveDrainWriteTimeout)
-	defer cancel()
-	if _, err := h.rt.WriteSystemMessage(ctx, prompt.String(), "next", ids); err != nil {
-		slog.Default().Warn(
-			"weave-runtime: drainPendingToStdin write failed — maildir entries stay in pending/ for the next poke, but any status_change lines in this batch are LOST (destructive drain); their bodies follow so they are recoverable from this log",
-			slog.String("agent", h.name),
-			slog.Int("lost_status_lines", len(statusLines)),
-			slog.String("lost_status_bodies", strings.Join(statusLines, "")),
-			slog.Any("err", err),
-		)
-	}
+	runDrain(h.rt, h.sprawlRoot, h.name, weaveDrainPolicy(&h.drainMu))
 }
 
 // Stop tears down the runtime, activity subscriber, session, and activity

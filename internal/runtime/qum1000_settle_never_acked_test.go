@@ -1080,6 +1080,22 @@ func assertOnlyQCancelled(t *testing.T, cancelled []string, promptP, promptQ str
 //	                                           lie in one of them, and did: before
 //	                                           the split it blamed an extra cancel
 //	                                           while printing an EMPTY cancel list.
+//	M6 delete the replayEcho for the swept   — NO CASCADE, in both swept arms.
+//	   prompt P in the swept arms              Added by QUM-1068, which made the
+//	                                           adjacent consume-count assertion
+//	                                           read 1 instead of 2. Since 1 is now
+//	                                           also what a never-arriving echo
+//	                                           would print, the count no longer
+//	                                           distinguishes "acked" from "not
+//	                                           acked" — so this mutation exists to
+//	                                           prove the NO-CASCADE state assertion
+//	                                           carries that job on its own. It
+//	                                           does: printed "Q after T2:
+//	                                           state=stateConsumed, want
+//	                                           statePending" in both arms. (Same
+//	                                           printed output as M3, by a different
+//	                                           route — M3 breaks the ack
+//	                                           bookkeeping, M6 removes the ack.)
 //	M5 snapshotPendingUser also returns      — RECALL and SENDALLNOW. NOT unique:
 //	   stateConsumed entries (the tempting     it also fails TestRecall_OnlyPending-
 //	   "fix" for QUM-1033)                     UserRehydrates_TwoAckModels, the
@@ -1107,9 +1123,12 @@ func assertOnlyQCancelled(t *testing.T, cancelled []string, promptP, promptQ str
 //	                                           pending to resend), not M5.
 //
 // M4 (markConsumed's Publish moved inside the statePending guard) flips the
-// post-sweep consume count 2→1. That is an intentional-change tripwire, not a
-// defect kill: the property under test is that a post-sweep ack is not
-// REJECTED, not the count.
+// post-sweep consume count 2→1. That was written as an intentional-change
+// tripwire rather than a defect kill, and it fired exactly as predicted:
+// QUM-1068 IS that change, so the assertion now reads 1 and the tripwire is
+// spent. The property under test was always that a post-sweep ack is not
+// REJECTED, not the count — and that property is carried by the no-cascade state
+// assertion, not by the count. Re-adding the ungated publish flips it back to 2.
 //
 // Assertions kept as BASELINE rather than as evidence, labelled so they are not
 // counted as kills: interruptCount()==0 (nothing in routeFrame can reach
@@ -1246,12 +1265,21 @@ func TestQUM1000_WrongfulSweep_LosesRecallNotDelivery(t *testing.T) {
 			drain()
 
 			// The late ack for an already-swept entry is ACCEPTED, not rejected: the
-			// entry is still there to ack. Two causes for a count of 1: the echo did
-			// not land, or markConsumed's Publish was moved inside its statePending
-			// guard (M4 — an intentional change, not a defect). Either way the
-			// no-cascade assertion below would no longer prove what it claims.
-			if n := consumedFor(all, promptP); n != 2 {
-				t.Fatalf("EventUserMessageConsumed for P = %d, want 2 (the sweep's, plus the CLI's later ack); events=%v", n, eventNames(all))
+			// entry is still there to ack. Since QUM-1068 made markConsumed
+			// idempotent, that acceptance publishes NOTHING — the sweep already
+			// flipped P out of statePending, so the echo's markConsumed is a no-op
+			// and the sweep's own publish is the only one. Hence 1, not 2.
+			//
+			// The count is therefore NOT what proves the echo landed, and never
+			// really was: 1 is now also what you would see if the echo never
+			// arrived. The NO-CASCADE assertion below is the load-bearing one, and
+			// it is genuinely discriminating — deleting the replayEcho line above
+			// makes it fail with "Q after T2: state=stateConsumed", because without
+			// an ack T2's terminal sweeps Q (watched; recorded as M6 in the mutation
+			// log). Keep both: this count pins that acceptance is silent, the state
+			// assertion pins that acceptance happened.
+			if n := consumedFor(all, promptP); n != 1 {
+				t.Fatalf("EventUserMessageConsumed for P = %d, want 1 (the sweep's only — QUM-1068 makes the CLI's later ack a silent no-op); events=%v", n, eventNames(all))
 			}
 			// NO CASCADE: that late ack counts as T2's ack, so T2's terminal does not
 			// sweep Q — which sits under the watermark and would otherwise be the

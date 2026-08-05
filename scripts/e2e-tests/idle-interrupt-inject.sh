@@ -20,11 +20,15 @@
 #       (a) the child's urgent ACK reaches weave (now-priority preempts the
 #           in-flight turn — empirically it ACKs well before the sleep ends).
 #       (b) STORM REGRESSION GATE: the child's raw NDJSON shows a BOUNDED number
-#           of now-priority stdin writes for that single urgent send. QUM-821
-#           found that a now message yields no isReplay ack, so without the
-#           synchronous mark-on-write fix PostTurnSweep re-injects it every turn
-#           (~1990 writes / 1989 turns in 68s). One urgent send must produce a
-#           handful of writes, not thousands.
+#           of now-priority stdin writes for that single urgent send. A now
+#           message's isReplay ack is NOT GUARANTEED (QUM-1068 measured 51 of 54
+#           echoed, so 3 were not), so without the synchronous mark-on-write fix
+#           an un-acked entry stays in pending/ and PostTurnSweep re-injects it
+#           every turn (~1990 writes / 1989 turns in 68s). One urgent send must
+#           produce a handful of writes, not thousands.
+#           (QUM-821 originally recorded this as "a now message yields no
+#           isReplay ack" — measured false by QUM-1068; the gate is unaffected,
+#           only the stated reason changed.)
 #
 # Esc-abort-carries-no-content is verified at the unit layer (QUM-821:
 # TestInterrupt_CarriesNoContent + supervisor now-priority drain tests); the

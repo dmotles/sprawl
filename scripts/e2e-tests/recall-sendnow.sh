@@ -239,9 +239,11 @@ test_run() {
     else
         pass "C: neither superseded queued uuid produced an isReplay echo"
     fi
-    # The now message drives a turn. now-writes are NOT echoed via
-    # --replay-user-messages (QUM-821 ack asymmetry), so we assert the model
-    # produced an assistant turn after the supersede rather than an isReplay.
+    # The now message drives a turn. We assert the model produced an assistant
+    # turn after the supersede rather than asserting on an isReplay echo: the
+    # echo is not GUARANTEED for a now-write (QUM-1068 measured 51 of 54 echoed,
+    # so 3 were not), which makes it unusable as a hard gate in either direction.
+    # (This comment previously claimed now-writes are never echoed — false.)
     if jq -rc 'select(.type=="assistant")' "$OUT_C" 2>/dev/null | grep -qiF "COMBINED"; then
         pass "C: the single now message drove a turn (assistant replied COMBINED)"
     else
