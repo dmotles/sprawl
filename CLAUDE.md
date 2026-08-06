@@ -83,15 +83,15 @@ races was a *production* defect: four concurrent unsynchronised writers to one
 caller-supplied `io.Writer`. `validate` now depends on `test-race` **instead of**
 `test`; there is no uninstrumented run.
 
-**The pre-fix count is run-dependent — do not quote a bare total.** The detector
-reports what it witnesses, so repeated pre-fix runs disagree: `internal/rootinit`
-reported **8** (six writer races plus two from the `callOrder` append), while
-`internal/backend` reported **3** in three of four runs and **2** in the fourth.
-The commonly-cited "9 races" figure is one observation, and the 4db5057 commit
-message's "rootinit 6" undercounts by the two `callOrder` reports. The honest
-statement is "races in two packages, count varying by run" — the variance is
-itself the point (see the `-shuffle=on` follow-up: the gate currently gives
-order-dependent races exactly one ordering).
+**A race count is run-dependent — do not quote a bare total.** The detector
+reports what it witnesses, so repeated runs disagree: pre-fix,
+`internal/rootinit` reported **8** (six writer races plus two from the
+`callOrder` append), while `internal/backend` reported **3** in three of four
+runs and **2** in the fourth. State it as "races in two packages, count varying
+by run" — the variance is itself the point (see the `-shuffle=on` follow-up: the
+gate currently gives order-dependent races exactly one ordering). A commit
+message in history (`4db5057`) quotes "9 races (backend 3, rootinit 6)"; that
+rootinit figure omits the two `callOrder` reports.
 
 State the guarantee accurately, because it is narrower than "no races exist":
 
@@ -139,12 +139,11 @@ shape one test away from the same defect. So `internal/merge` appearing here is
 not evidence of a third racing package.
 
 Snapshotting the var at goroutine entry does **not** fix it — the snapshot read
-*is* the racing access. `session.go` carried comments asserting exactly the
-opposite ("snapshot at goroutine entry so tests ... can't race with us") for a
-long time; QUM-972 deleted them. Note also that a knob whose override *happens*
-to be safe today because every caller writes it before starting the reader is
-safe only by an **unstated precondition**; convert it rather than documenting the
-precondition.
+*is* the racing access. Do not write (or trust) a comment claiming otherwise;
+QUM-972 deleted the ones `session.go` carried. Note also that a knob whose
+override *happens* to be safe today because every caller writes it before
+starting the reader is safe only by an **unstated precondition**; convert it
+rather than documenting the precondition.
 
 ## Commit guard (QUM-808)
 
@@ -177,9 +176,9 @@ the first worktree is spawned.
 
 ### Reference-transaction backstop (QUM-837)
 
-The pre-commit guard above is **skippable by `git commit --no-verify`** (the
-QUM-836 leak forced agents onto `--no-verify`, which let the QUM-830 commit land
-on `main`). `scripts/guard-main-ref` closes that hole: it is a git
+The pre-commit guard above is **skippable by `git commit --no-verify`**, and
+any condition that pushes agents onto `--no-verify` therefore disables it
+(QUM-836/QUM-830). `scripts/guard-main-ref` closes that hole: it is a git
 `reference-transaction` hook — a class git does **not** skip under
 `--no-verify`. It rejects any update to `refs/heads/main` by a non-root agent
 **regardless of how the update was attempted** (commit, reset, merge, even
@@ -235,6 +234,123 @@ moving `main`'s ref back without touching the working tree:
 The guard makes this recovery a rare exception, not a routine: agents are
 blocked from landing on `main` in the first place.
 
+### Recovering a downstream branch after a squash-merge (QUM-1083)
+
+**The precondition.** Squash-merging a base branch to `main` replaces its
+commits with one new commit carrying a **different SHA**. A branch still based
+on the *originals* now holds that content twice — once in its own history, once
+in the squash — so `git rebase main` replays base commits onto a tree that
+already contains them. This hits **any fan-out with a common base**, which is
+the normal shape whenever two managers stack work on one tree. It is not
+anyone's mistake; it is what squash-then-rebase does.
+
+**Both natural checks lie, in opposite directions.** `git branch --contains
+<original-base-tip>` does **not** list `main` after a squash-merge, even though
+the content is fully present — the reading "not merged" and the reading
+"merged, re-parented" have opposite correct responses. And the rebase itself
+**may succeed, which proves nothing**: git drops a replayed commit on an exact
+patch-id match (`skipped previously applied commit`) or when the replay empties
+out (`patch contents already upstream`), so a single-commit base, or base
+commits touching disjoint files, sail through. As soon as one base commit's
+patch does not apply verbatim to the squashed tree — the normal case for a
+branch that touches a file more than once — it conflicts, and it conflicts on
+the *base* commits, not on yours.
+
+**Prevent, don't recover.** When two branches share a base, either **merge the
+dependent one first** or **rebase it onto the squash before merging the base**.
+Best of all, don't base a branch on another branch that hasn't landed yet. The
+procedure below is for when that was missed.
+
+**Step 1 — gate on the base being content-equivalent.**
+
+```bash
+git diff <squash-commit-on-main> <original-base-tip>   # must be EMPTY
+```
+
+If it is not empty, **stop**: the squash changed content, and the downstream
+delta is not safe to replay blind.
+
+**Step 2 — cherry-pick the delta; do not rebase.**
+
+```bash
+git switch -c <my-branch>-rebased main
+git cherry-pick -n <original-base-tip>..<my-tip>
+```
+
+The range excludes the already-landed commits **by construction**, where a
+rebase includes them by construction. That difference is the whole reason this
+works. On the clean path `-n` leaves nothing in progress and `git status` shows
+an ordinary staged set, which is where step 3 happens.
+
+**A conflict here does not mean step 1 failed.** Step 1 only establishes that
+the squash matches the *original base*; it says nothing about commits `main`
+acquired afterwards. You branched off `main`'s tip, so if later work touched
+the same regions as your delta you get an ordinary cherry-pick conflict with
+step 1 entirely correct — resolve it as such rather than re-auditing the gate.
+A conflicted *range* cherry-pick leaves the sequencer populated
+(`.git/sequencer`, no `CHERRY_PICK_HEAD`), so `git status` says `Cherry-pick
+currently in progress` and branch switching is refused until you resolve it or
+run `git cherry-pick --abort`.
+
+**Step 3 — verify the delta, not the absence of conflicts.**
+
+If you branched off the squash commit and `main` has not moved since, the tree
+must match exactly:
+
+```bash
+git diff <my-tip>          # must be EMPTY
+git status --short         # git diff cannot see untracked strays
+```
+
+If `main` has advanced past the squash, that diff reports `main`'s later
+commits and is **not** a pass/fail predicate — compare the *deltas* instead
+(QUM-1085):
+
+```bash
+diff <(git diff <original-base-tip> <my-tip>) \
+     <(git diff main <my-branch>-rebased)     # must be exactly ZERO lines
+```
+
+Raw line counts here are dominated by blob `index` and `@@` header lines; to
+count only content, filter with
+`| grep -E '^[<>] [+-]' | grep -vE '^[<>] (\+\+\+|---)'`.
+
+**A clean cherry-pick is not evidence of an identical tree.** The wrong range
+exits **0** with content silently missing. Git reports textual success; it does
+not report that you got the tree you meant. (And never sweep a stray in with
+`git add -A` — see below.)
+
+**Step 4 — commit, then check the parent.**
+
+```bash
+git commit
+git merge-base --is-ancestor main <my-branch>-rebased   # must exit 0
+```
+
+**Run the parent check after committing, not before** — until you commit, the
+branch tip *is* the squash commit, so `--is-ancestor` inspects `main` against
+itself and returns 0 even with nothing staged. Run it also on **any branch
+someone hands you** claiming to be the rebased result.
+
+**"Tree matches" is necessary and not sufficient.** A branch built on the
+*original* base carries a byte-identical tree and passes steps 1–3 while
+sitting off `main` entirely. Same shape as asserting a value where the
+**wiring** is what matters (cf. QUM-1080) — hence step 4.
+
+**Check that the question the command answers is the question you are
+claiming.** Both hazards above are one class — an asymmetric relation verified
+in the convenient direction and reported in the desired one — and running the
+command *more carefully* does not catch it, because the command is already
+correct and its result already true. `git merge-base --is-ancestor main
+<branch>` (step 4) asks *is `main` contained in my branch* — "I am rebased up to
+date"; the reversed argument order asks *did my commits land on `main`*. Those
+are different claims. Reread the argument order — or the subject of any check
+you did not design — against the sentence you are about to write.
+
+Finally, retire the original: once `<my-branch>-rebased` passes both checks,
+point the merge at it, or `git branch -f <my-branch> <my-branch>-rebased` so
+the name everyone else is using follows the recovered work.
+
 ### Never `git add -A` (QUM-989)
 
 **Standing rule: stage explicit paths only.** Never `git add -A`, `git add .`,
@@ -245,11 +361,11 @@ on a **shared filesystem** next to other agents' scratch output, and agents run
 tooling (`terraform apply`, `az acr build`, test harnesses) that drops files
 nobody named in advance. `-A` stages *whatever is present*, so the contents of
 your commit become a function of **other agents' filesystem hygiene and of
-files you never created**. QUM-989 was filed after exactly that: a 57 KB
-terraform plan and two Azure apply/build logs appeared inside one agent's
-worktree, written by an unidentified process, in a subtree that agent's work
-never touched. Its earlier `-A` commits were clean only because the files
-landed afterwards — timing, not discipline.
+files you never created**. This has occurred here (QUM-989): a 57 KB terraform
+plan and two Azure apply/build logs appeared inside an agent worktree, written
+by an unidentified process, in a subtree that worktree's own work never
+touched. An `-A` commit that comes out clean is clean by timing, not by
+discipline.
 
 The two `main` guards above do not help here: this is a **correct-branch,
 correct-identity commit containing foreign content**. Neither does
@@ -431,7 +547,7 @@ This repo IS Sprawl. The `.sprawl/` directory at the repo root stores agent stat
 
 ## Code Patterns
 
-**Dependency injection**: Commands use a `deps` struct to inject interfaces for external dependencies (backend processes, git, env vars, filesystem). See `cmd/merge.go` or `cmd/report.go` for representative examples. This enables testing without real subprocesses.
+**Dependency injection**: Commands use a `deps` struct to inject interfaces for external dependencies (backend processes, git, env vars, filesystem). See `cmd/gc.go` or `cmd/usage.go` for the command-local shape. Agent operations keep theirs in `internal/agentops` as exported `XxxDeps` with nil-defaulting accessors (`internal/agentops/report.go`), which the command aliases — `cmd/merge.go` is `type mergeDeps = agentops.MergeDeps`. This enables testing without real subprocesses.
 
 **Tests required**: Every file in `cmd/` and `internal/` has a corresponding `_test.go`. Keep it that way. **Read `/testing-practices` before writing any tests for the first time** — it covers the dependency injection pattern, mock conventions, and common pitfalls.
 
@@ -507,6 +623,20 @@ This project uses [golangci-lint v2](https://golangci-lint.run/) with `gofumpt` 
 4. For TUI changes, read `/tui-testing` for the E2E validation harness and manual testing workflow. TUI validation is mandatory for all TUI-related changes.
 5. **Mandatory-test e2e harness.** When you touch any file listed in the table below, run `make test-e2e-matrix-<row>` for the corresponding row (or `make test-e2e-matrix` to run all rows).
 
+   **Derive the row set from the table; never from a list someone handed you (QUM-1081).** The obligation is *every* row whose named files or functions your diff touches — the **union** of both greps over the table as it stands at the commit you are making. Take `git diff --name-only`, grep the table for each path, then grep again for the functions you edited. A row's function list tells you *why* it covers you; it never narrows a path match. And a literal path grep will not match the eight files-column entries that are **globs** rather than literal paths (`internal/supervisor/*.go` and similar) — a grep for `runtime_launcher.go` misses the row that covers it via `internal/supervisor/*.go` — so check the glob rows by hand. **A green run against the wrong rows is indistinguishable from coverage.**
+
+   Corollaries of the union rule, each of which is enough on its own to produce a wrong row set:
+
+   * **The obligation is a property of the commit, not of one file in it.** Derive over every path in `git diff --name-only`, including a delta that is comment-only. A change of any size to a second file brings in that file's rows.
+   * **A bare function name does not identify a row.** The same name can appear in more than one file under different rows — `drainPendingToStdin` exists in both `weave_handle.go` and `runtime_launcher.go`, under different rows. Match on path first, then on symbol.
+   * **Symbol scopes are annotative, not exhaustive.** A row's function list says *why* the row covers a file, not every function it reaches. Treating it as a closed set lets an omission in the table silently shrink an obligation.
+   * **Obligation and coverage are different questions — answer the obligation first.** You may afterwards reason about which of the owed rows could plausibly catch a given defect, but that analysis never removes a row from the run. A reader cannot tell a verified narrowing from a careless one. The asymmetry settles it: over-running costs a CI slot, under-running ships the defect **and comes back green either way**.
+   * **A row named as the *only* live coverage of a path is never optional.** Where the table says in bold that one row is the sole live coverage of some behaviour (e.g. `notif-stacked-restart` for `weave_handle.go`'s `runInboxRedrainTicker` / `weaveInboxRedrainInterval` / `drainPendingToStdin` redrain path — the file's other rows exercise the poke path instead), every other row can come back green while that behaviour goes untested.
+
+   Deriving mechanically also makes a *gap* in the table a checkable claim about the table rather than an unfalsifiable one about the author. One such gap is open today: per QUM-1073, no row delivers an **async** message to a **busy child**.
+
+   **Writing an issue or a brief? State the rule, not the row list.** An implementer cannot tell an authoritative hard-coded list from a careless one, so a list in an AC silently substitutes your reading of the table for theirs. Cite the table and the rule; if you must name a row, name it as an example, not as the set.
+
    **Multi-row invocation is supported (QUM-947).** Several rows in the table below instruct you to re-run additional rows; run them in one shot by calling the driver directly with N row names:
 
    ```bash
@@ -529,7 +659,7 @@ This project uses [golangci-lint v2](https://golangci-lint.run/) with `gofumpt` 
    | present, **unauthenticated** | no | **never read; inert** | row runs and fails with `Not logged in` |
    | present + authenticated | no | n/a | real run |
 
-   The middle state is a **misdiagnosis hazard, not a false green**: the row fails with a Session Error whose body is `Not logged in`, which is trivially misread as a product regression (and has been). If you see `Not logged in`, fix auth — see the `scripts/run-claude` shim and `.env` above; the flag is **not** the remedy, because the gate it controls never fires in that state. And **never hide `claude` from PATH to force a skip.** That converts the middle state into the absent state, and all it buys you is a vacuous all-skip run that asserts nothing. QUM-974 tracks the related defect that `e2e_recover_oauth_token` reports success even when it recovers no token.
+   The middle state is a **misdiagnosis hazard, not a false green**: the row fails with a Session Error whose body is `Not logged in`, which is trivially misread as a product regression. If you see `Not logged in`, fix auth — see the `scripts/run-claude` shim and `.env` above; the flag is **not** the remedy, because the gate it controls never fires in that state. And **never hide `claude` from PATH to force a skip.** That converts the middle state into the absent state, and all it buys you is a vacuous all-skip run that asserts nothing. QUM-974 tracks the related defect that `e2e_recover_oauth_token` reports success even when it recovers no token.
 
    **Skip accounting (QUM-952).** A skipped row is reported as `SKIP <row>`, never `PASS`, and forces a nonzero exit — **exit 3** when rows skipped but none outright failed. Two summary lines are printed:
 
@@ -564,27 +694,67 @@ This project uses [golangci-lint v2](https://golangci-lint.run/) with `gofumpt` 
    (`scripts/test-e2e-lockwait-unit.sh` — pure shell, needs `flock(1)`, no
    `claude`/`tmux`).
 
+   **This table is prose, so a refactor that moves code between files silently
+   relocates it out from under its gates and nothing in the pipeline notices**
+   (QUM-1084: QUM-1060 moved 443 lines of drain logic into
+   `internal/supervisor/drain.go`, leaving three-line wrappers behind, and the
+   rows that gate that behaviour still *looked* correct). When you move
+   code, re-derive the rows for its **new** path, not just the old one.
+
+   **And when you audit this table, audit the category, not the predicted
+   instance.** A prediction handed to you as a target narrows the search to
+   itself: a sweep briefed to confirm one named dead entry can establish that
+   its named entry was never in the table, miss the dead entries that are, and
+   report clean. Audit every entry against the tree.
+
+   When the glob check above turns your file up, note **a glob hit means
+   *incidentally listed*, not *substantively gated*** — `internal/supervisor/*.go`
+   put `drain.go` under `handoff` without anyone deciding that handoff covers the
+   drain. That is a statement about **coverage**, not about what you owe: it never
+   shrinks the union, it only tells you which rows could plausibly catch you. Same
+   for any script you write here — **it is a candidate generator for coverage
+   analysis, never an oracle for an obligation.** An obligation needs no helper;
+   you run the union.
+
+   Two cautions when counting rows this way. **A document that cites a count over
+   itself is self-falsifying by construction** — these paragraphs live inside the
+   corpus they describe, so a whole-file grep matches the prose too (including
+   this sentence). Cite the rule; treat any figure as an illustration at a stated
+   commit, and anchor it to table rows rather than `grep -c` output:
+   `grep -E '^   \| ' CLAUDE.md | grep -cE ...`.
+   And globs are not the only entries a literal path grep misses:
+   `internal/supervisor/liveness/` and `.claude/agents/` are directory prefixes
+   in the files column, matched by neither a path grep nor a glob grep. And
+   because `*` crosses `/` in both bash pattern-matching and git pathspec,
+   **treat a glob row as matching unless you have read the row and it clearly
+   does not apply — when in doubt, include it**; `internal/supervisor/*.go`
+   sweeping in nested packages like `liveness/` is over-inclusion, which is the
+   direction to fail in. The narrow reading is mechanically defensible — shell
+   expansion really does not cross `/` — and it is still the wrong call here:
+   when a mechanism and a fail-safe direction disagree, take the direction that
+   fails safely.
+
    | files touched | matrix row | guards |
    |---|---|---|
    | `cmd/enter.go`, `cmd/enter_notify.go`, `internal/tui/app.go`, `internal/tui/messages.go`, or `internal/tui/tree.go` | `notify-tui` | QUM-311/QUM-312 |
    | `cmd/enter.go`, `internal/supervisor/*.go`, `internal/sprawlmcp/*.go`, `internal/rootinit/postrun.go`, or `internal/tui/app.go`'s `HandoffRequestedMsg`/`SessionRestartingMsg`/`RestartSessionMsg` handlers | `handoff` | QUM-329 |
    | `internal/agentops/merge.go`, `internal/sprawlmcp/server.go` (`toolMerge`), `cmd/merge.go`, `internal/supervisor/supervisor.go` (`Merge`), or `internal/supervisor/real.go` (`Real.Merge` / `mergeFn`) | `merge-reuse` | QUM-511/QUM-489 |
    | `internal/supervisor/question.go`, `internal/supervisor/question_real.go`, `internal/supervisor/real.go` (`RegisterRootRuntime` — QUM-535 root-type persistence; `Real.Wake` proactive `cancelByAgent` — QUM-611/QUM-724), `internal/sprawlmcp/server.go` (`toolAskUserQuestion` + eligibility gate), `internal/sprawlmcp/tools.go` (`ask_user_question` schema), `internal/tui/question.go`, `internal/tui/messages.go` (`DismissQuestionMsg.Hard` — QUM-611), `internal/tui/app.go` (question modal + `Ctrl-Q` binding + `View()` composition for `showQuestion` + `DismissQuestionMsg` cancel path — QUM-611), `internal/tui/statusbar.go` (`SetPendingQuestions` / `SetQuestionModalHidden` — QUM-611), or `cmd/enter.go` (TUI question consumer registration + `QuestionsChanged` forwarder goroutine) | `ask-user-question` | QUM-527/QUM-535/QUM-611 |
-   | `internal/messages/messages.go`, `internal/runtime/unified.go` (QUM-817: `writeMessage`/`WriteSystemMessage`/`markConsumed`/`Outstanding` — the deleted `queue.go` is gone), `internal/agentloop/session_spec.go` (`ReplayUserMessages` — the isReplay echo is what renders the drain row), `internal/supervisor/weave_handle.go`, `internal/supervisor/runtime.go`, `internal/supervisor/runtime_launcher.go` (`drainPendingToStdin`/`feedTasks`/`OnDelivered`), `internal/supervisor/real.go`, `internal/inboxprompt/inboxprompt.go`, `internal/tui/messages.go`, `internal/tui/viewport.go`, or `cmd/enter.go` (`buildEnterSessionSpec` `ReplayUserMessages`) | `drain-row-inject` | QUM-555/QUM-323/QUM-817 |
-   | `internal/runtime/unified.go` (`UnifiedRuntime.Interrupt` — the bare Esc-abort frame, now the ONLY interrupt entry point; QUM-821 deleted `ForceInterruptForDelivery`), `internal/supervisor/runtime_launcher.go` (`drainPendingToStdin` — writes interrupt-class batches at priority `now`, async at `next`; QUM-821 deleted `unifiedHandle.ForceInterruptDelivery`), `internal/supervisor/runtime.go` / `internal/supervisor/weave_handle.go` (QUM-821 deleted the `RuntimeHandle.ForceInterruptDelivery` interface method + `AgentRuntime`/`WeaveRuntimeHandle` impls; `InterruptCount`/`RuntimeEventInterrupted` telemetry stays on `AgentRuntime.Interrupt`), or `internal/supervisor/real.go` (`Real.SendMessage` — interrupt=true now always routes via `WakeForDelivery`; urgency carried by the `now`-priority drain, not a bare interrupt) | `idle-interrupt-inject` | QUM-619/QUM-817/QUM-821 |
+   | `internal/messages/messages.go`, `internal/runtime/unified.go` (QUM-817: `writeMessage`/`WriteSystemMessage`/`markConsumed`/`Outstanding` — the deleted `queue.go` is gone), `internal/agentloop/session_spec.go` (`ReplayUserMessages` — the isReplay echo is what renders the drain row), `internal/supervisor/weave_handle.go`, `internal/supervisor/runtime.go`, `internal/supervisor/runtime_launcher.go` (`drainPendingToStdin`/`feedTasks`), `internal/supervisor/sweep_coordinator.go` (`OnDelivered` — QUM-1084: the table filed this under `runtime_launcher.go`, but it is defined here), **`internal/supervisor/drain.go`** (QUM-1084 — QUM-1060 moved the whole inbox→stdin drain here; `runtime_launcher.go`/`weave_handle.go` keep only three-line wrappers. `runDrain` = read/build/write, `readInboxSnapshot` = the maildir peek + `InFlightSystemEntryIDs` filter + the DESTRUCTIVE `DrainStatusChangeLines`, `buildInjection` = the pure snapshot→frames step, `writeInjection` = the bounded per-frame write + ack. **Blind spot, per QUM-1073: no row in this table exercises the drain's async (`interrupt=false`) branch to a BUSY child** — this row delivers child→weave, and the weave drain has had the in-flight filter since QUM-925, so a green run here is not evidence for that branch. Do not infer async-child coverage from this row or from `idle-interrupt-inject`), `internal/supervisor/real.go`, `internal/inboxprompt/inboxprompt.go`, `internal/tui/messages.go`, `internal/tui/viewport.go`, or `cmd/enter.go` (`buildEnterSessionSpec` `ReplayUserMessages`) | `drain-row-inject` | QUM-555/QUM-323/QUM-817/QUM-1084 |
+   | `internal/runtime/unified.go` (`UnifiedRuntime.Interrupt` — the bare Esc-abort frame, now the ONLY interrupt entry point; QUM-821 deleted `ForceInterruptForDelivery`), `internal/supervisor/runtime_launcher.go` (`drainPendingToStdin` — a wrapper since QUM-1060; QUM-821 deleted `unifiedHandle.ForceInterruptDelivery`), **`internal/supervisor/drain.go`** (QUM-1084 — the interrupt/async priority split now lives here as policy, not as a branch: `drainPolicy.interruptPriority` (`now` for children, `next` for weave — a LOCKED asymmetry), `drainAsyncPriority = "next"`, `coalesceInterrupts`, and `ackInterruptOnWrite` (QUM-821 ack-on-write, child-only, invalid when coalesced). QUM-1072's per-frame `writeTimeout` bound is here too. **Blind spot, per QUM-1073: this row delivers weave→child at `now`, a tier protected by ack-on-write, so it does not reach the async branch to a BUSY child — and no other row does either; the gap is total across this table.** The nearest is `wake-on-traffic`, which reaches async delivery to a newly-woken *idle* child), `internal/supervisor/runtime.go` / `internal/supervisor/weave_handle.go` (QUM-821 deleted the `RuntimeHandle.ForceInterruptDelivery` interface method + `AgentRuntime`/`WeaveRuntimeHandle` impls; `InterruptCount`/`RuntimeEventInterrupted` telemetry stays on `AgentRuntime.Interrupt`), or `internal/supervisor/real.go` (`Real.SendMessage` — interrupt=true now always routes via `WakeForDelivery`; urgency carried by the `now`-priority drain, not a bare interrupt) | `idle-interrupt-inject` | QUM-619/QUM-817/QUM-821/QUM-1084 |
    | `internal/backend/session.go` (`session.Interrupt` — QUM-827: sends ONLY the SDK interrupt control_request, must NOT cancel in-flight async MCP handlers; they cancel at teardown via `drainInflight`), or `internal/runtime/unified.go` (`UnifiedRuntime.Interrupt` `interruptPending` arm when in-turn + `openFrameTurn` clear-on-open + `routeFrame` EndOfTurn re-classifying a user-interrupted turn as `EventInterrupted` instead of `EventTurnCompleted`/`EventTurnFailed` — QUM-827; QUM-927 widened the arm to `inTurn || frameTurnOpen` for the turn-boundary Esc — the mu-guarded `frameTurnOpen` mirror of the reader-goroutine-only `autoTurn.open` set in `openFrameTurn` / cleared in `closeFrameTurn` at both `st.reset()` sites, the `!frameTurnOpen` gate on `setPhaseLocked`'s idle→non-idle clear, and the `system/init` arm-retire that closes the last stale-arm path; **QUM-927 rework also widened the FAULT-SURFACE gate in the `SetTerminalErrorHandler` closure to `inTurnLocked() || frameTurnOpen`** — a second, opposite-direction use of the same flag: the arm SUPPRESSES an error surface for a user Esc, while this gate PRESERVES one for a genuine transport EOF / subprocess death at the same boundary. Touching either needs this row **and** the reducer-level tests in `internal/tui/app_boundary_fault_test.go`, which are the real gate — per QUM-958 both of this row's assertions are structurally unable to detect the "fault surfaces nothing" class, so a pass here is inconclusive. The deliberate no-`EventBackendFaulted`-case decision in `internal/tui/event_translate.go` is pinned by `TestTranslateRuntimeEvent_BackendFaultedHasNoCase`; the root-idle residual gap is QUM-964) | `esc-interrupt-survives` | QUM-827/QUM-927 |
    | `internal/inputcoalesce/coalescer.go` or the `tea.NewProgram` call site in `cmd/enter.go` (`resolveEnterDeps.runProgram` closure) | `paste-coalesce` | QUM-608 |
    | `internal/supervisor/runtime.go` (`AgentRuntime.Wake` / startWithSpec / health probe), `internal/supervisor/real.go` (`Real.Wake` wrapper / `RecoverAgents` post-restart resume path), `internal/sprawlmcp/server.go` (`toolWake`), `internal/backend/claude/adapter.go` (subprocess lifetime / `realStarter.Start` / `Pid()` exposure), or `internal/runtime/unified.go` (Done() closure on terminal fault / `SetTerminalErrorHandler` wiring; QUM-817: `turnloop.go` is deleted — turn lifecycle + Done now flow through `routeFrame`) | `wake-live` | QUM-606/QUM-724/QUM-817 |
    | `internal/runtime/eventbus.go` (`Publish` Seq stamping, `CurrentSeq`, `PublishWithSeq`; terminal-event undroppable path `isTerminalEvent` / `terminalPublishDeadline` — QUM-775), `internal/runtime/unified.go` (`UnifiedRuntime.Interrupt` idle-branch synthetic `EventInterrupted` emit — QUM-775), `internal/tuiruntime/tuiadapter.go` (`lastSeq`, `pendingMsg` stash/drain, gap-detect branch, `SPRAWL_DEBUG_GAP_INJECT`), `internal/tui/replay.go`, or `internal/tui/app.go`'s `EventDropDetectedMsg` (including its QUM-978 per-leg `rearmPump` — see the `tui-live-render` row) / `ViewportResyncMsg` / `gapConfirmMsg` reducers / `gapStateNormal..gapStateRecovered` / `resyncCmd` / `kickResyncFromGap` / Ctrl+L key arm. **QUM-829 deleted the QUM-775 TUI liveness watchdog and its drop seam** — `TurnWatchdogTickMsg`, `runTurnWatchdog`, `noteBusActivityIfApplicable`, `watchdogTimeoutDefault`, `SPRAWL_TUI_WATCHDOG_TIMEOUT_MS`, `SPRAWL_DEBUG_DROP_NEXT_TERMINAL_MSG`, and the `RuntimeInTurn` `LivenessProbe` in `internal/tui/session_backend.go` — all verified absent from the tree, so do not grep for them to decide whether this row applies (the only `LivenessProbe` left is `internal/supervisor/dead_routing.go`'s unrelated QUM-725 type). Note the watchdog was the mechanism that would have recovered from a parked pump; with it gone, the `EventDropDetectedMsg` re-arm is the only thing standing between a gap and a frozen viewport. | `viewport-resync` | QUM-669/QUM-775/QUM-829/QUM-978 |
    | `internal/tui/app.go`'s pump-delivered reducers — `WaitForEvent()` is ONE-SHOT, so every reducer receiving a bus/pump-delivered msg MUST re-issue `m.bridge.WaitForEvent()` (directly, or via `finalizeTurn` for the terminal trio `SessionResultMsg` / `InterruptCompletedMsg` / `SessionErrorMsg`) or the bubbletea event pump parks and live render freezes (QUM-826). Reducers that re-arm today: `UserMessageSentMsg` / `UserMessageConsumedMsg` (the FIRST non-nil pump event of every typed turn — the original QUM-826 break) / `UserMessageCancelledMsg` / `TurnStartedMsg` / `AssistantContentMsg` / `ToolResultMsg` / `SessionModelMsg` / `CompactBoundaryMsg` / `CompactingStatusMsg` / `CompactFailedMsg` / `EventDropDetectedMsg` (QUM-978), plus the top-level `AssistantTextMsg` / `ThinkingMsg` / `ToolCallMsg` reducers (on the bridge path `MapProtocolMessage` only ever returns these NESTED in `AssistantContentMsg.Msgs`; the standalone reducers are the child-stream / test delivery shape, and they re-arm too). NOT exhaustive as a list of pump-delivered msgs. `EventDropDetectedMsg` is returned directly by `TUIAdapter.WaitForEvent` (both the gap-detect and `SPRAWL_DEBUG_GAP_INJECT` branches) and since QUM-978 re-arms on **every** exit leg — resync-in-flight, burst, already-dropped, below-burst (the last two share a return via the `||` disjunct, and the inner `if m.resyncInFlight` in the burst branch is dead code that is re-armed for symmetry only) — via the nil-guarded `AppModel.rearmPump` helper, batched with the existing `resyncCmd` / `gapDebounceCmd`. The re-arm lives in that reducer **only**: `ViewportResyncMsg` and `gapConfirmMsg` are produced by `resyncCmd` / `gapDebounceCmd` and by the Ctrl+L manual arm (which consumes no pump event at all), never by the pump, so re-arming there too would leave two `WaitForEvent` cmds racing for one event and manufacture the spurious `lastSeq` gaps QUM-669 exists to detect. Pinned by the per-leg tests plus `TestAppModel_GapReducers_RearmExactlyOncePerDrop` / `TestAppModel_CtrlL_DoesNotRearmPump` / `TestAppModel_EventDropDetectedMsg_NilBridge_NoPanic` in `internal/tui/app_drop_rearm_test.go`, and end-to-end by `TestTUIAdapter_GapReducerRearm_DeliversStashedPendingMsg` (the adapter stashes the gap-arriving event's translated msg in `pendingMsg` and only drains it on the NEXT `WaitForEvent`, so without the re-arm that msg is stranded forever). Also `internal/tui/event_translate.go` (`EventUserMessageConsumed`/`Cancelled`/`Sent` → msgs; a nil return means "skip this event, keep reading" — never "park"), or `internal/tui/protocol_mapping.go` — where the trigger is any change that makes `MapProtocolMessage` return a NEW non-nil msg, since that msg becomes pump-delivered and needs a re-arming reducer. QUM-928's sidechain suppression (non-empty `parent_tool_use_id`, inside `mapAssistantMessage`/`mapUserMessage` only) and the deliberately-unmapped `task_notification` are pump-SAFE by construction: both consumers (`internal/tuiruntime/tuiadapter.go`'s `WaitForEvent`, `internal/tui/child_stream.go`) loop on `msg != nil`, so a nil mapping never returns to bubbletea and never consumes the armed cmd. `AutoContinueMsg` and the `task_notification → AutoContinueMsg` mapping were DELETED by QUM-928 — do not grep for them to decide whether this row applies. | `tui-live-render` | QUM-826/QUM-928 |
-   | `internal/tui/pendingzone.go` (new — `pendingZone` + `classifyInboundFrame` + `peelNotificationEntries`), `internal/tui/chatlist.go` (`zone` field + `ZoneAdd{User,System}`/`ZoneSettle`/`ZoneDrop`/`ZoneUserCount`/`ClearZone` + `buildRender` zone tail + `Reset` zone-clear — QUM-833), `internal/tui/app.go`'s `InboxDrainMsg` (eager `AppendSystemNotification` DELETED) / `UserMessageSentMsg` (eager-create+classify into zone) / `UserMessageConsumedMsg` (settle/relocate, untracked=no-op) / `UserMessageCancelledMsg` (`ZoneDrop`) reducers + `SessionRestartingMsg` zone-clear + retired `queuedUser`/`queuedText`/`syncQueuedIndicator` (`queuedUserCount` now `ZoneUserCount`), `internal/tui/input.go` (retired `SetQueuedCount`/`queuedCount`/`pendingQueuedIndicator` ⏳ indicator), or `internal/tui/replay.go` (both content branches route through the shared `peelNotificationEntries` — single-classifier convergence). **QUM-925 adds `internal/supervisor/weave_handle.go` to this row** (`runInboxRedrainTicker` / `weaveInboxRedrainInterval` / `drainPendingToStdin`): because this row injects straight into `queue/pending/` on disk there is no in-process producer to poke, so the redrain ticker is the delivery path and **this row is its only live coverage** — the file's other rows (`drain-row-inject`, `idle-interrupt-inject`) exercise the poke path instead. This row is also the primary live evidence for QUM-925 **AC 1** ("an idle weave receiving a system frame enters a turn"): its `L0` asserts the idle precondition and its `L2` asserts turn entry from the CLI's own `"kind":"result"` frames. Note `L1`'s pane citations are NOT AC-1 evidence — they render from sprawl's own `EventUserMessageSent` publish and stay green with the CLI dead (mutation-verified). | `notif-stacked-restart` (re-run `tui-live-render`, `drain-row-inject`, `recall-sendnow`) | QUM-833/QUM-925 |
-   | `internal/usage/*.go`, `internal/supervisor/runtime_launcher.go` (`runUsageSubscriber`), `internal/protocol/types.go` (`AssistantMessage.ParseUsage` + `Usage` parse path), `internal/state/state.go` (AgentState cost-field removal), `internal/tui/app.go` (`persistCostCmd` removal; `ShowUsageMsg`/`DismissUsageMsg` handlers, `showUsage`/`usageModal` modal gate), `internal/tui/usagemodal.go` (new — QUM-721), `internal/tui/commands/registry.go` (`/usage` entry + `ActionShowUsage`), `internal/tui/palette.go` (`ActionShowUsage` dispatch) | `usage` | QUM-368/QUM-721 |
+   | `internal/tui/pendingzone.go` (new — `pendingZone` + `classifyInboundFrame` + `peelNotificationEntries`), `internal/tui/chatlist.go` (`zone` field + `ZoneAdd{User,System}`/`ZoneSettle`/`ZoneDrop`/`ZoneUserCount`/`ClearZone` + `buildRender` zone tail + `Reset` zone-clear — QUM-833), `internal/tui/app.go`'s `InboxDrainMsg` (eager `AppendSystemNotification` DELETED) / `UserMessageSentMsg` (eager-create+classify into zone) / `UserMessageConsumedMsg` (settle/relocate, untracked=no-op) / `UserMessageCancelledMsg` (`ZoneDrop`) reducers + `SessionRestartingMsg` zone-clear + retired `queuedUser`/`queuedText`/`syncQueuedIndicator` (`queuedUserCount` now `ZoneUserCount`), `internal/tui/input.go` (retired `SetQueuedCount`/`queuedCount`/`pendingQueuedIndicator` ⏳ indicator), or `internal/tui/replay.go` (both content branches route through the shared `peelNotificationEntries` — single-classifier convergence). **QUM-925 adds `internal/supervisor/weave_handle.go` to this row** (`runInboxRedrainTicker` / `weaveInboxRedrainInterval` / `drainPendingToStdin`) **and QUM-1084 adds `internal/supervisor/drain.go` alongside it — additively, not as a move**: the ticker and its interval stayed in `weave_handle.go`, but what the ticker *drives* is now `runDrain` under `weaveDrainPolicy` (the serialising `drainMu`, `coalesceInterrupts: true`, and the QUM-559 status-lines-first ordering inside `buildInjection`). Because this row injects straight into `queue/pending/` on disk there is no in-process producer to poke, so the redrain ticker is the delivery path and **this row is its only live coverage** — the file's other rows (`drain-row-inject`, `idle-interrupt-inject`) exercise the poke path instead. This row is also the primary live evidence for QUM-925 **AC 1** ("an idle weave receiving a system frame enters a turn"): its `L0` asserts the idle precondition and its `L2` asserts turn entry from the CLI's own `"kind":"result"` frames. Note `L1`'s pane citations are NOT AC-1 evidence — they render from sprawl's own `EventUserMessageSent` publish and stay green with the CLI dead (mutation-verified). | `notif-stacked-restart` (re-run `tui-live-render`, `drain-row-inject`, `recall-sendnow`) | QUM-833/QUM-925/QUM-1084 |
+   | `internal/usage/*.go`, `internal/supervisor/runtime_launcher.go` (`runUsageSubscriber`), `internal/protocol/types.go` (`AssistantMessage.ParseUsage` + `Usage` parse path), `internal/state/state.go` (AgentState cost-field removal), `internal/tui/app.go` (`persistCostCmd` removal; `ShowUsageMsg`/`DismissUsageMsg` handlers, `showUsage`/`usageModal` modal gate), `internal/tui/usagemodal.go` (new — QUM-721), `internal/tui/commands/registry.go` (`/usage` entry + `ActionShowUsage`; the `ActionShowUsage` dispatch itself lives in `app.go`, already named above) | `usage` | QUM-368/QUM-721 |
    | `internal/supervisor/real.go` (`Real.Kill`, `Real.Pause`), `internal/supervisor/runtime.go` (`AgentRuntime.Pause`, `watchHandleExit`), `internal/supervisor/liveness/`, `internal/sprawlmcp/server.go` (`toolPause`), `internal/state/state.go`, `cmd/enter.go` shutdown-loop | `pause-lifecycle` | QUM-722 |
    | `internal/state/state.go` (`StatusComplete` constant, `IsTerminal` narrowed to `{retired, retiring}`, legacy-`stopped` migration in `LoadAgent`), `internal/supervisor/runtime.go` (set-sites that previously stamped `StatusStopped` now stamp `StatusComplete` on `state:complete` teardown / `StatusFaulted` on clean-exit-without-report), or `internal/supervisor/real.go` (`Real.Delegate` auto-wake on `StatusComplete` + `TerminalAgentError` gate narrowed to `{retired, retiring}`, `Real.SendMessage` mirror, `Real.Wake` accept-set, `RecoverAgents` settle-pass) | `complete-lifecycle` | QUM-786/QUM-787/QUM-789/QUM-790 |
    | `internal/supervisor/real.go` (`RecoverAgents`), `internal/supervisor/runtime.go` (`StartResume`, `RuntimeStartSpec`), `internal/supervisor/runtime_launcher.go` (`Start` initialPrompt override), `internal/agent/restart_prompt.go` (new) | `paused-persistence` | QUM-723 |
    | `internal/supervisor/runtime.go` (`AgentRuntime.StopAfterTurn` — the reusable defer-teardown-to-turn-end primitive: subscribe-before-check EventBus wait on `{EventTurnCompleted, EventInterrupted, EventTurnFailed, EventBackendFaulted}` / ctx / timeout runaway guard), or `internal/supervisor/real.go` (`Real.ReportStatus` teardown goroutine — calls `rt.StopAfterTurn(stopCtx, runtimeStopTimeout)` instead of `rt.Stop` so a follow-on send_message in the same turn survives; failure-path `syncRuntimeFromState` still runs after it returns) | `report-then-send` (re-run `complete-lifecycle`) | QUM-866 |
    | `internal/supervisor/real.go` (`Real.SendMessage` / `Real.ReportStatus` dead-recipient route-up), `internal/supervisor/dead_routing.go` (new), `internal/inboxprompt/dead_routing.go` (new), `internal/tui/death_toast.go` (new), `internal/tui/app.go` (`AgentDiedMsg` reducer), or `cmd/enter.go` (registry-subscriber death goroutine in `onStart`) | `death-observability` | QUM-725 |
-   | `internal/supervisor/real.go` (`Real.SendMessage`, `Real.Delegate`, `Real.Wake` WakeReason), `internal/supervisor/runtime_launcher.go` (`feedTasks` writes delegated tasks to stdin priority `later` — QUM-817 Amendment 1: proven not to strand an idle agent), `internal/sprawlmcp/server.go` (`toolSendMessage`, `toolDelegate`), `internal/sprawlmcp/tools.go` (schemas), `internal/agent/wake_prompts.go` (new) | `wake-on-traffic` | QUM-726/QUM-817 |
+   | `internal/supervisor/real.go` (`Real.SendMessage`, `Real.Delegate`, `Real.Wake` WakeReason), `internal/supervisor/runtime_launcher.go` (`feedTasks` writes delegated tasks to stdin priority `later` — QUM-817 Amendment 1: proven not to strand an idle agent), `internal/sprawlmcp/server.go` (`toolSendMessage`, `toolDelegate`), `internal/sprawlmcp/tools.go` (schemas), `internal/agent/wake_prompts.go` (new), **`internal/supervisor/drain.go`** (QUM-1084, scoped: `Real.SendMessage` → `WakeForDelivery` → `drainPendingToStdin` → `runDrain` is how the woken agent's first inbox item actually reaches stdin, so a drain break surfaces here. This is the **only** row that reaches the async (`interrupt=false`) branch at all — but to a **newly-woken, idle** child, NOT the busy child of QUM-1073's gap, so it does not close that gap) | `wake-on-traffic` | QUM-726/QUM-817/QUM-1084 |
    | `internal/agentops/spawn.go` (`PrepareSpawn` subagent validation: type allow-list, depth cap, branch rejection, root-cannot-host, parent worktree+branch reuse), `internal/supervisor/real.go` (`Real.Spawn` `AgentInfo.Subagent` / `SharedWorktreeWith` population + StatusReport mirror), `internal/supervisor/supervisor.go` (`SpawnRequest.Subagent`, `AgentInfo.Subagent`/`SharedWorktreeWith`), `internal/sprawlmcp/server.go` (`toolSpawn` subagent+branch interaction validation), `internal/sprawlmcp/tools.go` (spawn schema `subagent` property), or `internal/agent/prompt_child_sections.go` (engineer reviewer-spawn prose) | `subagent-model` | QUM-709/QUM-756 |
    | `.claude/agents/oracle.md`, `.claude/agents/test-critic.md`, or any other worktree-local sidechain definition under `.claude/agents/` | `sidechain-discovery-smoke` | QUM-757 |
    | `internal/claude/launch.go` (`LaunchOpts.ReplayUserMessages` / `BuildArgs`), `internal/backend/session.go` (`SessionSpec.ReplayUserMessages`, `runReader` `control_cancel_request` route + `handleControlCancelRequest`), `internal/backend/claude/adapter.go` (`LaunchOpts.ReplayUserMessages` set-site), `internal/agentloop/session_spec.go` + `cmd/enter.go` `buildEnterSessionSpec` (QUM-817: both set `ReplayUserMessages: true` — without it the CLI never echoes and the whole Slice-2 consumption-ack contract silently breaks), or `internal/protocol/types.go` (`UserMessage.{Priority,UUID,SessionID}`, `UserFrame` (`isReplay`), `CancelAsyncMessageRequest` (`message_uuid`), `CancelAsyncMessageAck` (`cancelled`), `SystemNotification`) | `replay-echo` | QUM-814/QUM-817 |
