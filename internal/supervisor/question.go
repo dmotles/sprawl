@@ -7,7 +7,7 @@
 // (user-dismissed), the agent retires (CancelByAgent), or the supervisor
 // shuts down (closeAll).
 //
-// See docs/research/ask-user-question-mcp-design.md for the full design.
+// See docs/archive/research/ask-user-question-mcp-design.md for the full design.
 package supervisor
 
 import (

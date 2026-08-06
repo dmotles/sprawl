@@ -1,6 +1,6 @@
 // QUM-475: Exhaustive coverage for the runtime-event → tea.Msg mapping in
 // TUIAdapter.WaitForEvent. The wedge described in
-// docs/forensics/tui-weave-wedge-2026-05-05.md happened because EventInterrupted
+// docs/archive/forensics/tui-weave-wedge-2026-05-05.md happened because EventInterrupted
 // was mapped to a non-terminal request-ack message (InterruptResultMsg), so the
 // AppModel never transitioned out of TurnStreaming when an interrupt drained.
 //

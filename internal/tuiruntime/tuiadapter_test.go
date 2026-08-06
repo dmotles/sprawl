@@ -332,7 +332,7 @@ func TestTUIAdapter_WaitForEvent_TurnFailed_SessionResultError(t *testing.T) {
 // Interrupt() (see TestTUIAdapter_Interrupt_ForwardsToRuntime). Conflating
 // the two — as the pre-fix code does — means the request-ack path drives
 // finalize logic (causing the wedge described in
-// docs/forensics/tui-weave-wedge-2026-05-05.md) and the terminal path is
+// docs/archive/forensics/tui-weave-wedge-2026-05-05.md) and the terminal path is
 // invisible to the AppModel.
 func TestTUIAdapter_WaitForEvent_Interrupted_InterruptCompletedMsg(t *testing.T) {
 	mock := &adapterMockSession{}

@@ -25,7 +25,7 @@ const maxSummaryLen = 200
 
 // ActivityEntry is a single recorded protocol-level event.
 //
-// See docs/designs/messaging-overhaul.md §4.4.
+// See docs/archive/designs/messaging-overhaul.md §4.4.
 type ActivityEntry struct {
 	TS      time.Time `json:"ts"`
 	Kind    string    `json:"kind"`           // "assistant_text" | "tool_use" | "result" | "system" | "rate_limit"

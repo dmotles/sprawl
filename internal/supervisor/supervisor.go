@@ -103,7 +103,7 @@ type ReportStatusResult struct {
 }
 
 // PeekResult is returned by Supervisor.Peek. See
-// docs/designs/messaging-overhaul.md §4.2.4.
+// docs/archive/designs/messaging-overhaul.md §4.2.4.
 type PeekResult struct {
 	Status string `json:"status"`
 	// Blurb is the short auto-generated capability summary (QUM-899).
@@ -129,7 +129,7 @@ type PeekResult struct {
 }
 
 // MessageSummary is a compact listing entry for a message in the caller's mailbox.
-// See docs/designs/messaging-overhaul.md — returned by Supervisor.MessagesList
+// See docs/archive/designs/messaging-overhaul.md — returned by Supervisor.MessagesList
 // and MessagesPeek.
 type MessageSummary struct {
 	ID        string `json:"id"`      // short ID if available, otherwise full ID
@@ -290,7 +290,7 @@ type Supervisor interface {
 
 	// PeekActivity returns up to `tail` of the most recent activity
 	// entries recorded for the named agent, oldest-first. See
-	// docs/designs/messaging-overhaul.md §4.4. A missing agent (no
+	// docs/archive/designs/messaging-overhaul.md §4.4. A missing agent (no
 	// activity file yet) yields an empty slice and nil error.
 	PeekActivity(ctx context.Context, agentName string, tail int) ([]agentloop.ActivityEntry, error)
 
@@ -315,7 +315,7 @@ type Supervisor interface {
 	// ReportStatus is the canonical status channel: persists the reporter's
 	// LastReport* fields, flips Status for complete/failure, and delivers a
 	// structured async notification to the reporter's parent. See
-	// docs/designs/messaging-overhaul.md §4.2.3. The reporter identity is
+	// docs/archive/designs/messaging-overhaul.md §4.2.3. The reporter identity is
 	// the supervisor's caller (r.callerName) when agentName is empty.
 	ReportStatus(ctx context.Context, agentName, state, summary string) (*ReportStatusResult, error)
 
@@ -365,7 +365,7 @@ type Supervisor interface {
 	RegisterRootRuntime(name string, handle RuntimeHandle, agentState *state.AgentState) (*AgentRuntime, error)
 
 	// --- Question queue (QUM-527 slice 1) ---
-	// See docs/research/ask-user-question-mcp-design.md for the full design.
+	// See docs/archive/research/ask-user-question-mcp-design.md for the full design.
 
 	// AskUserQuestion enqueues a question for human consumption and blocks
 	// until a registered QuestionConsumer (e.g. the TUI) resolves it, the

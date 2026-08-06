@@ -1,5 +1,5 @@
 // Package agentloop implements the per-agent harness queue described in
-// docs/designs/messaging-overhaul.md §4.3. The queue is a pair of on-disk
+// docs/archive/designs/messaging-overhaul.md §4.3. The queue is a pair of on-disk
 // directories (pending/ and delivered/) holding one JSON file per message.
 // Enqueues use a file lock for cross-process serialization of sequence
 // allocation and atomic rename for crash safety.

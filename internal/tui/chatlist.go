@@ -6,7 +6,7 @@ package tui
 // per-(width, expanded) render cache that ViewportModel/ChatRegion display.
 // (The pre-S6 ViewportModel `messages` slice + renderMessages walk and the
 // migration-era dual-append shim are gone — see
-// docs/designs/tui-structural-rewrite-plan.md §3.)
+// docs/archive/designs/tui-structural-rewrite-plan.md §3.)
 //
 // Contract notes:
 //   - No AppendStatus/AppendError/AppendBanner here. Those "contract

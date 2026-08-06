@@ -2,7 +2,7 @@
 
 Stands up the **remote Terraform state backend** every hub Terraform root
 depends on. This is the one-time chicken-and-egg step from
-[`docs/designs/hub/06-iac.md` §6](../../../docs/designs/hub/06-iac.md#6-bootstrap--state-backend):
+[`docs/archive/hub/06-iac.md` §6](../../../docs/archive/hub/06-iac.md#6-bootstrap--state-backend):
 Terraform state must live in Azure Blob Storage, **never** on local disk or in
 this (public) repo.
 

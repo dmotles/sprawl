@@ -131,7 +131,7 @@ func (v *atomicDuration) set(d time.Duration) { v.ns.Store(int64(d)) }
 //     (sweep_coordinator.go). Grep "sweep" here and that is what you find.
 //   - SOON: QUM-1000's settleNeverAcked, which walks the IN-MEMORY rt.outstanding
 //     map and MUTATES entry state without writing anything. (Design doc only at
-//     time of writing — docs/research/qum-1000-local-command-strand-design.md —
+//     time of writing — docs/archive/research/qum-1000-local-command-strand-design.md —
 //     so do not expect a grep to find it.)
 //
 // This function shares nothing with either that a reader would assume from the

@@ -2713,7 +2713,7 @@ func TestAppModel_InterruptCompletedMsg_LeavesAppDrainable(t *testing.T) {
 // still TurnStreaming) must append a banner but NOT drain (drains require
 // idle). When the InterruptCompletedMsg subsequently arrives, the AppModel
 // must transition to TurnIdle so the very next tickAgentsCmd can drain. This
-// is the wedge scenario from docs/forensics/tui-weave-wedge-2026-05-05.md.
+// is the wedge scenario from docs/archive/forensics/tui-weave-wedge-2026-05-05.md.
 func TestAppModel_InterruptCompletedMsg_NotificationDuringInterruptPending(t *testing.T) {
 	sprawlRoot := t.TempDir()
 	seedUnreadForWeave(t, sprawlRoot, 1)

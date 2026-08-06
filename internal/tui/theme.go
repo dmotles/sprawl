@@ -63,7 +63,7 @@ type Theme struct {
 	SelectedItem     lipgloss.Style
 	PlaceholderStyle lipgloss.Style
 
-	// Per-agent report status chip colors (docs/designs/messaging-overhaul.md §4.7).
+	// Per-agent report status chip colors (docs/archive/designs/messaging-overhaul.md §4.7).
 	ReportDotWorking  lipgloss.Style
 	ReportDotBlocked  lipgloss.Style
 	ReportDotFailure  lipgloss.Style

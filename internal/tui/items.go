@@ -4,7 +4,7 @@ package tui
 //
 // This file introduces the new render model that S3+ will wire into AppModel.
 // Nothing here is reachable from production code today — by design. See
-// docs/designs/tui-structural-rewrite-plan.md §3 S1 for slice scope and §2.1
+// docs/archive/designs/tui-structural-rewrite-plan.md §3 S1 for slice scope and §2.1
 // for the architectural target.
 //
 // Contract callouts that the rest of the arc inherits from here:

@@ -16,7 +16,7 @@ package tui
 //     negative half of (2) is structurally vacuous — most call sites were
 //     deleted; a few are retained as documentation via the helper stubs.
 //
-// Reference: docs/designs/tui-structural-rewrite-plan.md §3 S5 + the
+// Reference: docs/archive/designs/tui-structural-rewrite-plan.md §3 S5 + the
 // display-policy comment on QUM-675.
 
 import (

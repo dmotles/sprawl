@@ -14,7 +14,7 @@ import (
 )
 
 // QUM-595: host stdout-reader wedge fix knobs and sentinels. Forensic doc:
-// docs/research/permission-hang-forensic-2026-05-19.md.
+// docs/archive/research/permission-hang-forensic-2026-05-19.md.
 //
 // subscriberSendDeadline bounds how long runReader will block on a
 // per-turn subscriber send before declaring the consumer wedged and
@@ -839,7 +839,7 @@ func (s *session) runReader(ctx context.Context) {
 			// stall the reader — once subscriberSendDeadline elapses we
 			// fault the session with ErrSubscriberWedged so StartTurn
 			// waiters unwind cleanly. See
-			// docs/research/permission-hang-forensic-2026-05-19.md.
+			// docs/archive/research/permission-hang-forensic-2026-05-19.md.
 			//
 			// QUM-618: also race the per-turn ctx. When the turn was abandoned
 			// (per-turn deadline / parent cancel), the watcher has already
@@ -1024,7 +1024,7 @@ func (s *session) matchPendingControl(msg *protocol.Message) bool {
 // persistent reader keeps consuming claude's stdout while a long-running
 // MCP tool handler runs. Without this, `Session.Interrupt` is unobservable
 // mid-tool-wait and the EventBus goes silent for the entire wedge window
-// (see docs/research/qum-549-send-interrupt-during-mcp-tool-wait.md).
+// (see docs/archive/research/qum-549-send-interrupt-during-mcp-tool-wait.md).
 //
 // Only `mcp_message` is asynchronous. `can_use_tool` (and any future
 // subtype that resolves synchronously off a static decision) stays in

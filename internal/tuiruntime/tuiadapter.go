@@ -1,6 +1,6 @@
 // TUIAdapter wraps a UnifiedRuntime so a Bubble Tea model can drive its
 // lifecycle and consume its event stream as tea.Msg values. See QUM-397
-// (docs/designs/unified-runtime.md section 5).
+// (docs/archive/designs/unified-runtime.md section 5).
 //
 // The adapter is intentionally a thin translation layer: it owns one
 // EventBus subscription and converts each RuntimeEvent it receives into the

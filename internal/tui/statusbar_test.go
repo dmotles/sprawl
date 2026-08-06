@@ -453,7 +453,7 @@ func TestStatusBarModel_SetResyncPill_ClearedByEmpty(t *testing.T) {
 
 // --- QUM-675 S5: transient label (the new single sink for status/banner text
 // that used to land in the viewport via vp.AppendStatus / vp.AppendBanner).
-// Spec: docs/designs/tui-structural-rewrite-plan.md §3 S5 + tower's
+// Spec: docs/archive/designs/tui-structural-rewrite-plan.md §3 S5 + tower's
 // display-policy comment on QUM-675. Single field, last-write-wins, no queue,
 // no timer. Cleared by explicit state transitions (tested at the AppModel
 // reducer level in app_test.go), not by an auto-decay.

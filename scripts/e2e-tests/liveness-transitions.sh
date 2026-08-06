@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 # scripts/e2e-tests/liveness-transitions.sh — QUM-615 AgentLiveness matrix row.
 #
-# Spec: docs/research/qum-615-agent-liveness-spec-2026-05-26.md §4. Drives the
+# Spec: docs/archive/research/qum-615-agent-liveness-spec-2026-05-26.md §4. Drives the
 # AgentLiveness transition classes against the observable projections (disk
 # Status + process_alive via the `mcp__sprawl__peek` tool — QUM-899 moved
 # process_alive off the status payload into peek). Phases map 1:1 onto spec

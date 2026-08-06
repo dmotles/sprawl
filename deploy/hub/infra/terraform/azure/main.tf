@@ -1,7 +1,7 @@
 # Phase-0 hub — a real ACA deployment of hubd. This root wires four capability
 # modules (../modules/) plus the glue Azure needs (RG, Log Analytics, Container
 # App Environment, ACR, and the user-assigned identity that ties pull + secret +
-# blob access together). See docs/designs/hub/06-iac.md and 08-deployment.md.
+# blob access together). See docs/archive/hub/06-iac.md and 08-deployment.md.
 
 # Deployer identity — tenant + object id for the Key Vault Secrets Officer grant.
 # Resolved at apply from the caller's credentials; never committed.

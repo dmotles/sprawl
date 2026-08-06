@@ -3,7 +3,7 @@ package tui
 // QUM-684 — pre-S3 refactor: lift shared width-budgeting and box-drawing
 // helpers out of viewport.go and items.go into pure package-level functions.
 // Zero behavioral change: callers in both files must produce byte-identical
-// output. See docs/designs/tui-structural-rewrite-plan.md §3 S3 prep.
+// output. See docs/archive/designs/tui-structural-rewrite-plan.md §3 S3 prep.
 
 import (
 	"fmt"

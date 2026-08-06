@@ -1,5 +1,5 @@
 // Package runtime provides building blocks for the unified agent runtime
-// (see docs/designs/unified-runtime.md). The EventBus is the real-time
+// (see docs/archive/designs/unified-runtime.md). The EventBus is the real-time
 // streaming foundation: it fans out RuntimeEvents from a Claude subprocess
 // to multiple subscribers (TUI viewport, activity ring, log writers).
 //

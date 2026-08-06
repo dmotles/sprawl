@@ -1,7 +1,7 @@
 // UnifiedRuntime wraps the per-agent EventBus and stdin-write input path
 // behind a single supervised lifecycle (QUM-817: the Go MessageQueue and
 // TurnLoop were deleted; every turn is now router-driven from the stdout
-// stream). See docs/designs/unified-runtime.md sections 3.1, 3.6, and 4.
+// stream). See docs/archive/designs/unified-runtime.md sections 3.1, 3.6, and 4.
 //
 // WHY THE kind:system CHANNEL IS BOUNDED — the durable-queue category error.
 //

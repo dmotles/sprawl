@@ -6,7 +6,7 @@ import (
 )
 
 // AskUserQuestion implements Supervisor.AskUserQuestion. See QUM-527 and
-// docs/research/ask-user-question-mcp-design.md. The MCP tool dispatcher is
+// docs/archive/research/ask-user-question-mcp-design.md. The MCP tool dispatcher is
 // responsible for generating req.RequestID — an empty value is an error.
 func (r *Real) AskUserQuestion(ctx context.Context, req QuestionRequest) (QuestionResponse, error) {
 	if req.RequestID == "" {

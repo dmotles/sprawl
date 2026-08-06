@@ -2139,7 +2139,7 @@ func (r *Real) Peek(ctx context.Context, agentName string, tail int) (*PeekResul
 
 // ReportStatus delegates to agentops.Report, which is the single persistence
 // path used by the `report_status` MCP tool. See
-// docs/designs/messaging-overhaul.md §4.2.3 / §4.7.
+// docs/archive/designs/messaging-overhaul.md §4.2.3 / §4.7.
 //
 // An empty agentName defaults to r.callerName — the MCP tool invokes this
 // method with an empty name so child agents can report without passing their

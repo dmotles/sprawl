@@ -8,7 +8,7 @@ import (
 	"github.com/dmotles/sprawl/internal/state"
 )
 
-// Report state values — matches the enum in docs/designs/messaging-overhaul.md §4.2.3.
+// Report state values — matches the enum in docs/archive/designs/messaging-overhaul.md §4.2.3.
 const (
 	ReportStateWorking  = "working"
 	ReportStateBlocked  = "blocked"
@@ -95,7 +95,7 @@ func ValidReportState(state string) bool {
 // terminal liveness (stopped/faulted) in the same save so a subsequent boot
 // never observes an "active" zombie next to a terminal LastReportState.
 //
-// See docs/designs/messaging-overhaul.md §4.2.3 / §4.7.
+// See docs/archive/designs/messaging-overhaul.md §4.2.3 / §4.7.
 func Report(deps *ReportDeps, sprawlRoot, agentName, stateVal, summary string) (ReportResult, error) {
 	if deps == nil {
 		deps = &ReportDeps{}
