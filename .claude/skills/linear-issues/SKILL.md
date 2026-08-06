@@ -186,8 +186,7 @@ meaningful step — not just at task end. The canonical status channel is the
 ```
 report_status({
   state: "working" | "blocked" | "complete" | "failure",
-  summary: "<=160 char one-liner>",
-  detail: "<optional markdown>"
+  summary: "<=160 char one-liner>"
 })
 ```
 
@@ -199,14 +198,12 @@ in the TUI and in the parent's notification stream.
 
 The agent-facing messaging surface is MCP-only:
 
-- `send_async({to, subject, body})` — default messaging channel. Queues
-  an async message the recipient reads on its next yield. Does NOT interrupt.
-  Use for questions, context-sharing, and "fyi" updates.
-- `send_interrupt({to, subject, body, resume_hint?})` — **rare**.
-  Parent->descendant only. Interrupts the target mid-turn. Reserve for
-  genuinely urgent corrections ("I forgot to tell you: use the other API").
-- `peek({agent, tail?})` — inspect a child/peer's recent activity and
-  last report. **Use this before** sending a child "are you done?" — only
-  `send_async` if peek is inconclusive.
-- `message(...)` — **deprecated** alias for `send_async`. Do not
-  use in new code.
+- `send_message` — the channel for substantive agent-to-agent communication:
+  questions, context-sharing, findings, hand-offs. Durable — it lands in the
+  recipient's inbox and can be retrieved later. Async by default; it can also
+  request preemption, which is **rare** and reserved for genuinely urgent
+  parent->descendant corrections ("I forgot to tell you: use the other API").
+  Consult the tool's own MCP schema for its current arguments and semantics.
+- `peek` — inspect a child/peer's recent activity and last report.
+  **Use this before** sending a child "are you done?" — only `send_message`
+  if peek is inconclusive.
