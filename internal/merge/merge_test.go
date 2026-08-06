@@ -44,8 +44,11 @@ func newTestDeps() *Deps {
 		WritePoke:       func(sprawlRoot, agentName, content string) error { return nil },
 		GitUpdateRef:    func(worktree, ref, newSHA string) error { return nil },
 		GitUpdateRefCAS: func(worktree, ref, newSHA, oldSHA string) error { return nil },
-		Now:             func() time.Time { return testNow },
-		Stderr:          io.Discard,
+		GitSymbolicRefHead: func(worktree string) (string, error) {
+			return "refs/heads/sprawl/test-agent", nil
+		},
+		Now:    func() time.Time { return testNow },
+		Stderr: io.Discard,
 	}
 }
 

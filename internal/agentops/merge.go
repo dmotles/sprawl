@@ -157,6 +157,23 @@ func Merge(ctx context.Context, deps *MergeDeps, agentName, messageOverride stri
 		return nil, fmt.Errorf("checking agent worktree status: %w", err)
 	}
 	if agentStatus != "" {
+		// QUM-1100: staged-with-nothing-modified is the fingerprint of a
+		// previous merge that died between `git reset --soft` and its squash
+		// commit. Saying "uncommitted changes" there is TRUE and misdescribes
+		// the cause, and the natural response to it destroys the work.
+		if StagedOnlyPorcelain(agentStatus) {
+			return nil, fmt.Errorf(
+				"agent %q worktree has STAGED content its branch does not contain, and no unstaged edits.\n"+
+					"That is the shape a PREVIOUS FAILED MERGE leaves behind — the engine's `git reset --soft` ran and the squash commit did not (QUM-1100) — and also what an agent that staged work without committing looks like.\n"+
+					"Do NOT discard or clean this worktree before checking: if it is the former, the staged tree may be the only live copy of the agent's work.\n"+
+					"Check, in this order:\n"+
+					"  git -C %s rev-parse --abbrev-ref HEAD   # which branch is it really on\n"+
+					"  git -C %s log --oneline -3              # does the branch still have its commits\n"+
+					"  git -C %s for-each-ref %s/%s\n"+
+					"If a recovery ref names a tip the branch no longer has, restore the branch first; otherwise ask the agent to commit",
+				agentName, agentState.Worktree, agentState.Worktree, agentState.Worktree,
+				merge.PremergeRefPrefix, agentName)
+		}
 		return nil, fmt.Errorf("agent %q has uncommitted changes in worktree. Ask the agent to commit first", agentName)
 	}
 

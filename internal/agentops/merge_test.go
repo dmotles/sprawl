@@ -142,3 +142,88 @@ func mergeTestDeps(sprawlRoot string) *MergeDeps {
 		Stderr:       io.Discard,
 	}
 }
+
+// --- QUM-1100: distinguish a previous failed merge from agent edits ------
+
+// mergeDirtyEnv seeds a parent agent + weave and returns deps whose
+// GitStatus reports agentStatus for the AGENT worktree and clean elsewhere.
+func mergeDirtyEnv(t *testing.T, agentStatus string) (*MergeDeps, string) {
+	t.Helper()
+	sprawlRoot := t.TempDir()
+	parentWT := filepath.Join(sprawlRoot, ".sprawl", "worktrees", "parent")
+	if err := os.MkdirAll(parentWT, 0o755); err != nil {
+		t.Fatalf("mkdir parent wt: %v", err)
+	}
+	if err := state.SaveAgent(sprawlRoot, &state.AgentState{
+		Name: "parent", Type: "engineer", Family: "engineering",
+		Branch: "dmotles/parent", Worktree: parentWT, Parent: "weave",
+		Status: state.StatusActive,
+	}); err != nil {
+		t.Fatalf("SaveAgent parent: %v", err)
+	}
+	weaveWT := filepath.Join(sprawlRoot, "weave-wt")
+	if err := os.MkdirAll(weaveWT, 0o755); err != nil {
+		t.Fatalf("mkdir weave wt: %v", err)
+	}
+	if err := state.SaveAgent(sprawlRoot, &state.AgentState{
+		Name: "weave", Type: "manager", Family: "engineering",
+		Worktree: weaveWT, Status: state.StatusActive,
+	}); err != nil {
+		t.Fatalf("SaveAgent weave: %v", err)
+	}
+	deps := mergeTestDeps(sprawlRoot)
+	deps.GitStatus = func(wt string) (string, error) {
+		if wt == parentWT {
+			return agentStatus, nil
+		}
+		return "", nil
+	}
+	return deps, parentWT
+}
+
+// TestMerge_AgentWorktree_StagedOnly_NamesThePreviousFailedMerge — the
+// QUM-1100 misdirection. In the live incident the retry said `agent "chip"
+// has uncommitted changes in worktree`: TRUE, and it entirely misdescribed
+// the cause — the content was the engine's own orphaned squash. The natural
+// response (`reset --hard`) would have destroyed 3026 lines.
+func TestMerge_AgentWorktree_StagedOnly_NamesThePreviousFailedMerge(t *testing.T) {
+	deps, _ := mergeDirtyEnv(t, "A  k.txt")
+
+	_, err := Merge(context.Background(), deps, "parent", "", true, false)
+	if err == nil {
+		t.Fatal("a dirty agent worktree must still block the merge")
+	}
+	msg := err.Error()
+	if !strings.Contains(msg, "PREVIOUS FAILED MERGE") {
+		t.Errorf("must raise a previous failed merge as a possible cause, got: %v", err)
+	}
+	if !strings.Contains(msg, "refs/sprawl/premerge") {
+		t.Errorf("must point at the recovery refs, got: %v", err)
+	}
+	if !strings.Contains(msg, "Do NOT discard") {
+		t.Errorf("must warn against discarding before checking, got: %v", err)
+	}
+	if strings.Contains(msg, "Ask the agent to commit first") {
+		t.Errorf("must not blame the agent for the engine's orphaned squash, got: %v", err)
+	}
+}
+
+// TestMerge_AgentWorktree_ModifiedFiles_StillBlamesTheAgent — the other
+// direction. Real agent edits must keep the original, correct message; a fix
+// that widened both cases into one would re-merge exactly what QUM-1100 asks
+// to separate.
+func TestMerge_AgentWorktree_ModifiedFiles_StillBlamesTheAgent(t *testing.T) {
+	deps, _ := mergeDirtyEnv(t, " M a.go")
+
+	_, err := Merge(context.Background(), deps, "parent", "", true, false)
+	if err == nil {
+		t.Fatal("a dirty agent worktree must block the merge")
+	}
+	msg := err.Error()
+	if !strings.Contains(msg, "uncommitted changes") || !strings.Contains(msg, "Ask the agent to commit first") {
+		t.Errorf("agent edits must keep the original message, got: %v", err)
+	}
+	if strings.Contains(msg, "PREVIOUS FAILED MERGE") || strings.Contains(msg, "premerge") {
+		t.Errorf("must not blame a failed merge for the agent's own edits, got: %v", err)
+	}
+}

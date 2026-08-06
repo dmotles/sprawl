@@ -46,11 +46,16 @@ production implementations live in `internal/merge/git.go`.
 5. **Squash.** `git reset --soft <mergeBase>` in the **agent worktree**,
    then `git commit` — the agent branch now carries one commit containing
    its whole delta. This is the first mutation, and it rewrites the agent
-   branch **before** the engine knows the merge will succeed.
+   branch **before** the engine knows the merge will succeed. If the
+   **commit** fails, the `reset --soft` is undone by a compare-and-swap
+   `update-ref` back to the pre-squash tip (QUM-1100); the index and
+   worktree are deliberately left alone, because the reset never touched
+   them and in the crash variant the index is the only live copy.
 6. **Rebase.** `git rebase parentBranch` in the agent worktree. On failure:
-   `git rebase --abort` (best-effort), return an error telling the caller
-   how to restore the pre-squash tip manually. See *Failure leaves the
-   branch rewritten* below.
+   `git rebase --abort` (best-effort), then restore the branch to its
+   pre-squash tip by compare-and-swap and say so in the error (QUM-1090).
+   Only if the swap is *refused* is the caller asked to act. See *Failure
+   leaves the branch rewritten* below.
 7. **Fast-forward merge.** `git merge --ff-only agentBranch` in the
    **parent worktree**. After a clean rebase the agent branch is exactly
    parent + one commit, so this only moves the parent ref forward.
@@ -141,9 +146,19 @@ changing any of this code.
 | `git worktree remove [--force]` | `internal/agentops/helpers.go:118-131` via `internal/agent/retire.go` (`forceRemove = force \|\| dirty`) | agent worktree | Every retire. `--force` discards **uncommitted** files only. |
 | `os.RemoveAll(.sprawl/agents/<name>/)` | `internal/state/state.go` (`DeleteAgent`) | non-git agent data | Every retire, unconditionally (QUM-1055 tracks the findings-loss consequence). |
 
+| `git update-ref <ref> <sha>` | `internal/merge/git.go` (`RealGitUpdateRef`) | `refs/sprawl/premerge/**` | Every non-noop, non-dry-run merge, before the first mutation. Creates refs only; never moves a branch (QUM-1090). |
+| `git update-ref <ref> <new> <old>` (CAS) | `internal/merge/git.go` (`RealGitUpdateRefCAS`) via `restoreAgentBranch` | agent branch | Rebase failure (QUM-1090) and squash-commit failure (QUM-1100), to restore the pre-squash tip. Compare-and-swap: refuses rather than forcing if the ref moved. |
+| `git update-ref -d <ref>` | `internal/agentops/gc.go` (`DefaultDeleteRef`) | `refs/sprawl/premerge/**` | `sprawl gc --apply` beyond the retention window; prefix-guarded in `ApplyPremergeGC`. |
+
 Deliberately absent from these paths: `git push --force`, `git checkout -f`,
-`git branch -f`, raw `git update-ref`. If a change introduces one, it needs
-a design-level justification here.
+`git branch -f`. Raw `git update-ref` **is** used, in the three forms above —
+its justification is *Recovery refs* below and the compare-and-swap rule in
+CLAUDE.md ("never overwrite the thing that tells you where you were"). Note
+raw `update-ref` does **not** honour git's "branch is checked out in another
+worktree" protection, which is why the CAS restores run with cwd set to the
+agent worktree while the premerge writes run from `SprawlRoot`. If a change
+introduces a further destructive primitive, it needs a design-level
+justification here.
 
 ## Structural gotchas
 
@@ -164,18 +179,34 @@ Engineering facts about git that shape this design; each has bitten a
   commit", which is exactly the premise the `HEAD~1` rollback rests on.
   Combined with the previous point, an already-upstream delta plus a
   validate failure rewinds a commit the merge never added (QUM-1087).
-* **A failed merge leaves the agent branch rewritten to the squash.** Both
-  the rebase-failure and validate-failure paths return with the agent's
-  original commits unreachable from any ref; the content is preserved in
-  the squash, and restoring the original history requires the manual
-  `git reset --hard <preSquashSHA>` printed in the error. Manual recovery
-  after squash operations is historically where damage happens (see
-  CLAUDE.md's QUM-1083 recovery procedure); QUM-1090 moves the restore into
-  the tool.
-* **There is a crash window between `reset --soft` and the squash commit**
-  in which the agent's work exists only as staged files in the worktree,
-  reachable from no ref. It is narrow (no subprocess between the two
-  steps) but real; the recovery refs below are the mitigation.
+* **A failed merge leaves the agent branch rewritten to the squash on the
+  validate-failure and ff-merge-failure paths.** The rebase-failure and
+  squash-commit-failure paths now restore the pre-squash tip themselves
+  (QUM-1090, QUM-1100); the other two do not. The ff-merge path is
+  undeliberate rather than decided — nothing currently gates it. The
+  validate-failure path deliberately does not: there the merge *did* happen
+  and was rejected on quality, so the squashed+rebased branch is a
+  legitimate state to iterate on and rewinding it would discard the rebase
+  work. On that path the agent's original commits are reachable only from
+  the recovery refs. Manual recovery after squash operations is historically
+  where damage happens (CLAUDE.md's QUM-1083 procedure), which is why the
+  tool now does the restore wherever it can and never prints a
+  `git reset --hard` for a human to run.
+* **The window between `reset --soft` and the squash commit is as wide as a
+  validate run, on every merge — and its routine trigger is our own
+  tooling.** `git commit` IS a subprocess: it runs the pre-commit hook,
+  which runs `make validate`. A non-zero exit is ordinary, not exotic. An
+  earlier version of this document called this a "crash window" and called
+  it "narrow (no subprocess between the two steps)"; both were wrong, and
+  the label is what people read. It fired in production on 2026-08-06 —
+  an unrelated test flake failed the hook and left 3026 insertions across
+  30 files reachable from no ref, after which the retry reported
+  `has uncommitted changes in worktree`, which was true and misdescribed
+  the cause (the content was the engine's own orphaned squash). QUM-1100
+  restores the branch whenever the engine gets to run and splits that
+  message. A true crash (SIGKILL) in the same window remains uncovered by
+  construction — no code runs — and the recovery refs are the whole net
+  there.
 * **The rebase is merge-machinery (3-way), not patch application.** An
   agent based on a branch that was later squash-merged to the parent (the
   fan-out shape documented in CLAUDE.md under QUM-1083) merges cleanly:

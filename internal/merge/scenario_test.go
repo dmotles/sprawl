@@ -341,15 +341,23 @@ func TestMergeSafety_S5_ValidateFails(t *testing.T) {
 	})
 }
 
-// TestMergeSafety_S6_CrashBetweenSoftResetAndCommit — the crash window. The
-// process dies after `git reset --soft <mergeBase>` and before the squash
-// commit, so the agent's work exists only as staged files in the worktree,
-// reachable from no ref at all. Simulated with an injected failing GitCommit;
-// the on-disk git state is identical to a SIGKILL there.
+// TestMergeSafety_S6_CommitFailsAfterSoftReset — the squash commit fails
+// after `git reset --soft <mergeBase>`.
 //
-// This is the case the recovery refs exist for: nothing else — not the
-// branch, not the squash, not `--ff-only` — holds the original tip.
-func TestMergeSafety_S6_CrashBetweenSoftResetAndCommit(t *testing.T) {
+// EMPHASIS DELIBERATELY INVERTED from the research harness, which called this
+// a "crash window". `git commit` IS a subprocess: it runs the pre-commit
+// hook, which runs `make validate`. A non-zero exit is therefore the ROUTINE
+// case, not an exotic one, and the window is as wide as a validate run, on
+// every merge. It fired in production on 2026-08-06 — an unrelated test flake
+// (QUM-1070) failed the hook and left 3026 insertions across 30 files
+// reachable from no ref. The audit's "narrow (no subprocess between the two
+// steps)" was false on its own terms.
+//
+// A true crash (SIGKILL) in the same window is the RARE sibling and is the
+// one case this fix cannot cover: no code runs, so the premerge refs written
+// at step 3a are the entire net. The injected failing GitCommit models the
+// routine case; the on-disk state before the restore is identical either way.
+func TestMergeSafety_S6_CommitFailsAfterSoftReset(t *testing.T) {
 	r := newScenarioRepo(t)
 	wt := r.addWorktree("agent/k")
 	r.commitFile(wt, "k-work-1", "k.txt", "1\n")
@@ -358,40 +366,132 @@ func TestMergeSafety_S6_CrashBetweenSoftResetAndCommit(t *testing.T) {
 
 	deps := scenarioDeps()
 	deps.GitCommit = func(_, _ string) (string, error) {
-		return "", fmt.Errorf("simulated crash between reset --soft and commit")
+		return "", fmt.Errorf("git commit: exit status 1: pre-commit hook rejected the squash")
 	}
 	_, err := Merge(context.Background(), r.scenarioCfg("k", "agent/k", wt, ""), deps)
 
 	if err == nil {
-		t.Fatal("expected the injected crash to fail the merge")
+		t.Fatal("expected the failed squash commit to fail the merge")
 	}
 	t.Run("main is untouched", func(t *testing.T) {
 		if got := r.sha("main"); got != mainBefore {
 			t.Errorf("main = %s, want unchanged %s", got[:8], mainBefore[:8])
 		}
 	})
-	t.Run("the window is real: work is branch-unreachable and only staged", func(t *testing.T) {
-		if got := r.sha("agent/k"); got != r.commits["init"] {
-			t.Errorf("agent/k = %s, want the merge base %s — the window did not open", got[:8], r.commits["init"][:8])
+	// QUM-1100 inverts what this asserted before. The old subtest ("the
+	// window is real: work is branch-unreachable and only staged") REQUIRED
+	// the branch to sit at the merge base — it encoded the defect as the
+	// expected outcome, and it was green while the defect was live in
+	// production. It asserted the window opens and never that anything
+	// closes it.
+	t.Run("the agent branch is restored to its pre-merge tip", func(t *testing.T) {
+		if got := r.sha("agent/k"); got != agentOrig {
+			t.Errorf("agent/k = %s, want its original tip %s — the engine must undo its own reset --soft", got[:8], agentOrig[:8])
 		}
 		for _, label := range []string{"k-work-1", "k-work-2"} {
-			if r.reachableFromBranches(r.commits[label]) {
-				t.Errorf("%s is still branch-reachable; the window did not open and the next subtest would be vacuous", label)
+			if !r.reachableFromBranches(r.commits[label]) {
+				t.Errorf("%s is reachable from no branch; the work was orphaned", label)
 			}
 		}
+		if c := r.fileOnRef("agent/k", "k.txt"); c != "1\n2" {
+			t.Errorf("content on the restored branch = %q, want %q", c, "1\n2")
+		}
+	})
+	t.Run("the restore leaves the agent worktree clean", func(t *testing.T) {
+		// The crux, made falsifiable. Distinct from S2's identical-looking
+		// assertion: there `rebase --abort` had already rewritten index and
+		// worktree, and cleanliness followed from tree(squash)==tree(pre).
+		// HERE nothing was ever written — `reset --soft` moves only the ref
+		// and a hook-rejected commit writes nothing at all — so the staged
+		// content the production retry saw was the UNCHANGED index compared
+		// against a REWOUND HEAD. Moving the ref back collapses that
+		// comparison to empty. Never add a reset/checkout on this path: in
+		// the crash variant the index is the only live copy of the work.
 		out, gerr := r.gitOK(wt, "status", "--porcelain")
-		if gerr != nil || out == "" {
-			t.Errorf("expected staged-but-uncommitted work in the worktree, got %q (err %v)", out, gerr)
+		if gerr != nil {
+			t.Fatalf("git status: %v: %s", gerr, out)
+		}
+		if out != "" {
+			t.Errorf("worktree dirty after the ref-only restore:\n%s", out)
+		}
+	})
+	t.Run("the error states the branch was restored and names the tip", func(t *testing.T) {
+		if !strings.Contains(err.Error(), agentOrig) {
+			t.Errorf("error must name the restored tip %s, got: %v", agentOrig[:8], err)
+		}
+		if !strings.Contains(err.Error(), premergeRestoredClaim) {
+			t.Errorf("error must say the branch was restored, got: %v", err)
+		}
+	})
+	t.Run("the error does not prescribe a manual hard reset", func(t *testing.T) {
+		if strings.Contains(err.Error(), "reset --hard") {
+			t.Errorf("the index may be the only live copy; never prescribe a hard reset: %v", err)
+		}
+	})
+	t.Run("both pre-merge tips stay ref-reachable", func(t *testing.T) {
+		assertPremergePair(t, r, agentOrig, mainBefore)
+	})
+}
+
+// TestMergeSafety_S6b_CommitFailsAndTheRestoreIsRefused — the CAS refuses
+// because the branch is no longer where the engine's reset left it.
+//
+// The injection is the real RealGitCommit edge, not a contrivance: `git
+// commit` SUCCEEDS and the follow-up `git rev-parse --short HEAD` fails, so
+// the engine returns an error for a commit that landed. A read-HEAD CAS
+// oldSHA would rewind that real commit; keying on the merge base refuses.
+//
+// This scenario is also where S6's old "recovery is one update-ref" subtest
+// now lives (QUM-1104 pin 2). After QUM-1100 the branch is auto-restored in
+// the ordinary case, so that subtest would have recovered NOTHING and passed
+// for the wrong reason — a green produced by fixing a bug. Here the branch
+// genuinely was not restored, so the recovery genuinely recovers.
+func TestMergeSafety_S6b_CommitFailsAndTheRestoreIsRefused(t *testing.T) {
+	r := newScenarioRepo(t)
+	wt := r.addWorktree("agent/k2")
+	r.commitFile(wt, "k2-work-1", "m.txt", "1\n")
+	agentOrig := r.commitFile(wt, "k2-work-2", "m.txt", "1\n2\n")
+	mainBefore := r.sha("main")
+
+	deps := scenarioDeps()
+	deps.GitCommit = func(worktree, message string) (string, error) {
+		// The commit lands, moving the ref off the merge base...
+		r.git(worktree, "commit", "-q", "-m", message)
+		// ...but the engine never learns its hash.
+		return "", fmt.Errorf("git rev-parse --short HEAD: simulated failure after a successful commit")
+	}
+	_, err := Merge(context.Background(), r.scenarioCfg("k2", "agent/k2", wt, ""), deps)
+
+	if err == nil {
+		t.Fatal("expected an error")
+	}
+	t.Run("the branch was NOT rewound to the pre-squash tip", func(t *testing.T) {
+		if got := r.sha("agent/k2"); got == agentOrig {
+			t.Errorf("agent/k2 = %s: the CAS must refuse when the ref moved off the merge base, not rewind a real commit", got[:8])
+		}
+	})
+	t.Run("the failure is loud and does not claim a restore", func(t *testing.T) {
+		if !strings.Contains(err.Error(), "WARNING") {
+			t.Errorf("a refused restore must be louder than the restored case, got: %v", err)
+		}
+		if strings.Contains(err.Error(), premergeRestoredClaim) {
+			t.Errorf("must not claim a restore that did not happen, got: %v", err)
+		}
+	})
+	t.Run("the original commits are reachable from NO branch", func(t *testing.T) {
+		// Arrival witness, re-sited here from S6. It lives on a case
+		// QUM-1100 does NOT close, so unlike S6's version it cannot be
+		// removed by the fix it is meant to witness.
+		for _, label := range []string{"k2-work-1", "k2-work-2"} {
+			if r.reachableFromBranches(r.commits[label]) {
+				t.Errorf("%s is still branch-reachable; the recovery assertions below would be vacuous", label)
+			}
 		}
 	})
 	t.Run("both pre-merge tips stay ref-reachable", func(t *testing.T) {
 		assertPremergePair(t, r, agentOrig, mainBefore)
 	})
 	t.Run("recovery is one update-ref from the saved ref", func(t *testing.T) {
-		// The AC is "a crash mid-merge is recoverable by one update-ref".
-		// Do the recovery through the ref by NAME — resolving it is the part
-		// a human actually performs — rather than through the SHA the test
-		// happens to remember.
 		var agentRef string
 		for _, ref := range r.premergeRefs() {
 			if strings.HasSuffix(ref, "/agent") {
@@ -401,15 +501,104 @@ func TestMergeSafety_S6_CrashBetweenSoftResetAndCommit(t *testing.T) {
 		if agentRef == "" {
 			t.Fatal("no /agent recovery ref to recover from")
 		}
-		r.git(r.root, "update-ref", "refs/heads/agent/k", agentRef)
-
-		if got := r.sha("agent/k"); got != agentOrig {
-			t.Errorf("after recovery agent/k = %s, want %s", got[:8], agentOrig[:8])
+		r.git(r.root, "update-ref", "refs/heads/agent/k2", agentRef)
+		if got := r.sha("agent/k2"); got != agentOrig {
+			t.Errorf("after recovery agent/k2 = %s, want %s", got[:8], agentOrig[:8])
 		}
-		if !r.reachableFromBranches(r.commits["k-work-1"]) || !r.reachableFromBranches(r.commits["k-work-2"]) {
-			t.Error("recovery did not make the original commits branch-reachable again")
+		for _, label := range []string{"k2-work-1", "k2-work-2"} {
+			if !r.reachableFromBranches(r.commits[label]) {
+				t.Errorf("recovery did not make %s branch-reachable again", label)
+			}
 		}
 	})
+}
+
+// TestMergeSafety_S6c_StaleAdvertisedBranchRestoresTheRealOne — the
+// QUM-1088 retire shape, end to end in real git.
+//
+// Found in review of QUM-1100's first cut, which had a live defect here.
+// After an agent has merged once, sprawl's own ff-merge makes its old
+// branch's tip an ancestor of the parent, so merge-base(parent, staleBranch)
+// EQUALS that stale tip. Keying the restore CAS on the merge base therefore
+// SUCCEEDS on the stale branch — fast-forwarding a branch nobody asked
+// about, leaving the real branch rewound, and reporting restored=true.
+// Keying on "the branch HEAD is actually on" is what makes it safe.
+func TestMergeSafety_S6c_StaleAdvertisedBranchRestoresTheRealOne(t *testing.T) {
+	r := newScenarioRepo(t)
+	wt := r.addWorktree("agent/b1")
+	r.commitFile(wt, "b1-work", "b1.txt", "1\n")
+	// Land it, the way a first merge would, so main contains b1's tip.
+	r.git(r.root, "merge", "-q", "--ff-only", "agent/b1")
+	staleTip := r.sha("agent/b1")
+
+	// Delegate reuse: the agent moves to a new branch; state.Branch still
+	// advertises the old one.
+	r.git(wt, "switch", "-q", "-c", "agent/b2")
+	realOrig := r.commitFile(wt, "b2-work", "b2.txt", "2\n")
+
+	// Precondition: this scenario only bites when the merge base coincides
+	// with the stale branch's tip. Assert it rather than assuming it.
+	mb := strings.TrimSpace(r.git(r.root, "merge-base", "main", "agent/b1"))
+	if mb != staleTip {
+		t.Fatalf("precondition: merge-base(main, agent/b1)=%s must equal the stale tip %s", mb[:8], staleTip[:8])
+	}
+
+	deps := scenarioDeps()
+	deps.GitCommit = func(string, string) (string, error) {
+		return "", fmt.Errorf("git commit: exit status 1: pre-commit hook rejected")
+	}
+	// cfg.AgentBranch is the STALE name, exactly as agentops/retire.go passes it.
+	_, err := Merge(context.Background(), r.scenarioCfg("b1", "agent/b1", wt, ""), deps)
+	if err == nil {
+		t.Fatal("expected an error")
+	}
+
+	t.Run("the REAL branch is restored", func(t *testing.T) {
+		if got := r.sha("agent/b2"); got != realOrig {
+			t.Errorf("agent/b2 = %s, want its pre-merge tip %s", got[:8], realOrig[:8])
+		}
+	})
+	t.Run("the stale branch is NOT touched", func(t *testing.T) {
+		if got := r.sha("agent/b1"); got != staleTip {
+			t.Errorf("agent/b1 = %s, want it untouched at %s — the restore moved a branch nobody asked about", got[:8], staleTip[:8])
+		}
+	})
+	t.Run("the worktree is clean", func(t *testing.T) {
+		out, _ := r.gitOK(wt, "status", "--porcelain")
+		if out != "" {
+			t.Errorf("worktree dirty after the restore:\n%s", out)
+		}
+	})
+}
+
+// TestMergeSafety_PremergeRefCheckerDiscriminatesContents — S0b, the standing
+// replacement witness for every assertPremergePair in this file.
+//
+// S0 only proves reachableFromPremergeRefs returns false when NO premerge
+// refs exist; it cannot distinguish "the checker works" from "the checker
+// says yes whenever any ref exists". S6's old pin used to supply the missing
+// half as a side effect of the engine failing to restore — so QUM-1100 closed
+// that window and took the witness with it. This constructs the
+// branch-unreachable state DIRECTLY (plant a commit, move the ref off it),
+// which no fix to the engine can remove.
+func TestMergeSafety_PremergeRefCheckerDiscriminatesContents(t *testing.T) {
+	r := newScenarioRepo(t)
+	held := r.commitFile(r.root, "held", "held.txt", "h\n")
+	wt := r.addWorktree("agent/w")
+	orphan := r.commitFile(wt, "orphan", "o.txt", "o\n")
+	r.git(wt, "reset", "--hard", "-q", "HEAD~1")
+
+	if r.reachableFromBranches(orphan) {
+		t.Fatal("precondition: the planted commit must be branch-unreachable")
+	}
+	r.git(r.root, "update-ref", PremergeRefPrefix+"/w/20260806T000000.000Z/agent", held)
+
+	if !r.reachableFromPremergeRefs(held) {
+		t.Error("checker cannot see a sha that a premerge ref DOES contain")
+	}
+	if r.reachableFromPremergeRefs(orphan) {
+		t.Error("checker reports reachable for a sha NO premerge ref contains — it cannot say no")
+	}
 }
 
 // TestMergeSafety_HappyPath_NoLoss is the baseline: a clean merge must land

@@ -388,9 +388,15 @@ func TestMerge_AgentDirtyWorktree(t *testing.T) {
 		Type: "engineer", Family: "engineering",
 	})
 
+	// QUM-1100: " M" (worktree-modified) is what an agent's own edits look
+	// like. The previous fixture was "M  " — staged-with-nothing-modified —
+	// which is the fingerprint of a FAILED MERGE, not of agent edits, and now
+	// selects the other message. Corrected rather than papered over: keeping
+	// the old fixture passing would have required both causes to share one
+	// message, which is exactly what this issue separates.
 	deps.GitStatus = func(worktree string) (string, error) {
 		if worktree == "/worktree/target" {
-			return "M  dirty-file.go", nil
+			return " M dirty-file.go", nil
 		}
 		return "", nil
 	}
@@ -401,6 +407,41 @@ func TestMerge_AgentDirtyWorktree(t *testing.T) {
 	}
 	if !strings.Contains(err.Error(), "uncommitted changes") {
 		t.Errorf("error should mention dirty worktree, got: %v", err)
+	}
+}
+
+// TestMerge_AgentStagedOnlyWorktree — the QUM-1100 wording must reach the
+// CLI, not just internal/agentops. In the live incident the operator saw this
+// message through the tool, and acting on it would have destroyed the work.
+func TestMerge_AgentStagedOnlyWorktree(t *testing.T) {
+	deps, tmpDir := newTestMergeDeps(t)
+
+	createTestAgent(t, tmpDir, &state.AgentState{
+		Name: "parent-agent", Status: "active", Branch: "main",
+		Worktree: "/worktree/parent", Parent: "root",
+	})
+	createTestAgent(t, tmpDir, &state.AgentState{
+		Name: "target-agent", Status: "suspended", LastReportState: "complete", Branch: "feature-branch",
+		Worktree: "/worktree/target", Parent: "parent-agent",
+		Type: "engineer", Family: "engineering",
+	})
+
+	deps.GitStatus = func(worktree string) (string, error) {
+		if worktree == "/worktree/target" {
+			return "A  orphaned.go", nil
+		}
+		return "", nil
+	}
+
+	err := runMerge(context.Background(), deps, "target-agent", "", true, false)
+	if err == nil {
+		t.Fatal("expected error for a staged-only agent worktree")
+	}
+	if !strings.Contains(err.Error(), "PREVIOUS FAILED MERGE") {
+		t.Errorf("CLI must surface the failed-merge explanation, got: %v", err)
+	}
+	if !strings.Contains(err.Error(), "Do NOT discard") {
+		t.Errorf("CLI must surface the do-not-discard warning, got: %v", err)
 	}
 }
 

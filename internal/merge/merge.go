@@ -90,6 +90,13 @@ type Deps struct {
 	// something else moved (QUM-1090).
 	GitUpdateRefCAS func(worktree, ref, newSHA, oldSHA string) error
 
+	// GitSymbolicRefHead returns the full ref name HEAD points at (e.g.
+	// "refs/heads/foo"), or an error on a detached HEAD. Used to restore the
+	// branch the worktree is ACTUALLY on rather than the advertised
+	// AgentBranch, which is the stale spawn-time name on the retire path
+	// (QUM-1088).
+	GitSymbolicRefHead func(worktree string) (string, error)
+
 	// Now supplies the premerge recovery refs' timestamp. Mandatory, like
 	// every other seam here: Merge dereferences it unconditionally, and
 	// NilSeams/MinDepsSeams gate every construction site on it being bound.
@@ -179,7 +186,7 @@ func Merge(ctx context.Context, cfg *Config, deps *Deps) (*Result, error) {
 	commitMsg := buildMergeCommitMessage(cfg.AgentState, cfg.ParentBranch, cfg.MessageOverride)
 	commitHash, err := deps.GitCommit(cfg.AgentWorktree, commitMsg)
 	if err != nil {
-		return nil, fmt.Errorf("squash commit: %w", err)
+		return nil, commitFailureError(cfg, deps, err, preSquashSHA, mergeBase, agentRef, parentRef)
 	}
 	cpMerge(deps, "merge.squash-committed", "commit", commitHash)
 
@@ -326,6 +333,97 @@ func buildMergeCommitMessage(agent *state.AgentState, parentBranch, messageOverr
 		firstLine, agent.Branch, parentBranch, agent.Name, agent.Type, agent.Family, coAuthor)
 }
 
+// restoreAgentBranch compare-and-swaps refs/heads/<AgentBranch> back to
+// preSquashSHA, refusing unless the ref currently reads expectedSHA.
+//
+// Run in the AGENT WORKTREE (not SprawlRoot, unlike the premerge writes):
+// raw `update-ref` does not honour git's "branch is checked out in another
+// worktree" protection, so issuing it from the worktree whose HEAD points at
+// the branch keeps HEAD and the ref moving together.
+func restoreAgentBranch(cfg *Config, deps *Deps, preSquashSHA, expectedSHA string) error {
+	// Resolve the branch from HEAD, NOT from cfg.AgentBranch. On the retire
+	// path AgentBranch is the stale spawn-time name (QUM-1088), and keying
+	// the CAS on the merge base does not protect against a wrong NAME: once
+	// an agent has merged once, merge-base(parent, staleBranch) EQUALS the
+	// stale branch's tip, so the swap SUCCEEDS on a branch nobody asked
+	// about, fast-forwards it, leaves the real branch rewound, and reports
+	// success. Reproduced in real git; found in review of the first cut of
+	// QUM-1100, which had exactly that defect.
+	//
+	// This is the same resolution the refused-leg message tells a human to
+	// perform, and the same rule agentops.Merge already applies to the merge
+	// SOURCE (QUM-511). A detached HEAD is refused rather than guessed at.
+	ref, err := deps.GitSymbolicRefHead(cfg.AgentWorktree)
+	if err != nil {
+		return fmt.Errorf("resolving the checked-out branch of %s: %w", cfg.AgentWorktree, err)
+	}
+	if !strings.HasPrefix(ref, "refs/heads/") {
+		return fmt.Errorf("refusing to restore: HEAD of %s is %q, not a branch", cfg.AgentWorktree, ref)
+	}
+	return deps.GitUpdateRefCAS(cfg.AgentWorktree, ref, preSquashSHA, expectedSHA)
+}
+
+// commitFailureError undoes the `reset --soft` and builds the caller-facing
+// error when the squash commit fails (QUM-1100).
+//
+// `git commit` is a SUBPROCESS: it runs the pre-commit hook, which runs
+// `make validate`. A non-zero exit is therefore ROUTINE, and the window
+// between the reset and a completed commit is as wide as a validate run, on
+// every merge. It fired in production on 2026-08-06 when an unrelated test
+// flake failed the hook, leaving 3026 insertions across 30 files reachable
+// from no ref — and the retry then blamed the agent for "uncommitted
+// changes" that were the engine's own orphaned squash.
+//
+// THE RESTORE IS REF-ONLY, AND THAT IS SUFFICIENT. This is a different
+// argument from rebaseFailureError's, resting on different facts — do not
+// merge the two comments. `git reset --soft` writes ONLY the ref; a
+// hook-rejected `git commit` writes nothing at all: no tree, no commit, no
+// ref update, and no index change. So the index still holds preSquashSHA's
+// exact tree, and the "staged changes" the retry saw were the UNCHANGED
+// index compared against a REWOUND HEAD. `update-ref` touches neither index
+// nor worktree, so putting the ref back exactly reverses the reset and
+// `git status` is clean again (verified directly, and byte-identically in
+// the live incident before recovery).
+//
+// NEVER add a reset, checkout or read-tree here. In the crash variant of
+// this window the index is the ONLY live copy of the work, and destroying it
+// is precisely what the incident nearly did.
+//
+// The CAS oldSHA is the MERGE BASE, not a freshly-read HEAD. mergeBase is
+// the value this engine itself wrote, so the swap asserts "the ref is still
+// where my reset put it, therefore undoing my reset is safe" — a provable
+// undo rather than a blind rewind with a CAS-shaped window. It also makes
+// the RealGitCommit edge safe, where `git commit` SUCCEEDS and only the
+// follow-up hash read fails: HEAD is then a real commit, and keying on
+// mergeBase refuses instead of rewinding it.
+func commitFailureError(cfg *Config, deps *Deps, cause error, preSquashSHA, mergeBase, agentRef, parentRef string) error {
+	refPair := fmt.Sprintf("Recovery refs:\n  %s\n  %s", agentRef, parentRef)
+
+	casErr := restoreAgentBranch(cfg, deps, preSquashSHA, mergeBase)
+	if casErr == nil {
+		cpMerge(deps, "merge.squash-commit-failed", "restored", "true",
+			"branch", cfg.AgentBranch, "restored_to", preSquashSHA)
+		return fmt.Errorf("squash commit: %w\nBranch %s %s %s: the `git reset --soft` was undone. The engine did not touch the index or worktree; if a hook staged or modified files before failing, those remain.\n%s",
+			cause, cfg.AgentBranch, premergeRestoredClaim, preSquashSHA, refPair)
+	}
+	cpMerge(deps, "merge.squash-commit-failed", "restored", "false",
+		"branch", cfg.AgentBranch, "cas_error", casErr.Error())
+	// Deliberately names no branch to update: on the retire path
+	// cfg.AgentBranch is the stale spawn-time name (QUM-1088), so a
+	// ready-made one-liner would aim recovery at the wrong branch.
+	return fmt.Errorf("squash commit: %w\n"+
+		"WARNING: the agent branch is NOT at its pre-merge tip %s and could NOT be auto-restored (%v).\n"+
+		"The agent's commits may be reachable ONLY from the recovery ref below.\n"+
+		"Do NOT discard, clean or check out the agent worktree before recovering: the squash content may exist only in its index.\n"+
+		"Confirm which branch is actually checked out:\n"+
+		"  git -C %s rev-parse --abbrev-ref HEAD\n"+
+		"then, ONLY if that branch is not AHEAD of the recovery ref, point it there\n"+
+		"with a compare-and-swap (if it has commits the ref lacks, do NOT point it there):\n"+
+		"  git -C %s log --oneline <that-branch>\n"+
+		"  git update-ref refs/heads/<that-branch> %s $(git -C %s rev-parse <that-branch>)\n%s",
+		cause, preSquashSHA, casErr, cfg.AgentWorktree, cfg.AgentWorktree, agentRef, cfg.AgentWorktree, refPair)
+}
+
 // rebaseFailureError restores the agent branch to its pre-squash tip and
 // builds the caller-facing error (QUM-1090 part B).
 //
@@ -359,7 +457,7 @@ func rebaseFailureError(cfg *Config, deps *Deps, preSquashSHA, agentRef, parentR
 
 	curTip, why := deps.GitRevParseHead(cfg.AgentWorktree)
 	if why == nil {
-		why = deps.GitUpdateRefCAS(cfg.AgentWorktree, "refs/heads/"+cfg.AgentBranch, preSquashSHA, curTip)
+		why = restoreAgentBranch(cfg, deps, preSquashSHA, curTip)
 		if why == nil {
 			return fmt.Errorf("rebase failed (conflicts likely). Aborted rebase.\nBranch %s %s %s.\n%s",
 				cfg.AgentBranch, premergeRestoredClaim, preSquashSHA, refPair)
@@ -376,9 +474,11 @@ func rebaseFailureError(cfg *Config, deps *Deps, preSquashSHA, agentRef, parentR
 		"Could NOT auto-restore the agent branch (%v); it is left at the squash commit.\n"+
 		"Confirm which branch is actually checked out before recovering:\n"+
 		"  git -C %s rev-parse --abbrev-ref HEAD\n"+
-		"then point THAT branch at the recovery ref (%q may be stale):\n"+
-		"  git update-ref refs/heads/<that-branch> %s\n%s",
-		why, cfg.AgentWorktree, cfg.AgentBranch, agentRef, refPair)
+		"then, ONLY if that branch is not AHEAD of the recovery ref, point it there\n"+
+		"with a compare-and-swap (if it has commits the ref lacks, do NOT point it there):\n"+
+		"  git -C %s log --oneline <that-branch>\n"+
+		"  git update-ref refs/heads/<that-branch> %s $(git -C %s rev-parse <that-branch>)\n%s",
+		why, cfg.AgentWorktree, cfg.AgentWorktree, agentRef, cfg.AgentWorktree, refPair)
 }
 
 // premergeRestoredClaim is the phrase the rebase-failure path uses when it
@@ -414,7 +514,7 @@ func NilSeams(d *Deps) (missing []string, checked int) {
 
 // MinDepsSeams is the assertion-count floor for NilSeams: the number of
 // mandatory func seams Deps carries. Bump it deliberately when adding one.
-const MinDepsSeams = 14
+const MinDepsSeams = 15
 
 // cpMerge calls deps.Checkpoint if non-nil. Safe to call with nil dep.
 func cpMerge(d *Deps, step string, kv ...any) {

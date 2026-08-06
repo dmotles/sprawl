@@ -156,6 +156,18 @@ func RealGitUpdateRefCAS(worktree, ref, newSHA, oldSHA string) error {
 	return nil
 }
 
+// RealGitSymbolicRefHead returns the full ref HEAD points at, erroring on a
+// detached HEAD.
+func RealGitSymbolicRefHead(worktree string) (string, error) {
+	cmd := exec.Command("git", "symbolic-ref", "--quiet", "HEAD")
+	cmd.Dir = worktree
+	out, err := cmd.Output()
+	if err != nil {
+		return "", fmt.Errorf("git symbolic-ref HEAD (detached HEAD?): %w", err)
+	}
+	return strings.TrimSpace(string(out)), nil
+}
+
 // RealWritePoke writes a poke file for the given agent.
 func RealWritePoke(sprawlRoot, agentName, content string) error {
 	pokePath := filepath.Join(sprawlRoot, ".sprawl", "agents", agentName+".poke")
@@ -173,20 +185,21 @@ func RealWritePoke(sprawlRoot, agentName, content string) error {
 // cpMerge nil-guards it.
 func RealDeps(stderr io.Writer) *Deps {
 	return &Deps{
-		LockAcquire:       RealLockAcquire,
-		GitMergeBase:      RealGitMergeBase,
-		GitRevParseHead:   RealGitRevParseHead,
-		GitResetSoft:      RealGitResetSoft,
-		GitCommit:         RealGitCommit,
-		GitRebase:         RealGitRebase,
-		GitRebaseAbort:    RealGitRebaseAbort,
-		GitFFMerge:        RealGitFFMerge,
-		GitResetHard:      RealGitResetHard,
-		RunTestsStreaming: RealRunTestsStreaming,
-		WritePoke:         RealWritePoke,
-		GitUpdateRef:      RealGitUpdateRef,
-		GitUpdateRefCAS:   RealGitUpdateRefCAS,
-		Now:               time.Now,
-		Stderr:            stderr,
+		LockAcquire:        RealLockAcquire,
+		GitMergeBase:       RealGitMergeBase,
+		GitRevParseHead:    RealGitRevParseHead,
+		GitResetSoft:       RealGitResetSoft,
+		GitCommit:          RealGitCommit,
+		GitRebase:          RealGitRebase,
+		GitRebaseAbort:     RealGitRebaseAbort,
+		GitFFMerge:         RealGitFFMerge,
+		GitResetHard:       RealGitResetHard,
+		RunTestsStreaming:  RealRunTestsStreaming,
+		WritePoke:          RealWritePoke,
+		GitUpdateRef:       RealGitUpdateRef,
+		GitUpdateRefCAS:    RealGitUpdateRefCAS,
+		GitSymbolicRefHead: RealGitSymbolicRefHead,
+		Now:                time.Now,
+		Stderr:             stderr,
 	}
 }
