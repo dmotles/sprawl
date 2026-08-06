@@ -7,6 +7,7 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"reflect"
 	"strings"
 	"testing"
 
@@ -498,7 +499,7 @@ func TestToolStatus_ShapeDropsInternalFieldsKeepsBlurb(t *testing.T) {
 				Blurb:              "Built the QUM-899 blurb pipeline; knows state migration.",
 				LastReportMessage:  "wiring the heartbeat refresh",
 				LastReportState:    "working",
-				TotalCostUsd:       1.23,
+				SessionCostUsd:     1.23,
 				InTurn:             true,
 				Liveness:           "running",
 				ProcessAlive:       &alive,
@@ -534,10 +535,29 @@ func TestToolStatus_ShapeDropsInternalFieldsKeepsBlurb(t *testing.T) {
 		t.Errorf("liveness = %v, want running", v["liveness"])
 	}
 	// Kept operator-facing fields incl. the headline blurb.
-	for _, k := range []string{"name", "type", "family", "parent", "tree_path", "status", "branch", "blurb", "in_turn", "total_cost_usd"} {
+	for _, k := range []string{"name", "type", "family", "parent", "tree_path", "status", "branch", "blurb", "in_turn", "session_cost_usd"} {
 		if _, ok := v[k]; !ok {
 			t.Errorf("status view missing kept field %q\n%s", k, out)
 		}
+	}
+	// QUM-1093: the cost field is the CURRENT SESSION's cost, and the wire name
+	// says so. The old lifetime-flavoured name must be gone, not aliased — a
+	// stale name is how this class of bug survives review.
+	if _, ok := v["total_cost_usd"]; ok {
+		t.Errorf("status view must not emit total_cost_usd (renamed to session_cost_usd)\n%s", out)
+	}
+	// The payload check above is defeated by omitempty: a retained
+	// zero-valued total_cost_usd field is absent from the JSON for the wrong
+	// reason. Assert against the struct so the field cannot survive as a
+	// stale alias.
+	rt := reflect.TypeOf(statusView{})
+	for i := range rt.NumField() {
+		if strings.Split(rt.Field(i).Tag.Get("json"), ",")[0] == "total_cost_usd" {
+			t.Errorf("statusView still declares a total_cost_usd json field (%s)", rt.Field(i).Name)
+		}
+	}
+	if v["session_cost_usd"] != 1.23 {
+		t.Errorf("session_cost_usd = %v, want 1.23", v["session_cost_usd"])
 	}
 	if v["blurb"] != "Built the QUM-899 blurb pipeline; knows state migration." {
 		t.Errorf("blurb = %v", v["blurb"])

@@ -466,16 +466,16 @@ func TestTreeModel_ReportChip_ColorsDiffer(t *testing.T) {
 	}
 }
 
-func TestBuildTreeNodes_PropagatesCostField(t *testing.T) {
+func TestBuildTreeNodes_PropagatesSessionCostField(t *testing.T) {
 	agents := []supervisor.AgentInfo{
-		{Name: "alice", Type: "engineer", Status: "active", TotalCostUsd: 0.05},
+		{Name: "alice", Type: "engineer", Status: "active", SessionCostUsd: 0.05},
 	}
 	nodes := buildTreeNodes(agents, nil)
 	if len(nodes) != 1 {
 		t.Fatalf("len = %d", len(nodes))
 	}
-	if nodes[0].TotalCostUsd != 0.05 {
-		t.Errorf("TotalCostUsd = %f, want 0.05", nodes[0].TotalCostUsd)
+	if nodes[0].SessionCostUsd != 0.05 {
+		t.Errorf("SessionCostUsd = %f, want 0.05", nodes[0].SessionCostUsd)
 	}
 }
 

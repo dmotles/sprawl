@@ -49,7 +49,9 @@ type TreeNode struct {
 	Unread            int
 	LastReportState   string // working, blocked, complete, failure, ""
 	LastReportMessage string
-	TotalCostUsd      float64
+	// SessionCostUsd is the CURRENT session's cost, not lifetime spend
+	// (QUM-1093); sourced from supervisor.AgentInfo.SessionCostUsd.
+	SessionCostUsd float64
 	// FaultClass is the UX class of the most-recent backend fault on this
 	// agent's runtime (e.g. "HangTimeout"). Empty = no fault. Populated by
 	// the AppModel's BackendFaultMsg handler + re-applied on every
@@ -239,8 +241,8 @@ func (m TreeModel) View() string {
 		icon := typeIcon(node.Type)
 		dot := m.theme.ReportDot(DeriveIconState(node, time.Now()))
 		var costTag string
-		if node.TotalCostUsd > 0 {
-			costTag = fmt.Sprintf(" [$%.4f]", node.TotalCostUsd)
+		if node.SessionCostUsd > 0 {
+			costTag = fmt.Sprintf(" [$%.4f]", node.SessionCostUsd)
 		}
 		var line string
 		if node.LastReportMessage != "" {
@@ -369,7 +371,7 @@ func buildTreeNodes(agents []supervisor.AgentInfo, unread map[string]int) []Tree
 			Unread:            unread[a.Name],
 			LastReportState:   a.LastReportState,
 			LastReportMessage: a.LastReportMessage,
-			TotalCostUsd:      a.TotalCostUsd,
+			SessionCostUsd:    a.SessionCostUsd,
 			ProcessAlive:      a.ProcessAlive,
 			InTurn:            a.InTurn,
 			SelfInTurn:        a.InTurn,

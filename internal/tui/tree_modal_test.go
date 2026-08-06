@@ -99,7 +99,7 @@ func TestTreeModal_View_CostTagOmittedWhenZero(t *testing.T) {
 	m := newTestTreeModal(t)
 	m.SetNodes([]TreeNode{
 		{Name: "weave", Type: "weave", Depth: 0},
-		{Name: "finn", Type: "engineer", Depth: 1, TotalCostUsd: 0},
+		{Name: "finn", Type: "engineer", Depth: 1, SessionCostUsd: 0},
 	}, "weave")
 	m.Show()
 	out := stripAnsi(m.View())
@@ -112,7 +112,7 @@ func TestTreeModal_View_CostTagWhenNonZero(t *testing.T) {
 	m := newTestTreeModal(t)
 	m.SetNodes([]TreeNode{
 		{Name: "weave", Type: "weave", Depth: 0},
-		{Name: "finn", Type: "engineer", Depth: 1, TotalCostUsd: 0.0042},
+		{Name: "finn", Type: "engineer", Depth: 1, SessionCostUsd: 0.0042},
 	}, "weave")
 	m.Show()
 	out := stripAnsi(m.View())

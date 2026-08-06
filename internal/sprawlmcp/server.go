@@ -466,7 +466,7 @@ type statusView struct {
 	Branch             string    `json:"branch"`
 	InTurn             bool      `json:"in_turn"`
 	LastActivityAt     time.Time `json:"last_activity_at,omitempty"`
-	TotalCostUsd       float64   `json:"total_cost_usd,omitempty"`
+	SessionCostUsd     float64   `json:"session_cost_usd,omitempty"`
 	Subagent           bool      `json:"subagent,omitempty"`
 	SharedWorktreeWith string    `json:"shared_worktree_with,omitempty"`
 	// Demoted secondary fields.
@@ -487,7 +487,7 @@ func toStatusView(a supervisor.AgentInfo) statusView {
 		Branch:             a.Branch,
 		InTurn:             a.InTurn,
 		LastActivityAt:     a.LastActivityAt,
-		TotalCostUsd:       a.TotalCostUsd,
+		SessionCostUsd:     a.SessionCostUsd,
 		Subagent:           a.Subagent,
 		SharedWorktreeWith: a.SharedWorktreeWith,
 		LastReportState:    a.LastReportState,

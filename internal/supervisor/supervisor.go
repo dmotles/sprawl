@@ -27,13 +27,17 @@ type AgentInfo struct {
 	TreePath string `json:"tree_path,omitempty"`
 	// Blurb is the short auto-generated capability summary (QUM-899). Shown as
 	// the headline line per agent in the status tool.
-	Blurb             string  `json:"blurb,omitempty"`
-	LastReportType    string  `json:"last_report_type,omitempty"`
-	LastReportState   string  `json:"last_report_state,omitempty"`
-	LastReportMessage string  `json:"last_report_message,omitempty"`
-	LastReportDetail  string  `json:"last_report_detail,omitempty"`
-	TotalCostUsd      float64 `json:"total_cost_usd,omitempty"`
-	ProcessAlive      *bool   `json:"process_alive"`
+	Blurb             string `json:"blurb,omitempty"`
+	LastReportType    string `json:"last_report_type,omitempty"`
+	LastReportState   string `json:"last_report_state,omitempty"`
+	LastReportMessage string `json:"last_report_message,omitempty"`
+	LastReportDetail  string `json:"last_report_detail,omitempty"`
+	// SessionCostUsd is the cost of the agent's CURRENT session only, not its
+	// lifetime spend (QUM-1093). It is 0 — and, being omitempty, absent from
+	// the JSON — when the agent has no session yet or its session has recorded
+	// no usage. Lifetime totals are reported by `sprawl usage` and /usage.
+	SessionCostUsd float64 `json:"session_cost_usd,omitempty"`
+	ProcessAlive   *bool   `json:"process_alive"`
 	// SubprocessAlive is the ground-truth "is a live RuntimeHandle attached"
 	// boolean. Distinct from ProcessAlive (the liveness-projection field):
 	// after QUM-727, the two should agree in steady state.

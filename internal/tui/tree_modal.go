@@ -15,7 +15,8 @@ package tui
 //   - Type icon (typeIcon).
 //   - Name (rendered with selReverseStyle pill when observed).
 //   - Family/type chip [eng]/[mgr]/[res] dim-italic; weave omitted.
-//   - Cost tag `[$0.0000]` when TotalCostUsd > 0.
+//   - Cost tag `[$0.0000]` when SessionCostUsd > 0 (current session, not
+//     lifetime — QUM-1093).
 //   - `(status)` or `— <last_report_message>`.
 //
 // Keys: ↑/↓ move cursor; Enter emits AgentSelectedMsg and hides the modal
@@ -206,8 +207,8 @@ func (m TreeModalModel) renderRow(n TreeNode, idx int, now time.Time) string {
 	chip := m.typeChip(n.Type)
 
 	var cost string
-	if n.TotalCostUsd > 0 {
-		cost = m.theme.NormalText.Render(fmt.Sprintf(" [$%.4f]", n.TotalCostUsd))
+	if n.SessionCostUsd > 0 {
+		cost = m.theme.NormalText.Render(fmt.Sprintf(" [$%.4f]", n.SessionCostUsd))
 	}
 
 	var tail string

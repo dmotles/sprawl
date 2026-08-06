@@ -556,7 +556,7 @@ func (r *Real) Status(_ context.Context) ([]AgentInfo, error) {
 			LastReportMessage:  a.LastReportMessage,
 			LastReportDetail:   a.LastReportDetail,
 			Blurb:              a.Blurb,
-			TotalCostUsd:       sumUsageCostForAgent(r.sprawlRoot, a.Name),
+			SessionCostUsd:     sessionUsageCostForAgent(r.sprawlRoot, a.Name, a.SessionID),
 			ProcessAlive:       processAliveByName[a.Name],
 			SubprocessAlive:    subprocessAliveByName[a.Name],
 			EventbusSubscribed: eventbusSubCountByName[a.Name] > 0,
@@ -2559,13 +2559,35 @@ func (r *Real) MessagesPeek(ctx context.Context) (*MessagesPeekResult, error) {
 	}, nil
 }
 
-// sumUsageCostForAgent returns the aggregated total_cost_usd for the named
-// agent across all per-session usage NDJSON logs under
-// .sprawl/logs/usage/<agent>/*.ndjson. Errors are swallowed (returns 0) so
-// the Status build path is robust against transient I/O issues — usage data
-// is informational, not load-bearing for control flow.
-func sumUsageCostForAgent(sprawlRoot, name string) float64 {
-	t, err := usage.SumForAgent(sprawlRoot, name)
+// sessionUsageCostForAgent returns the total_cost_usd recorded for the agent's
+// CURRENT session only — .sprawl/logs/usage/<agent>/<sessionID>.ndjson.
+// QUM-1093: this was a lifetime sum across every session file, which
+// over-reported long-lived agents by one to two orders of magnitude while being
+// read as the current session's cost.
+//
+// sessionID is the agent's PERSISTED AgentState.SessionID (QUM-1093 decision),
+// not a newest-file-by-mtime guess and not the in-memory runtime snapshot's.
+// The tradeoff is real and points the other way, so state it rather than imply
+// the snapshot is the sloppier source: the recorder names its output file from
+// the LIVE protocol session id (usage/recorder.go:84-90 → :156), and that same
+// live value reaches AgentRuntime.snapshot.SessionID via handle.SessionID()
+// (runtime.go:412/480) WITHOUT being persisted, while disk only catches up at
+// spawn / wake / RecoverAgents. So on a mid-life rotation the snapshot names the
+// file being written and disk names the previous one — this reports the previous
+// session's cost, or 0 if that stale id has no log. Persisted wins anyway
+// because it is what `--resume` reattaches to, making the failure mode a
+// stale-but-real session rather than a fabricated one.
+//
+// Returns 0 when the agent has no session yet, when its session log does not
+// exist, and on any read error. There is NO lifetime fallback: usage data is
+// informational, and a silent fallback would resurrect the bug for whichever
+// agents happened to be missing a session ID. Lifetime totals live in
+// `sprawl usage` and the /usage modal.
+func sessionUsageCostForAgent(sprawlRoot, name, sessionID string) float64 {
+	if sessionID == "" {
+		return 0
+	}
+	t, err := usage.SumForAgentSession(sprawlRoot, name, sessionID)
 	if err != nil {
 		return 0
 	}

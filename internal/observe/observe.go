@@ -10,14 +10,14 @@ import (
 
 // AgentInfo wraps AgentState with runtime liveness and role info.
 //
-// TotalCostUsd is sourced from the per-agent usage NDJSON logs at
-// supervisor.Status() build time (QUM-368), not from AgentState. The
-// AgentState.TotalCostUsd field was removed; readers treewalk on demand.
+// SessionCostUsd is sourced from the per-agent usage NDJSON logs at
+// supervisor.Status() build time (QUM-368), not from AgentState. Since
+// QUM-1093 it is the CURRENT session's cost, not lifetime spend.
 type AgentInfo struct {
 	state.AgentState
-	TotalCostUsd float64
-	ProcessAlive *bool
-	IsRoot       bool
+	SessionCostUsd float64
+	ProcessAlive   *bool
+	IsRoot         bool
 }
 
 // Deps holds injected dependencies for the observe package.
@@ -72,8 +72,8 @@ func loadFromSupervisor(ctx context.Context, deps Deps, sprawlRoot string) ([]*A
 				LastReportMessage: info.LastReportMessage,
 				LastReportDetail:  info.LastReportDetail,
 			},
-			TotalCostUsd: info.TotalCostUsd,
-			ProcessAlive: info.ProcessAlive,
+			SessionCostUsd: info.SessionCostUsd,
+			ProcessAlive:   info.ProcessAlive,
 		})
 	}
 

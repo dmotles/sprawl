@@ -3,9 +3,11 @@ package usage
 import (
 	"bufio"
 	"encoding/json"
+	"fmt"
 	"os"
 	"path/filepath"
 	"sort"
+	"strings"
 	"time"
 )
 
@@ -72,7 +74,13 @@ func SumByAgent(sprawlRoot string, since time.Time) (map[string]TokenTotals, err
 }
 
 // SumForAgent treewalks .sprawl/logs/usage/<agent>/*.ndjson and returns
-// the total token + cost counts for that agent.
+// the LIFETIME total token + cost counts for that agent — every session it has
+// ever had.
+//
+// It has no production callers as of QUM-1093, which moved the status path to
+// SumForAgentSession; it is retained per that issue's no-change constraint.
+// Note the lifetime semantics `sprawl usage` and the /usage modal depend on live
+// in SumGrouped and SumByAgent, not here.
 func SumForAgent(sprawlRoot, agent string) (TokenTotals, error) {
 	var t TokenTotals
 	matches, err := filepath.Glob(filepath.Join(sprawlRoot, ".sprawl", "logs", "usage", agent, "*.ndjson"))
@@ -89,6 +97,56 @@ func SumForAgent(sprawlRoot, agent string) (TokenTotals, error) {
 		}); err != nil {
 			return TokenTotals{}, err
 		}
+	}
+	return t, nil
+}
+
+// SumForAgentSession sums a SINGLE session's usage log,
+// .sprawl/logs/usage/<agent>/<sessionID>.ndjson — one file per session, so the
+// session is resolved from the filename rather than by filtering records. This
+// is the current-session figure the status tool reports (QUM-1093); the
+// lifetime figure is SumForAgent.
+//
+// An empty sessionID ("no session yet"), a session file that does not exist,
+// and an empty file all return the zero TokenTotals with a nil error. There is
+// deliberately NO fallback to the lifetime sum: a fallback would make the
+// QUM-1093 over-reporting intermittent — present for some agents and absent for
+// others depending on state — which is worse than the bug it hides. Malformed
+// NDJSON lines are skipped, matching SumForAgent and LoadRecords.
+//
+// A non-empty sessionID that is not a single safe path element is rejected with
+// an error: it reaches a filesystem path from the agent's state file, so a
+// corrupt (or hostile) value must not escape the agent's usage directory. The
+// check is stricter than "no traversal" — "." and ".." are legal Linux filenames
+// but are rejected too. That strictness costs nothing, because the WRITER
+// (Recorder.openWriter, recorder.go:156) joins the same sessionID+".ndjson" with no
+// validation at all: an ID containing a separator could never have produced a
+// readable log here in the first place.
+//
+// An error rather than a zero, deliberately: a library reporting 0 for "I
+// refused to look" would lie to every future caller. Swallowing it to 0 is the
+// status path's policy, not this function's — and it stays silent there rather
+// than logging, because Status re-runs on every TUI refresh and a persistently
+// corrupt state file would spam the log every tick.
+func SumForAgentSession(sprawlRoot, agent, sessionID string) (TokenTotals, error) {
+	if sessionID == "" {
+		return TokenTotals{}, nil
+	}
+	// ContainsAny subsumes a filepath.Base mismatch: Base can only differ from
+	// its input when the input holds a separator.
+	if strings.ContainsAny(sessionID, `/\`) || sessionID == "." || sessionID == ".." {
+		return TokenTotals{}, fmt.Errorf("usage: invalid session id %q", sessionID)
+	}
+	var t TokenTotals
+	path := filepath.Join(sprawlRoot, ".sprawl", "logs", "usage", agent, sessionID+".ndjson")
+	if err := scanFile(path, func(line aggregateLine) {
+		t.InputTokens += line.InputTokens
+		t.OutputTokens += line.OutputTokens
+		t.CacheReadInputTokens += line.CacheReadInputTokens
+		t.CacheCreationInputTokens += line.CacheCreationInputTokens
+		t.TotalCostUsd += line.TotalCostUsd
+	}); err != nil {
+		return TokenTotals{}, err
 	}
 	return t, nil
 }
@@ -194,9 +252,9 @@ func TailRecords(sprawlRoot string, f Filter, n int) ([]Record, error) {
 // by onLine (callers attempt json.Unmarshal on the bytes and continue on
 // error). Shared by scanFile (legacy aggregate aggregation) and scanRecords
 // (typed Record decode for LoadRecords) — see SumByAgent / SumForAgent /
-// LoadRecords callers.
+// SumForAgentSession / LoadRecords callers.
 func scanNDJSON(path string, onLine func([]byte)) error {
-	f, err := os.Open(path) //nolint:gosec // G304: path produced by filepath.Glob over trusted root
+	f, err := os.Open(path) //nolint:gosec // G304: path produced by filepath.Glob over a trusted root, or by SumForAgentSession from a validated single-element session id
 	if err != nil {
 		if os.IsNotExist(err) {
 			return nil

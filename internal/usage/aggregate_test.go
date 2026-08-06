@@ -10,7 +10,10 @@ import (
 )
 
 // writeFixtureFile creates .sprawl/logs/usage/<agent>/<session>.ndjson with the
-// given records.
+// given records. It deliberately does NOT stamp Record.SessionID: session
+// scoping is resolved from the FILENAME (one file per session, per
+// internal/usage/record.go), so a record-field-based implementation must fail
+// these fixtures.
 func writeFixtureFile(t *testing.T, sprawlRoot, agent, session string, recs []Record) {
 	t.Helper()
 	dir := filepath.Join(sprawlRoot, ".sprawl", "logs", "usage", agent)
@@ -519,5 +522,265 @@ func TestTailRecords_ZeroReturnsEmpty(t *testing.T) {
 	}
 	if len(got) != 0 {
 		t.Errorf("got %d, want empty", len(got))
+	}
+}
+
+// --- QUM-1093: session-scoped sums ---
+
+// TestSumForAgentSession_ScopedToOneSessionNotLifetime is the central QUM-1093
+// assertion: the scoped sum must equal exactly the requested session's file and
+// must NOT equal the lifetime sum across all of the agent's session files. The
+// three fixture costs are deliberately distinct and no two of them sum to a
+// third, so a wrong grouping cannot coincidentally match the expected figure.
+func TestSumForAgentSession_ScopedToOneSessionNotLifetime(t *testing.T) {
+	tmp := t.TempDir()
+	writeFixtureFile(t, tmp, "alice", "s1", []Record{
+		{InputTokens: 1000, OutputTokens: 100, TotalCostUsd: 1.00},
+	})
+	writeFixtureFile(t, tmp, "alice", "s2", []Record{
+		{InputTokens: 120, OutputTokens: 12, TotalCostUsd: 0.12},
+		{InputTokens: 80, OutputTokens: 8, TotalCostUsd: 0.08},
+	})
+	writeFixtureFile(t, tmp, "alice", "s3", []Record{
+		{InputTokens: 10000, OutputTokens: 1000, TotalCostUsd: 10.00},
+	})
+
+	got, err := SumForAgentSession(tmp, "alice", "s2")
+	if err != nil {
+		t.Fatalf("SumForAgentSession: %v", err)
+	}
+	if !nearly(got.TotalCostUsd, 0.20) {
+		t.Errorf("scoped cost = %v, want 0.20 (session s2 only)", got.TotalCostUsd)
+	}
+	if got.InputTokens != 200 || got.OutputTokens != 20 {
+		t.Errorf("scoped tokens = (%d,%d), want (200,20)", got.InputTokens, got.OutputTokens)
+	}
+	// Diagnostic only: this can fail only when the assertion above already
+	// has, but it names the most likely wrong answer. The independent
+	// lifetime tripwire is TestSumForAgent_StillLifetimeAcrossSessions.
+	if nearly(got.TotalCostUsd, 11.20) {
+		t.Errorf("scoped cost = %v, which is the LIFETIME sum — scoping did not happen", got.TotalCostUsd)
+	}
+}
+
+// TestSumForAgentSession_ScopedToOneAgent catches an implementation that
+// resolves the session file across every agent directory instead of the named
+// one: two agents legitimately hold the same session filename here.
+func TestSumForAgentSession_ScopedToOneAgent(t *testing.T) {
+	tmp := t.TempDir()
+	writeFixtureFile(t, tmp, "alice", "s1", []Record{
+		{InputTokens: 100, TotalCostUsd: 0.10},
+	})
+	writeFixtureFile(t, tmp, "bob", "s1", []Record{
+		{InputTokens: 5000, TotalCostUsd: 5.00},
+	})
+
+	got, err := SumForAgentSession(tmp, "alice", "s1")
+	if err != nil {
+		t.Fatalf("SumForAgentSession: %v", err)
+	}
+	if !nearly(got.TotalCostUsd, 0.10) {
+		t.Errorf("cost = %v, want 0.10 (alice/s1 only, not bob/s1)", got.TotalCostUsd)
+	}
+}
+
+// TestSumForAgentSession_SingleSessionStillKeysOnSessionID covers the
+// exactly-one-session case without the vacuous "scoped == lifetime" assertion
+// (QUM-1080): the load-bearing half is that a session ID matching no file
+// returns zero even when the directory holds exactly one file.
+func TestSumForAgentSession_SingleSessionStillKeysOnSessionID(t *testing.T) {
+	tmp := t.TempDir()
+	writeFixtureFile(t, tmp, "alice", "s1", []Record{
+		{InputTokens: 70, OutputTokens: 7, TotalCostUsd: 0.07},
+	})
+
+	got, err := SumForAgentSession(tmp, "alice", "s1")
+	if err != nil {
+		t.Fatalf("SumForAgentSession(s1): %v", err)
+	}
+	if !nearly(got.TotalCostUsd, 0.07) {
+		t.Errorf("cost = %v, want 0.07", got.TotalCostUsd)
+	}
+
+	other, err := SumForAgentSession(tmp, "alice", "s1-typo")
+	if err != nil {
+		t.Fatalf("SumForAgentSession(s1-typo): %v", err)
+	}
+	if other != (TokenTotals{}) {
+		t.Errorf("got %+v for a session ID matching no file, want zero TokenTotals (no fallback to the only file present)", other)
+	}
+}
+
+func TestSumForAgentSession_MissingFileReturnsZeroNoError(t *testing.T) {
+	tmp := t.TempDir()
+	writeFixtureFile(t, tmp, "alice", "s1", []Record{
+		{InputTokens: 70, TotalCostUsd: 0.07},
+	})
+
+	got, err := SumForAgentSession(tmp, "alice", "s2")
+	if err != nil {
+		t.Fatalf("SumForAgentSession: %v", err)
+	}
+	if got != (TokenTotals{}) {
+		t.Errorf("got %+v, want zero TokenTotals", got)
+	}
+}
+
+func TestSumForAgentSession_MissingAgentDirReturnsZeroNoError(t *testing.T) {
+	tmp := t.TempDir()
+	got, err := SumForAgentSession(tmp, "nobody", "s1")
+	if err != nil {
+		t.Fatalf("SumForAgentSession on missing dir: %v", err)
+	}
+	if got != (TokenTotals{}) {
+		t.Errorf("got %+v, want zero TokenTotals", got)
+	}
+}
+
+func TestSumForAgentSession_EmptyFileReturnsZeroNoError(t *testing.T) {
+	tmp := t.TempDir()
+	dir := filepath.Join(tmp, ".sprawl", "logs", "usage", "alice")
+	if err := os.MkdirAll(dir, 0o755); err != nil {
+		t.Fatalf("MkdirAll: %v", err)
+	}
+	if err := os.WriteFile(filepath.Join(dir, "s1.ndjson"), nil, 0o644); err != nil {
+		t.Fatalf("WriteFile: %v", err)
+	}
+	// A second, populated session file so a lifetime fallback is detectable
+	// here rather than indistinguishable from the correct zero.
+	writeFixtureFile(t, tmp, "alice", "s2", []Record{
+		{InputTokens: 420, TotalCostUsd: 0.42},
+	})
+
+	got, err := SumForAgentSession(tmp, "alice", "s1")
+	if err != nil {
+		t.Fatalf("SumForAgentSession: %v", err)
+	}
+	if got != (TokenTotals{}) {
+		t.Errorf("got %+v, want zero TokenTotals", got)
+	}
+}
+
+// TestSumForAgentSession_EmptySessionIDReturnsZero pins the documented
+// no-session-yet contract: zero, never a lifetime fallback.
+func TestSumForAgentSession_EmptySessionIDReturnsZero(t *testing.T) {
+	tmp := t.TempDir()
+	writeFixtureFile(t, tmp, "alice", "s1", []Record{
+		{InputTokens: 70, TotalCostUsd: 0.07},
+	})
+	writeFixtureFile(t, tmp, "alice", "s2", []Record{
+		{InputTokens: 80, TotalCostUsd: 0.08},
+	})
+
+	got, err := SumForAgentSession(tmp, "alice", "")
+	if err != nil {
+		t.Fatalf("SumForAgentSession with empty session id: %v", err)
+	}
+	if got != (TokenTotals{}) {
+		t.Errorf("got %+v, want zero TokenTotals (no session yet must not fall back to lifetime)", got)
+	}
+}
+
+// TestSumForAgentSession_SkipsMalformedLines pins the existing scanner's
+// lenient behaviour — preserved here, not tightened.
+func TestSumForAgentSession_SkipsMalformedLines(t *testing.T) {
+	tmp := t.TempDir()
+	dir := filepath.Join(tmp, ".sprawl", "logs", "usage", "alice")
+	if err := os.MkdirAll(dir, 0o755); err != nil {
+		t.Fatalf("MkdirAll: %v", err)
+	}
+	body := `{"timestamp":"2026-05-01T10:00:00Z","agent_name":"alice","input_tokens":100,"total_cost_usd":0.10}` + "\n" +
+		`}{ not json` + "\n" +
+		"\n" +
+		`{"timestamp":"2026-05-01T11:00:00Z","agent_name":"alice","input_tokens":200,"total_cost_usd":0.20}` + "\n"
+	if err := os.WriteFile(filepath.Join(dir, "s1.ndjson"), []byte(body), 0o644); err != nil {
+		t.Fatalf("WriteFile: %v", err)
+	}
+
+	got, err := SumForAgentSession(tmp, "alice", "s1")
+	if err != nil {
+		t.Fatalf("SumForAgentSession: %v", err)
+	}
+	if got.InputTokens != 300 {
+		t.Errorf("InputTokens = %d, want 300 (malformed line skipped)", got.InputTokens)
+	}
+	if !nearly(got.TotalCostUsd, 0.30) {
+		t.Errorf("cost = %v, want 0.30", got.TotalCostUsd)
+	}
+}
+
+// TestSumForAgentSession_RejectsUnsafeSessionID: the session ID is read from
+// the agent's state file and interpolated into a filesystem path, so it must be
+// a single safe path element. The contract is deliberately stricter than "no
+// traversal" — "." and ".." are legal Linux filenames but are rejected, and so
+// is a backslash, because a corrupt state file is the realistic case and a
+// narrow reject-list invites re-litigation. The empty session ID is NOT in this
+// set: it means "no session yet" and returns (zero, nil) — see
+// TestSumForAgentSession_EmptySessionIDReturnsZero.
+//
+// The positive controls are load-bearing: without them the rejection could be
+// attributable to a nonexistent directory rather than to the session ID.
+func TestSumForAgentSession_RejectsUnsafeSessionID(t *testing.T) {
+	tmp := t.TempDir()
+	writeFixtureFile(t, tmp, "alice", "s1", []Record{
+		{InputTokens: 100, TotalCostUsd: 0.10},
+	})
+	writeFixtureFile(t, tmp, "victim", "secret", []Record{
+		{InputTokens: 999, TotalCostUsd: 9.99},
+	})
+
+	// Control A: alice/s1 is readable, so an "alice" dir exists and a
+	// well-formed session ID resolves.
+	if got, err := SumForAgentSession(tmp, "alice", "s1"); err != nil || !nearly(got.TotalCostUsd, 0.10) {
+		t.Fatalf("control: SumForAgentSession(alice,s1) = (%+v, %v), want cost 0.10, nil", got, err)
+	}
+	// Control B: the traversal target really is readable by its own name, so
+	// the rejected inputs below are pointing at live data.
+	if got, err := SumForAgentSession(tmp, "victim", "secret"); err != nil || !nearly(got.TotalCostUsd, 9.99) {
+		t.Fatalf("control: SumForAgentSession(victim,secret) = (%+v, %v), want cost 9.99, nil", got, err)
+	}
+
+	cases := []struct{ name, sessionID string }{
+		{"parent_traversal", "../victim/secret"},
+		{"dotdot", ".."},
+		{"dot", "."},
+		{"nested", "a/b"},
+		{"backslash", `a\b`},
+		{"trailing_slash", "sub/"},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			got, err := SumForAgentSession(tmp, "alice", tc.sessionID)
+			if err == nil {
+				t.Errorf("SumForAgentSession(%q) err = nil, want a rejection error", tc.sessionID)
+			}
+			if got != (TokenTotals{}) {
+				t.Errorf("SumForAgentSession(%q) = %+v, want zero TokenTotals", tc.sessionID, got)
+			}
+		})
+	}
+}
+
+// TestSumForAgent_StillLifetimeAcrossSessions pins that QUM-1093 did not turn
+// SumForAgent into a scoped sum. Scope honestly: SumForAgent has no production
+// callers, so this guards the function's documented contract, not a live
+// consumer. The lifetime semantics `sprawl usage` and the /usage modal actually
+// depend on are SumGrouped's and SumByAgent's — TestSumByAgent_TwoAgents is the
+// tripwire that covers those, by summing two of alice's session files.
+func TestSumForAgent_StillLifetimeAcrossSessions(t *testing.T) {
+	tmp := t.TempDir()
+	writeFixtureFile(t, tmp, "alice", "s1", []Record{{InputTokens: 1000, TotalCostUsd: 1.00}})
+	writeFixtureFile(t, tmp, "alice", "s2", []Record{{InputTokens: 200, TotalCostUsd: 0.20}})
+	writeFixtureFile(t, tmp, "alice", "s3", []Record{{InputTokens: 10000, TotalCostUsd: 10.00}})
+
+	got, err := SumForAgent(tmp, "alice")
+	if err != nil {
+		t.Fatalf("SumForAgent: %v", err)
+	}
+	if !nearly(got.TotalCostUsd, 11.20) {
+		t.Errorf("lifetime cost = %v, want 11.20 (sum of all three session files)", got.TotalCostUsd)
+	}
+	if got.InputTokens != 11200 {
+		t.Errorf("lifetime InputTokens = %d, want 11200", got.InputTokens)
 	}
 }

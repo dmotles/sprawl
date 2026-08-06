@@ -108,7 +108,7 @@ func baseToolDefinitions() []map[string]any {
 		},
 		{
 			"name":        "status",
-			"description": "List all agents. Each entry headlines a short auto-generated `blurb` (what the agent knows / was last working on) plus name, type, family, parent/tree_path, status, a single collapsed `liveness` token, branch, in_turn, last_activity_at, and cost. Internal debugging fields (`process_alive`, `subprocess_alive`, `eventbus_subscribed`, `eventbus_sub_count`) are NOT included here — use `peek` for those. Does NOT wake the agent.",
+			"description": "List all agents. Each entry headlines a short auto-generated `blurb` (what the agent knows / was last working on) plus name, type, family, parent/tree_path, status, a single collapsed `liveness` token, branch, in_turn, last_activity_at, and `session_cost_usd` — the cost of the agent's CURRENT session, not its lifetime spend (lifetime totals are in `sprawl usage`). Internal debugging fields (`process_alive`, `subprocess_alive`, `eventbus_subscribed`, `eventbus_sub_count`) are NOT included here — use `peek` for those. Does NOT wake the agent.",
 			"inputSchema": map[string]any{
 				"type":       "object",
 				"properties": map[string]any{},
