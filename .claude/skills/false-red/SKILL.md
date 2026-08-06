@@ -165,13 +165,16 @@ procedure has been run successfully more than once:
 ```bash
 # 1. Find the branch's real tip from before the merge.
 git -C <agent-worktree> reflog --all | head -30
-git -C <agent-worktree> for-each-ref refs/sprawl/premerge   # if the fixed engine is installed
+git -C <agent-worktree> for-each-ref refs/sprawl/premerge   # only if the fixed engine is installed
+                                                            # (see the predicate below — do NOT write here yourself)
 
 # 2. PIN IT before anything else. A ref makes it survive gc and mistakes.
-git update-ref refs/sprawl/rescue/<agent> <recovered-sha>
+#    Name the ATTEMPT, not the branch, and embed an ISO timestamp:
+#    refs/sprawl/rescue/<agent>/<ISO8601>/<slug>
+git update-ref refs/sprawl/rescue/<agent>/2026-08-06T23:00:00Z/<slug> <recovered-sha>
 
 # 3. Move the branch back WITHOUT touching the working tree or index.
-git -C <agent-worktree> reset --soft refs/sprawl/rescue/<agent>
+git -C <agent-worktree> reset --soft refs/sprawl/rescue/<agent>/2026-08-06T23:00:00Z/<slug>
 
 # 4. Verify, then commit anything still staged.
 git -C <agent-worktree> log --oneline -5
@@ -181,12 +184,38 @@ git -C <agent-worktree> status --short
 `--soft` moves the branch pointer only. **`--hard` at any point in this
 procedure destroys the thing you are recovering.**
 
+**About the rescue namespace.** `refs/sprawl/rescue/` is **not documented in any
+landed tree** — a merge-safety series in flight proposes it, together with a
+decision to keep such refs **permanently** rather than sweep them. Use it anyway:
+an orphaned ref is a trivial cost against a lost commit. Two rules go with it:
+
+* **Embed an ISO timestamp in the ref name.** `sprawl gc` ages refs by the
+  timestamp *in the name*, never by commit date, and a name it cannot parse is
+  never pruned. Nothing sweeps `rescue/` today and that is by design; the naming
+  keeps the option open, and it matches the repo's "name a ref for an attempt,
+  not for a branch" rule. Costs nothing.
+* **Never pin a rescue under `refs/sprawl/premerge/`.** That prefix is owned
+  exclusively by the QUM-1090 engine so that anything under it is tool output *by
+  construction*. A hand-made ref there once made `git for-each-ref
+  refs/sprawl/premerge` return non-empty on a tree where the feature had never
+  run — a false positive in the verification of the very mechanism this entry
+  tells you to check for. Same failure class as everything else in this file.
+
 > **A signal is landing for this one.** A merge engine that writes recovery refs
 > before it rewrites anything, and undoes its own reset when the squash commit
 > fails, is in flight (QUM-1090 / QUM-1100). Once installed, step 1 becomes a
 > lookup instead of an excavation. **Check which engine you have before you need
-> it** — `git for-each-ref refs/sprawl/premerge` returning nothing means you are
-> on the old one and the manual procedure is the only net.
+> it** — and check the *binary that will run*, not branch state or a claim that
+> the series landed:
+>
+> ```bash
+> strings $(command -v sprawl) | grep -c 'refs/sprawl/premerge'
+> # 0 = OLD engine: the un-commit hazard is live and this entry applies.
+> ```
+>
+> **That predicate is this entry's cut criterion.** Retire the entry when it
+> returns nonzero — not when someone reports the fix merged. Measured `0` on this
+> host on 2026-08-06.
 
 ---
 

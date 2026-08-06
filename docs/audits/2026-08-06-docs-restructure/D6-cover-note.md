@@ -95,14 +95,35 @@ re-deriving it. Both are now stated, with the scope named.
 
 ## Open flags
 
-**`refs/sprawl/rescue/` is a namespace I invented.** The skill tells an agent
-recovering an orphaned merge to pin a rescue ref there before moving anything.
-`sprawl gc` prunes `refs/sprawl/premerge/` on a retention window; it prunes
-nothing under `refs/sprawl/rescue/`, so these accumulate indefinitely. I kept it
-deliberately — an orphaned ref is a trivial cost against a lost commit, and the
-pin is what makes the recovery safe — but whoever lands QUM-1090 should either
-fold this namespace into the same retention sweep or redirect the instruction at
-the premerge namespace. It should not stay unmanaged by accident.
+**`refs/sprawl/rescue/` is not documented in any landed tree.** The skill tells an
+agent recovering an orphaned merge to pin a rescue ref there before moving
+anything. `sprawl gc` prunes `refs/sprawl/premerge/` on a retention window; it
+prunes nothing under `refs/sprawl/rescue/`, so these accumulate indefinitely. I
+kept it deliberately — an orphaned ref is a trivial cost against a lost commit,
+and the pin is what makes the recovery safe.
+
+*Resolved 2026-08-06, and the resolution is worth more than the flag.* The owner
+of the merge engine reported the namespace **was** sanctioned, citing
+`CLAUDE.md:384-385`. That citation resolves only on that agent's own unlanded
+branch — the text was written by its own engineer four commits earlier
+(`git log -S'refs/sprawl/rescue' -- CLAUDE.md`) and has never reached `main`. So
+the convention is real but **proposed and in flight**, not documented: nothing in
+any tree an agent can read today sanctions it. The series also decides these refs
+are **permanent by design**, so "fold it into the retention sweep" is answered:
+don't. The skill now names it as in-flight, embeds an ISO timestamp in the ref
+name (`sprawl gc` ages by the name, and an unparseable name is never pruned), and
+forbids redirecting rescues into `refs/sprawl/premerge/` — that prefix must stay
+tool-output-only, or a hand-made ref there falsifies the check for the mechanism
+itself.
+
+**Cite content, not coordinates, and say which tree.** Two agents each asserted
+something false about `CLAUDE.md` in one exchange, and it only resolved when the
+third check was made against content rather than a line number. `CLAUDE.md` is
+contended three ways right now, so `file:line` resolves differently per branch —
+and nothing in the *form* of a line-number citation tells you which reading you
+are getting. "`CLAUDE.md` on branch X says '<quoted phrase>'" is checkable by
+anyone. This is the audit's abstract finding about unmaintainable line citations
+appearing as a live incident, in the audit's own review loop.
 
 **The catalogue will rot in one specific place.** The symptom strings are
 durable; the issue states (`QUM-1118` open, `QUM-1070` unfixed, `QUM-1090`
