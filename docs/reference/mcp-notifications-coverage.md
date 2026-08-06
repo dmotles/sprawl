@@ -4,7 +4,10 @@
 **Author:** ghost
 **Date:** 2026-05-11
 **Client tested:** Claude Code `2.1.126` (stdio MCP transport)
-**Related:** `docs/research/mcp-hang-observability-design.md` §3 (QUM-498 — `notifications/progress` baseline)
+**Related:** QUM-498 established the `notifications/progress` baseline. The design
+note that recorded it was deleted in the D4 docs cut — its angles A and C shipped
+(`internal/sprawlmcp/calllog/`, the SIGUSR1 dump, pprof) and the code is now the
+authority. Recoverable from git history.
 
 ## TL;DR
 

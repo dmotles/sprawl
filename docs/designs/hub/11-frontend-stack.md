@@ -1,10 +1,14 @@
 # 11 — Frontend Stack (OPEN RESEARCH → recommendation)
 
+> **Some links below point into `../../archive/hub/` (archived).** Those hub
+> documents were superseded and moved to `docs/archive/`. They are not
+> authority — verify against the tree before acting on anything they say.
+
 *Which framework/library to build the hub's browser SPA with. Evaluates real
 options and recommends one.*
 
 See also: [`00-overview.md`](00-overview.md) · [`01-architecture.md`](01-architecture.md) ·
-[`02-components.md`](02-components.md) (§3 frontend) · [`03-api-surfaces.md`](03-api-surfaces.md) · [index](README.md)
+[`02-components.md`](../../archive/hub/02-components.md) (§3 frontend) · [`03-api-surfaces.md`](03-api-surfaces.md) · [index](README.md)
 
 ---
 
@@ -31,7 +35,7 @@ See also: [`00-overview.md`](00-overview.md) · [`01-architecture.md`](01-archit
 
 ## 1. What the SPA actually has to do
 
-From [`02` §3](02-components.md) and [`03` §2](03-api-surfaces.md), the SPA is a
+From [`02` §3](../../archive/hub/02-components.md) and [`03` §2](03-api-surfaces.md), the SPA is a
 **pure static event-log consumer + input producer**. Concretely:
 
 1. **Consume a Connect/protobuf server-stream** (`SubscribeInstance`) and follow
@@ -43,9 +47,9 @@ From [`02` §3](02-components.md) and [`03` §2](03-api-surfaces.md), the SPA is
    `Login`, which sets an **httpOnly session cookie** ([`04`](README.md)); no OIDC,
    no IdP, no client secret in the SPA.
 3. **Single pane of glass** — `ListInstances` + an instance switcher; possibly
-   tail several instances at once (open question in [`02`](02-components.md)).
+   tail several instances at once (open question in [`02`](../../archive/hub/02-components.md)).
 4. **Ship as pure static assets** — no SSR — that `go:embed` into the hub binary
-   (§1.8 of [`02`](02-components.md)) *or* serve from a CDN.
+   (§1.8 of [`02`](../../archive/hub/02-components.md)) *or* serve from a CDN.
 
 **Load-bearing consequences for framework choice:**
 
@@ -86,7 +90,7 @@ this app the practical delta is tens of KB, not a UX cliff even on mobile.*
 
 - **React / Preact / Solid on Vite** are **natively SPAs** — `vite build` emits a
   hashed `dist/` of pure static assets; point `//go:embed dist` at it and serve
-  from the Connect listener ([`02` §1.8](02-components.md)). Zero coercion.
+  from the Connect listener ([`02` §1.8](../../archive/hub/02-components.md)). Zero coercion.
 - **SvelteKit** is SSR-first; SPA mode requires `export const ssr = false` +
   `adapter-static` with a fallback page, and a **known gotcha**: adapter-static
   can still emit server/SSR CSS into the build, *doubling* the CSS bytes embedded
@@ -211,7 +215,7 @@ all candidates*. The choice rides on §3.1/§3.3/§3.5, not on transport.
 - **Multi-instance (single pane):** start as **N independent one-rule stream
   controllers** (one per tailed instance) writing into a keyed store — matches
   "just another consumer" and defers the hub-side multiplexing question in
-  [`02`](02-components.md) / [`03`](03-api-surfaces.md). YAGNI on a multiplexed
+  [`02`](../../archive/hub/02-components.md) / [`03`](03-api-surfaces.md). YAGNI on a multiplexed
   stream until N gets large.
 
 ---
@@ -244,7 +248,7 @@ all candidates*. The choice rides on §3.1/§3.3/§3.5, not on transport.
 - **Multi-instance fan-out:** N independent stream controllers in the SPA (simple,
   matches "just another consumer") vs. a hub-side multiplexed stream (fewer
   connections, more hub code) — ties to the open question in
-  [`02`](02-components.md) / [`03`](03-api-surfaces.md). At what N does client-side
+  [`02`](../../archive/hub/02-components.md) / [`03`](03-api-surfaces.md). At what N does client-side
   fan-out stop scaling?
 - **Store choice:** Zustand vs. a hand-rolled `useSyncExternalStore` module —
   is one dependency worth avoiding, or does Zustand's ergonomics pay for itself?

@@ -5,7 +5,7 @@
 **Date:** 2026-06-04
 **Branch:** `dmotles/qum-683-chatlist-invariants-doc`
 **Tracks:** QUM-683
-**Companion to:** `docs/designs/tui-structural-rewrite-plan.md` (the arc plan)
+**Companion to:** `docs/archive/designs/tui-structural-rewrite-plan.md` — the arc plan (archived)
 and `docs/designs/qum-669-viewport-wedge-recovery.md` (the portable seam).
 
 This doc is the spec the S5 (QUM-675) implementer reads before splitting
@@ -439,11 +439,12 @@ That test pins the contract for future contributors.
   raw-text fallback (the asymmetric drop documented in §3 / §10).
 - `internal/tui/app.go:2118-2126` — `chatRegionContent` (the routing
   surface that ties cl + vp together).
-- `docs/designs/tui-structural-rewrite-plan.md` §2.1, §3, §4.4, §5.
+- `docs/archive/designs/tui-structural-rewrite-plan.md` (archived) §2.1, §3, §4.4, §5.
 - `docs/designs/qum-669-viewport-wedge-recovery.md` §3 (portable seam),
   §2.4 (resync command), §2.7 (wedge-exit).
-- `docs/handoffs/b4-manager-handoff.md` §S4 (Reset hazards L1/L2/L3),
-  §S5 (this issue), §S6 (forge's portable-seam handoff).
+- The B4 manager handoff §S4 (Reset hazards L1/L2/L3), §S5 (this issue),
+  §S6 (the portable-seam handoff) — an expired agent-to-agent work order,
+  deleted in the D4 docs cut; recoverable from git history.
 - Shipped commits on `main`: `8e28ddd` (S1), `fb9f1ac` (S2), `619ce46`
   (S3 + QUM-684 helpers refactor), `ec6828a` / `e42ad5c` (S4).
 

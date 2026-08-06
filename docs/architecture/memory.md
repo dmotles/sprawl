@@ -3,7 +3,7 @@
 The sprawl memory system is a 3-tier append-only model that records what each
 session of work produced and surfaces a short narrative of project history into
 the next session's system prompt. It replaces the earlier
-LLM-driven-distillation pipeline (see `docs/forensics/memory-consolidation-perf.md`)
+LLM-driven-distillation pipeline (see `docs/archive/forensics/memory-consolidation-perf.md`, archived)
 that proved unstable as session count grew.
 
 Tracked under umbrella issue QUM-513; cutover landed in QUM-517.
@@ -151,6 +151,6 @@ The script is intentionally non-destructive: it never overwrites the live
 - QUM-515 — slice 2: `AppendSession` production path.
 - QUM-516 — slice 3: arc summarizer + hidden CLIs.
 - QUM-517 — slice 4: cutover (this document).
-- `docs/forensics/memory-consolidation-perf.md` — historical analysis of why
+- `docs/archive/forensics/memory-consolidation-perf.md` (archived) — historical analysis of why
   the old pipeline failed.
 

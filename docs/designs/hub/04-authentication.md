@@ -1,12 +1,16 @@
 # 04 — Authentication
 
+> **Some links below point into `../../archive/hub/` (archived).** Those hub
+> documents were superseded and moved to `docs/archive/`. They are not
+> authority — verify against the tree before acting on anything they say.
+
 *The hub's two trust checks, MVP shape: browsers via a login page that trades a
 configured bearer token for a session cookie; hosts via hashed bearer tokens.
 Conforms to [`01-architecture.md`](01-architecture.md); this is the detail behind
-[`02` §1.4](02-components.md) and the auth notes in [`03`](03-api-surfaces.md).*
+[`02` §1.4](../../archive/hub/02-components.md) and the auth notes in [`03`](03-api-surfaces.md).*
 
 See also: [`00-overview.md`](00-overview.md) · [`01-architecture.md`](01-architecture.md) ·
-[`02-components.md`](02-components.md) · [`03-api-surfaces.md`](03-api-surfaces.md) ·
+[`02-components.md`](../../archive/hub/02-components.md) · [`03-api-surfaces.md`](03-api-surfaces.md) ·
 [index](README.md)
 
 ---
@@ -31,7 +35,7 @@ here — most importantly, **there is no OIDC in v1** (see §1).
 - **Also distinct — write authority is NOT auth.** Being authenticated lets you
   *hold a connection*; it does **not** grant the right to *write*. Write
   authority is the active-host marker's job ([`01` §4](01-architecture.md#4-identity-lease--fencing-conceptual--detail-in-doc-10--09),
-  [`02` §1.5](02-components.md)). Auth gates the connection; the marker gates the
+  [`02` §1.5](../../archive/hub/02-components.md)). Auth gates the connection; the marker gates the
   write. (In this MVP the marker is trivial — a single active-host flag, no fence
   tokens — but it is still a separate concern from auth.)
 
@@ -56,13 +60,13 @@ token** — a secret set at deploy time — presented once through a tiny login 
 ### 1.1 The login token is a deploy secret — never hardcoded
 
 The browser-login bearer token is **configuration**, resolved at startup from
-the secrets path ([`02` §1.7](02-components.md)), never compiled in. There is
+the secrets path ([`02` §1.7](../../archive/hub/02-components.md)), never compiled in. There is
 **no default and no baked-in secret** (public-repo hygiene, mirrors the "no
 default hub endpoint" rule in [`01` §3](01-architecture.md#3-connected-vs-disconnected)).
 
 | Parameter | Source | Notes |
 |---|---|---|
-| `HUB_LOGIN_TOKEN` | **secrets path** (`gocloud.dev/secrets`, [`02` §1.7](02-components.md)) | The single deploy secret the operator types into the login page. Never committed, never in plaintext env where avoidable. |
+| `HUB_LOGIN_TOKEN` | **secrets path** (`gocloud.dev/secrets`, [`02` §1.7](../../archive/hub/02-components.md)) | The single deploy secret the operator types into the login page. Never committed, never in plaintext env where avoidable. |
 | session cookie signing key | **secrets path** | Signs/seals the session cookie the login mints (§6). |
 
 Because there is exactly one user (the operator), a single shared login secret is
@@ -123,7 +127,7 @@ single-user scale, because per-host **rotate/revoke** is cheap and worth keeping
   we don't hash-compare against every row.
 - **At rest:** we store **only a hash of the `<secret>`**, never the token
   itself. Use a slow password hash (**argon2id**, or bcrypt) with a per-deploy
-  **pepper** resolved from the secrets path ([`02` §1.7](02-components.md)). A DB
+  **pepper** resolved from the secrets path ([`02` §1.7](../../archive/hub/02-components.md)). A DB
   dump alone cannot reconstruct usable tokens.
 - **Verify path:** parse prefix → look up row by `<tokenid>` → constant-time
   compare `hash(secret, pepper)` against the stored hash → check not-revoked /
@@ -156,7 +160,7 @@ host_token
   and a shared secret in a public-repo ops story is a footgun.
 - **Right (chosen):** per-host tokens, hashed at rest, individually revocable.
   Cost: a small table + a token-vending UI + lifecycle.
-- **Recommendation: per-host hashed tokens now** (echoing [`02` §1.4](02-components.md)).
+- **Recommendation: per-host hashed tokens now** (echoing [`02` §1.4](../../archive/hub/02-components.md)).
   Per-host revocation and attribution are cheap and useful even for a single
   operator with several machines; the cost is one table plus a few unary RPCs we
   already listed in [`03` §2](03-api-surfaces.md)
@@ -260,7 +264,7 @@ other host secrets, and **never** from a value passed on the command line.
   `.sprawl/secrets/hub-token` or a `gocloud.dev/secrets` reference), mode `0600`,
   owned by the operator. **Never committed** — the path is gitignored, mirroring
   the existing `.env` handling in `CLAUDE.md`.
-- **Resolution precedence** (highest first), extending [`02` §2.6](02-components.md)
+- **Resolution precedence** (highest first), extending [`02` §2.6](../../archive/hub/02-components.md)
   by splitting its single config tier into a user- then project-level layer:
   1. **Flag** — a `--hub-token-file` **path** (a secrets-path reference, never the
      value itself; see below).

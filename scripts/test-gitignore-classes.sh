@@ -113,8 +113,8 @@ KEEPS=(
   deploy/hub/spike/logs/.gitkeep
   deploy/hub/infra/terraform/azure/.terraform.lock.hcl
   # Real, and specifically at risk: merged onto the integration branch at the
-  # same time as `findings/`. Pins that the QUM-991 research dir is unaffected.
-  docs/research/qum-991-foreign-content-guard/decision.md
+  # same time as `findings/`. Pins that the QUM-991 decision dir is unaffected.
+  docs/designs/qum-991-foreign-content-guard/decision.md
   # SYNTHETIC precision fixture (not tracked): `findings/` is a DIRECTORY
   # pattern, so a mere substring must not match. Guards against someone
   # "simplifying" it to `*findings*`.

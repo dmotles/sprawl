@@ -1,5 +1,9 @@
 # 13 — Implementation Plan (single-user MVP sprint)
 
+> **Some links below point into `../../archive/hub/` (archived).** Those hub
+> documents were superseded and moved to `docs/archive/`. They are not
+> authority — verify against the tree before acting on anything they say.
+
 *The synthesis doc. Written last. It turns docs 00–12 + `security-privacy` +
 `attachments-multimodal` into a phased build plan for the **v2 single-user cloud
 companion**, records that the one transport disagreement is now reconciled in the
@@ -181,13 +185,13 @@ phases assume single-user throughout: a `user_id` column rides durable rows
 - **Proto/Connect contract + `buf` toolchain** from day one: `buf generate` →
   Go (`connect-go`) + TS (`connect-es`); `buf lint`/`buf format`/**`buf breaking`
   in CI** wired into `make validate` (Go-only repo today) ([`03` §3](03-api-surfaces.md),
-  [`08`](08-deployment.md)). Additive-only field policy; never reuse field
+  [`08`](../../archive/hub/08-deployment.md)). Additive-only field policy; never reuse field
   numbers — this is what keeps the deferred v2 features (snapshots, richer auth)
   **additive** rather than breaking.
 - **Single Go container skeleton** (`./hubd`): one Connect listener; `go:embed`
   SPA seam (empty shell is fine); `/healthz` (deps-free) + `/readyz`
-  (deps-checked) split; graceful `SIGTERM` drain ([`08`](08-deployment.md),
-  [`05` §4](05-observability.md)).
+  (deps-checked) split; graceful `SIGTERM` drain ([`08`](../../archive/hub/08-deployment.md),
+  [`05` §4](../../archive/hub/05-observability.md)).
 - **`Store` interface + two impls** (`memStore`, `pgStore`) behind
   dependency-injection, from the start; **goose** migrations embedded via
   `embed.FS`, **applied automatically by `hubd` on boot** (`pgStore.Migrate`) —
@@ -199,7 +203,7 @@ phases assume single-user throughout: a `user_id` column rides durable rows
   (cut with fencing).
 - **`gocloud.dev/blob` + `gocloud.dev/secrets`** wired (memblob/fileblob + local
   secrets impl in dev/test) — the abstraction *is* the local-dev backend, so it
-  costs ~nil ([`07`](07-storage-persistence.md), [`06`](06-iac.md)).
+  costs ~nil ([`07`](07-storage-persistence.md), [`06`](../../archive/hub/06-iac.md)).
 - **Auth, for real but single-user** ([`04`](04-authentication.md),
   [`security-privacy` §5](security-privacy.md)):
   - **One configured bearer token — NO OIDC.** The token is a **deploy secret**
@@ -228,11 +232,11 @@ phases assume single-user throughout: a `user_id` column rides durable rows
   and surfaces it in `ListInstances` ([`03` §1/§2](03-api-surfaces.md)).
 - **`--hub-url` / env / config** plumbing with **default firmly empty** (public-
   repo hygiene); log resolved endpoint host-only, token redacted
-  ([`01` §3](01-architecture.md), [`02` §2.6](02-components.md)).
+  ([`01` §3](01-architecture.md), [`02` §2.6](../../archive/hub/02-components.md)).
 - **Observability floor**: slog/JSON with canonical attrs
   (`run_id/host_id/seq/component/trace_id`); `/debug/state` endpoint (gated,
-  read-only) from day one ([`05`](05-observability.md)).
-- **IaC** ([`06`](06-iac.md)): `bootstrap/` (remote encrypted TF state) + `azure/`
+  read-only) from day one ([`05`](../../archive/hub/05-observability.md)).
+- **IaC** ([`06`](../../archive/hub/06-iac.md)): `bootstrap/` (remote encrypted TF state) + `azure/`
   concrete root + `modules/` capability contracts (container-host, database,
   object-store, secrets). `terraform.tfvars.example` placeholders only; no
   instance-specific defaults. `aws/` = README stub.
@@ -265,7 +269,7 @@ This alone kills window-juggling and gives remote/mobile *view*.
   (frame-oriented, persistent monotonic seq continuous across resumes) and ship
   frames — the eventbus continues to drive live local TUI delivery, but the
   authoritative durable source the uplink reads is the wire log
-  ([`02` §2.1](02-components.md)); **bounded local outbound buffer**, drop-oldest
+  ([`02` §2.1](../../archive/hub/02-components.md)); **bounded local outbound buffer**, drop-oldest
   past high-water, **one log per truncation** + a `truncated-from` marker
   ([`01` §3](01-architecture.md), [`09` §2](09-synchronization.md)).
 - **Uplink**: `AppendTranscript` **unary/batched** carrying
@@ -307,7 +311,7 @@ This alone kills window-juggling and gives remote/mobile *view*.
   (Zustand / `useSyncExternalStore`), **virtualized** log view
   (`@tanstack/react-virtual`); reconnect-per-one-rule in a framework-agnostic
   plain-TS transport module. `go:embed`'d, no SSR.
-- **`trace_id`** propagated through frames + logs ([`05` §3.2](05-observability.md)).
+- **`trace_id`** propagated through frames + logs ([`05` §3.2](../../archive/hub/05-observability.md)).
 
 **Simplest vs. right (Phase 1):** simplest = hub stores only the latest state,
 clients full-reload on every reconnect. **Right — durable seq'd log kept in full +
@@ -331,7 +335,7 @@ block** (the feasibility-verified screenshot path).
 - **Downlink input**: `SubmitInput` (unary) → hub → host's `SubscribeCommands`
   downlink stream → **the ONE turn-queue**, reusing sprawl's existing
   message/turn-queue plumbing; the hub only *transports* input, never interprets
-  it ([`01` §6](01-architecture.md), [`02` §2.3](02-components.md)). No source tag
+  it ([`01` §6](01-architecture.md), [`02` §2.3](../../archive/hub/02-components.md)). No source tag
   in v1 (add only if double-driving proves confusing). Lightweight **"N clients
   connected"** guard only — no driver-lock/presence.
 - **Attachments (VERIFIED FEASIBLE)** ([`attachments-multimodal`](attachments-multimodal.md)):
@@ -430,7 +434,7 @@ connected instances at a glance.
 
 The hub is a companion for *a handful* of one maintainer's instances and one or
 two human viewers — **not** a multi-tenant SaaS fleet ([`01` §0](01-architecture.md),
-[`05`](05-observability.md)). Sizing is deliberately tiny; these are
+[`05`](../../archive/hub/05-observability.md)). Sizing is deliberately tiny; these are
 order-of-magnitude figures for a generic public-cloud target ("Azure" as a
 stand-in), **not** a quote. The re-scope barely moves the envelope — it removes
 some secrets and the GC/snapshot machinery, and makes blob growth unbounded (but
@@ -458,11 +462,11 @@ always-on container + Postgres floor. Two structural cost levers:
 
 **Scaling ceiling (single container):** the open sizing question is *how many
 concurrent held-open server-streams a single Go container holds before goroutine/
-memory pressure matters* ([`03`](03-api-surfaces.md)/[`08`](08-deployment.md) OQ).
+memory pressure matters* ([`03`](03-api-surfaces.md)/[`08`](../../archive/hub/08-deployment.md) OQ).
 For single-user (a handful of hosts + 1–2 browsers) this is a non-issue;
 multi-instance scale-out (externalized marker/fan-out registry, sticky vs.
 stateless-over-Postgres routing) is deferred until a real second user or fan-out
-ceiling forces it ([`06`](06-iac.md) OQ).
+ceiling forces it ([`06`](../../archive/hub/06-iac.md) OQ).
 
 ---
 
@@ -481,17 +485,17 @@ Rows marked **▸ v2 cut** reflect where the re-scope simplified the earlier cal
 | Browser auth | basic-auth / shared password | **one configured bearer token → httpOnly session cookie; NO OIDC** ▸ v2 cut | [`04`](04-authentication.md) |
 | Memory sync | git line-merge | **write-local → push-on-handoff → pull-on-start → last-writer-wins; NO version-vector/reconcile; never textual** ▸ v2 cut | [`09`](09-synchronization.md)/[`10`](10-memory.md) |
 | Storage seam | inline SQL + blob SDK | **`Store` interface, `memStore`+`pgStore`, goose migrations** | [`07`](07-storage-persistence.md) |
-| Blob/secrets | local FS + env vars | **`gocloud.dev/blob`+`/secrets` from day one** | [`02`](02-components.md)/[`07`](07-storage-persistence.md) |
+| Blob/secrets | local FS + env vars | **`gocloud.dev/blob`+`/secrets` from day one** | [`02`](../../archive/hub/02-components.md)/[`07`](07-storage-persistence.md) |
 | Retention | GC / retention windows | **keep everything indefinitely; NO GC in v1** ▸ v2 cut | [`07`](07-storage-persistence.md)/[`09`](09-synchronization.md)/[`10`](10-memory.md) |
 | Frontend | (choose) | **React 19 + Vite + connect-web/-query, `go:embed`** | [`11`](11-frontend-stack.md) |
-| Deploy | recreate; embed-only | **single container, embed toggle, rolling+drain** | [`08`](08-deployment.md) |
-| Observability | grep logs / one healthz | **slog/JSON + `/debug/state` + healthz/readyz split; metrics/tracing = seams** | [`05`](05-observability.md) |
-| Schema evolution | be careful | **`buf breaking` in CI + additive-only, day one** | [`03`](03-api-surfaces.md)/[`08`](08-deployment.md) |
-| IaC | click-ops / flat dir | **Terraform, `azure/` root + `modules/` contracts + `bootstrap/` state** | [`06`](06-iac.md) |
+| Deploy | recreate; embed-only | **single container, embed toggle, rolling+drain** | [`08`](../../archive/hub/08-deployment.md) |
+| Observability | grep logs / one healthz | **slog/JSON + `/debug/state` + healthz/readyz split; metrics/tracing = seams** | [`05`](../../archive/hub/05-observability.md) |
+| Schema evolution | be careful | **`buf breaking` in CI + additive-only, day one** | [`03`](03-api-surfaces.md)/[`08`](../../archive/hub/08-deployment.md) |
+| IaC | click-ops / flat dir | **Terraform, `azure/` root + `modules/` contracts + `bootstrap/` state** | [`06`](../../archive/hub/06-iac.md) |
 | Attachments | (verify) inline | **base64 blocks + blob-store-by-reference; `/attach` first; Files API deferred** | [`attachments-multimodal`](attachments-multimodal.md) |
 | Content trust | absolutist ZK vs plaintext | **hub-can-read default; ZK seam + per-project opt-out DEFERRED (opaque-blob seam kept)** ▸ v2 cut | [`security-privacy`](security-privacy.md) |
 | Tenant isolation | trust queries | **single `user_id` value now; authz chokepoint DEFERRED to first second user** ▸ v2 cut | [`security-privacy`](security-privacy.md) |
-| Test strategy | live claude + grep logs | **fixture at `RuntimeEvent` layer + hermetic fakes + `/debug/state` asserts + e2e rows** | [`12`](12-testability-local-dev.md) |
+| Test strategy | live claude + grep logs | **fixture at `RuntimeEvent` layer + hermetic fakes + `/debug/state` asserts + e2e rows** | [`12`](../../archive/hub/12-testability-local-dev.md) |
 
 ---
 

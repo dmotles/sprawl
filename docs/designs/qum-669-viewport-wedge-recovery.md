@@ -198,7 +198,7 @@ add a regression test (`TestQuitFromWedgedStreamingState`).
 
 ## 3. Portable seam: today (viewport.go) vs. B4 (ChatList)
 
-Per `docs/designs/tui-structural-rewrite-plan.md`:
+Per `docs/archive/designs/tui-structural-rewrite-plan.md` (archived):
 - S3-S4 introduce `ChatList` alongside `ViewportModel`.
 - S6 deletes `viewport.go` wholesale.
 - S5 routes "contract violators" away from `ChatList`.
@@ -425,7 +425,7 @@ Risk hotspots for the implementer:
 - `internal/agentloop/activity.go` — (NOT the resync source; clarified
   in §1)
 - `internal/memory/sessionlog.go:36` — `SessionLogPath`
-- `docs/designs/tui-structural-rewrite-plan.md` — S3/S4/S5/S6 plan
+- `docs/archive/designs/tui-structural-rewrite-plan.md` (archived) — S3/S4/S5/S6 plan
 - QUM-472 — silent-drop telemetry (predecessor)
 - QUM-667 — viewport render perf (parallel)
 - QUM-681 — drop-telemetry status-bar segment (predecessor; reused)

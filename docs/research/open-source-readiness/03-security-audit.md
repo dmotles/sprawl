@@ -1,5 +1,36 @@
 # Security Audit
 
+> **HELD LIVE — deliberately not archived (D4, 2026-08-06).** The D4 docs cut
+> classified this file ARCHIVE. It is being kept in place instead, because it and
+> `docs/designs/hub/security-privacy.md` are the only two files in the repo that
+> state the security trust model, and **QUM-1138** exists to write that model down
+> somewhere durable *before* either is cut. Archiving first would destroy
+> information rather than reorganise it. This file leaves `docs/research/` — and
+> `docs/research/` disappears — when QUM-1138 lands.
+>
+> **Priority Action #1 is DONE; the summary below is wrong and is left visible
+> rather than silently edited.** Agent-name validation landed as
+> `internal/agent/validate.go` → `func ValidateName(name string) error`
+> (allow-list `^[a-zA-Z0-9][a-zA-Z0-9_-]*$` plus a 64-char cap, rejecting `/`,
+> `\`, `..` and a leading `.`), wired in at 11+ non-test call sites, committed
+> `30fd7fe` on **2026-04-06** — two days after this audit was written — under
+> **QUM-161 (Done)**. `internal/agent/validate_test.go` asserts
+> `ValidateName("../etc/passwd")` fails.
+>
+> The claim "no agent name validation exists anywhere" survived four months
+> because every probe searched for `ValidateAgentName` — **the identifier this
+> document proposes**, which was never the identifier that shipped. A zero-hit
+> grep and a grep that *cannot* hit look identical. QUM-1128 was filed on that
+> false premise and is **canceled**. One genuine residual: `Real.Delegate` takes
+> a caller-supplied name that `ValidateName` does not cover — a hardening gap,
+> filed separately.
+>
+> **Priority Actions #2, #3 and #4 are genuinely open** and are what QUM-1138
+> tracks: no `docs/security-model.md` and no `SECURITY.md` exist; state,
+> message and worktree paths are still `0o644`/`0o755` with `//nolint:gosec`
+> annotations; `SPRAWL_TEST_MODE` is still prompt-level only and unmentioned in
+> `README.md`.
+
 **Date:** 2026-04-04
 **Original researcher:** delta
 **Validated by:** brook (2026-04-05) — all claims verified against codebase with file paths/line numbers, additional findings added

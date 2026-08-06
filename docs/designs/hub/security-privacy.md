@@ -1,5 +1,9 @@
 # security-privacy — Threat Model & Data-Privacy Design (MVP)
 
+> **Some links below point into `../../archive/hub/` (archived).** Those hub
+> documents were superseded and moved to `docs/archive/`. They are not
+> authority — verify against the tree before acting on anything they say.
+
 *The hub's threat model for the **v1 single-user cloud companion**, the
 data-sensitivity inventory, the secret/transit/at-rest posture, and the
 token-leak + public-repo hygiene rules. Multi-tenant isolation and
@@ -7,7 +11,7 @@ zero-knowledge encryption are **deferred** — documented here as clearly-trigge
 future work, not v1 scope.*
 
 See also: [`00-overview`](00-overview.md) · [`01-architecture`](01-architecture.md)
-(§4 lease/fence) · [`02-components`](02-components.md) (§1.4 auth) ·
+(§4 lease/fence) · [`02-components`](../../archive/hub/02-components.md) (§1.4 auth) ·
 [`03-api-surfaces`](03-api-surfaces.md) · [`10-memory`](10-memory.md) ·
 [index](README.md)
 
@@ -52,7 +56,7 @@ load-bearing.
 |---|---|---|
 | **Session transcripts** | HIGH — raw claude I/O; can contain employer-internal systems, hostnames, customer names, secrets pasted mid-session | blob store (`transcripts/`, [`10` §5](10-memory.md)) |
 | **Distilled memory** | HIGH — curated facts/preferences, may name internal context | blob store (`units/`, `snapshots/`) |
-| **Event log** | MED–HIGH — live claude output stream, same content class as transcripts | event-log store (PG, [`02` §1.6](02-components.md)) |
+| **Event log** | MED–HIGH — live claude output stream, same content class as transcripts | event-log store (PG, [`02` §1.6](../../archive/hub/02-components.md)) |
 | **Attachments** | MED–HIGH — screenshots (design mocks, **error screens with tokens/PII**) | blob store |
 | **The bearer token** | CRITICAL — the single configured secret = full hub access (browser + host) | `0600` file / env / secrets manager (§5, §6) |
 | **Lease/fence registry** | LOW content, HIGH integrity — wrong holder = write clobber | PG |
@@ -224,7 +228,7 @@ forecloses each. **This section stays fully in force.**
 
 ## 6. Secret handling
 
-- **`gocloud.dev/secrets`** ([`02` §1.7](02-components.md)) is the single portable
+- **`gocloud.dev/secrets`** ([`02` §1.7](../../archive/hub/02-components.md)) is the single portable
   interface for the runtime secret material — in v1 that is **the bearer token**
   (and, when it's used, any session-cookie signing key). Backed by the provider's
   secrets manager in prod; a local impl for tests/dev — so no cloud provider is

@@ -1,11 +1,15 @@
 # QUM-911 — Hub P1 E2E: live-tail + reconnect zero-gap proof
 
+> **Some links below point into `../../archive/hub/` (archived).** Those hub
+> documents were superseded and moved to `docs/archive/`. They are not
+> authority — verify against the tree before acting on anything they say.
+
 *The capstone verification for Hub Phase 1: prove the read-only, wire-log-
 authoritative browser live-tail stack end to end, **local only** (a local hubd,
 no cloud). Wires together the host tailer (QUM-908), the hub in-mem fan-out
 (QUM-909), and the SPA (QUM-910) against a real local `hubd`.*
 
-See also: [`12-testability-local-dev.md`](12-testability-local-dev.md) (the
+See also: [`12-testability-local-dev.md`](../../archive/hub/12-testability-local-dev.md) (the
 "mock the claude stream" linchpin, `/debug/state` assertions) ·
 [`09-synchronization.md`](09-synchronization.md) (the one reconnect rule) ·
 [index](README.md).
@@ -25,7 +29,7 @@ See also: [`12-testability-local-dev.md`](12-testability-local-dev.md) (the
   live-tail (AC1 data path), the running/idle pill data source (AC3), and
   **zero-gap / zero-dupe reconnect** across both a subscriber network blip and a
   **hubd restart** (AC2), keyed by the durable wire seq.
-- **The LLM is mocked, by design.** [`12` §1](12-testability-local-dev.md#1-the-linchpin--mock-the-claude-stream)
+- **The LLM is mocked, by design.** [`12` §1](../../archive/hub/12-testability-local-dev.md#1-the-linchpin--mock-the-claude-stream)
   makes "no seam test depends on a real model" the top testability decision. The
   wire-log NDJSON is the real host↔hub interface; the capstone drives the **real
   tailer** over a hand-authored seq'd fixture, exercising the whole uplink →
@@ -40,7 +44,7 @@ Files:
 - Contiguity checker + permanent negative control (untagged, runs on every
   `make validate`): `internal/hub/e2e/contiguity_test.go`.
 - Matrix row: `scripts/e2e-tests/hub-e2e.sh`.
-- Evidence: [`evidence/qum-911/`](evidence/qum-911/).
+- Evidence: [`evidence/qum-911/`](../../archive/hub/evidence/qum-911/).
 
 ---
 
@@ -55,7 +59,7 @@ permanent, untagged negative control that keeps the checker honest (it flags
 forward gaps, dupes, non-monotonic runs, and wrong resume floors). Verified to
 have teeth: flipping the blip reconnect from `fromSeq=lastSeq` to `fromSeq=0`
 makes `network_blip` fail with `first seq = 1, want 6` (a replayed dupe caught by
-the checker) — see [`evidence/qum-911/teeth-check.txt`](evidence/qum-911/teeth-check.txt).
+the checker) — see [`evidence/qum-911/teeth-check.txt`](../../archive/hub/evidence/qum-911/teeth-check.txt).
 
 `TestHubLocalE2E` subtests:
 
@@ -102,7 +106,7 @@ make test-hub-e2e
 make test-e2e-matrix-hub-e2e
 ```
 
-Captured transcript: [`evidence/qum-911/go-test.txt`](evidence/qum-911/go-test.txt).
+Captured transcript: [`evidence/qum-911/go-test.txt`](../../archive/hub/evidence/qum-911/go-test.txt).
 
 ---
 
@@ -122,7 +126,7 @@ not block on a UI session picker.
 The rendered pane-of-glass needs a real browser, which needs TLS: the hub
 session cookie is `Secure`, so it is silently dropped over plain `http://` (see
 `web/README.md`, "Secure-cookie caveat"). This is out of P1 automation scope
-(Playwright is deferred — [`12` §4.3](12-testability-local-dev.md#43-seam-3--add-the-real-web-headless-then-playwright)).
+(Playwright is deferred — [`12` §4.3](../../archive/hub/12-testability-local-dev.md#43-seam-3--add-the-real-web-headless-then-playwright)).
 Steps to reproduce by hand:
 
 1. **Build the SPA into the embed dir** (needs node; the committed `web/dist` is
@@ -161,7 +165,7 @@ Steps to reproduce by hand:
 **Evidence format:** capture a screenshot (or short asciinema) of the browser
 showing live output + the pill for AC1/AC3, and the `go test -v` transcript for
 the automated AC1(data)/AC2/AC3 proofs. Store non-secret artifacts under
-[`evidence/qum-911/`](evidence/qum-911/). **Public-repo hygiene:** commit only
+[`evidence/qum-911/`](../../archive/hub/evidence/qum-911/). **Public-repo hygiene:** commit only
 synthetic fixtures — never a real session transcript, host id, or token.
 
 ---
@@ -173,6 +177,6 @@ synthetic fixtures — never a real session transcript, host id, or token.
   new wire-frame table? Tracked as later-phase work under QUM-906.
 - **Session-list RPC** (QUM-923): once it lands, the manual `/debug/state`
   triple lookup (§2) and the test's fixed IDs can key off it instead.
-- **Playwright `hub-fullstack` row** ([`12` §7](12-testability-local-dev.md#7-new-e2e-matrix-rows-touched-files--row)):
+- **Playwright `hub-fullstack` row** ([`12` §7](../../archive/hub/12-testability-local-dev.md#7-new-e2e-matrix-rows-touched-files--row)):
   when added, it supersedes the manual browser walkthrough (§3) for AC1's
   rendered path.
