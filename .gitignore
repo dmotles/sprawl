@@ -83,6 +83,28 @@ plan.out
 az-scratch/
 bootstrap.env
 
+# Agent scratch dirs (QUM-989 rationale). Agents in the merge-safety work series
+# each copy a 404-line Go harness into scratch/mergeharness/ in their own
+# worktree, on a shared filesystem. Until this line the only defence was every
+# future prompt remembering to say "never stage this" — and per QUM-989 the
+# artifacts that bite arrive from processes nobody predicted, so convention is
+# not a control.
+#
+# UNANCHORED, like `findings/` above: agents create scratch/ at whatever depth
+# they are standing in, so `/scratch/` would cover the least likely case.
+#
+# This does NOT subsume `az-scratch/` above — keep that line. A gitignore
+# pattern with no interior slash is matched against a WHOLE path component, not
+# a substring, so `scratch/` matches a directory named exactly `scratch` and
+# leaves `az-scratch/`, `scratchpad/`, and `docs/scratchpad.md` alone. Deleting
+# `az-scratch/` as "already covered" would un-ignore it.
+#
+# COST, recorded: a legitimately tracked scratch/ dir now needs `git add -f`.
+# Nothing is tracked under such a path today (verified: `git ls-files | grep -i
+# scratch` is empty). Guarded by scripts/test-gitignore-classes.sh, which pins
+# both the ignore and the two over-match directions (`*scratch*`, `scratch*/`).
+scratch/
+
 # Tool/build/apply logs (QUM-989). Deliberately BROAD. `terraform apply` and
 # `az acr build` emit ad-hoc logs (apply4.log, acrbuild2.log) whose names nobody
 # can enumerate in advance, and this repo is PUBLIC — such logs routinely carry
