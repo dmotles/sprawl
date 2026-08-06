@@ -9,8 +9,9 @@
 #   - interrupt sent      (weave observable)
 #   - sleep returns       (manager observable, expect ctx.Canceled)
 #
-# Output (line-oriented) is meant to be appended into
-# docs/research/qum-552-sandbox-transcript.md by the operator.
+# Output (line-oriented) is read by the operator; the transcript file it
+# used to be appended into was deleted in the D4 docs cut, since the tests
+# are the durable artifact.
 #
 # NOT a make-validate target — strictly a research repro. Requires real
 # claude + tmux + jq on PATH.

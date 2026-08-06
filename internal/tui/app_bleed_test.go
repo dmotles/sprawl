@@ -1,7 +1,8 @@
 package tui
 
 // QUM-334 — TDD red-phase tests for the per-agent ViewportModel fix
-// (Option A from docs/research/qum-334-bridge-bleed.md).
+// (Option A; the design note that named it was deleted in the D4 docs cut,
+// recoverable from git history).
 //
 // These tests reference APIs that do NOT yet exist on AppModel /
 // ViewportModel:
