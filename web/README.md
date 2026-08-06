@@ -5,7 +5,7 @@ authenticated shell with two views — **Instances** (lists instances via
 `ListInstances`, QUM-878 / Hub P0-4) and **Tokens** (host-token administration
 over the `CreateHostToken`/`ListHostTokens`/`RevokeHostToken` RPCs, QUM-889 /
 QUM-885). No router, no state libraries, no live-tail — those are Phase 1
-(see [`docs/design/hub/11-frontend-stack.md`](../docs/design/hub/11-frontend-stack.md)).
+(see [`docs/designs/hub/11-frontend-stack.md`](../docs/designs/hub/11-frontend-stack.md)).
 
 Stack: **React 19 + Vite + `@connectrpc/connect-web`** (connect-es v1).
 

@@ -4,8 +4,8 @@
 container platform: a heartbeated Connect **server-stream** survives a managed
 L7 (Envoy) ingress idle timeout (~240s on Azure Container Apps), and reconnect
 with `from_seq` resumes with **zero gaps / zero dupes** (the "one rule"). See
-[`docs/design/hub/03-api-surfaces.md` §4–5](../../../docs/design/hub/03-api-surfaces.md)
-and [`13-implementation-plan.md` §2](../../../docs/design/hub/13-implementation-plan.md).
+[`docs/designs/hub/03-api-surfaces.md` §4–5](../../../docs/designs/hub/03-api-surfaces.md)
+and [`13-implementation-plan.md` §2](../../../docs/designs/hub/13-implementation-plan.md).
 
 Deliberately minimal app logic. The infra path (remote state + ACA) is reusable
 for Phase 0; the spike **app** resources are torn down after the verdict.

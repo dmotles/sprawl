@@ -4,7 +4,7 @@
 // @ts-nocheck
 
 // Package hub.v1 is the host<->hub + api<->webapp Connect wire contract for the
-// sprawl hub (see docs/design/hub/03-api-surfaces.md).
+// sprawl hub (see docs/designs/hub/03-api-surfaces.md).
 //
 // ADDITIVE-ONLY FIELD POLICY (see proto/README.md): fields may only be ADDED
 // with new numbers. NEVER renumber a field, NEVER change a field's type, and

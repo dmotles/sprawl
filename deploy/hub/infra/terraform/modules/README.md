@@ -1,6 +1,6 @@
 # modules/ — capability contracts
 
-Per [`docs/design/hub/06-iac.md` §3](../../../../docs/design/hub/06-iac.md), the
+Per [`docs/designs/hub/06-iac.md` §3](../../../../docs/designs/hub/06-iac.md), the
 hub's IaC keeps the AWS door open via a thin capability-contract seam: a
 cloud-agnostic set of module *contracts* (input variables + output names) that
 each cloud implements identically.

@@ -1,7 +1,7 @@
 // Command hubd is the sprawl hub server: one Connect listener serving the
 // (stubbed) HubService RPCs, health/readiness probes, a gated /debug/state
 // endpoint, and a graceful SIGTERM drain. It is a separate deployable process,
-// not a `sprawl` subcommand. See docs/design/hub/.
+// not a `sprawl` subcommand. See docs/designs/hub/.
 package main
 
 import (

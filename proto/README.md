@@ -2,7 +2,7 @@
 
 The `.proto` files here are the single source of truth for the sprawl hub's
 Connect/protobuf wire contract (host↔hub and api↔webapp). See
-[`docs/design/hub/03-api-surfaces.md`](../docs/design/hub/03-api-surfaces.md).
+[`docs/designs/hub/03-api-surfaces.md`](../docs/designs/hub/03-api-surfaces.md).
 
 ## Additive-only field policy (load-bearing)
 

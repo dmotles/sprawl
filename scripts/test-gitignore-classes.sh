@@ -109,7 +109,7 @@ KEEPS=(
   CHANGELOG.md
   cmd/logs.go
   internal/memory/sessionlog.go
-  docs/design/hub/13-implementation-plan.md
+  docs/designs/hub/13-implementation-plan.md
   deploy/hub/spike/logs/.gitkeep
   deploy/hub/infra/terraform/azure/.terraform.lock.hcl
   # Real, and specifically at risk: merged onto the integration branch at the

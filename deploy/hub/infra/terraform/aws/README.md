@@ -1,6 +1,6 @@
 # aws/ — future sibling (do NOT build now)
 
-Placeholder per [`docs/design/hub/06-iac.md` §3](../../../../docs/design/hub/06-iac.md).
+Placeholder per [`docs/designs/hub/06-iac.md` §3](../../../../docs/designs/hub/06-iac.md).
 When a second deploy target justifies it, mirror `azure/`: implement the same
 four capability contracts (`../modules/`), swapping the `azurerm` provider for
 `aws` and the azurerm state backend for `s3`.

@@ -14,8 +14,8 @@ Container App Environment is VNet-injected too (`internal_load_balancer_enabled
 resolving its private FQDN via a private DNS zone. Only the DB is private — the
 browser and host dial-out still reach the hub from the internet.
 
-See [`docs/design/hub/06-iac.md`](../../../../../docs/design/hub/06-iac.md) and
-[`08-deployment.md`](../../../../../docs/design/hub/08-deployment.md).
+See [`docs/designs/hub/06-iac.md`](../../../../../docs/designs/hub/06-iac.md) and
+[`08-deployment.md`](../../../../../docs/designs/hub/08-deployment.md).
 
 ## Public-repo / corporate-Azure rules (HARD)
 

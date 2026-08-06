@@ -11,7 +11,7 @@ import (
 )
 
 // Identifier types. All are opaque strings; the single-user MVP keeps UserID
-// constant everywhere (docs/design/hub/07-storage-persistence.md §0).
+// constant everywhere (docs/designs/hub/07-storage-persistence.md §0).
 type (
 	UserID         string
 	HostID         string

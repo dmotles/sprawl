@@ -11,7 +11,7 @@
 # across a subscriber network blip and a hubd restart.
 #
 # Needs only the Go toolchain — no claude, tmux, or jq — so it runs unguarded in
-# the matrix. See docs/design/hub/13-p1-local-e2e-and-manual-walkthrough.md.
+# the matrix. See docs/designs/hub/13-p1-local-e2e-and-manual-walkthrough.md.
 
 test_metadata() {
     echo ""

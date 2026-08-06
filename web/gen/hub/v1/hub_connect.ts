@@ -4,7 +4,7 @@
 // @ts-nocheck
 
 // Package hub.v1 is the host<->hub + api<->webapp Connect wire contract for the
-// sprawl hub (see docs/design/hub/03-api-surfaces.md).
+// sprawl hub (see docs/designs/hub/03-api-surfaces.md).
 //
 // ADDITIVE-ONLY FIELD POLICY (see proto/README.md): fields may only be ADDED
 // with new numbers. NEVER renumber a field, NEVER change a field's type, and
@@ -19,7 +19,7 @@ import { MethodKind } from "@bufbuild/protobuf";
  * HubService is the RPC surface for the hub. RegisterInstance/ListInstances are
  * the host<->hub registry RPCs; the CreateHostToken/ListHostTokens/
  * RevokeHostToken RPCs are browser-only (cookie-authenticated) token
- * administration (docs/design/hub/04-authentication.md §4).
+ * administration (docs/designs/hub/04-authentication.md §4).
  *
  * @generated from service hub.v1.HubService
  */
