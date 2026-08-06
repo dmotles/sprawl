@@ -104,6 +104,36 @@ all):
 * something else advanced the parent between the ff-merge and the rollback
   (an unserialized concurrent merge — see *Locking model*).
 
+### The scenario harness's loss detector is weaker than the invariant
+
+The invariant above is stated over **parent-branch** reachability. The loss
+detector most assertions in `internal/merge/scenario_test.go` use,
+`reachableFromBranches`, is `git branch --contains` — reachable from **any**
+`refs/heads/*` tip. So it tests a strictly weaker property than this document
+claims, and a commit that has become unreachable *from the parent branch*
+while still sitting on the agent branch passes it.
+
+Its positive control (`TestMergeSafety_ReachabilityCheckerDetectsLoss`, the S0
+"detectors can fire" pin) plants a **total** loss via `reset --hard` and
+asserts `{false, false}` — valid, but only for that shape. QUM-1087's S5b is the other shape: the victim stays reachable from
+the agent branch, so the detector returns `true` on a real loss *and the
+control stays green throughout*. A control can prove a mechanism works in
+general while the mechanism is blind to the particular case it will be asked
+about. This is the same `--contains` asymmetry CLAUDE.md warns about in the
+squash-rebase recovery procedure — "not merged" and "merged, re-parented"
+having opposite correct responses — arriving in a checker rather than in a
+procedure.
+
+**No already-merged assertion misuses it** (audited at `889b37b`): the
+loss-direction assertions in `_S5_ValidateFails`, `_S2_RebaseConflict`,
+`_S6*` and `_HappyPath_NoLoss` are genuine "reachable from NO branch" claims,
+where any-branch scope is exactly the right scope, and the recovery-ref
+assertions use `reachableFromPremergeRefs`. The gap bites only S5b, which is
+not ported yet — so QUM-1090 (`fa7a48e`) and QUM-1100 (`889b37b`) do not need
+re-auditing on this account. Whoever ports S5b needs a parent-branch-scoped
+checker, which is not a stricter variant of `reachableFromBranches` but the
+only one that tests the invariant as written.
+
 ## Locking model
 
 Serialization is currently a property of the **caller**, not of the engine.
