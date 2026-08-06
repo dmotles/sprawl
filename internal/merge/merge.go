@@ -2,10 +2,12 @@ package merge
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"io"
 	"path/filepath"
 	"reflect"
+	"regexp"
 	"strings"
 	"time"
 
@@ -42,6 +44,28 @@ func premergeRefs(agentName string, now time.Time) (agentRef, parentRef string) 
 	return base + "/agent", base + "/parent"
 }
 
+// CommitRecord is one commit from the agent branch's range: the pair a
+// squash destroys and this package has to carry forward.
+type CommitRecord struct {
+	// SHA is the full 40-char hash. Recorded in full, not abbreviated:
+	// abbreviation length depends on repository size, so a record that is
+	// unambiguous in a fixture can be ambiguous in a real repo — and after
+	// the squash this SHA is the only handle relating the merged commit to
+	// what was reviewed.
+	SHA string
+
+	// Message is the raw %B body with its trailing newline trimmed.
+	Message string
+}
+
+// Subject returns the commit's first line.
+func (c CommitRecord) Subject() string {
+	if i := strings.IndexByte(c.Message, '\n'); i >= 0 {
+		return c.Message[:i]
+	}
+	return c.Message
+}
+
 // Config holds the parameters for a merge operation.
 type Config struct {
 	SprawlRoot      string
@@ -63,8 +87,15 @@ type Config struct {
 
 // Deps holds injectable dependencies for the merge operation.
 type Deps struct {
-	LockAcquire     func(lockPath string) (unlock func(), err error)
-	GitMergeBase    func(repoRoot, a, b string) (string, error)
+	LockAcquire  func(lockPath string) (unlock func(), err error)
+	GitMergeBase func(repoRoot, a, b string) (string, error)
+
+	// GitLogRange returns the commits in base..head, oldest first, restricted
+	// to the branch's own line of development. It is the SOURCE OF THE SQUASH
+	// COMMIT MESSAGE (QUM-1105) — the agent's commit messages are the durable
+	// record, and after the squash they exist only here.
+	GitLogRange func(worktree, base, head string) ([]CommitRecord, error)
+
 	GitRevParseHead func(worktree string) (string, error)
 	GitResetSoft    func(worktree, ref string) error
 	GitCommit       func(worktree, message string) (string, error)
@@ -165,6 +196,17 @@ func Merge(ctx context.Context, cfg *Config, deps *Deps) (*Result, error) {
 		return nil, fmt.Errorf("reading parent HEAD for premerge ref: %w", err)
 	}
 	agentRef, parentRef := premergeRefs(cfg.AgentName, deps.Now())
+
+	// Step 3b (QUM-1105): derive the commit message from the agent's own
+	// commits, still before the first mutation. Deriving here rather than at
+	// the commit means a branch we cannot describe is refused while it is
+	// intact, instead of after `reset --soft` has rewound it to the merge
+	// base — the QUM-1100 window, entered for a reason that is knowable in
+	// advance.
+	commitMsg, err := deriveCommitMessage(cfg, deps, mergeBase, agentHead, agentRef)
+	if err != nil {
+		return nil, err
+	}
 	// Written in SprawlRoot, not the agent worktree: refs are shared across
 	// worktrees, and SprawlRoot is the one path still guaranteed to exist on
 	// the retire path, which removes the agent worktree.
@@ -183,7 +225,6 @@ func Merge(ctx context.Context, cfg *Config, deps *Deps) (*Result, error) {
 		return nil, fmt.Errorf("squash reset: %w", err)
 	}
 
-	commitMsg := buildMergeCommitMessage(cfg.AgentState, cfg.ParentBranch, cfg.MessageOverride)
 	commitHash, err := deps.GitCommit(cfg.AgentWorktree, commitMsg)
 	if err != nil {
 		return nil, commitFailureError(cfg, deps, err, preSquashSHA, mergeBase, agentRef, parentRef)
@@ -280,19 +321,21 @@ func Merge(ctx context.Context, cfg *Config, deps *Deps) (*Result, error) {
 }
 
 func dryRun(cfg *Config, deps *Deps) (*Result, error) { //nolint:unparam // error return kept for interface consistency
-	mergeBase, err := deps.GitMergeBase(cfg.SprawlRoot, cfg.ParentBranch, cfg.AgentBranch)
-	if err != nil {
+	mergeBase, baseErr := deps.GitMergeBase(cfg.SprawlRoot, cfg.ParentBranch, cfg.AgentBranch)
+	if baseErr != nil {
 		mergeBase = "(unknown)"
 	}
 
-	agentHead, err := deps.GitRevParseHead(cfg.AgentWorktree)
-	if err != nil {
+	agentHead, headErr := deps.GitRevParseHead(cfg.AgentWorktree)
+	if headErr != nil {
 		agentHead = "(unknown)"
 	}
 
-	isNoOp := mergeBase == agentHead
-	commitMsg := buildMergeCommitMessage(cfg.AgentState, cfg.ParentBranch, cfg.MessageOverride)
-	indentedMsg := "    " + strings.ReplaceAll(commitMsg, "\n", "\n    ")
+	// Two failed reads both yield "(unknown)" and would compare EQUAL, so
+	// this cannot key on the values alone: a dry run that could read nothing
+	// would otherwise report "no-op (no new commits)", which is a claim about
+	// the branch rather than about the failure.
+	isNoOp := baseErr == nil && headErr == nil && mergeBase == agentHead
 
 	fmt.Fprintf(deps.Stderr, "[dry-run] Would merge agent %q (branch %s) into %s\n", cfg.AgentName, cfg.AgentBranch, cfg.ParentBranch)
 	fmt.Fprintf(deps.Stderr, "  Merge base: %s\n", mergeBase)
@@ -303,7 +346,28 @@ func dryRun(cfg *Config, deps *Deps) (*Result, error) { //nolint:unparam // erro
 		return &Result{WasNoOp: true}, nil
 	}
 
-	fmt.Fprintf(deps.Stderr, "  Commit message:\n%s\n", indentedMsg)
+	// Derivation comes AFTER the no-op return, matching Merge's ordering —
+	// otherwise the two disagree about when the message is even needed. The
+	// recovery ref is named as "" here: a dry run writes none, and printing
+	// an invented ref name would be a claim about a ref that does not exist.
+	//
+	// A revision we failed to read is NOT handed to git as the literal
+	// "(unknown)": that would report the wrong cause (a bogus revision)
+	// instead of the real one (the read that failed).
+	var commitMsg string
+	msgErr := errors.Join(baseErr, headErr)
+	if msgErr == nil {
+		commitMsg, msgErr = deriveCommitMessage(cfg, deps, mergeBase, agentHead, "")
+	}
+
+	// A dry run mutates nothing, so a derivation failure is reported and the
+	// plan still printed — but it is reported as the blocker it is, since the
+	// real merge will refuse for the same reason.
+	if msgErr != nil {
+		fmt.Fprintf(deps.Stderr, "  Commit message: CANNOT BE DERIVED — this merge would FAIL:\n    %v\n", msgErr)
+	} else {
+		fmt.Fprintf(deps.Stderr, "  Commit message:\n%s\n", "    "+strings.ReplaceAll(commitMsg, "\n", "\n    "))
+	}
 	fmt.Fprintf(deps.Stderr, "  Steps: acquire lock → squash → rebase → ff-merge")
 	if !cfg.NoValidate && cfg.ValidateCmd != "" {
 		fmt.Fprintf(deps.Stderr, " → validate (%s)", cfg.ValidateCmd)
@@ -315,23 +379,146 @@ func dryRun(cfg *Config, deps *Deps) (*Result, error) { //nolint:unparam // erro
 	return &Result{}, nil
 }
 
-func buildMergeCommitMessage(agent *state.AgentState, parentBranch, messageOverride string) string {
-	coAuthor := "Co-Authored-By: Claude <noreply@anthropic.com>"
+// errNoDerivableMessage is returned when the agent branch's range yields no
+// commit to derive a message from. Deliberately not a fallback: see
+// buildMergeCommitMessage.
+var errNoDerivableMessage = errors.New("no commit message could be derived")
+
+// buildMergeCommitMessage composes the squash commit message (QUM-1105).
+//
+// On a squash merge the agent's own commit message IS the durable record —
+// the source commits stop being reachable from any branch, and the branch
+// itself is deleted at retire. So this reads the commits.
+//
+// It used to read AgentState.LastReportMessage instead, and that is worth
+// stating as a class rather than as a bug: LastReportMessage is a ≤160-char
+// status ping written for a TUI line and updated asynchronously, under no
+// obligation to be current at merge time. Substituting it was not a
+// formatting problem but reading a field whose contract does not include
+// being true later — and the failure was silent, because the merge reported
+// success and the diff was correct. The observed case replaced a 455-line
+// verified message with a one-liner naming a SHA three amends old.
+//
+// It is therefore NOT a fallback here, in any form. An empty derivation is an
+// error, and the caller's remedy is to say what the merge is for via
+// messageOverride, which remains the highest-precedence source.
+//
+// recoveryRef names the premerge /agent ref (QUM-1090) so a reader of the
+// squash can find the originals; empty on the dry-run path, where no ref is
+// written.
+func buildMergeCommitMessage(agent *state.AgentState, parentBranch, messageOverride string, commits []CommitRecord, recoveryRef string) (string, error) {
+	const coAuthor = "Co-Authored-By: Claude <noreply@anthropic.com>"
 
 	if messageOverride != "" {
-		return messageOverride + "\n\n" + coAuthor
+		return messageOverride + "\n\n" + coAuthor, nil
+	}
+	if len(commits) == 0 {
+		return "", errNoDerivableMessage
 	}
 
-	var firstLine string
-	if agent.LastReportMessage != "" {
-		firstLine = agent.Name + ": " + agent.LastReportMessage
+	var body strings.Builder
+	if len(commits) == 1 {
+		// Byte-for-byte, subject line included: the point is that a reader of
+		// the parent branch sees exactly what the agent wrote. The provenance
+		// trailers below are appended to this, so "verbatim" is a claim about
+		// the BODY, not about the whole message — the earlier wording said
+		// the latter and was false.
+		body.WriteString(commits[0].Message)
 	} else {
-		firstLine = fmt.Sprintf("%s: merge branch '%s'", agent.Name, agent.Branch)
+		fmt.Fprintf(&body, "%s: %s (+%d more)\n", agent.Name, commits[0].Subject(), len(commits)-1)
+		for _, c := range commits {
+			body.WriteString("\n" + c.Message + "\n")
+		}
 	}
 
-	return fmt.Sprintf("%s\n\nSquash merge of branch '%s' into '%s'.\nAgent: %s (%s, %s)\n\n%s",
-		firstLine, agent.Branch, parentBranch, agent.Name, agent.Type, agent.Family, coAuthor)
+	// Provenance is emitted as TRAILERS, not as a free-text footer, and this
+	// is the whole reason the block looks like this.
+	//
+	// git only parses the message's LAST paragraph as trailers. A free-text
+	// footer appended after the body therefore demotes every trailer the
+	// agent wrote — `Refs:`, `Signed-off-by:`, its own `Co-Authored-By:` —
+	// out of the trailer block. They remain visible as text and stop being
+	// readable by `git interpret-trailers`, by GitHub's co-author
+	// attribution, and by anything else that parses them. That is precisely
+	// the QUM-1105 failure shape one level down: preserved to the eye,
+	// silently degraded to every machine.
+	//
+	// So: all-trailer lines, and appended to the agent's own trailer block
+	// (single newline) when the body already ends in one, rather than
+	// starting a competing paragraph after it.
+	var t strings.Builder
+	fmt.Fprintf(&t, "Squash-Merge: %s -> %s\nSprawl-Agent: %s (%s, %s)\n", agent.Branch, parentBranch, agent.Name, agent.Type, agent.Family)
+	for _, c := range commits {
+		// Source commits stop being reachable from any branch once the squash
+		// lands; this and the recovery ref are how a reader gets back to them.
+		fmt.Fprintf(&t, "Source-Commit: %s %s\n", c.SHA, c.Subject())
+	}
+	if recoveryRef != "" {
+		fmt.Fprintf(&t, "Premerge-Ref: %s\n", recoveryRef)
+	}
+
+	trimmed := strings.TrimRight(body.String(), "\n")
+	sep := "\n\n"
+	if endsWithTrailerBlock(trimmed) {
+		sep = "\n"
+	}
+	msg := trimmed + sep + t.String()
+
+	// Case-insensitively, because git's trailer matching is: an agent
+	// following CLAUDE.md writes `Co-Authored-By: Claude Opus 5 <...>`, which
+	// does not contain this exact line, so an exact-match guard appends a
+	// SECOND, conflicting co-author to every convention-following commit.
+	if !strings.Contains(strings.ToLower(msg), "co-authored-by:") {
+		msg += coAuthor + "\n"
+	}
+	return msg, nil
 }
+
+// trailerLine matches a git trailer line: `Token: value`, token being
+// alphanumerics and dashes.
+var trailerLine = regexp.MustCompile(`^[A-Za-z0-9-]+:( |$)`)
+
+// endsWithTrailerBlock reports whether body's last paragraph is entirely
+// trailer lines (plus their folded continuations).
+//
+// Deliberately STRICTER than git's own rule, which accepts a paragraph that
+// is only partly trailers. The two directions are not symmetric: judging a
+// trailer paragraph to be prose costs a blank line, while judging a prose
+// paragraph to be trailers glues our lines onto the end of the agent's last
+// sentence. Only the conservative error is recoverable by reading.
+func endsWithTrailerBlock(body string) bool {
+	paras := strings.Split(body, "\n\n")
+	lines := strings.Split(paras[len(paras)-1], "\n")
+	for _, l := range lines {
+		if strings.HasPrefix(l, " ") || strings.HasPrefix(l, "\t") {
+			continue // folded continuation of the previous trailer
+		}
+		if !trailerLine.MatchString(l) {
+			return false
+		}
+	}
+	return true
+}
+
+// deriveCommitMessage reads the agent branch's commits and composes the
+// squash message. Run BEFORE the first mutation: a branch this cannot
+// describe must not first be rewound to its merge base.
+func deriveCommitMessage(cfg *Config, deps *Deps, mergeBase, agentHead, recoveryRef string) (string, error) {
+	commits, err := deps.GitLogRange(cfg.AgentWorktree, mergeBase, agentHead)
+	if err != nil {
+		return "", fmt.Errorf("reading the agent's commits in %s..%s: %w%s", mergeBase, agentHead, err, explicitMessageRemedy)
+	}
+	msg, err := buildMergeCommitMessage(cfg.AgentState, cfg.ParentBranch, cfg.MessageOverride, commits, recoveryRef)
+	if err != nil {
+		return "", fmt.Errorf("%w from %s..%s: the range contains no non-merge commit on the branch's own first-parent line%s", err, mergeBase, agentHead, explicitMessageRemedy)
+	}
+	return msg, nil
+}
+
+// explicitMessageRemedy is appended to every message-derivation failure.
+// Derivation failing REFUSES the merge, so without it the caller is stuck;
+// the override path is the escape hatch and has to be named.
+const explicitMessageRemedy = "\nRe-run supplying the commit message explicitly: `sprawl merge --message \"...\"`, or `message:` on the merge MCP tool."
 
 // restoreAgentBranch compare-and-swaps refs/heads/<AgentBranch> back to
 // preSquashSHA, refusing unless the ref currently reads expectedSHA.
@@ -514,7 +701,7 @@ func NilSeams(d *Deps) (missing []string, checked int) {
 
 // MinDepsSeams is the assertion-count floor for NilSeams: the number of
 // mandatory func seams Deps carries. Bump it deliberately when adding one.
-const MinDepsSeams = 15
+const MinDepsSeams = 16
 
 // cpMerge calls deps.Checkpoint if non-nil. Safe to call with nil dep.
 func cpMerge(d *Deps, step string, kv ...any) {

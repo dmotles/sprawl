@@ -3,6 +3,7 @@ package merge
 import (
 	"bytes"
 	"context"
+	"errors"
 	"fmt"
 	"io"
 	"strings"
@@ -31,6 +32,9 @@ func newTestDeps() *Deps {
 				return "ppp444", nil
 			}
 			return "bbb222", nil
+		},
+		GitLogRange: func(worktree, base, head string) ([]CommitRecord, error) {
+			return []CommitRecord{{SHA: "d00dfeed" + strings.Repeat("0", 32), Message: "COMMIT-SUBJ-SENTINEL\n\nCOMMIT-BODY-SENTINEL"}}, nil
 		},
 		GitResetSoft:   func(worktree, ref string) error { return nil },
 		GitCommit:      func(worktree, message string) (string, error) { return "ccc333", nil },
@@ -62,11 +66,13 @@ func newTestConfig() *Config {
 		ParentWorktree: "/worktree/parent",
 		ValidateCmd:    "make validate",
 		AgentState: &state.AgentState{
-			Name:              "test-agent",
-			Type:              "engineer",
-			Family:            "engineering",
-			Branch:            "sprawl/test-agent",
-			LastReportMessage: "completed the task",
+			Name:   "test-agent",
+			Type:   "engineer",
+			Family: "engineering",
+			Branch: "sprawl/test-agent",
+			// A sentinel, not prose: any test that lets the status blurb reach
+			// a commit message fails by name rather than by looking plausible.
+			LastReportMessage: blurbSentinel,
 		},
 	}
 }
@@ -563,6 +569,12 @@ func TestMerge_CommitMessage_WithOverride(t *testing.T) {
 	}
 }
 
+// TestMerge_CommitMessage_Default supersedes a test of the same name that
+// asserted the commit message contained AgentState.LastReportMessage — i.e.
+// it ratified the QUM-1105 defect, and would have had to be deleted to fix
+// it. Recorded rather than quietly rewritten: a test asserting the current
+// mechanism instead of the intended outcome is the shape that makes a defect
+// look load-bearing.
 func TestMerge_CommitMessage_Default(t *testing.T) {
 	deps := newTestDeps()
 	cfg := newTestConfig()
@@ -578,15 +590,141 @@ func TestMerge_CommitMessage_Default(t *testing.T) {
 		t.Fatalf("unexpected error: %v", err)
 	}
 
-	if !strings.Contains(capturedMessage, "test-agent:") {
-		t.Errorf("commit message should contain agent name, got: %q", capturedMessage)
+	if !strings.Contains(capturedMessage, "COMMIT-SUBJ-SENTINEL") {
+		t.Errorf("commit message should carry the agent commit's subject, got: %q", capturedMessage)
 	}
-	if !strings.Contains(capturedMessage, "completed the task") {
-		t.Errorf("commit message should contain last report, got: %q", capturedMessage)
+	if !strings.Contains(capturedMessage, "COMMIT-BODY-SENTINEL") {
+		t.Errorf("commit message should carry the agent commit's body, got: %q", capturedMessage)
+	}
+	if strings.Contains(capturedMessage, blurbSentinel) {
+		t.Errorf("the status blurb reached the commit message, got: %q", capturedMessage)
 	}
 	if !strings.Contains(capturedMessage, "Co-Authored-By:") {
 		t.Errorf("commit message should contain co-author, got: %q", capturedMessage)
 	}
+	// The recovery ref is where the source commits still exist after the
+	// squash, so the message pointing at it is the whole reason the SHA index
+	// is useful. Asserted rather than read off the comment that claims it.
+	if !strings.Contains(capturedMessage, testPremergeBase+"/agent") {
+		t.Errorf("commit message should name the premerge /agent recovery ref, got: %q", capturedMessage)
+	}
+}
+
+// TestMerge_CommitMessage_DerivationErrorAbortsBeforeAnyMutation — a failing
+// GitLogRange must refuse the merge while the branch is still intact, never
+// after `reset --soft` has rewound it. Complements S14, which covers the
+// empty-range half in real git.
+func TestMerge_CommitMessage_DerivationErrorAbortsBeforeAnyMutation(t *testing.T) {
+	deps := newTestDeps()
+	cfg := newTestConfig()
+
+	deps.GitLogRange = func(worktree, base, head string) ([]CommitRecord, error) {
+		return nil, errors.New("LOGRANGE-BOOM")
+	}
+	var mutated []string
+	deps.GitUpdateRef = func(worktree, ref, newSHA string) error {
+		mutated = append(mutated, "GitUpdateRef")
+		return nil
+	}
+	deps.GitResetSoft = func(worktree, ref string) error {
+		mutated = append(mutated, "GitResetSoft")
+		return nil
+	}
+	deps.GitCommit = func(worktree, message string) (string, error) {
+		mutated = append(mutated, "GitCommit")
+		return "abc1234", nil
+	}
+
+	_, err := Merge(context.Background(), cfg, deps)
+
+	if err == nil {
+		t.Fatal("merge should fail when the agent's commits cannot be read")
+	}
+	if !strings.Contains(err.Error(), "LOGRANGE-BOOM") {
+		t.Errorf("error should wrap the cause, got: %v", err)
+	}
+	if !strings.Contains(err.Error(), "--message") {
+		t.Errorf("error should name the explicit-message remedy, got: %v", err)
+	}
+	if len(mutated) > 0 {
+		t.Errorf("the repository was mutated despite an abortable failure: %v", mutated)
+	}
+}
+
+// TestMerge_DryRun_ShowsTheDerivedMessage — the dry run reads the same
+// derivation, so its preview cannot disagree with what the real merge would
+// write. The second leg pins that a derivation failure is reported as the
+// blocker it is: a dry run that prints a plan for a merge that will refuse is
+// worse than one that prints nothing.
+func TestMerge_DryRun_ShowsTheDerivedMessage(t *testing.T) {
+	t.Run("derivable", func(t *testing.T) {
+		deps := newTestDeps()
+		cfg := newTestConfig()
+		cfg.DryRun = true
+		var stderr bytes.Buffer
+		deps.Stderr = &stderr
+
+		if _, err := Merge(context.Background(), cfg, deps); err != nil {
+			t.Fatalf("unexpected error: %v", err)
+		}
+		if !strings.Contains(stderr.String(), "COMMIT-BODY-SENTINEL") {
+			t.Errorf("dry run should preview the derived message, got:\n%s", stderr.String())
+		}
+		if strings.Contains(stderr.String(), blurbSentinel) {
+			t.Errorf("dry run previewed the status blurb, got:\n%s", stderr.String())
+		}
+	})
+
+	// Both revision reads failing yields "(unknown)" for each, and two
+	// unrelated failures then compare EQUAL. Keying the no-op purely on the
+	// values would report "no-op (no new commits)" — a claim about the
+	// branch — for a dry run that could read nothing at all.
+	t.Run("both revision reads fail", func(t *testing.T) {
+		deps := newTestDeps()
+		cfg := newTestConfig()
+		cfg.DryRun = true
+		deps.GitMergeBase = func(repoRoot, a, b string) (string, error) { return "", errors.New("BASE-BOOM") }
+		deps.GitRevParseHead = func(worktree string) (string, error) { return "", errors.New("HEAD-BOOM") }
+		var logged bool
+		deps.GitLogRange = func(worktree, base, head string) ([]CommitRecord, error) {
+			logged = true
+			return nil, nil
+		}
+		var stderr bytes.Buffer
+		deps.Stderr = &stderr
+
+		result, err := Merge(context.Background(), cfg, deps)
+		if err != nil {
+			t.Fatalf("dry run should not itself fail: %v", err)
+		}
+		if result.WasNoOp {
+			t.Error("a dry run that could read neither revision must not claim the merge is a no-op")
+		}
+		if logged {
+			t.Error(`the literal "(unknown)" was handed to git log as a revision`)
+		}
+		for _, want := range []string{"BASE-BOOM", "HEAD-BOOM"} {
+			if !strings.Contains(stderr.String(), want) {
+				t.Errorf("the real cause %q was swallowed, got:\n%s", want, stderr.String())
+			}
+		}
+	})
+
+	t.Run("underivable", func(t *testing.T) {
+		deps := newTestDeps()
+		cfg := newTestConfig()
+		cfg.DryRun = true
+		deps.GitLogRange = func(worktree, base, head string) ([]CommitRecord, error) { return nil, nil }
+		var stderr bytes.Buffer
+		deps.Stderr = &stderr
+
+		if _, err := Merge(context.Background(), cfg, deps); err != nil {
+			t.Fatalf("dry run should not itself fail: %v", err)
+		}
+		if !strings.Contains(stderr.String(), "CANNOT BE DERIVED") {
+			t.Errorf("dry run should report that the real merge would fail, got:\n%s", stderr.String())
+		}
+	})
 }
 
 func TestMerge_EmptyValidateCmd_SkipsWithWarning(t *testing.T) {
@@ -652,6 +790,10 @@ func TestMerge_ValidateCmd_PassedToRunTests(t *testing.T) {
 	}
 }
 
+// TestMerge_CommitMessage_NoReport supersedes a test of the same name that
+// asserted the `<agent>: merge branch '<branch>'` placeholder — the SECOND
+// silent fallback QUM-1105 removes. Same note as TestMerge_CommitMessage_
+// Default: it is recorded, not quietly dropped.
 func TestMerge_CommitMessage_NoReport(t *testing.T) {
 	deps := newTestDeps()
 	cfg := newTestConfig()
@@ -668,11 +810,11 @@ func TestMerge_CommitMessage_NoReport(t *testing.T) {
 		t.Fatalf("unexpected error: %v", err)
 	}
 
-	if !strings.Contains(capturedMessage, "test-agent:") {
-		t.Errorf("commit message should contain agent name, got: %q", capturedMessage)
+	if !strings.Contains(capturedMessage, "COMMIT-SUBJ-SENTINEL") {
+		t.Errorf("an absent status report must not change the source of the message, got: %q", capturedMessage)
 	}
-	if !strings.Contains(capturedMessage, "merge branch") {
-		t.Errorf("commit message should use fallback format, got: %q", capturedMessage)
+	if strings.Contains(capturedMessage, "merge branch") {
+		t.Errorf("the no-report placeholder subject is still being produced, got: %q", capturedMessage)
 	}
 }
 

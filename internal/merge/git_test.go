@@ -1,6 +1,7 @@
 package merge
 
 import (
+	"fmt"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -84,5 +85,50 @@ func TestRealGitResetSoft_NoPathSeparator(t *testing.T) {
 	}
 	if string(diffOut) != "b.txt\n" {
 		t.Errorf("staged files after soft reset = %q, want \"b.txt\\n\"", string(diffOut))
+	}
+}
+
+// TestRealGitLogRange_ParsesEveryMessageShape gates the -z record split
+// (QUM-1105). Parsing is where this seam can fail silently: a wrong boundary
+// does not error, it produces plausible-looking records with bodies truncated
+// at the first blank line, and the squash message would still look fine.
+//
+// Not red-first — the function is new — so it was demonstrated by mutation:
+// dropping -z from the git invocation makes every multi-paragraph case fail
+// here with the body split across records.
+func TestRealGitLogRange_ParsesEveryMessageShape(t *testing.T) {
+	r := newScenarioRepo(t)
+	base := r.sha("main")
+
+	shapes := []struct {
+		name string
+		msg  string
+		want string
+	}{
+		{"subject only", "SUBJECT-ONLY", "SUBJECT-ONLY"},
+		{"multi paragraph", "subj\n\npara1\n\npara2", "subj\n\npara1\n\npara2"},
+		{"trailing blank lines", "subj\n\nbody\n\n\n", "subj\n\nbody"},
+		{"hash-leading line", "subj\n\n# not a comment here\nbody", "subj\n\n# not a comment here\nbody"},
+	}
+	var shas []string
+	for i, s := range shapes {
+		shas = append(shas, r.commitFileMsg(r.root, s.name, fmt.Sprintf("shape%d.txt", i), "x\n", s.msg))
+	}
+
+	got, err := RealGitLogRange(r.root, base, "main")
+	if err != nil {
+		t.Fatalf("RealGitLogRange: %v", err)
+	}
+	if len(got) != len(shapes) {
+		t.Fatalf("got %d records, want %d: %#v", len(got), len(shapes), got)
+	}
+	for i, s := range shapes {
+		// Oldest first: the composed message must read in commit order.
+		if got[i].SHA != shas[i] {
+			t.Errorf("%s: SHA = %q, want %q (records out of order?)", s.name, got[i].SHA, shas[i])
+		}
+		if got[i].Message != s.want {
+			t.Errorf("%s: message = %q, want %q", s.name, got[i].Message, s.want)
+		}
 	}
 }

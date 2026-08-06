@@ -419,6 +419,23 @@ tree would have left the ref pointing at a tree nobody wanted — **still
 looking authoritative**. That is luck, not design, and it is the failure
 mode a per-attempt name does not have.
 
+The timestamp in that name is **millisecond** precision, and the first live
+exercise of the feature is why that is not fussiness:
+
+```
+refs/sprawl/premerge/engX/20260806T080747.780Z/{agent,parent}
+refs/sprawl/premerge/engX/20260806T080747.863Z/{agent,parent}
+```
+
+Two merges of the same agent **83 milliseconds apart, inside the same
+second**. At second precision those two names collide, and the second merge
+**silently overwrites the first's recovery pair** — destroying the artifact
+the feature exists to preserve, in precisely the circumstance it exists for.
+Millisecond precision was argued for from *reasoning about* collisions before
+any of this ran; the design's failure case then occurred unprompted on first
+contact. That is what makes it a demonstrated necessity rather than a
+defensible preference, and it is the strongest evidence point 4 will get.
+
 The incident is the point. Compressed to a maxim the rule reads as obvious
 and gets routed around; attached to a case where it caught out people who
 were paying close attention, it is a thing that actually happens.

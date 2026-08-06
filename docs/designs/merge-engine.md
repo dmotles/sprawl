@@ -43,6 +43,12 @@ production implementations live in `internal/merge/git.go`.
    commits.
 4. **Record recovery point.** The agent's pre-squash HEAD SHA is captured;
    failure messages reference it.
+4b. **Derive the commit message** (QUM-1105; labelled `Step 3b` in the source
+   comments, which number the recovery point as 3 where this list numbers it
+   as 4) — see *The squash commit message* below. Still before the first
+   mutation, deliberately: a branch the engine cannot describe is refused
+   while it is intact, rather than after step 5 has rewound it to the merge
+   base.
 5. **Squash.** `git reset --soft <mergeBase>` in the **agent worktree**,
    then `git commit` — the agent branch now carries one commit containing
    its whole delta. This is the first mutation, and it rewrites the agent
@@ -190,6 +196,67 @@ agent worktree while the premerge writes run from `SprawlRoot`. If a change
 introduces a further destructive primitive, it needs a design-level
 justification here.
 
+## The squash commit message (QUM-1105)
+
+The squash replaces the agent's commits with one commit, and the branch is
+deleted at retire. **The agent's commit message is therefore the durable
+record, and the squash is the only copy that survives.**
+
+Precedence, in `buildMergeCommitMessage`:
+
+1. `MessageOverride` (`--message` / `message:`) — highest, unchanged.
+2. Otherwise the agent branch's own commits, via the `GitLogRange` seam over
+   `mergeBase..agentHead` with `--first-parent --no-merges`. One commit: its
+   message byte-for-byte. Several: a derived subject, then every commit's
+   full message. Both then get a provenance **trailer** block appended
+   (`Squash-Merge:`, `Sprawl-Agent:`, one `Source-Commit:` per commit,
+   `Premerge-Ref:`), so "verbatim" describes the body, not the whole message.
+3. There is no third source. An empty derivation is an **error** naming the
+   override as the remedy.
+
+Three things here are load-bearing and easy to undo by accident:
+
+* **`AgentState.LastReportMessage` is not a source, in any position.** It
+  used to be the default one. It is a ≤160-char status ping written for a
+  TUI line and updated asynchronously, under no obligation to be current at
+  merge time — the observed case replaced a 455-line verified message with a
+  one-liner naming a SHA three amends old. The defect class is not
+  "formatting": it is reading a field whose contract does not include being
+  true later. Re-adding it as "additive context" reinstates a stale field in
+  the one durable record, which is why the tests pin its total absence.
+* **Both `git log` flags are required, and neither implies the other.** An
+  agent that merges a sibling branch in would otherwise carry that branch's
+  messages into its own squash: `--no-merges` drops the merge commit's
+  boilerplate subject, `--first-parent` drops the side branch it brought in.
+  Removing either is individually detectable (scenario `S12`).
+* **Provenance is appended as trailers, not as a free-text footer, and it
+  joins the agent's own trailer block when there is one.** git parses only
+  the message's LAST paragraph as trailers, so a free-text footer demotes
+  every trailer the agent wrote (`Refs:`, `Signed-off-by:`, its own
+  `Co-Authored-By:`) out of the trailer block: still present as text, no
+  longer readable by `git interpret-trailers` or by GitHub's co-author
+  attribution. That is the QUM-1105 shape one level down — preserved to the
+  eye, silently degraded to every machine — and the first cut of the fix did
+  it. The `Co-Authored-By` guard is prefix-keyed and case-insensitive for the
+  same family of reason: an exact-line match never fires against CLAUDE.md's
+  own `Co-Authored-By: Claude Opus 5 <...>` and stamps a second, conflicting
+  co-author on every convention-following commit.
+* **`git commit` takes the message on stdin (`-F -`), never `-m`.** Linux
+  caps a single argument at MAX_ARG_STRLEN (128 KiB) regardless of ARG_MAX,
+  and a real agent message passes that; `-m` then dies at fork/exec with
+  "argument list too long", inside the step-5 window. `--cleanup=verbatim`
+  is explicit so a user's `commit.cleanup=strip` cannot silently delete every
+  `#`-leading line — and `verbatim` rather than the `whitespace` default
+  because `whitespace` strips trailing whitespace and collapses runs of blank
+  lines, which is a markdown hard break and an embedded diff's blank context
+  line respectively.
+
+Why this was invisible for so long: weave passes `message:` explicitly on
+every merge as a matter of habit, adopted for unrelated reasons. That
+**masked** the defect rather than avoiding it — the failure surfaces the
+moment anyone merges without it, and agents merging their own children are
+the likeliest victims, since their branches are deleted at retire.
+
 ## Structural gotchas
 
 Engineering facts about git that shape this design; each has bitten a
@@ -281,3 +348,6 @@ and they cover neither uncommitted work nor non-git agent data.
   `internal/merge` changes).
 * If you add a destructive primitive, add it to the table above with its
   trigger.
+* Can the squash commit message still only come from `MessageOverride` or
+  the agent's own commits? Any third source, in any position, is the
+  QUM-1105 defect — and it will report success while it destroys the record.

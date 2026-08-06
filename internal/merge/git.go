@@ -1,6 +1,7 @@
 package merge
 
 import (
+	"errors"
 	"fmt"
 	"io"
 	"os"
@@ -64,10 +65,78 @@ func RealGitResetSoft(worktree, ref string) error {
 	return nil
 }
 
-// RealGitCommit creates a commit with the given message and returns the short hash.
-func RealGitCommit(worktree, message string) (string, error) {
-	cmd := exec.Command("git", "commit", "-m", message)
+// RealGitLogRange returns the commits in base..head, oldest first.
+//
+// --first-parent --no-merges, and both are load-bearing. An agent that merges
+// another branch into its own would otherwise pull that branch's commit
+// messages into its squash: --no-merges drops the merge commit's own
+// boilerplate subject, and --first-parent drops the side branch it brought in.
+// Neither flag subsumes the other (pinned by S12 in
+// commit_message_scenario_test.go, which fails if either is removed).
+//
+// -z rather than newline separation: commit bodies contain blank lines, so a
+// newline-delimited stream has no unambiguous record boundary. With --format,
+// -z terminates each record with a NUL.
+func RealGitLogRange(worktree, base, head string) ([]CommitRecord, error) {
+	// `head --not base` rather than `base..head`: identical to git, but it
+	// keeps both revisions as their own argv elements instead of a
+	// concatenated string, which is what the rest of this file does and what
+	// keeps the gosec G204 rule satisfied honestly rather than by nolint.
+	cmd := exec.Command("git", "log", "--reverse", "--first-parent", "--no-merges",
+		"-z", "--format=%H%n%B", head, "--not", base, "--")
 	cmd.Dir = worktree
+	out, err := cmd.Output()
+	if err != nil {
+		// git's own diagnosis, not just "exit status 128": a failure here
+		// REFUSES the merge, so this is the one read in this file where the
+		// caller most needs to know why.
+		var ee *exec.ExitError
+		if errors.As(err, &ee) && len(ee.Stderr) > 0 {
+			return nil, fmt.Errorf("git log %s..%s: %w: %s", base, head, err, strings.TrimSpace(string(ee.Stderr)))
+		}
+		return nil, fmt.Errorf("git log %s..%s: %w", base, head, err)
+	}
+	var records []CommitRecord
+	// Records are `<sha>\n<message>\0`, so the only empty element is the tail
+	// after the final NUL. Keyed on exactly that rather than on a whitespace
+	// test: a commit created with --allow-empty-message is `<sha>\n`, which a
+	// TrimSpace guard would still keep, but the precise test cannot ever drop
+	// a real commit from the SHA index.
+	for _, rec := range strings.Split(string(out), "\x00") {
+		if rec == "" {
+			continue
+		}
+		sha, msg, _ := strings.Cut(rec, "\n")
+		records = append(records, CommitRecord{
+			SHA:     strings.TrimSpace(sha),
+			Message: strings.TrimRight(msg, "\n"),
+		})
+	}
+	return records, nil
+}
+
+// RealGitCommit creates a commit with the given message and returns the short hash.
+//
+// The message goes in on stdin (-F -), never as `-m <message>`. Linux caps a
+// SINGLE argument at MAX_ARG_STRLEN (128 KiB) regardless of ARG_MAX, and a
+// derived message carrying an agent's real commit bodies passes that easily —
+// `-m` fails at fork/exec with "argument list too long" before git runs.
+// Stdin is set explicitly: a nil Stdin would let git inherit the parent's,
+// which in TUI mode is the session's own input (cf. git_stdio_leak_test.go).
+//
+// --cleanup=verbatim, and NOT the `whitespace` default. Being explicit is
+// what defeats a user's `commit.cleanup=strip`, which would silently delete
+// every '#'-leading line of an agent's message — and a code block is where
+// those live. But `whitespace` is itself lossy in ways that matter for the
+// messages we now carry: measured, it strips trailing whitespace from every
+// line and collapses runs of blank lines. A blank context line in an
+// embedded diff is a single space; a markdown hard break is two trailing
+// spaces. `verbatim` is byte-faithful and defeats `strip` just as well, so
+// it strictly dominates.
+func RealGitCommit(worktree, message string) (string, error) {
+	cmd := exec.Command("git", "commit", "--cleanup=verbatim", "-F", "-")
+	cmd.Dir = worktree
+	cmd.Stdin = strings.NewReader(message)
 	out, err := cmd.CombinedOutput()
 	if err != nil {
 		return "", fmt.Errorf("git commit: %w: %s", err, strings.TrimSpace(string(out)))
@@ -187,6 +256,7 @@ func RealDeps(stderr io.Writer) *Deps {
 	return &Deps{
 		LockAcquire:        RealLockAcquire,
 		GitMergeBase:       RealGitMergeBase,
+		GitLogRange:        RealGitLogRange,
 		GitRevParseHead:    RealGitRevParseHead,
 		GitResetSoft:       RealGitResetSoft,
 		GitCommit:          RealGitCommit,
