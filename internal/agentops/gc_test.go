@@ -9,6 +9,7 @@ import (
 	"time"
 
 	"github.com/dmotles/sprawl/internal/agentops"
+	"github.com/dmotles/sprawl/internal/merge"
 	"github.com/dmotles/sprawl/internal/state"
 )
 
@@ -549,5 +550,227 @@ func TestScanOrphans_SkipsOrphanedQuarantineDir(t *testing.T) {
 		if n == "_orphaned" {
 			t.Errorf("ScanOrphans returned %q as an orphan; quarantine root must be skipped", n)
 		}
+	}
+}
+
+// --- QUM-1090: premerge recovery ref pruning ---------------------------
+
+// premergeRef builds the ref name internal/merge writes for a given agent
+// and timestamp, using the shared layout constant so the two cannot drift.
+func premergeRef(agent string, ts time.Time, leaf string) string {
+	return "refs/sprawl/premerge/" + agent + "/" + ts.UTC().Format(merge.PremergeTSLayout) + "/" + leaf
+}
+
+// TestScanPremergeRefs_ClassifiesByRefNameTimestamp — the ref NAME is the
+// age source (GCDeps exposes no commit-date seam by design: a commit
+// authored months ago and merged today must not be pruned on its first gc
+// run). Negative control: flipping the Before(cutoff) comparison turns this
+// red.
+func TestScanPremergeRefs_ClassifiesByRefNameTimestamp(t *testing.T) {
+	now := time.Date(2026, 5, 18, 12, 0, 0, 0, time.UTC)
+	oldRef := premergeRef("finn", now.Add(-20*24*time.Hour), "agent")
+	freshRef := premergeRef("zone", now.Add(-24*time.Hour), "parent")
+
+	deps := agentops.GCDeps{
+		Now:              func() time.Time { return now },
+		ListPremergeRefs: func() ([]string, error) { return []string{oldRef, freshRef}, nil },
+	}
+	recs, err := agentops.ScanPremergeRefs(deps, agentops.DefaultPremergeRetention)
+	if err != nil {
+		t.Fatalf("ScanPremergeRefs err: %v", err)
+	}
+	if len(recs) != 2 {
+		t.Fatalf("want 2 records, got %d: %+v", len(recs), recs)
+	}
+	byRef := map[string]agentops.PremergeRefRecord{}
+	for _, r := range recs {
+		byRef[r.Ref] = r
+	}
+	if r, ok := byRef[oldRef]; !ok || !r.Stale {
+		t.Errorf("20d-old ref should be Stale: %+v (present=%v)", r, ok)
+	} else if r.Agent != "finn" {
+		t.Errorf("Agent = %q, want finn", r.Agent)
+	}
+	if r, ok := byRef[freshRef]; !ok || r.Stale {
+		t.Errorf("1d-old ref should not be Stale: %+v (present=%v)", r, ok)
+	} else if r.Agent != "zone" {
+		t.Errorf("Agent = %q, want zone", r.Agent)
+	}
+}
+
+// TestScanPremergeRefs_UnparseableRefIsNeverStale — a ref whose name we
+// cannot date is a ref we must never delete. Negative control: defaulting
+// the parse-failure branch to Stale=true turns this red.
+func TestScanPremergeRefs_UnparseableRefIsNeverStale(t *testing.T) {
+	now := time.Date(2026, 5, 18, 12, 0, 0, 0, time.UTC)
+	// Only prefix-matching refs; whether a non-premerge ref yields a record
+	// at all is left to the implementation, so it is not asserted here.
+	bad := []string{
+		"refs/sprawl/premerge/finn/NOT-A-TIMESTAMP/agent",
+		"refs/sprawl/premerge/finn", // too few components
+	}
+	deps := agentops.GCDeps{
+		Now:              func() time.Time { return now },
+		ListPremergeRefs: func() ([]string, error) { return bad, nil },
+	}
+	recs, err := agentops.ScanPremergeRefs(deps, agentops.DefaultPremergeRetention)
+	if err != nil {
+		t.Fatalf("ScanPremergeRefs err: %v", err)
+	}
+	if len(recs) != len(bad) {
+		t.Fatalf("want %d records, got %d: %+v", len(bad), len(recs), recs)
+	}
+	for _, r := range recs {
+		if r.Stale {
+			t.Errorf("unparseable ref %q must never be Stale", r.Ref)
+		}
+	}
+}
+
+// TestScanPremergeRefs_NilLister_ReturnsNil mirrors ScanSessionLogs' absent-
+// directory tolerance. Negative control: removing the nil guard panics.
+func TestScanPremergeRefs_NilLister_ReturnsNil(t *testing.T) {
+	recs, err := agentops.ScanPremergeRefs(agentops.GCDeps{Now: time.Now}, agentops.DefaultPremergeRetention)
+	if err != nil {
+		t.Fatalf("err: %v", err)
+	}
+	if recs != nil {
+		t.Errorf("want nil when ListPremergeRefs is nil, got %+v", recs)
+	}
+}
+
+// TestApplyPremergeGC_DeletesOnlyStale — negative control: dropping the
+// `if !r.Stale { continue }` guard turns this red.
+func TestApplyPremergeGC_DeletesOnlyStale(t *testing.T) {
+	var deleted []string
+	deps := agentops.GCDeps{
+		Now: time.Now,
+		DeleteRef: func(ref string) error {
+			deleted = append(deleted, ref)
+			return nil
+		},
+	}
+	recs := []agentops.PremergeRefRecord{
+		{Ref: "refs/sprawl/premerge/a/ts/agent", Stale: true},
+		{Ref: "refs/sprawl/premerge/b/ts/agent", Stale: false},
+	}
+	res := agentops.ApplyPremergeGC(deps, recs)
+	if len(deleted) != 1 || deleted[0] != "refs/sprawl/premerge/a/ts/agent" {
+		t.Errorf("DeleteRef calls = %v, want only the stale ref", deleted)
+	}
+	if len(res.Removed) != 1 || res.Removed[0] != "refs/sprawl/premerge/a/ts/agent" {
+		t.Errorf("res.Removed = %v, want only the stale ref", res.Removed)
+	}
+	if len(res.Errors) != 0 {
+		t.Errorf("Errors should be empty, got %v", res.Errors)
+	}
+}
+
+// TestApplyPremergeGC_DeleteErrorCaptured — a failed delete is an error, not
+// a silent success.
+func TestApplyPremergeGC_DeleteErrorCaptured(t *testing.T) {
+	deps := agentops.GCDeps{
+		Now:       time.Now,
+		DeleteRef: func(string) error { return errors.New("ref locked") },
+	}
+	res := agentops.ApplyPremergeGC(deps, []agentops.PremergeRefRecord{
+		{Ref: "refs/sprawl/premerge/a/ts/agent", Stale: true},
+	})
+	if len(res.Errors) == 0 {
+		t.Errorf("expected DeleteRef error captured in Errors")
+	}
+	if len(res.Removed) != 0 {
+		t.Errorf("Removed should be empty on failure, got %v", res.Removed)
+	}
+}
+
+// TestScanPremergeRefs_ListerError_Propagates — "for-each-ref failed" must
+// not be silently reported as "no refs to prune".
+func TestScanPremergeRefs_ListerError_Propagates(t *testing.T) {
+	deps := agentops.GCDeps{
+		Now:              time.Now,
+		ListPremergeRefs: func() ([]string, error) { return nil, errors.New("not a git repo") },
+	}
+	if _, err := agentops.ScanPremergeRefs(deps, agentops.DefaultPremergeRetention); err == nil {
+		t.Error("expected the lister error to propagate")
+	}
+}
+
+// TestScanPremergeRefs_CutoffBoundary pins inclusive-vs-exclusive at exactly
+// the retention window. Negative control: flipping Before to !After turns the
+// exactly-at-cutoff case red.
+func TestScanPremergeRefs_CutoffBoundary(t *testing.T) {
+	now := time.Date(2026, 5, 18, 12, 0, 0, 0, time.UTC)
+	retention := 14 * 24 * time.Hour
+	atCutoff := premergeRef("finn", now.Add(-retention), "agent")
+	justOlder := premergeRef("finn", now.Add(-retention-time.Millisecond), "agent")
+
+	deps := agentops.GCDeps{
+		Now:              func() time.Time { return now },
+		ListPremergeRefs: func() ([]string, error) { return []string{atCutoff, justOlder}, nil },
+	}
+	recs, err := agentops.ScanPremergeRefs(deps, retention)
+	if err != nil {
+		t.Fatalf("err: %v", err)
+	}
+	if len(recs) != 2 {
+		t.Fatalf("want 2 records, got %d", len(recs))
+	}
+	for _, r := range recs {
+		switch r.Ref {
+		case atCutoff:
+			if r.Stale {
+				t.Errorf("a ref exactly at the cutoff must be retained (exclusive boundary), got Stale=true")
+			}
+		case justOlder:
+			if !r.Stale {
+				t.Errorf("a ref 1ms older than the cutoff must be Stale")
+			}
+		}
+	}
+}
+
+// TestApplyPremergeGC_NilDeleteRef_NoPanic — twin of the nil-lister guard.
+func TestApplyPremergeGC_NilDeleteRef_NoPanic(t *testing.T) {
+	res := agentops.ApplyPremergeGC(agentops.GCDeps{Now: time.Now}, []agentops.PremergeRefRecord{
+		{Ref: "refs/sprawl/premerge/a/ts/agent", Stale: true},
+	})
+	if len(res.Removed) != 0 {
+		t.Errorf("nil DeleteRef must remove nothing, got %v", res.Removed)
+	}
+	if len(res.Errors) == 0 {
+		t.Errorf("nil DeleteRef must be reported as an error, not a silent success")
+	}
+}
+
+// TestApplyPremergeGC_RefusesRefsOutsideThePrefix — DeleteRef is an
+// unrestricted "delete any ref" seam, so ApplyPremergeGC must refuse
+// anything outside refs/sprawl/premerge/ even if a caller hands it a record
+// marked Stale. Negative control: dropping the prefix guard turns this red.
+func TestApplyPremergeGC_RefusesRefsOutsideThePrefix(t *testing.T) {
+	var deleted []string
+	deps := agentops.GCDeps{
+		Now:       time.Now,
+		DeleteRef: func(ref string) error { deleted = append(deleted, ref); return nil },
+	}
+	res := agentops.ApplyPremergeGC(deps, []agentops.PremergeRefRecord{
+		{Ref: "refs/heads/main", Stale: true},
+		{Ref: "refs/sprawl/premerge/finn/20260101T000000.000Z/agent", Stale: true},
+	})
+	if len(deleted) != 1 || deleted[0] != "refs/sprawl/premerge/finn/20260101T000000.000Z/agent" {
+		t.Errorf("DeleteRef calls = %v, want only the premerge ref", deleted)
+	}
+	if len(res.Errors) == 0 {
+		t.Errorf("refusing an out-of-prefix ref must be reported as an error, not silently skipped")
+	}
+	// A refused ref must not be reported as removed — gc would otherwise
+	// claim a deletion it never performed.
+	for _, r := range res.Removed {
+		if r == "refs/heads/main" {
+			t.Errorf("res.Removed contains the refused ref %q", r)
+		}
+	}
+	if len(res.Removed) != 1 {
+		t.Errorf("res.Removed = %v, want only the premerge ref", res.Removed)
 	}
 }

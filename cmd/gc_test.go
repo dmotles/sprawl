@@ -3,6 +3,7 @@ package cmd
 import (
 	"bytes"
 	"errors"
+	"fmt"
 	"os"
 	"path/filepath"
 	"strings"
@@ -11,6 +12,7 @@ import (
 
 	"github.com/spf13/cobra"
 
+	"github.com/dmotles/sprawl/internal/merge"
 	"github.com/dmotles/sprawl/internal/state"
 )
 
@@ -24,6 +26,10 @@ import (
 // implementer chooses a different plumbing shape, adjust these call sites to
 // match — the behavioral assertions are what matter.
 const testLogRetentionDays = 30
+
+// QUM-1090: runGC gains a third pass (premerge recovery refs), so its
+// signature grows a second retention argument.
+const testPremergeRetentionDays = 14
 
 func newTestGCDeps(t *testing.T) (*gcDeps, *bytes.Buffer, *bytes.Buffer, *gcFakeState) {
 	t.Helper()
@@ -48,6 +54,13 @@ func newTestGCDeps(t *testing.T) (*gcDeps, *bytes.Buffer, *bytes.Buffer, *gcFake
 			fs.removedDirs = append(fs.removedDirs, p)
 			return fs.removeAllErr
 		},
+		listPremergeRefs: func(root string) ([]string, error) {
+			return fs.premergeRefs, nil
+		},
+		deleteRef: func(root, ref string) error {
+			fs.deletedRefs = append(fs.deletedRefs, ref)
+			return fs.deleteRefErr
+		},
 		now:    func() time.Time { return time.Date(2026, 5, 18, 12, 0, 0, 0, time.UTC) },
 		out:    out,
 		errOut: errOut,
@@ -57,6 +70,9 @@ func newTestGCDeps(t *testing.T) (*gcDeps, *bytes.Buffer, *bytes.Buffer, *gcFake
 
 type gcFakeState struct {
 	root         string
+	premergeRefs []string
+	deletedRefs  []string
+	deleteRefErr error
 	worktrees    map[string]bool
 	removedWT    []string
 	removedDirs  []string
@@ -86,7 +102,7 @@ func TestRunGC_DryRunDefault_ListsAndHintsApply(t *testing.T) {
 	deps, out, errOut, fs := newTestGCDeps(t)
 	gcSeedOrphan(t, fs.root, "stale", deps.now().Add(-30*24*time.Hour))
 
-	if err := runGC(deps, false, testLogRetentionDays); err != nil {
+	if err := runGC(deps, false, testLogRetentionDays, testPremergeRetentionDays); err != nil {
 		t.Fatalf("runGC err: %v", err)
 	}
 	if !strings.Contains(out.String(), "stale") {
@@ -104,7 +120,7 @@ func TestRunGC_Apply_RemovesAndReports(t *testing.T) {
 	deps, _, errOut, fs := newTestGCDeps(t)
 	gcSeedOrphan(t, fs.root, "stale", deps.now().Add(-30*24*time.Hour))
 
-	if err := runGC(deps, true, testLogRetentionDays); err != nil {
+	if err := runGC(deps, true, testLogRetentionDays, testPremergeRetentionDays); err != nil {
 		t.Fatalf("runGC err: %v", err)
 	}
 	if len(fs.removedDirs) != 1 {
@@ -117,7 +133,7 @@ func TestRunGC_Apply_RemovesAndReports(t *testing.T) {
 
 func TestRunGC_EmptyState_NothingToDo(t *testing.T) {
 	deps, _, errOut, _ := newTestGCDeps(t)
-	if err := runGC(deps, false, testLogRetentionDays); err != nil {
+	if err := runGC(deps, false, testLogRetentionDays, testPremergeRetentionDays); err != nil {
 		t.Fatalf("runGC err: %v", err)
 	}
 	if !strings.Contains(errOut.String(), "Nothing to do") {
@@ -130,7 +146,7 @@ func TestRunGC_ApplyWithErrors_ReturnsError(t *testing.T) {
 	fs.removeAllErr = errors.New("rm fail")
 	gcSeedOrphan(t, fs.root, "stale", deps.now().Add(-30*24*time.Hour))
 
-	err := runGC(deps, true, testLogRetentionDays)
+	err := runGC(deps, true, testLogRetentionDays, testPremergeRetentionDays)
 	if err == nil {
 		t.Fatalf("expected error")
 	}
@@ -143,7 +159,7 @@ func TestRunGC_SprawlRootMissing_Errors(t *testing.T) {
 	deps, _, _, _ := newTestGCDeps(t)
 	deps.sprawlRoot = func() (string, error) { return "", errors.New("SPRAWL_ROOT unset") }
 
-	if err := runGC(deps, false, testLogRetentionDays); err == nil {
+	if err := runGC(deps, false, testLogRetentionDays, testPremergeRetentionDays); err == nil {
 		t.Errorf("expected error when sprawlRoot fails")
 	}
 }
@@ -152,7 +168,7 @@ func TestRunGC_FreshOrphanReportedAsFresh_DryRun(t *testing.T) {
 	deps, out, errOut, fs := newTestGCDeps(t)
 	gcSeedOrphan(t, fs.root, "recent", deps.now().Add(-1*time.Hour))
 
-	if err := runGC(deps, false, testLogRetentionDays); err != nil {
+	if err := runGC(deps, false, testLogRetentionDays, testPremergeRetentionDays); err != nil {
 		t.Fatalf("runGC err: %v", err)
 	}
 	combined := out.String() + errOut.String()
@@ -224,7 +240,7 @@ func TestRunGC_DryRun_ListsStaleSessionLogsDistinctly(t *testing.T) {
 	deps, out, _, fs := newTestGCDeps(t)
 	staleLog := gcSeedSessionLog(t, fs.root, "agentA", "old", deps.now().Add(-40*24*time.Hour))
 
-	if err := runGC(deps, false, testLogRetentionDays); err != nil {
+	if err := runGC(deps, false, testLogRetentionDays, testPremergeRetentionDays); err != nil {
 		t.Fatalf("runGC err: %v", err)
 	}
 	combined := out.String()
@@ -244,7 +260,7 @@ func TestRunGC_Apply_RemovesStaleSessionLogsKeepsFresh(t *testing.T) {
 	staleLog := gcSeedSessionLog(t, fs.root, "agentA", "old", deps.now().Add(-40*24*time.Hour))
 	freshLog := gcSeedSessionLog(t, fs.root, "agentB", "fresh", deps.now())
 
-	if err := runGC(deps, true, testLogRetentionDays); err != nil {
+	if err := runGC(deps, true, testLogRetentionDays, testPremergeRetentionDays); err != nil {
 		t.Fatalf("runGC err: %v", err)
 	}
 
@@ -269,7 +285,7 @@ func TestRunGC_LogPassRunsWithZeroOrphans(t *testing.T) {
 	staleLog := gcSeedSessionLog(t, fs.root, "agentA", "old", deps.now().Add(-40*24*time.Hour))
 
 	// No orphan agent dirs seeded — only a stale session log.
-	if err := runGC(deps, true, testLogRetentionDays); err != nil {
+	if err := runGC(deps, true, testLogRetentionDays, testPremergeRetentionDays); err != nil {
 		t.Fatalf("runGC err: %v", err)
 	}
 
@@ -289,7 +305,7 @@ func TestRunGC_OrphanAndLogOutputAreDistinguishable(t *testing.T) {
 	gcSeedOrphan(t, fs.root, "staleorphan", deps.now().Add(-30*24*time.Hour))
 	gcSeedSessionLog(t, fs.root, "agentA", "stalelog", deps.now().Add(-40*24*time.Hour))
 
-	if err := runGC(deps, false, testLogRetentionDays); err != nil {
+	if err := runGC(deps, false, testLogRetentionDays, testPremergeRetentionDays); err != nil {
 		t.Fatalf("runGC err: %v", err)
 	}
 	combined := out.String()
@@ -298,5 +314,224 @@ func TestRunGC_OrphanAndLogOutputAreDistinguishable(t *testing.T) {
 	}
 	if !strings.Contains(combined, "wirelog") && !strings.Contains(combined, "logs/sessions") {
 		t.Errorf("log pass output not distinguishable from orphan pass, got %q", combined)
+	}
+}
+
+// --- QUM-1090: premerge recovery ref pruning ---------------------------
+
+// gcPremergeRef builds a premerge ref name at the given age relative to the
+// test clock, using the shared layout constant so the two cannot drift.
+func gcPremergeRef(agent string, ts time.Time, leaf string) string {
+	return "refs/sprawl/premerge/" + agent + "/" + ts.UTC().Format(merge.PremergeTSLayout) + "/" + leaf
+}
+
+func TestGCCmd_HasPremergeRetentionFlag(t *testing.T) {
+	var gc *cobra.Command
+	for _, c := range rootCmd.Commands() {
+		if c.Name() == "gc" {
+			gc = c
+			break
+		}
+	}
+	if gc == nil {
+		t.Fatal("gc command not registered")
+	}
+	if gc.Flags().Lookup("premerge-retention-days") == nil {
+		t.Errorf("gc command missing --premerge-retention-days flag")
+	}
+}
+
+// Negative control: making the dry-run branch fall through to apply turns
+// this red on the deletedRefs assertion.
+func TestRunGC_DryRun_ListsStalePremergeRefsDistinctly(t *testing.T) {
+	deps, out, _, fs := newTestGCDeps(t)
+	staleRef := gcPremergeRef("finn", deps.now().Add(-20*24*time.Hour), "agent")
+	fs.premergeRefs = []string{staleRef}
+
+	if err := runGC(deps, false, testLogRetentionDays, testPremergeRetentionDays); err != nil {
+		t.Fatalf("runGC err: %v", err)
+	}
+	combined := out.String()
+	// "premerge" alone is a substring of the ref path itself, so it would
+	// be satisfied by merely printing the ref. Require the column marker.
+	if !strings.Contains(combined, "premerge-ref  ") {
+		t.Errorf("expected a distinct premerge-ref column marker, got %q", combined)
+	}
+	if !strings.Contains(combined, staleRef) {
+		t.Errorf("expected the ref name listed, got %q", combined)
+	}
+	if len(fs.deletedRefs) != 0 {
+		t.Errorf("dry-run must not delete anything, got %v", fs.deletedRefs)
+	}
+}
+
+// Negative control: hardcoding the reported count to 0 turns the count
+// assertion red; dropping the Stale guard turns the fresh-ref assertion red.
+func TestRunGC_Apply_PrunesStalePremergeRefsAndReportsCount(t *testing.T) {
+	deps, _, errOut, fs := newTestGCDeps(t)
+	staleRef := gcPremergeRef("finn", deps.now().Add(-20*24*time.Hour), "agent")
+	freshRef := gcPremergeRef("zone", deps.now().Add(-24*time.Hour), "parent")
+	fs.premergeRefs = []string{staleRef, freshRef}
+
+	if err := runGC(deps, true, testLogRetentionDays, testPremergeRetentionDays); err != nil {
+		t.Fatalf("runGC err: %v", err)
+	}
+	if len(fs.deletedRefs) != 1 || fs.deletedRefs[0] != staleRef {
+		t.Errorf("DeleteRef calls = %v, want only %q", fs.deletedRefs, staleRef)
+	}
+	// AC: gc "reports the count".
+	if !strings.Contains(errOut.String(), "1 premerge ref") {
+		t.Errorf("expected the pruned count reported, got %q", errOut.String())
+	}
+}
+
+// Regression twin of TestRunGC_LogPassRunsWithZeroOrphans: the premerge pass
+// must run when there are no orphan dirs and no session logs. Negative
+// control: placing the pass behind the orphan early-return turns this red.
+func TestRunGC_PremergePassRunsWithZeroOrphansAndLogs(t *testing.T) {
+	deps, out, _, fs := newTestGCDeps(t)
+	staleRef := gcPremergeRef("finn", deps.now().Add(-20*24*time.Hour), "agent")
+	fs.premergeRefs = []string{staleRef}
+
+	if err := runGC(deps, true, testLogRetentionDays, testPremergeRetentionDays); err != nil {
+		t.Fatalf("runGC err: %v", err)
+	}
+	if len(fs.deletedRefs) != 1 {
+		t.Errorf("premerge pass must run with zero orphans and zero logs; deletedRefs=%v out=%q", fs.deletedRefs, out.String())
+	}
+}
+
+func TestRunGC_ThreePassOutputsAreDistinguishable(t *testing.T) {
+	deps, out, _, fs := newTestGCDeps(t)
+	gcSeedOrphan(t, fs.root, "staleorphan", deps.now().Add(-30*24*time.Hour))
+	gcSeedSessionLog(t, fs.root, "agentA", "stalelog", deps.now().Add(-40*24*time.Hour))
+	fs.premergeRefs = []string{gcPremergeRef("finn", deps.now().Add(-20*24*time.Hour), "agent")}
+
+	if err := runGC(deps, false, testLogRetentionDays, testPremergeRetentionDays); err != nil {
+		t.Fatalf("runGC err: %v", err)
+	}
+	combined := out.String()
+	for _, marker := range []string{"staleorphan", "wirelog  ", "premerge-ref  "} {
+		if !strings.Contains(combined, marker) {
+			t.Errorf("pass output for %q missing or conflated, got %q", marker, combined)
+		}
+	}
+}
+
+// TestGCCmd_PremergeRetentionFlagDefaultsTo14 pins the "~14 day window" AC;
+// without it the default rests on nothing.
+func TestGCCmd_PremergeRetentionFlagDefaultsTo14(t *testing.T) {
+	var gc *cobra.Command
+	for _, c := range rootCmd.Commands() {
+		if c.Name() == "gc" {
+			gc = c
+			break
+		}
+	}
+	if gc == nil {
+		t.Fatal("gc command not registered")
+	}
+	f := gc.Flags().Lookup("premerge-retention-days")
+	if f == nil {
+		t.Fatal("gc command missing --premerge-retention-days flag")
+	}
+	if f.DefValue != "14" {
+		t.Errorf("--premerge-retention-days default = %q, want 14", f.DefValue)
+	}
+}
+
+// TestRunGC_PremergeRetentionFlagIsHonored — testPremergeRetentionDays and
+// DefaultPremergeRetention are both 14, so every other premerge test would
+// still pass if runGC dropped the parameter and hardcoded the default. This
+// one uses a non-default window so that mutation is visible.
+func TestRunGC_PremergeRetentionFlagIsHonored(t *testing.T) {
+	deps, _, _, fs := newTestGCDeps(t)
+	// 2 days old: stale under a 1-day window, fresh under the 14-day default.
+	ref := gcPremergeRef("finn", deps.now().Add(-2*24*time.Hour), "agent")
+	fs.premergeRefs = []string{ref}
+
+	if err := runGC(deps, true, testLogRetentionDays, 1); err != nil {
+		t.Fatalf("runGC err: %v", err)
+	}
+	if len(fs.deletedRefs) != 1 || fs.deletedRefs[0] != ref {
+		t.Errorf("--premerge-retention-days=1 must prune a 2-day-old ref; deletedRefs=%v", fs.deletedRefs)
+	}
+}
+
+// TestRunGC_PremergeDeleteError_ReturnsError — twin of the orphan pass's
+// TestRunGC_ApplyWithErrors_ReturnsError: a failed ref delete must make
+// `sprawl gc --apply` exit non-zero, not silently succeed.
+func TestRunGC_PremergeDeleteError_ReturnsError(t *testing.T) {
+	deps, _, _, fs := newTestGCDeps(t)
+	fs.premergeRefs = []string{gcPremergeRef("finn", deps.now().Add(-20*24*time.Hour), "agent")}
+	fs.deleteRefErr = errors.New("ref locked")
+
+	if err := runGC(deps, true, testLogRetentionDays, testPremergeRetentionDays); err == nil {
+		t.Error("expected a non-nil error when a premerge ref delete fails")
+	}
+}
+
+// TestResolveGCDeps_BindsPremergeSeams — QUM-1090 wiring gate: every gc test
+// substitutes fakes for listPremergeRefs/deleteRef, so a production binding
+// that is a no-op stub would prune nothing forever while the suite stays
+// green. Negative control: replace either binding with a nil-returning stub
+// and this names it.
+func TestResolveGCDeps_BindsPremergeSeams(t *testing.T) {
+	saved := defaultGCDeps
+	defaultGCDeps = nil
+	t.Cleanup(func() { defaultGCDeps = saved })
+
+	d := resolveGCDeps()
+	if d.listPremergeRefs == nil {
+		t.Fatal("resolveGCDeps left listPremergeRefs nil")
+	}
+	if d.deleteRef == nil {
+		t.Fatal("resolveGCDeps left deleteRef nil")
+	}
+	// A no-op stub returns (nil, nil) for any root. The real lister shells
+	// out to git, so a non-repo path must produce an error rather than a
+	// silent empty result.
+	notARepo := t.TempDir()
+	// Assert the error TEXT, not merely err != nil: a missing git binary or
+	// any other error-returning stub would satisfy a bare nil check while
+	// proving nothing about the binding.
+	if _, err := d.listPremergeRefs(notARepo); err == nil || !strings.Contains(err.Error(), "not a git repository") {
+		t.Errorf("listPremergeRefs on a non-git dir must fail with git's own diagnostic; got %v", err)
+	}
+	if err := d.deleteRef(notARepo, "refs/sprawl/premerge/x/y/agent"); err == nil || !strings.Contains(err.Error(), "not a git repository") {
+		t.Errorf("deleteRef on a non-git dir must fail with git's own diagnostic; got %v", err)
+	}
+}
+
+// TestGCCmd_RejectsNonPositivePremergeRetention — a window of 0 makes the
+// cutoff "now" and prunes a recovery pair an in-flight merge just wrote;
+// negative moves the cutoff into the future and prunes everything. gc takes
+// no lock, so nothing interlocks it with a running merge. Negative control:
+// remove the `< 1` guard in gcCmd's RunE and both subtests go red.
+func TestGCCmd_RejectsNonPositivePremergeRetention(t *testing.T) {
+	var gc *cobra.Command
+	for _, c := range rootCmd.Commands() {
+		if c.Name() == "gc" {
+			gc = c
+			break
+		}
+	}
+	if gc == nil {
+		t.Fatal("gc command not registered")
+	}
+	saved := gcPremergeRetentionDays
+	t.Cleanup(func() { gcPremergeRetentionDays = saved })
+
+	for _, days := range []int{0, -1} {
+		t.Run(fmt.Sprintf("days=%d", days), func(t *testing.T) {
+			gcPremergeRetentionDays = days
+			err := gc.RunE(gc, nil)
+			if err == nil {
+				t.Fatalf("--premerge-retention-days=%d must be refused", days)
+			}
+			if !strings.Contains(err.Error(), "premerge-retention-days") {
+				t.Errorf("error should name the flag, got: %v", err)
+			}
+		})
 	}
 }

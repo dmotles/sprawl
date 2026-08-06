@@ -18,6 +18,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/dmotles/sprawl/internal/merge"
 	"github.com/dmotles/sprawl/internal/state"
 )
 
@@ -43,6 +44,12 @@ type GCDeps struct {
 	RemoveWorktree func(path string) error
 	RemoveAll      func(path string) error
 	SprawlRoot     string
+
+	// ListPremergeRefs returns every ref under refs/sprawl/premerge/.
+	// nil is tolerated and yields no records (QUM-1090).
+	ListPremergeRefs func() ([]string, error)
+	// DeleteRef deletes a single ref by full name.
+	DeleteRef func(ref string) error
 }
 
 // DefaultLogRetention is the default age cutoff for session wire-log files:
@@ -301,6 +308,137 @@ func DefaultRemoveWorktree(sprawlRoot, path string) error {
 	out, err := cmd.CombinedOutput()
 	if err != nil {
 		return fmt.Errorf("git worktree remove %s: %s: %w", path, strings.TrimSpace(string(out)), err)
+	}
+	return nil
+}
+
+// --- QUM-1090: premerge recovery refs ---------------------------------
+
+// DefaultPremergeRetention is the default age cutoff for the premerge
+// recovery refs written by internal/merge (QUM-1090).
+const DefaultPremergeRetention = 14 * 24 * time.Hour
+
+// PremergeRefRecord describes one premerge recovery ref.
+type PremergeRefRecord struct {
+	Ref   string
+	Agent string
+	TS    time.Time
+	Stale bool
+}
+
+// ScanPremergeRefs lists the premerge recovery refs written by
+// internal/merge and flags those older than retention.
+//
+// Age comes from the ref NAME's timestamp, not from the commit it points at.
+// A commit authored months ago and merged today would present as months
+// stale under committerdate and be pruned on its first gc run — the exact
+// inverse of the intent. Git also keeps no reflog for refs/sprawl/*
+// (core.logAllRefUpdates covers only heads/remotes/notes/stash), so the name
+// is the only honest creation date available.
+//
+// A ref whose name does not parse is returned with Stale=false: never delete
+// a ref you could not date. Returns nil,nil when the lister is unset.
+func ScanPremergeRefs(deps GCDeps, retention time.Duration) ([]PremergeRefRecord, error) {
+	if deps.ListPremergeRefs == nil {
+		return nil, nil
+	}
+	refs, err := deps.ListPremergeRefs()
+	if err != nil {
+		return nil, fmt.Errorf("listing premerge refs: %w", err)
+	}
+
+	cutoff := deps.Now().Add(-retention)
+	recs := make([]PremergeRefRecord, 0, len(refs))
+	for _, ref := range refs {
+		rec := PremergeRefRecord{Ref: ref}
+		if agent, ts, ok := parsePremergeRef(ref); ok {
+			rec.Agent = agent
+			rec.TS = ts
+			rec.Stale = ts.Before(cutoff)
+		}
+		recs = append(recs, rec)
+	}
+	sort.Slice(recs, func(i, j int) bool { return recs[i].Ref < recs[j].Ref })
+	return recs, nil
+}
+
+// parsePremergeRef splits refs/sprawl/premerge/<agent>/<ts>/<leaf>. Agent
+// names cannot contain "/" (internal/agent validates them), so the split is
+// unambiguous.
+func parsePremergeRef(ref string) (agent string, ts time.Time, ok bool) {
+	if !strings.HasPrefix(ref, merge.PremergeRefPrefix+"/") {
+		return "", time.Time{}, false
+	}
+	parts := strings.Split(ref, "/")
+	if len(parts) != 6 {
+		return "", time.Time{}, false
+	}
+	ts, err := time.Parse(merge.PremergeTSLayout, parts[4])
+	if err != nil {
+		return "", time.Time{}, false
+	}
+	return parts[3], ts, true
+}
+
+// ApplyPremergeGC deletes every Stale record via deps.DeleteRef. Records
+// outside PremergeRefPrefix are refused and reported as errors — DeleteRef
+// can delete any ref, so the prefix guard lives here rather than resting on
+// every caller building records correctly. Never returns an error; inspect
+// res.Errors.
+func ApplyPremergeGC(deps GCDeps, recs []PremergeRefRecord) ApplyResult {
+	var res ApplyResult
+	for _, r := range recs {
+		if !r.Stale {
+			continue
+		}
+		if !strings.HasPrefix(r.Ref, merge.PremergeRefPrefix+"/") {
+			res.Errors = append(res.Errors, fmt.Errorf("refusing to delete ref outside %s: %s", merge.PremergeRefPrefix, r.Ref))
+			continue
+		}
+		if deps.DeleteRef == nil {
+			res.Errors = append(res.Errors, fmt.Errorf("cannot prune %s: DeleteRef is not configured", r.Ref))
+			continue
+		}
+		if err := deps.DeleteRef(r.Ref); err != nil {
+			res.Errors = append(res.Errors, fmt.Errorf("deleting premerge ref %s: %w", r.Ref, err))
+		} else {
+			res.Removed = append(res.Removed, r.Ref)
+		}
+	}
+	return res
+}
+
+// DefaultListPremergeRefs lists every ref under refs/sprawl/premerge/,
+// rooted at sprawlRoot. Production binding for GCDeps.ListPremergeRefs.
+func DefaultListPremergeRefs(sprawlRoot string) ([]string, error) {
+	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+	defer cancel()
+	//nolint:gosec // G204: every argument is a compile-time constant except
+	// sprawlRoot, which is the process's own root path, and the ref pattern
+	// is the package constant — no caller-supplied data reaches this.
+	cmd := exec.CommandContext(ctx, "git", "-C", sprawlRoot, "for-each-ref", "--format=%(refname)", "--", merge.PremergeRefPrefix)
+	out, err := cmd.CombinedOutput()
+	if err != nil {
+		return nil, fmt.Errorf("git for-each-ref %s: %s: %w", merge.PremergeRefPrefix, strings.TrimSpace(string(out)), err)
+	}
+	var refs []string
+	for _, line := range strings.Split(strings.TrimSpace(string(out)), "\n") {
+		if line != "" {
+			refs = append(refs, line)
+		}
+	}
+	return refs, nil
+}
+
+// DefaultDeleteRef deletes a single ref. Production binding for
+// GCDeps.DeleteRef.
+func DefaultDeleteRef(sprawlRoot, ref string) error {
+	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+	defer cancel()
+	cmd := exec.CommandContext(ctx, "git", "-C", sprawlRoot, "update-ref", "-d", "--", ref)
+	out, err := cmd.CombinedOutput()
+	if err != nil {
+		return fmt.Errorf("git update-ref -d %s: %s: %w", ref, strings.TrimSpace(string(out)), err)
 	}
 	return nil
 }

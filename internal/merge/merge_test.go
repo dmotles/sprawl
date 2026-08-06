@@ -7,26 +7,45 @@ import (
 	"io"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/dmotles/sprawl/internal/state"
 )
 
+// testNow is the fixed clock used by newTestDeps for premerge ref names, so
+// the ref path is fully deterministic in assertions (QUM-1090).
+var testNow = time.Date(2026, 5, 18, 12, 0, 0, 123000000, time.UTC)
+
+// testPremergeBase is the ref prefix newTestDeps' clock + newTestConfig's
+// agent name produce.
+const testPremergeBase = "refs/sprawl/premerge/test-agent/20260518T120000.123Z"
+
 func newTestDeps() *Deps {
 	return &Deps{
-		LockAcquire:     func(lockPath string) (func(), error) { return func() {}, nil },
-		GitMergeBase:    func(repoRoot, a, b string) (string, error) { return "aaa111", nil },
-		GitRevParseHead: func(worktree string) (string, error) { return "bbb222", nil },
-		GitResetSoft:    func(worktree, ref string) error { return nil },
-		GitCommit:       func(worktree, message string) (string, error) { return "ccc333", nil },
-		GitRebase:       func(worktree, onto string) error { return nil },
-		GitRebaseAbort:  func(worktree string) error { return nil },
-		GitFFMerge:      func(worktree, branch string) error { return nil },
-		GitResetHard:    func(worktree string) error { return nil },
+		LockAcquire:  func(lockPath string) (func(), error) { return func() {}, nil },
+		GitMergeBase: func(repoRoot, a, b string) (string, error) { return "aaa111", nil },
+		// QUM-1090: worktree-aware so a test asserting "the parent ref got
+		// the PARENT tip" cannot pass vacuously by both tips being equal.
+		GitRevParseHead: func(worktree string) (string, error) {
+			if worktree == "/worktree/parent" {
+				return "ppp444", nil
+			}
+			return "bbb222", nil
+		},
+		GitResetSoft:   func(worktree, ref string) error { return nil },
+		GitCommit:      func(worktree, message string) (string, error) { return "ccc333", nil },
+		GitRebase:      func(worktree, onto string) error { return nil },
+		GitRebaseAbort: func(worktree string) error { return nil },
+		GitFFMerge:     func(worktree, branch string) error { return nil },
+		GitResetHard:   func(worktree string) error { return nil },
 		RunTestsStreaming: func(ctx context.Context, dir, command string, sink func(string)) (string, error) {
 			return "ok", nil
 		},
-		WritePoke: func(sprawlRoot, agentName, content string) error { return nil },
-		Stderr:    io.Discard,
+		WritePoke:       func(sprawlRoot, agentName, content string) error { return nil },
+		GitUpdateRef:    func(worktree, ref, newSHA string) error { return nil },
+		GitUpdateRefCAS: func(worktree, ref, newSHA, oldSHA string) error { return nil },
+		Now:             func() time.Time { return testNow },
+		Stderr:          io.Discard,
 	}
 }
 
@@ -461,7 +480,14 @@ func TestMerge_StepOrdering(t *testing.T) {
 	}
 	deps.GitRevParseHead = func(worktree string) (string, error) {
 		order = append(order, "rev-parse")
+		if worktree == "/worktree/parent" {
+			return "ppp444", nil
+		}
 		return "bbb222", nil
+	}
+	deps.GitUpdateRef = func(worktree, ref, newSHA string) error {
+		order = append(order, "update-ref")
+		return nil
 	}
 	deps.GitResetSoft = func(worktree, ref string) error {
 		order = append(order, "reset-soft")
@@ -493,8 +519,11 @@ func TestMerge_StepOrdering(t *testing.T) {
 		t.Fatalf("unexpected error: %v", err)
 	}
 
+	// QUM-1090: the second rev-parse reads the PARENT tip and both
+	// update-ref writes land before reset-soft, the first mutation.
 	expected := []string{
-		"lock", "merge-base", "rev-parse", "reset-soft", "commit",
+		"lock", "merge-base", "rev-parse", "rev-parse",
+		"update-ref", "update-ref", "reset-soft", "commit",
 		"rebase", "ff-merge", "validate", "poke", "unlock",
 	}
 	if len(order) != len(expected) {
@@ -668,6 +697,7 @@ func TestMerge_EmitsCheckpointSequence(t *testing.T) {
 
 	want := []string{
 		"merge.lock-acquired",
+		"merge.premerge-refs-written",
 		"merge.squash-committed",
 		"merge.rebased",
 		"merge.ff-merged",

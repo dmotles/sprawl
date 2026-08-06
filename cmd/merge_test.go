@@ -878,3 +878,26 @@ func TestMerge_ConfigLoadError(t *testing.T) {
 		t.Errorf("error should mention loading config, got: %v", err)
 	}
 }
+
+// TestResolveMergeDeps_MergeDepsBindEveryGitSeam — QUM-1090 wiring gate for
+// the CLI path. Twin of internal/supervisor's; see that test for why both
+// construction sites need one. Negative control: drop any binding from
+// merge.RealDeps and this names it.
+func TestResolveMergeDeps_MergeDepsBindEveryGitSeam(t *testing.T) {
+	saved := defaultMergeDeps
+	defaultMergeDeps = nil
+	t.Cleanup(func() { defaultMergeDeps = saved })
+
+	d := resolveMergeDeps().NewMergeDeps()
+	missing, checked := merge.NilSeams(d)
+	if len(missing) != 0 {
+		t.Errorf("resolveMergeDeps left merge.Deps seams nil: %v", missing)
+	}
+	if checked < merge.MinDepsSeams {
+		t.Errorf("NilSeams examined %d seams, want >= %d; the walk looks broken", checked, merge.MinDepsSeams)
+	}
+	// Not a func, so skipped by the walk; Merge writes to it unconditionally.
+	if d.Stderr == nil {
+		t.Error("resolveMergeDeps left merge.Deps.Stderr nil")
+	}
+}

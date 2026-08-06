@@ -8,6 +8,7 @@ import (
 	"path/filepath"
 	"strings"
 	"syscall"
+	"time"
 )
 
 // RealLockAcquire acquires an exclusive flock on the given path.
@@ -129,8 +130,63 @@ func RealGitResetHard(worktree string) error {
 	return nil
 }
 
+// RealGitUpdateRef creates or moves ref to newSHA.
+func RealGitUpdateRef(worktree, ref, newSHA string) error {
+	cmd := exec.Command("git", "update-ref", "--", ref, newSHA)
+	cmd.Dir = worktree
+	out, err := cmd.CombinedOutput()
+	if err != nil {
+		return fmt.Errorf("git update-ref %s %s: %w: %s", ref, newSHA, err, strings.TrimSpace(string(out)))
+	}
+	return nil
+}
+
+// RealGitUpdateRefCAS moves ref to newSHA only if it currently points at
+// oldSHA. git's third positional argument makes the update atomic
+// compare-and-swap; a mismatch exits non-zero and is reported as an error
+// rather than forcing the ref.
+func RealGitUpdateRefCAS(worktree, ref, newSHA, oldSHA string) error {
+	cmd := exec.Command("git", "update-ref", "--", ref, newSHA, oldSHA)
+	cmd.Dir = worktree
+	out, err := cmd.CombinedOutput()
+	if err != nil {
+		return fmt.Errorf("git update-ref (compare-and-swap) %s %s (expected %s): %w: %s",
+			ref, newSHA, oldSHA, err, strings.TrimSpace(string(out)))
+	}
+	return nil
+}
+
 // RealWritePoke writes a poke file for the given agent.
 func RealWritePoke(sprawlRoot, agentName, content string) error {
 	pokePath := filepath.Join(sprawlRoot, ".sprawl", "agents", agentName+".poke")
 	return os.WriteFile(pokePath, []byte(content), 0o644) //nolint:gosec // G306: world-readable poke file is intentional
+}
+
+// RealDeps returns a Deps with every seam bound to its production
+// implementation. Both merge.Deps construction sites (cmd/merge.go and
+// internal/supervisor/real.go, the latter feeding both the merge and retire
+// paths) use it, so a newly added seam cannot be bound in one and forgotten
+// in the other — a class of silent failure where MCP-initiated merges lose a
+// safety net while the CLI keeps it (QUM-1090).
+//
+// Checkpoint is deliberately left nil: it is per-caller observability and
+// cpMerge nil-guards it.
+func RealDeps(stderr io.Writer) *Deps {
+	return &Deps{
+		LockAcquire:       RealLockAcquire,
+		GitMergeBase:      RealGitMergeBase,
+		GitRevParseHead:   RealGitRevParseHead,
+		GitResetSoft:      RealGitResetSoft,
+		GitCommit:         RealGitCommit,
+		GitRebase:         RealGitRebase,
+		GitRebaseAbort:    RealGitRebaseAbort,
+		GitFFMerge:        RealGitFFMerge,
+		GitResetHard:      RealGitResetHard,
+		RunTestsStreaming: RealRunTestsStreaming,
+		WritePoke:         RealWritePoke,
+		GitUpdateRef:      RealGitUpdateRef,
+		GitUpdateRefCAS:   RealGitUpdateRefCAS,
+		Now:               time.Now,
+		Stderr:            stderr,
+	}
 }

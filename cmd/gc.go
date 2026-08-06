@@ -14,39 +14,57 @@ import (
 	"github.com/spf13/cobra"
 
 	"github.com/dmotles/sprawl/internal/agentops"
+	"github.com/dmotles/sprawl/internal/merge"
 )
 
 // gcDeps wires runGC to the outside world. Tests substitute in-memory fakes
 // for each field; production uses the bindings in resolveGCDeps.
 type gcDeps struct {
-	sprawlRoot     func() (string, error)
-	listWorktrees  func(root string) (map[string]bool, error)
-	removeWorktree func(root, path string) error
-	removeAll      func(path string) error
-	now            func() time.Time
-	out, errOut    io.Writer
+	sprawlRoot       func() (string, error)
+	listWorktrees    func(root string) (map[string]bool, error)
+	removeWorktree   func(root, path string) error
+	removeAll        func(path string) error
+	listPremergeRefs func(root string) ([]string, error)
+	deleteRef        func(root, ref string) error
+	now              func() time.Time
+	out, errOut      io.Writer
 }
 
 var (
-	defaultGCDeps      *gcDeps
-	gcApply            bool
-	gcLogRetentionDays int
+	defaultGCDeps           *gcDeps
+	gcApply                 bool
+	gcLogRetentionDays      int
+	gcPremergeRetentionDays int
 )
 
 func init() {
 	gcCmd.Flags().BoolVar(&gcApply, "apply", false, "Actually remove orphan dirs and worktrees (default is dry-run)")
 	gcCmd.Flags().IntVar(&gcLogRetentionDays, "log-retention-days", 30, "Remove session wire logs older than N days")
+	gcCmd.Flags().IntVar(&gcPremergeRetentionDays, "premerge-retention-days", 14, "Prune premerge recovery refs (refs/sprawl/premerge/) older than N days")
 	rootCmd.AddCommand(gcCmd)
 }
 
 var gcCmd = &cobra.Command{
 	Use:   "gc",
 	Short: "Clean up orphan agent directories under .sprawl/agents/",
-	Long: "Sweeps .sprawl/agents/<name>/ directories that have no matching <name>.json. " +
+	Long: "Sweeps .sprawl/agents/<name>/ directories that have no matching <name>.json, stale session wire logs, " +
+		"and premerge recovery refs under refs/sprawl/premerge/ older than the retention window. " +
 		"Default is a dry-run report; pass --apply to remove. Refuses to remove dirs with files newer than 7 days.",
 	Args: cobra.NoArgs,
 	RunE: func(_ *cobra.Command, _ []string) error {
-		return runGC(resolveGCDeps(), gcApply, gcLogRetentionDays)
+		// A retention of 0 makes the cutoff "now", which would prune a
+		// recovery pair written seconds ago by an in-flight merge — gc takes
+		// no lock and the merge flock is per-agent, so nothing interlocks
+		// them. Negative is worse: the cutoff moves into the future and
+		// everything is pruned unconditionally. These refs are sometimes the
+		// only remaining copy of a pre-merge tip, so refuse rather than
+		// clamp (QUM-1090).
+		if gcPremergeRetentionDays < 1 {
+			return fmt.Errorf("--premerge-retention-days must be at least 1, got %d\n"+
+				"  premerge recovery refs may be the only copy of a pre-merge tip, and\n"+
+				"  a window of 0 would prune refs written by an in-flight merge", gcPremergeRetentionDays)
+		}
+		return runGC(resolveGCDeps(), gcApply, gcLogRetentionDays, gcPremergeRetentionDays)
 	},
 }
 
@@ -62,26 +80,30 @@ func resolveGCDeps() *gcDeps {
 			}
 			return r, nil
 		},
-		listWorktrees:  agentops.DefaultListWorktrees,
-		removeWorktree: agentops.DefaultRemoveWorktree,
-		removeAll:      os.RemoveAll,
-		now:            time.Now,
-		out:            os.Stdout,
-		errOut:         os.Stderr,
+		listWorktrees:    agentops.DefaultListWorktrees,
+		removeWorktree:   agentops.DefaultRemoveWorktree,
+		removeAll:        os.RemoveAll,
+		listPremergeRefs: agentops.DefaultListPremergeRefs,
+		deleteRef:        agentops.DefaultDeleteRef,
+		now:              time.Now,
+		out:              os.Stdout,
+		errOut:           os.Stderr,
 	}
 }
 
-func runGC(deps *gcDeps, apply bool, logRetentionDays int) error {
+func runGC(deps *gcDeps, apply bool, logRetentionDays, premergeRetentionDays int) error {
 	root, err := deps.sprawlRoot()
 	if err != nil {
 		return err
 	}
 	gcd := agentops.GCDeps{
-		Now:            deps.now,
-		ListWorktrees:  func() (map[string]bool, error) { return deps.listWorktrees(root) },
-		RemoveWorktree: func(p string) error { return deps.removeWorktree(root, p) },
-		RemoveAll:      deps.removeAll,
-		SprawlRoot:     root,
+		Now:              deps.now,
+		ListWorktrees:    func() (map[string]bool, error) { return deps.listWorktrees(root) },
+		RemoveWorktree:   func(p string) error { return deps.removeWorktree(root, p) },
+		RemoveAll:        deps.removeAll,
+		SprawlRoot:       root,
+		ListPremergeRefs: func() ([]string, error) { return deps.listPremergeRefs(root) },
+		DeleteRef:        func(ref string) error { return deps.deleteRef(root, ref) },
 	}
 
 	orphanErrs, didSomething, err := runOrphanPass(deps, gcd, root, apply)
@@ -96,11 +118,18 @@ func runGC(deps *gcDeps, apply bool, logRetentionDays int) error {
 	}
 	didSomething = didSomething || logDidSomething
 
+	premergeRetention := time.Duration(premergeRetentionDays) * 24 * time.Hour
+	premergeErrs, premergeDidSomething, err := runPremergePass(deps, gcd, premergeRetention, apply)
+	if err != nil {
+		return err
+	}
+	didSomething = didSomething || premergeDidSomething
+
 	if !didSomething {
-		fmt.Fprintln(deps.errOut, "No orphan agent dirs or stale session logs found. Nothing to do.")
+		fmt.Fprintln(deps.errOut, "No orphan agent dirs, stale session logs, or stale premerge refs found. Nothing to do.")
 	}
 
-	totalErrs := orphanErrs + logErrs
+	totalErrs := orphanErrs + logErrs + premergeErrs
 	if totalErrs > 0 {
 		return fmt.Errorf("gc: %d error(s) during apply", totalErrs)
 	}
@@ -233,6 +262,58 @@ func runLogPass(deps *gcDeps, gcd agentops.GCDeps, retention time.Duration, appl
 		fmt.Fprintf(deps.out, "removed  wirelog  %s\n", p)
 	}
 	fmt.Fprintf(deps.errOut, "%d wirelog(s) removed, %d error(s).\n", len(res.Removed), len(res.Errors))
+	for _, e := range res.Errors {
+		fmt.Fprintf(deps.errOut, "  %v\n", e)
+	}
+	return len(res.Errors), true, nil
+}
+
+// runPremergePass scans and (when apply) prunes the premerge recovery refs
+// written by internal/merge (QUM-1090). Output uses a distinct
+// "premerge-ref" marker so it can't be confused with the other two passes.
+func runPremergePass(deps *gcDeps, gcd agentops.GCDeps, retention time.Duration, apply bool) (int, bool, error) {
+	recs, err := agentops.ScanPremergeRefs(gcd, retention)
+	if err != nil {
+		return 0, false, err
+	}
+	if len(recs) == 0 {
+		return 0, false, nil
+	}
+
+	staleCount := 0
+	for _, r := range recs {
+		if r.Stale {
+			staleCount++
+		}
+	}
+
+	if !apply {
+		fmt.Fprintf(deps.errOut, "Scanning %s for stale premerge recovery refs...\n", merge.PremergeRefPrefix)
+		for _, r := range recs {
+			ts := "unknown"
+			marker := "kept (unparseable name)"
+			if !r.TS.IsZero() {
+				ts = r.TS.Format("2006-01-02")
+				marker = "fresh"
+				if r.Stale {
+					marker = "stale"
+				}
+			}
+			fmt.Fprintf(deps.out, "premerge-ref  %s  ts=%s  [%s]\n", r.Ref, ts, marker)
+		}
+		fmt.Fprintf(deps.errOut, "%d premerge ref(s) found, %d stale.\n", len(recs), staleCount)
+		if staleCount > 0 {
+			fmt.Fprintln(deps.errOut, "Re-run with --apply to prune stale premerge refs.")
+		}
+		return 0, true, nil
+	}
+
+	fmt.Fprintf(deps.errOut, "Pruning %d stale premerge recovery ref(s)...\n", staleCount)
+	res := agentops.ApplyPremergeGC(gcd, recs)
+	for _, ref := range res.Removed {
+		fmt.Fprintf(deps.out, "pruned  premerge-ref  %s\n", ref)
+	}
+	fmt.Fprintf(deps.errOut, "%d premerge ref(s) pruned, %d error(s).\n", len(res.Removed), len(res.Errors))
 	for _, e := range res.Errors {
 		fmt.Fprintf(deps.errOut, "  %v\n", e)
 	}

@@ -299,22 +299,7 @@ func NewReal(cfg Config) (*Real, error) {
 		}
 	}
 
-	newMergeDeps := func() *merge.Deps {
-		return &merge.Deps{
-			LockAcquire:       merge.RealLockAcquire,
-			GitMergeBase:      merge.RealGitMergeBase,
-			GitRevParseHead:   merge.RealGitRevParseHead,
-			GitResetSoft:      merge.RealGitResetSoft,
-			GitCommit:         merge.RealGitCommit,
-			GitRebase:         merge.RealGitRebase,
-			GitRebaseAbort:    merge.RealGitRebaseAbort,
-			GitFFMerge:        merge.RealGitFFMerge,
-			GitResetHard:      merge.RealGitResetHard,
-			RunTestsStreaming: merge.RealRunTestsStreaming,
-			WritePoke:         merge.RealWritePoke,
-			Stderr:            os.Stderr,
-		}
-	}
+	newMergeDeps := func() *merge.Deps { return merge.RealDeps(os.Stderr) }
 
 	r := &Real{
 		sprawlRoot:      cfg.SprawlRoot,

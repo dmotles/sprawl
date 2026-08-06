@@ -351,6 +351,78 @@ Finally, retire the original: once `<my-branch>-rebased` passes both checks,
 point the merge at it, or `git branch -f <my-branch> <my-branch>-rebased` so
 the name everyone else is using follows the recovered work.
 
+### Pre-merge recovery refs (QUM-1090)
+
+Every non-noop, non-dry-run `merge` writes two refs **before its first
+mutation**, so a failed or crashed merge is recoverable from a ref rather
+than from the reflog:
+
+```
+refs/sprawl/premerge/<agent>/<timestamp>/agent    ← agent branch tip
+refs/sprawl/premerge/<agent>/<timestamp>/parent   ← parent branch tip
+```
+
+Unlike reflog entries these survive `git gc`, survive branch deletion at
+retire, and are discoverable. Inspect and recover with:
+
+```bash
+git for-each-ref refs/sprawl/premerge                 # newest last: the name sorts chronologically
+git update-ref refs/heads/<branch> <the recovery ref>  # recovery is one command
+```
+
+**Both siblings matter, and a check that only looks at `/agent` is wrong.**
+The agent ref covers agent-branch damage; the **parent** ref is what makes a
+wrongly-rewound `main` a one-liner, and a rewound `main` is the loss mode
+that motivated this. A check that finds `/agent`, passes, and never looks
+for `/parent` misses exactly the half that was added.
+
+`refs/sprawl/premerge/` is owned **exclusively** by this mechanism, so
+anything under it is tool output by construction. That is load-bearing, not
+tidiness: a hand-made ref once lived under this prefix, which meant the
+obvious verification (`git for-each-ref refs/sprawl/premerge`, see output,
+conclude it works) returned non-empty on a tree where the feature had never
+run once. Put ad-hoc refs under `refs/sprawl/rescue/` or
+`refs/sprawl/manual/`.
+
+`sprawl gc` prunes these after `--premerge-retention-days` (default 14),
+ageing them by the **timestamp in the ref name** — never by the commit date,
+since a commit authored months ago and merged today is not an old *ref*. A
+ref whose name does not parse is never pruned.
+
+### Never overwrite the thing that tells you where you were
+
+One rule, four surfaces. It is worth seeing them as one, because each looks
+like local caution on its own:
+
+1. **Operator procedure** — when relocating a ref, create the replacement
+   **before** deleting the original, never the reverse.
+2. **Engine primitive** — restore a branch with a compare-and-swap
+   (`git update-ref <ref> <new> <old>`), so a ref that moved underneath you
+   **refuses** rather than clobbers. A blind write cannot tell "I am fixing
+   this" from "someone else already did".
+3. **Ad-hoc safety refs** — add a new ref rather than repointing an existing
+   one. Two refs cost nothing; a lost pointer costs everything.
+4. **Naming** — name a ref for an **attempt**, not for a **branch**. A ref
+   named for a branch has to be *maintained*; a ref named for an attempt
+   *cannot go stale*, because it describes a moment rather than a moving
+   target. This is why the refs above carry `<agent>/<timestamp>` rather
+   than one ref per branch.
+
+Point 4 was demonstrated live, by accident, on the very merge the mechanism
+exists to protect. A hand-written `refs/sprawl/rescue/<agent>-<slug>` was
+created at a branch tip as a stand-in while QUM-1090 was not yet in the
+running binary. The next `git commit --amend` silently invalidated it: it
+went on pointing at the old SHA, **nothing announced** that it had stopped
+answering "where is this branch", and recovery would still have worked *only
+because that amend happened to be message-only*. An amend that touched the
+tree would have left the ref pointing at a tree nobody wanted — **still
+looking authoritative**. That is luck, not design, and it is the failure
+mode a per-attempt name does not have.
+
+The incident is the point. Compressed to a maxim the rule reads as obvious
+and gets routed around; attached to a case where it caught out people who
+were paying close attention, it is a thing that actually happens.
+
 ### Never `git add -A` (QUM-989)
 
 **Standing rule: stage explicit paths only.** Never `git add -A`, `git add .`,
