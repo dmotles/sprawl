@@ -68,8 +68,23 @@ These are the findings I most want not to be lost in a docs cleanup. Four are de
 | **P1** | **Researcher and QA agents receive no safety guidance at all.** The `Executing actions with care` block, the prompt-injection/hooks section, and the destructive-var guardrail are present for engineer and manager, **absent for both researcher and QA**. The `rm -rf "$VAR"` rule exists **nowhere else in the repo** — not CLAUDE.md, not any skill, only two Go constants. QA is ordered to run `make validate` while told nothing about concurrency, making it the role least able to recognise a contention false-RED. | pinned prompt goldens in `internal/agent/` | **weave** — I am spawning researchers under this gap right now |
 | **P2** | **`DESCRIPTION.md` asserts a safety property the code lacks.** "If the name pool is exhausted, the system errors… a natural ceiling on system complexity." That string is **absent from the tree** (I verified); `AllocateName` falls into an unbounded `for i := 1; ; i++`. Exact shape of QUM-1111. | `grep 'no more agents can be spawned'` → 0 hits | product question |
 | **P3** | **Security finding sitting unfixed in an unread archive for four months.** `open-source-readiness/03-security-audit.md` filed a CRITICAL agent-name path traversal, "no validation anywhere." I verified: `func [Vv]alidateAgentName` → **zero hits**. This is a public repo. | verified at HEAD | **should be a Linear issue before anything is archived** |
-| **P4** | **`internal/supervisor/drain.go`: 443 lines, no test file** — while CLAUDE.md instructs agents that every file has one (36 of 216 do not). The e2e table calls this file load-bearing across four rows. | verified | engineering |
+| **P4** | ~~**`internal/supervisor/drain.go`: 443 lines, no test file**~~ — **WITHDRAWN. See §3.1.** | — | closed, not filed |
 | **P5** | **5 orphan e2e rows the table never obligates anyone to run**, incl. `qum903-false-thinking` guarding `unified.go`/`session.go` — files changed 43 and 26 times in 400 commits. | `grep -c` in CLAUDE.md → 0 | **tower has taken this** |
+
+### 3.1 Correction: P4 is withdrawn, and this document reproduced the defect it documents
+
+**Left visible rather than silently edited**, because the correction is more instructive than the finding was.
+
+P4 originally read: *"`internal/supervisor/drain.go`: 443 lines, no test file — while CLAUDE.md instructs agents that every file has one (36 of 216 do not)."* I had verified both numbers against the tree and they are both literally true. The finding is still wrong.
+
+- **`drain.go` is well tested.** `internal/supervisor/drain_policy_test.go` is 23 KB, and `qum1061_child_drain_duplicate_write_test.go` exercises the same paths. What `drain.go` lacks is a file *named* `drain_test.go`.
+- **The "36 of 216" figure is an artifact of reading the rule as `foo.go → foo_test.go`.** Of those 36, only **6** sit in a package with no test file at all — and of those six, two are generated protobuf (`hub.pb.go`, `hub.connect.go`), one is a test helper (`supervisortest/noop.go`), and one is a test binary (`cmd/hosttest/main.go`). **The entire genuine residue is `internal/runtimecfg/` (2 files).** Not worth an issue; recorded here.
+
+This also settles an open question from the skills audit — whether the companion-test rule means per-file or per-package. Read per-file it overstates the gap **6×**. CLAUDE.md's wording (*"Every file in `cmd/` and `internal/` has a corresponding `_test.go`. Keep it that way."*) invites the per-file reading, and the per-file reading is false. That is a defect in the **rule's wording**, to be fixed under D1 — not a defect in the code.
+
+**The lesson, and it is uncomfortable.** "36 of 216 files have no test" is a count followed by a class of code entities — precisely the enumeration pattern this document identifies as the root cause of the rot in §2. It passed because it was *arithmetically correct*. Verifying that a count is accurate does not verify that it means what the sentence claims. `prism` hit the identical trap while writing about it, and now so has this document.
+
+**So the mitigation in §2 needs strengthening**: it is not enough to ban counted rosters and check the counts. **Prefer a claim that names the property you care about** ("is this behaviour tested?") over one that names a proxy that happens to be countable ("does a file with this name exist?"). Countable proxies are what make the wrong claim survive review.
 
 Two more, already routed: the **merge engine un-commits an agent's work when the squash commit's pre-commit hook fails, with no rescue ref** (I hit it twice today on a markdown-only merge; `vault` confirms it is the second production firing and that fixes are landed-but-not-installed), and **`merge(no_validate:true)` does not reach the pre-commit hook** (QUM-1101; being deleted by QUM-1087's no-squash restructure).
 
