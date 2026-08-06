@@ -16,11 +16,12 @@ is a bug.
 | directory | what belongs here | what does not |
 |---|---|---|
 | `architecture/` | How a subsystem works **today**. Must name the code path that owns it. | Incidents, decisions, post-mortems, anything about how it *used* to work. |
-| `designs/` | Designs that are built, partly built, committed-to-build, or an open decision. A status banner is **required**: built / partial / design-only / open-decision. | Designs that were abandoned or shipped differently — those are archive. |
+| `designs/` | Designs that are built, partly built, committed-to-build, or an open decision. New or edited docs **must** carry a status banner: built / partial / design-only / open-decision. Most of the existing ones do not yet — that is a backlog, not a precedent. | Designs that were abandoned or shipped differently — those are archive. |
 | `guides/` | Procedural steps a human or an agent runs from this repo. | A task done only *sometimes* — make that a skill under `.claude/skills/`, which is loaded on demand instead of read every turn. |
 | `reference/` | External facts the tree cannot re-derive: protocol surfaces, client behaviour, third-party contracts. Say which version you observed. | Anything about *our* code. That is `architecture/`. |
-| `audits/` | Dated decision records for an in-flight restructure. The only directory with an **exit** criterion: when its decisions are executed or superseded, it moves to `archive/`. | Ongoing work tracking. Linear is the tracker. |
+| `audits/` | Dated decision records for an in-flight restructure. Carries an **exit** criterion: when its decisions are executed or superseded, it moves to `archive/`. | Ongoing work tracking. Linear is the tracker. |
 | `archive/` | Was true once. A one-way door — nothing exits. | Anything you want someone to rely on. |
+| `research/` | **Transitional — do not add to it.** It holds one file that states part of the security trust model and is held live until QUM-1138 records that model durably. The directory disappears when QUM-1138 lands. | Everything. New investigation goes to `.sprawl/agents/<name>/findings/`, or to `archive/` if it is worth keeping. |
 
 ## If you are reading a file under `docs/archive/`
 
@@ -30,7 +31,9 @@ a directory README is invisible to an agent that landed mid-file from a grep,
 which is how every previous attempt at this failed.
 
 A live document may link into `archive/` **only with an explicit `(archived)`
-label** at the link. The value in an archived document is usually the *why* —
+label** — at the link, or as a banner at the top of the file when one document
+links into the archive repeatedly and per-link labels would be noise. The value
+in an archived document is usually the *why* —
 the causal record of a decision — which the code genuinely cannot supply. That is
 worth citing. It is not worth citing silently.
 
@@ -58,9 +61,11 @@ behaviour tested?" over "does a file with this name exist?". A proxy that happen
 to be countable is what lets a wrong claim survive review by being arithmetically
 correct.
 
-Every live document carries a **date and a status line** at the top. That is
-metadata for the reader — it is *not* the control, because banners rot exactly
-like the prose they head. Do not judge staleness by git dates either: a
+Any document you add or substantially edit **must** carry a **date and a status
+line** at the top. Many existing ones do not — that is a backlog to work off, not
+a precedent to copy. Dating is metadata for the reader; it is *not* the control,
+because banners rot exactly like the prose they head. Do not judge staleness by
+git dates either: a
 substantial share of this tree carries a last-modified date from a mechanical
 one-word edit or a rebase squash, reflecting no content change at all.
 

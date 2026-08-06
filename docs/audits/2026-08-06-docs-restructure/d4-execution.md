@@ -8,14 +8,22 @@
 
 ## What happened, in one table
 
+Measured at this commit. **These are not invariants** — re-derive from the tree
+rather than citing this table, which is the whole point of the entry rule below.
+The 145/144 split in the first two rows is not a typo: the 145th pre-existing
+file is `audits/DECISION.md`, which the live-corpus row excludes.
+
 | | before | after |
 |---|---:|---:|
-| files under `docs/` | 144 | 80 |
-| **live corpus** (excl. `archive/`, `audits/`) | 144 | **27** |
-| lines, live corpus | 39,778 | **8,882** |
+| files under `docs/` | 145 | 82 |
+| **live corpus** (excl. `archive/`, `audits/`) | 144 | **28** |
+| lines, live corpus | 39,778 | **8,961** |
 | quarantined to `docs/archive/` | — | 52 |
 | deleted | — | 65 |
-| top-level directories | 12 | 6 |
+| top-level directories | 12 | 7 |
+
+The live corpus is 26 KEEP survivors, plus `03-security-audit.md` held live
+under §2, plus the new `README.md`.
 
 Five commits, each answering one question:
 
@@ -90,10 +98,10 @@ Every "nothing references this" claim below was run with a control proving the p
 
 | claim | probe | control |
 |---|---|---|
-| No non-docs file still cites `docs/design/hub/` | `git grep -n 'docs/design/hub' -- ':!docs'` → only `CHANGELOG.md` | the same probe returned **22 hits across 17 files** immediately before the rewrite |
+| No non-docs file still cites `docs/design/hub/` | `git grep -n 'docs/design/hub' -- ':!docs'` → only `CHANGELOG.md` | the same probe returned **22 hits across 18 files** immediately before the rewrite; 21 were repointed and the `CHANGELOG.md` line was left deliberately |
 | No live non-docs file cites an archived doc | `git grep -nF -f <52 old paths> -- ':!docs'` → 1 hit | returned **37** before the rewrite; the surviving hit is `.claude/skills/`, which this task may not touch |
-| Nothing outside the archive cites a deleted doc | `git grep -nF -f <65 paths> -- ':!docs/archive'` → 0 | returned **3** before repair; and the same `-F` probe over the KEEP set returns hits in 10 files, so it is live |
-| The live corpus has no dangling internal links | link-resolver over all 27 live files → 1 | an injected bad markdown link **and** an injected bad backticked path were both reported; the surviving hit is `docs/security-model.md`, a *proposed* path in Priority Action #2 that correctly does not exist and that QUM-1138 tracks creating |
+| No *link-shaped* citation of a deleted doc survives outside the archive | `git grep -nF -f <65 paths> -- ':!docs/archive'` → 0 links | returned **3** before repair; and the same `-F` probe over the KEEP set returns hits in 10 files, so it is live. **Scope this claim carefully:** the same probe returns 4 non-link *path mentions* that are deliberately untouched — `.gitignore:115` and `scripts/test-gitignore-classes.sh:65` (both enumerated in §6) and three prose mentions in `docs/designs/qum-991-foreign-content-guard/decision.md`, which cites the deleted evidence dir as the historical *precedent* for tracking research artifacts. That is a claim about the past and stays true. |
+| The live `.md` corpus has no dangling internal links | link-resolver over the 25 live `.md` files (the other 3 live files are `.sh`) → 1 | an injected bad markdown link **and** an injected bad backticked path were both reported; the surviving hit is `docs/security-model.md`, a *proposed* path in Priority Action #2 that correctly does not exist and that QUM-1138 tracks creating. **This probe is scoped to `docs/`** — it does not cover non-docs source comments; those are covered by the two rows above and by §6. |
 | The hub sibling links were all repaired | count of links to 02/05/06/08/12 | **41 before, 0 after**, and all 41 new `../../archive/hub/` targets resolve on disk |
 | `make validate` never read a path this cut moved | read `scripts/test-gitignore-classes.sh` | `stage_against()` does `printf 'fixture\n' > "$r/$f"` into a `mktemp` scratch repo — the fixtures are synthetic and the script never touches the real tree. **I did not run `make validate` myself to claim this**; it is established by reading the harness. |
 
@@ -101,14 +109,17 @@ Two false-negative traps specific to these probes, both hit and avoided: `git gr
 
 ---
 
-## 5. Collateral outside `docs/` — 58 citations across 45 files
+## 5. Collateral outside `docs/` — 58 changed lines across 42 files, net
 
-Not scope creep; these are the cut's own breakage. Every edit is a comment or prose string. **No code changed.**
+Not scope creep; these are the cut's own breakage. Every changed line is a comment, a prose string, or a shell array element. **No code changed.**
 
-- **22 refs / 17 files** repointed for the `design/` → `designs/` merge. This includes `proto/hub/v1/hub.proto` and the four checked-in **generated** files that carry its comment verbatim (`hub.pb.go`, `hub.connect.go`, `hub_pb.ts`, `hub_connect.ts`), edited to exactly what regeneration would emit.
+By cause (per-commit counts overlap — the five `deploy/hub/**` files were repointed by the merge and then again by the archive, so the net line count is lower than the sum):
+
+- **21 refs / 17 files** repointed for the `design/` → `designs/` merge. The probe found 22 refs across 18 files; the 22nd is `CHANGELOG.md`, deliberately left as a historical record of where the docs landed at the time. This includes `proto/hub/v1/hub.proto` and the four checked-in **generated** files that carry its comment verbatim (`hub.pb.go`, `hub.connect.go`, `hub_pb.ts`, `hub_connect.ts`), edited to exactly what regeneration would emit.
 - **36 refs / 28 files** repointed to `docs/archive/…` — Go source and test comments, an e2e spec header, and the `deploy/hub/**` terraform READMEs.
 - **2 source comments** de-linked from deleted docs.
-- **1 fixture path** in `scripts/test-gitignore-classes.sh`.
+- **1 fixture path** in `scripts/test-gitignore-classes.sh` (a shell array element, not a comment — the only changed line outside `docs/` that is data rather than prose; functionally a no-op, since the fixtures are synthetic).
+- **2 relative links** in `deploy/hub/infra/terraform/{aws,modules}/README.md` carried a pre-existing off-by-one `../` (four levels from `.../terraform/<x>/` lands at `deploy/`, not the repo root; the sibling `azure/README.md` correctly used five). Found by a reviewer, and fixed here rather than left: this cut had already rewritten those exact lines, so leaving them broken would have been this cut's problem regardless of who introduced it.
 
 Source comments get the bare `archive/` path with no `(archived)` suffix, deliberately: in a grep hit the path segment *is* the signal, and the label would be noise in a code comment. In prose docs the suffix is required, because a rendered link hides the path.
 
@@ -121,8 +132,10 @@ Source comments get the bare `archive/` path with no `(archived)` suffix, delibe
 | what | why not | route |
 |---|---|---|
 | `.claude/skills/e2e-testing-sandboxing/SKILL.md:175` cites `docs/research/qum-458-e2e-leak-analysis.md`, now archived | this task is forbidden to touch `.claude/skills/` | **D5** |
-| `scripts/e2e-tests/hub-e2e.sh:14` cites `13-p1-local-e2e-and-manual-walkthrough.md` | **pre-existing** dangler — that file exists under neither spelling and never did. Carried through the rename unchanged, not introduced here | follow-up |
+| `scripts/e2e-tests/hub-e2e.sh:14` cites `13-p1-local-e2e-and-manual-walkthrough.md` | **pre-existing** dangler — verified absent at the parent commit under either spelling. Carried through the rename unchanged, not introduced here | follow-up |
 | `.gitignore` still negates `docs/research/m13-phase1-evidence/ec6-live-handoff-stderr.log`, now deleted | the negation is inert, but removing it changes what `test-gitignore-classes.sh` asserts about the broad-`*.log` tradeoff — a test-semantics change needing its own review | follow-up |
+| `scripts/test-gitignore-classes.sh:64-65` comments `NEGATED` as "The single intentionally-tracked log" — that file is no longer tracked, so the comment is now false and the `NONEG` case proves a negation guarding nothing real | same reason as the row above: the fix is to retire or re-anchor the negation, which changes what the harness asserts. Still green, because the fixtures are synthetic. Flagged because a stale *comment* on a live guard is precisely this exercise's subject matter | follow-up, with the `.gitignore` row |
+| `docs/designs/hub/README.md` still lists 02-components, 05-observability, 06-iac, 08-deployment and 12-testability as rows of its own "Document index", status `todo`, as though they were live siblings | they are unlinked plain text, so no link resolver catches it, but a reader of a live doc is told five archived documents are part of the live set. Doubly awkward: a hand-maintained index mirroring a directory is exactly what this restructure's own entry rule sends to `archive/` on sight | follow-up; belongs with the `13-implementation-plan.md` rewrite |
 | `CLAUDE.local.md` advertises `docs/todo/punchlist.md`, now deleted | untracked private file; not mine to edit | forge |
 | `13-implementation-plan.md` carries no status marks though Phase 0 + Phase 1 shipped | the REWRITE is its own task | follow-up |
 | `chatlist-invariants.md` has zero mentions of the QUM-833/925 pending zone now inside `ChatList` | content correction, not placement; the classification flags it as UPDATE | follow-up |
