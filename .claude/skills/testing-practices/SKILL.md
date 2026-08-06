@@ -234,6 +234,11 @@ Two of those deserve singling out as reusable warnings:
   plus reporting setup failure as a **third outcome** — `0 passed, 0 failed,
   3 never ran` — in the vocabulary of what actually happened.
 
+**Standing prohibition, so this is not relitigated: do not rebuild the parser.**
+It was built, measured against a real audit, and rejected on the evidence above.
+The defence against this class is manual review against the shapes listed here,
+not a detector — a detector for it acquires the defect it detects.
+
 ### The worked example: `scripts/test-wirelog-helpers-unit.sh`
 
 Do it like that file. It exists because the wire-log helpers it tests feed
@@ -1596,6 +1601,65 @@ at all**.
 Derived independently by two agents from two unrelated surfaces, which is why it is
 written down — and in both cases **the claim had already been acted on by others
 before the control was run.** That cost, not tidiness, is the argument.
+
+### Name the property before you name the probe
+
+The previous two sections are about an instrument that could not see. This one is
+about an instrument aimed at the wrong thing, which is the failure the previous
+two cannot catch: the probe fires, returns a true answer, and the answer is about
+a different proposition than the one you publish.
+
+> **Write the sentence you intend to publish, in behavioural terms, before you
+> choose the search.** Then check that the sentence's subject and the search's
+> subject are the same noun. If they are not, the search cannot settle the
+> sentence, however carefully you run it.
+
+**Prefer the property over the countable proxy.** "Is this behaviour tested" and
+"does a file with this name exist" are different questions, and the second is the
+one that is easy to run. Substituting the proxy for the property is the single
+highest-yield source of false findings this repo has retracted: a companion-test
+convention read as `foo.go → foo_test.go` reports gaps that do not exist, because
+tests routinely live in a differently-named file in the same package.
+
+And keep the control discipline pointed the right way: **before trusting a
+negative result, prove the probe can produce a positive one.** A negative control
+that shares the probe's defect is not a control — if the probe is blind, it is
+blind on the control too, and both come back consistent. Only a positive one
+discriminates.
+
+### Check that the question the command answers is the question you are claiming
+
+The dangerous case is not a wrong command. It is a **correct command, returning a
+true result, answering an asymmetric question in the convenient direction while
+you report it in the desired one.** Running it more carefully does not help,
+because there is nothing wrong with the run.
+
+The clearest specimen is an ancestry check after a rebase.
+`git merge-base --is-ancestor main <branch>` asks *is `main` contained in my
+branch* — "I am rebased up to date". Reverse the argument order and it asks *did
+my commits land on `main`*. Both are one-line commands, both exit 0 on success,
+and they are different claims. The same shape recurs wherever the relation has a
+direction: containment, ancestry, subset, "A implies B", "the fix is in the
+binary" versus "the binary has the fix's marker".
+
+> **Reread the argument order — or the subject of any check you did not design —
+> against the sentence you are about to write.** Not against the sentence you
+> meant, and not against the intent you were handed: against the words that will
+> ship.
+
+The corollary for reviewers: a check someone else wrote and you are citing is a
+check whose direction you have not verified. Cite it only after you have read what
+it asks, not what its name suggests it asks.
+
+**The sibling failure is a check that is necessary and not sufficient, reported as
+if it settled the claim** — a true result about content where the *wiring* is what
+matters. In the recovery procedure this rule came out of, a branch built on the
+wrong base carries a byte-identical tree, passes every content comparison, and is
+still not attached to `main`; the content checks were all true and none of them
+was the claim. Distinct from § *Necessary but not sufficient: constrain the fix,
+not just the symptom*, which is about a fix too narrow for the class — this one is
+about a *verification* too narrow for the sentence. `/git-recovery` carries the
+worked instance.
 
 ### New render-affecting state is a stale-cache bug by default
 

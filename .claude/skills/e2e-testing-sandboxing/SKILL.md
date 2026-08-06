@@ -1,6 +1,6 @@
 ---
 name: e2e-testing-sandboxing
-description: Set up and use the sandbox testing system for end-to-end validation of sprawl changes without affecting production state.
+description: Set up and use the sandbox testing system for end-to-end validation of sprawl changes without affecting production state. Read it before running any tmux command in sandbox or harness context — sandbox tmux lives on a dedicated socket and bare `tmux` reaches the wrong server.
 user-invocable: true
 argument-hint: "[setup|inspect|cleanup] or omit for full workflow"
 ---
@@ -14,6 +14,10 @@ Use this workflow to validate sprawl changes end-to-end in an isolated environme
 - **Do NOT run `rm -rf "$SPRAWL_ROOT"` (or any destructive command against `$SPRAWL_ROOT`) manually.** The setup script installs an EXIT trap and a `sprawl_sandbox_destroy` function — use those. If `$SPRAWL_ROOT` is stale or points somewhere unexpected, a manual `rm -rf` can nuke your real repo.
 - **Do NOT run `bash scripts/sprawl-test-env.sh` from inside a `.sprawl/worktrees/` path.** The script refuses, by design. `cd /tmp` first, then invoke it by absolute path.
 - **Do NOT nest this workflow with `/tui-testing` in the same shell session.** Their env vars collide and the cleanup traps can stomp each other. Use separate shells.
+- **Do NOT run bare `tmux kill-server`.** It kills the *developer's* tmux server and every other agent's session on the default socket. The ban is on the **unscoped** form: socket-scoped `tmux -L "$SPRAWL_TMUX_SOCKET" kill-server` is what `sprawl_sandbox_destroy` itself runs and is correct, because `-L` confines it to this sandbox's own daemon.
+- **Do NOT use bare `tmux` at all in a sandbox or in a harness script — use `_stmux`.** Sandbox tmux state lives on a dedicated socket (see Setup), so a bare `tmux` command talks to the wrong server: it will not find your session, and anything destructive it does lands on someone else's.
+
+Production `sprawl enter` sessions still share the **default** socket. That asymmetry is the whole reason the sandbox socket exists, and it is why a bare `tmux` in sandbox context is not merely wrong but dangerous.
 
 ## Setup
 
@@ -31,10 +35,12 @@ This exports the following environment variables into your shell:
 | `SPRAWL_ROOT` | Temporary test directory (acts as the project root). Always under `/tmp/`. |
 | `SPRAWL_TEST_MODE=1` | Injects sandbox warnings into agent prompts. |
 | `SPRAWL_NAMESPACE` | Isolated tmux namespace (format: `test-XXXXXXXX`). |
+| `SPRAWL_TMUX_SOCKET` | Dedicated tmux socket for this sandbox (format: `sprawl-sandbox-test-XXXXXXXX`), so sandbox tmux operations cannot reach the developer's default server — or any other agent's. |
 
 It also installs:
 
-- `sprawl_sandbox_destroy` — the sanctioned manual teardown. Kills the tmux session and removes `$SPRAWL_ROOT`, but only after reasserting the path is under `/tmp/`.
+- `_stmux` — the tmux wrapper you should use for **every** tmux call in sandbox context. It is `tmux ${SPRAWL_TMUX_SOCKET:+-L "$SPRAWL_TMUX_SOCKET"} "$@"` — note the fallback: with the variable unset it degrades to bare `tmux` **silently**. An unset socket is not safe, it is undetected, so check the variable is exported before trusting the wrapper. The e2e drivers get the same wrapper from `scripts/lib/e2e-common.sh`.
+- `sprawl_sandbox_destroy` — the sanctioned manual teardown. Kills this sandbox's tmux server on its own socket and removes `$SPRAWL_ROOT`, but only after reasserting the path is under `/tmp/`.
 - An `EXIT` trap on your shell that auto-cleans `$SPRAWL_ROOT` (same `/tmp/` guard) when the shell terminates. In the common case you don't need to clean up manually — just `exit`.
 
 ## Exercising Features
@@ -58,8 +64,10 @@ $SPRAWL_BIN messages send weave "Test message" "Hello"
 ## Inspecting State
 
 ```bash
-# tmux sessions for this sandbox
-tmux list-sessions | grep "$SPRAWL_NAMESPACE"
+# tmux sessions for this sandbox — _stmux, never bare tmux:
+# the sandbox lives on $SPRAWL_TMUX_SOCKET, so bare `tmux list-sessions`
+# queries the default server and finds nothing.
+_stmux list-sessions
 
 # Agent state, messages, memory
 ls "$SPRAWL_ROOT/.sprawl/"
@@ -82,7 +90,15 @@ Manual teardown from the same shell:
 sprawl_sandbox_destroy
 ```
 
-Do **not** hand-roll `rm -rf "$SPRAWL_ROOT"`. See the DO-NOT section above.
+To clear only the tmux session and keep `$SPRAWL_ROOT` for inspection, use the
+narrower sanctioned form — still socket-scoped:
+
+```bash
+_stmux kill-session -t "$SPRAWL_NAMESPACE"
+```
+
+Do **not** hand-roll `rm -rf "$SPRAWL_ROOT"`, and do **not** reach for
+`tmux kill-server` to clean up. See the DO-NOT section above.
 
 ## Gotchas
 
@@ -99,8 +115,8 @@ Reason: the legacy tmux notifier's namespace resolution falls open to hardcoded 
 Detached tmux sessions default to ~80-col width, which truncates the TUI badge/tree rendering (e.g. the `(N)` weave unread badge gets cut). When launching `sprawl enter` in a detached tmux session for e2e tests, pin window size:
 
 ```bash
-tmux new-session -d -s <name> -x 200 -y 50 <cmd>
-tmux resize-window -t <name>:0 -x 200 -y 50   # required even after -x/-y on some tmux versions
+_stmux new-session -d -s <name> -x 200 -y 50 <cmd>
+_stmux resize-window -t <name>:0 -x 200 -y 50   # required even after -x/-y on some tmux versions
 ```
 
 Discovered in QUM-312.
@@ -113,11 +129,11 @@ Discovered in QUM-310.
 
 ### 4. Respawn-window verification trick
 
-To verify env-var propagation onto a tmux session without launching the full child agent, use `tmux respawn-window` to start a shell in the session and run `env | grep SPRAWL_` directly:
+To verify env-var propagation onto a tmux session without launching the full child agent, use `respawn-window` to start a shell in the session and run `env | grep SPRAWL_` directly:
 
 ```bash
-tmux respawn-window -t <session>:0 -k 'bash -c "env | grep SPRAWL_; sleep 5"'
-tmux capture-pane -t <session>:0 -p
+_stmux respawn-window -t <session>:0 -k 'bash -c "env | grep SPRAWL_; sleep 5"'
+_stmux capture-pane -t <session>:0 -p
 ```
 
 Useful for QUM-309-class env-propagation tests.
@@ -172,8 +188,19 @@ Parent agents (e.g. weave) should periodically run
 `./sprawl sandbox-gc --max-age=2h` to catch anything that slipped past
 layers 1-4.
 
-See `docs/research/qum-458-e2e-leak-analysis.md` for the underlying root-cause
-analysis and design rationale.
+The root cause, stated here so this section does not depend on a document
+surviving: isolating sandbox tmux onto a dedicated socket was correct, but it
+*increased* the leak surface, because every sandbox now spawns its own daemonized
+tmux server. Before the socket split, leaked sessions on the default socket got
+swept whenever the developer ran `tmux kill-server`; now each leaked sandbox has a
+daemon nobody touches. Combined with a missing parent-death contract on `claude`,
+every `kill -9` of an agent mid-e2e leaked a sandbox deterministically. That is
+what the layers above exist for — and it is why the answer is `sprawl sandbox-gc`,
+never a bare `kill-server`.
+
+Longer analysis in `docs/research/qum-458-e2e-leak-analysis.md`. A docs
+restructure is in flight that moves this file into `docs/archive/`; if the path
+above no longer resolves, look there and expect an `(archived)` label.
 
 ## Why this matters
 
