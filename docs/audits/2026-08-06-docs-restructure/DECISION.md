@@ -19,7 +19,7 @@
 | | now | proposed | change |
 |---|---:|---:|---|
 | `CLAUDE.md` | 768 lines / 10,577 words | **~75 lines** | **−90%** |
-| `docs/` | 144 files / 39,778 lines | **24 files / 7,712 lines** kept, 55 archived, 65 deleted | **−69% of lines** |
+| `docs/` | 144 files / 39,778 lines | **26 kept, 53 archived, 65 deleted** (§3.5 — corrects `cipher`'s 24/55) | **−69% of lines** |
 | `.claude/skills/` | 7 skills / 3,262 lines | 7–9 skills, 3 rewritten against the current CLI | net roughly flat, **but 3 are actively wrong today** |
 
 **Answer requested: yes or no to the six decisions in §5.** Everything before that is the argument.
@@ -31,11 +31,11 @@
 Confirmed, quantitatively, on every surface:
 
 - **The e2e table is 49.6% of `CLAUDE.md`** — 10.8k tokens, 5,251 words. The brief's "3,013 words / 28%" counted the rows only and omitted the mandatory derivation preamble. **Half the file is one table**, paid by every agent on every turn, forever.
-- **Its precision is fake, as claimed.** Median production commit obligates **14 of 30 rows**; the mode is **18** (exactly `internal/tui/app.go`'s fan-out); **62% of commits obligate ≥10 rows.** For the files people actually change, the table's answer is already "run almost everything."
+- **Its precision is fake, as claimed.** Median production commit obligates **14 of 29 rows**; the mode is **18** (exactly `internal/tui/app.go`'s fan-out); **~61% of commits obligate ≥10 rows.** Independently re-derived under both glob semantics (§3.4). For the files people actually change, the table's answer is already "run almost everything."
 - **The rot is real, widespread, and has caused a live bug.** QUM-1111's false claim is still live at HEAD.
 - **`docs/` has the same disease at 100-file scale.** 22% of code-path references dangle (152 of 688 distinct refs; 86% of those are genuine deletions, not typos). Only **6% of `docs/research/` survives contact with the tree**, and on close reading only **3 of 100 files** are prose describing how the system works today.
 
-**The correction — and it changes what we should build.** The thesis says the file is bloated and its content is bad. The content is *good*. `scout` verified **315 of 399 symbol claims (79%) as accurate**, and found that **every single "verified absent — do not grep for this" list in the table was 100% correct**. `recon` found the prose uniformly well-argued. The table even **predicted its own failure mode in writing** and the failure happened anyway.
+**The correction — and it changes what we should build.** The thesis says the file is bloated and its content is bad. The content is **better than the thesis assumes, though the strongest version of that claim does not survive** (§3.4): **symbols mostly exist where the table names them — 315 of 399 (79%) — but existence is an upper bound on claim truth, not a measure of it.** What does hold unqualified is that **every "verified absent — do not grep for this" list was 100% correct**, `recon` found the prose uniformly well-argued, and the table **predicted its own failure mode in writing** while the failure happened anyway.
 
 So this is not an authorship failure and we should not fix it by writing more carefully. It is a **mechanism failure**: unexecuted prose asserting properties of live code. The corollary matters for Phase 3 — **the tacit knowledge in these files is the valuable part and most of it must survive the cut**, relocated rather than deleted.
 
@@ -54,7 +54,7 @@ Four consequences, in descending order of how much they should change our plans:
 
 1. **An existence-checking CI is structurally blind to this class.** Nothing is dead; sites were *added*. This materially weakens "just enforce the table with CI" and is why `scout`'s recommendation declares gates as **path patterns, never symbol rosters**.
 2. **Claims of absence are stable; claims of presence expire silently.** Every "this was deleted, do not grep for it" list was perfect, while presence-claims rotted. **Documentation may safely say what is gone. It may not say what is there.** This is the single most useful editorial rule to come out of the audit.
-3. **Distance from code predicts wrongness, perfectly.** In all **14** CLAUDE.md↔source duplications `recon` found, the CLAUDE.md copy is the stale one. No exceptions. `make validate` is described three times; two are wrong, in non-overlapping ways.
+3. ~~**Distance from code predicts wrongness, perfectly.**~~ **RETRACTED as stated — see §3.4.** The honest form: **among divergent duplications found, the CLAUDE.md copy was the stale side every time — in a staleness-selected sample, with a known inverse case adjacent.** (`help.go:46` has the Up/Down rule *backwards* while CLAUDE.md has it right.) What survives unqualified: `make validate` is described three times and two are wrong, in non-overlapping ways.
 4. **The heuristic outperforms careful reading.** `recon` ran the enumeration grep across 270 lines *they had just finished hand-auditing* and it found **three defects they had missed — a ~25% miss rate.** Structural greps beat diligence.
 
 **The strongest single datum in the audit** came from `prism`, unprompted: while writing the section documenting counted-census errors, they introduced one ("~18 citations"; it is 13), caught it only by checking their own claim, and left the correction visible. An expert actively warning about this class produced an instance of it inside the warning. **No amount of care fixes this. Only mechanism does.**
@@ -140,6 +140,35 @@ A QA agent (`sentry`) was commissioned to falsify every absence-claim in these s
 
 **The largest remaining risk, stated plainly: the headline numbers have had no adversarial review.** `sentry`'s remit was absence-claims, which §2 identifies as the *stable* half. **22% dangling, 315/399, 14/14, median-14-of-30 — the figures driving D1, D2 and D4 — are presence-claims and nobody has attacked them.** `sentry` would start with the fan-out number, since it is computed by glob-matching against a table whose glob rows CLAUDE.md itself says are matched inconsistently, making the denominator method-dependent. **Treat those figures as indicative, not settled, until that pass is done.** They are directionally corroborated by mechanical measurements from independent surfaces, which is why I still recommend proceeding — but a reader should know which numbers have been attacked and which have not.
 
+### 3.4 The headline numbers, adversarially re-derived: no decision changes, two retractions
+
+A second QA agent (`audit`) independently re-derived the four numbers driving D1/D2/D4, choosing its own matching rules rather than re-running anyone's method. **No decision flips.** Two claims must be restated.
+
+| # | claim | verdict |
+|---|---|---|
+| 1 | median **14 of 30** rows / mode 18 / 62%≥10 | **SURVIVES robustly** — but the denominator is **29**, not 30 |
+| 2 | **22%** of `docs/` code-path refs dangle | **SURVIVES** — independently 21.8% (153/701); never-existed = 21 exactly |
+| 3 | **315/399 (79%)** symbol claims verify | survives as an **existence** measure, **overstated as a truth measure** |
+| 4 | **14/14** duplications, CLAUDE.md always stale | **DOES NOT SURVIVE AS STATED** |
+
+**#1 is now confirmed rather than merely unchallenged, and the null result is itself informative.** A fully independent backtick-aware parser handling all three known hazards produced median 14, mode 18 (×58), 61%≥10. `sentry`'s method-dependence suspicion gets a **measured null**: the two glob semantics genuinely classify real files differently (`hub/store`, `sprawlmcp/calllog`, `supervisor/liveness` all flip) yet the aggregate does not move, because obligations are dominated by literal hot-file matches. Positive control that the pipeline *can* move: dropping table-mandated re-runs shifts median→10, mode→0. **D2 stands under every variant.**
+**Correction: 29 e2e rows, not 30.** Two reconciling counts — 30 body lines = 29 e2e + 1 race-gate; and 29 + 5 orphans = exactly 34 driver scripts. "30 matched against scripts" is arithmetically impossible (30+5=35≠34). **Quote it as "14 of 29."** Note this mislabel propagated from `scout` into my brief to `audit` and would have propagated into the final report — a relay error surviving three hands.
+
+**#2 confirmed, and the corollary that sequences D3 after D4 holds**: the KEEP-set dangling rate re-derives to **4.1%**. Not concentration-driven (top-5 files are only 27% of dangling), so the cut buys a real reduction rather than removing a few pathological files.
+
+**#3 — the correction cuts *for* the thesis, which is why nobody had checked it.** It was the exculpatory number. The counterexample: QUM-931 (`e5b0c72`) deleted `interruptPending`, the `frameTurnOpen` field, `autoTurn.open`, and clear-paths the esc-interrupt row still describes in detail — yet none appears in the dead-as-live count, **because a grep finds each of them in the comment describing its own deletion.** Existence-checking cannot distinguish a live symbol from an epitaph.
+
+**#4 is the worst discrepancy of the pass and the claim was mine to check.** Three defects: the "14" is not reconstructible from `recon`'s own document (its §3 map has 16 rows, and the count folds in 9 `DESCRIPTION.md` items that are not CLAUDE.md↔source duplications at all); the set is **staleness-selected**, so "all of them are stale" is circular — `recon`'s own §2a lists duplications that *hold*, excluded from the denominator by construction; and there is a **verified inverse case**, `help.go:46`, where the product code is wrong and CLAUDE.md is right.
+
+### 3.5 Three more corrections, and a note on measuring one's own document
+
+- **`cipher`'s headline 24/55 contradicts its own Appendix B.** The authoritative split is **26 KEEP / 53 ARCHIVE / 65 DELETE**, derived mechanically by `flux` and independently by `pulse`, summing to 144 exactly. **This is the most compressed instance of the enumeration failure in the whole audit**: prose rotting relative to its own appendix, inside one document, written in one sitting, with zero elapsed time for anything to go stale. `cipher`'s §5 destination table separately omits two KEEP files.
+- **`.agents/` is a stub layer, not a stale fork.** All six counterparts are 13-line pointers to the `.claude/` canonical file — the single-source-of-truth pattern — so `cmd/skills_sync_test.go` asserting *existence* is the correct contract, not a false green. **The real residue: two `.agents/skills/` entries have real content and no `.claude/` counterpart** (`issue-execution-rigor`, `commit-message-hygiene`), and neither was in this audit's surface. `issue-execution-rigor` is loaded **by path** from `AGENTS.md`, so it escapes both directory enumeration and invocation greps. **D5's surface must include path-loaded instruction files explicitly.**
+- **D3's value is larger than the docs cut.** Tree-wide, **46 of 187 distinct line-cited paths in tracked markdown no longer exist (25%)** — independently corroborating #2 by a different method and extraction. Dangling citations appear in `CLAUDE.md` and four skills, which **survive** D4, so the checker earns its keep after the purge. `byte`'s constraint from building the analogous guard: the fixes are **not uniform** — dead-path-live-pattern is mechanical, dead-concept is not — and a checker landing red on a mixed set invites a suppression list, "which is how these guards become decorative."
+- **A measurement of one's own document is contaminated by it.** This file cites `turnloop.go` as deleted-but-widely-cited. Counting that citation: **14** including this document, **13** excluding it, **12** by `audit`'s independent count. The *observation* is robust; the integer is not. Cite it as "still cited by a dozen-odd documents," and note that the file describing the problem became an instance in its own tally.
+
+**A fifth verification failure mode, distinct from the others** (`byte`): a sub-agent returned diff *line counts* — 1946, 458, 323 — which read as overwhelming evidence of divergence. But **a large diff against a 13-line stub is maximal by construction**: it is the whole target file. The metric was **anti-correlated with the property** — the better the stub pattern worked, the more "drift" it displayed. Rule: **a summary statistic from a sub-agent is not evidence you have examined the thing, and when it conflicts with something you read first-hand, the first-hand reading wins.**
+
 Two more, already routed: the **merge engine un-commits an agent's work when the squash commit's pre-commit hook fails, with no rescue ref** (I hit it twice today on a markdown-only merge; `vault` confirms it is the second production firing and that fixes are landed-but-not-installed), and **`merge(no_validate:true)` does not reach the pre-commit hook** (QUM-1101; being deleted by QUM-1087's no-squash restructure).
 
 ## 4. The honest counter-arguments
@@ -163,7 +192,7 @@ Three things survive the audit, and one common-sense remedy is wrong.
 
 **D3 — Build exactly one referential-integrity checker.** Four researchers independently proposed variants; they must converge or we will have three half-checks. Two rules: **(i)** every path referenced in tracked markdown exists; **(ii)** no `file.go:NNN` line citations in tracked markdown. This alone would have caught `turnloop.go`×13, `cmd/retire.go`, `internal/shlint`, and `query`'s bad `retire.go:82` cite. **Precondition:** D4, because at a 22% dangling rate the check cannot be turned on.
 
-**D4 — `docs/`: keep 24, archive 55 to a one-way `docs/archive/`, delete 65.** Drops the dangling rate 22% → 4%, which is what makes D3 enforceable. Merge `docs/design/` into `docs/designs/` (verified an accident, not a taxonomy — `design/` has only ever contained `hub/`). Add a `docs/README.md` index; today only **3 of 144 docs** are reachable from any always-read file.
+**D4 — `docs/`: keep 26, archive 53 to a one-way `docs/archive/`, delete 65** (§3.5; `cipher`'s 24/55 prose contradicts its own appendix — derive from Appendix B). Drops the dangling rate **21.8% → 4.1%**, independently re-derived, which is what makes D3 enforceable. Merge `docs/design/` into `docs/designs/` (verified an accident, not a taxonomy — `design/` has only ever contained `hub/`). Add a `docs/README.md` index; today only **3 of 144 docs** are reachable from any always-read file.
 **~~Do not archive P3 first~~ — P3 is withdrawn (§3.2); do not re-file it.** `cipher`'s `docs-directory.md` still asserts that CRITICAL in two places with *"Promote to Linear before archiving"* — **strike those before anyone acts on that document.** The genuine pre-archive obligations are QUM-1134/1136/1137/1138, filed from `pulse`'s triage sweep.
 
 **D5 — Fix the skills layer before consolidating it.** Three of seven are built on a CLI that no longer exists; `linear-issues` instructs agents to call `send_async`/`send_interrupt`/`message`, which **the test suite asserts are absent**, and never mentions `send_message`. That is silently broken inter-agent comms — the highest blast radius in the layer, and it should be fixed independent of this restructure. `handoff` is the template: short, procedural, zero dead claims.
