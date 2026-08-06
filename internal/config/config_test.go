@@ -4,6 +4,7 @@ import (
 	"os"
 	"path/filepath"
 	"testing"
+	"time"
 )
 
 func TestLoad_FileNotExist_ReturnsEmptyConfig(t *testing.T) {
@@ -162,7 +163,11 @@ func TestGet_MissingKey(t *testing.T) {
 	}
 }
 
-func TestSet_NewKey(t *testing.T) {
+// QUM-1086 CONTRACT CHANGE: Set no longer accepts an arbitrary key. It used to
+// persist anything, which is how a misspelled `worktree_setup` could leave an
+// operator believing the commit guards were installed. It now returns an error
+// and stores nothing.
+func TestSet_UnknownKeyIsRejected(t *testing.T) {
 	tmpDir := t.TempDir()
 
 	cfg, err := Load(tmpDir)
@@ -170,14 +175,13 @@ func TestSet_NewKey(t *testing.T) {
 		t.Fatalf("unexpected error: %v", err)
 	}
 
-	cfg.Set("foo", "bar")
+	if err := cfg.Set("foo", "bar"); err == nil {
+		t.Fatal("Set on an unrecognized key must return an error")
+	}
 
 	val, ok := cfg.Get("foo")
-	if !ok {
-		t.Error("Get(\"foo\") should return ok=true after Set")
-	}
-	if val != "bar" {
-		t.Errorf("Get(\"foo\") = %q, want %q", val, "bar")
+	if ok || val != "" {
+		t.Errorf("Get(\"foo\") = (%q, %v) after a rejected Set, want (\"\", false)", val, ok)
 	}
 }
 
@@ -189,7 +193,9 @@ func TestSet_ValidateKey(t *testing.T) {
 		t.Fatalf("unexpected error: %v", err)
 	}
 
-	cfg.Set("validate", "npm test")
+	if err := cfg.Set("validate", "npm test"); err != nil {
+		t.Fatalf("Set: %v", err)
+	}
 
 	val, ok := cfg.Get("validate")
 	if !ok {
@@ -211,15 +217,20 @@ func TestSet_OverwriteKey(t *testing.T) {
 		t.Fatalf("unexpected error: %v", err)
 	}
 
-	cfg.Set("foo", "first")
-	cfg.Set("foo", "second")
+	// A recognized key: `foo` is no longer accepted (see
+	// TestSet_UnknownKeyIsRejected).
+	for _, v := range []string{"first", "second"} {
+		if err := cfg.Set("memory_model", v); err != nil {
+			t.Fatalf("Set(memory_model, %q): %v", v, err)
+		}
+	}
 
-	val, ok := cfg.Get("foo")
+	val, ok := cfg.Get("memory_model")
 	if !ok {
-		t.Error("Get(\"foo\") should return ok=true")
+		t.Error("Get(\"memory_model\") should return ok=true")
 	}
 	if val != "second" {
-		t.Errorf("Get(\"foo\") = %q, want %q (second Set should win)", val, "second")
+		t.Errorf("Get(\"memory_model\") = %q, want %q (second Set should win)", val, "second")
 	}
 }
 
@@ -232,7 +243,9 @@ func TestSave_CreatesDirectory(t *testing.T) {
 		t.Fatalf("unexpected error: %v", err)
 	}
 
-	cfg.Set("foo", "bar")
+	if err := cfg.Set("validate", "bar"); err != nil {
+		t.Fatalf("Set: %v", err)
+	}
 
 	if err := cfg.Save(); err != nil {
 		t.Fatalf("Save() error: %v", err)
@@ -255,8 +268,14 @@ func TestSave_RoundTrip(t *testing.T) {
 		t.Fatalf("unexpected error loading: %v", err)
 	}
 
-	cfg.Set("validate", "make test")
-	cfg.Set("custom-key", "custom-value")
+	// `custom-key` is gone: QUM-1086 removed arbitrary keys. worktree.setup is
+	// the key that actually matters on this path — it was map-only before, and
+	// Save marshalling only the map is what made `config set` a data-loss path.
+	for _, kv := range [][2]string{{"validate", "make test"}, {"worktree.setup", "echo hi"}} {
+		if err := cfg.Set(kv[0], kv[1]); err != nil {
+			t.Fatalf("Set(%q): %v", kv[0], err)
+		}
+	}
 
 	if err := cfg.Save(); err != nil {
 		t.Fatalf("Save() error: %v", err)
@@ -273,22 +292,30 @@ func TestSave_RoundTrip(t *testing.T) {
 		t.Errorf("round-trip Get(\"validate\") = (%q, %v), want (\"make test\", true)", val, ok)
 	}
 
-	val2, ok2 := cfg2.Get("custom-key")
-	if !ok2 || val2 != "custom-value" {
-		t.Errorf("round-trip Get(\"custom-key\") = (%q, %v), want (\"custom-value\", true)", val2, ok2)
+	val2, ok2 := cfg2.Get("worktree.setup")
+	if !ok2 || val2 != "echo hi" {
+		t.Errorf("round-trip Get(\"worktree.setup\") = (%q, %v), want (\"echo hi\", true)", val2, ok2)
 	}
 }
 
-// QUM-722: PauseTimeoutSeconds carries the default 30s pause-escalation
-// budget for the `pause` MCP tool.
-func TestConfig_PauseTimeoutSecondsDefault30(t *testing.T) {
+// QUM-722: the pause MCP tool gets a 30s default escalation budget.
+//
+// QUM-1086 CONTRACT CHANGE: Load no longer PREFILLS that default into the
+// struct field. Defaults now live only in the accessor, because Save marshals
+// the struct — a prefilled field would be written back to the user's file on the
+// next `sprawl config set`, freezing today's default as if they had chosen it.
+// The observable contract is therefore: field zero, accessor 30s.
+func TestConfig_PauseTimeoutDefaultLivesInTheAccessor(t *testing.T) {
 	tmpDir := t.TempDir()
 	cfg, err := Load(tmpDir)
 	if err != nil {
 		t.Fatalf("Load: %v", err)
 	}
-	if cfg.PauseTimeoutSeconds != 30 {
-		t.Errorf("PauseTimeoutSeconds default = %d, want 30", cfg.PauseTimeoutSeconds)
+	if cfg.PauseTimeoutSeconds != 0 {
+		t.Errorf("PauseTimeoutSeconds = %d, want 0: Load must not prefill defaults", cfg.PauseTimeoutSeconds)
+	}
+	if got := cfg.PauseTimeout(); got != 30*time.Second {
+		t.Errorf("PauseTimeout() = %v, want 30s (the accessor applies the default)", got)
 	}
 }
 
@@ -308,6 +335,9 @@ func TestConfig_PauseTimeoutSecondsOverride(t *testing.T) {
 	}
 }
 
+// QUM-1086 CONTRACT CHANGE: arbitrary keys (zebra/apple/mango) are gone, so
+// this now exercises sorting over real keys. Keys() reports only keys that are
+// SET; the full list is KnownKeys().
 func TestKeys_ReturnsSorted(t *testing.T) {
 	tmpDir := t.TempDir()
 
@@ -316,21 +346,21 @@ func TestKeys_ReturnsSorted(t *testing.T) {
 		t.Fatalf("unexpected error: %v", err)
 	}
 
-	cfg.Set("zebra", "z")
-	cfg.Set("apple", "a")
-	cfg.Set("mango", "m")
+	// Set in deliberately non-sorted order.
+	for _, kv := range [][2]string{{"worktree.setup", "w"}, {"hub_url", "h"}, {"memory_model", "m"}} {
+		if err := cfg.Set(kv[0], kv[1]); err != nil {
+			t.Fatalf("Set(%q): %v", kv[0], err)
+		}
+	}
 
 	keys := cfg.Keys()
-	if len(keys) != 3 {
-		t.Fatalf("Keys() returned %d keys, want 3", len(keys))
+	want := []string{"hub_url", "memory_model", "worktree.setup"}
+	if len(keys) != len(want) {
+		t.Fatalf("Keys() = %v, want %v", keys, want)
 	}
-	if keys[0] != "apple" {
-		t.Errorf("keys[0] = %q, want \"apple\"", keys[0])
-	}
-	if keys[1] != "mango" {
-		t.Errorf("keys[1] = %q, want \"mango\"", keys[1])
-	}
-	if keys[2] != "zebra" {
-		t.Errorf("keys[2] = %q, want \"zebra\"", keys[2])
+	for i := range want {
+		if keys[i] != want[i] {
+			t.Errorf("keys[%d] = %q, want %q", i, keys[i], want[i])
+		}
 	}
 }

@@ -103,13 +103,20 @@ func run(ctx context.Context, args []string, getenv func(string) string, w io.Wr
 
 	logger := newLogger(w, getenv)
 
-	// Config file is the lowest-precedence hub-url source; best-effort only —
-	// hubd runs fine without a .sprawl/config.yaml.
+	// Config file is the lowest-precedence hub-url source. A MISSING
+	// .sprawl/config.yaml is still fine (config.Load returns a zero-value
+	// config, no error) — hubd runs happily without one. But a config that
+	// exists and cannot be parsed is FATAL (QUM-1086): hubd is a separate
+	// process with no upstream config check, so swallowing the error here would
+	// silently produce a hubd serving with no uplink, which is a wrong-but-quiet
+	// operating mode rather than a failure.
 	var configHubURL string
 	if root := getenv("SPRAWL_ROOT"); root != "" {
-		if cfg, err := config.Load(root); err == nil {
-			configHubURL = cfg.HubURL
+		cfg, err := config.Load(root)
+		if err != nil {
+			return fmt.Errorf("loading %s/.sprawl/config.yaml: %w", root, err)
 		}
+		configHubURL = cfg.HubURL
 	}
 
 	// hubd is the server: no user-level client config applies, so the user

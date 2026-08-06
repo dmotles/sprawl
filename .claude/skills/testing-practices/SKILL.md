@@ -1638,6 +1638,42 @@ is not evidence*, one level up. If you are handed a premise, verify it before yo
 carve it into a comment, because the comment is where the next reader will find
 it and stop looking.
 
+### A capture taken at a geometry no user has cannot see the class (QUM-1086)
+
+Terminal-rendered output is only correct **at a size**. An evidence capture of
+it that does not state its geometry is not reproducible and, worse, may be
+structurally blind to the defect it was taken to rule out.
+
+QUM-1086's config error printed the offending keys first and the recognized-key
+reference table second. The issue's own evidence capture was taken at
+**200x50**, where the whole message fits, and was green. QA re-captured with
+tmux `capture-pane` at **80x24** — the common floor — and the table alone wraps
+to 26 rows, so cobra's usage block *and* the entire actionable half had scrolled
+off. What survived was the list of *valid* keys with no indication which of the
+user's was wrong: the deliverable half-defeated, in code that had just passed
+review at the larger size.
+
+The rule, and its two corollaries:
+
+* **State the geometry in the capture.** `capture-pane` at 80x24, named as such.
+  A capture that does not say is evidence about an unknown configuration.
+* **Verify at the floor, not at your terminal.** Your terminal is not the
+  environment under test; picking the size that fits is the same move as picking
+  the fixture that passes.
+* **Reason at the physical-row level, not the logical-line level.** 15 logical
+  lines was 26 physical rows here. An assertion counting `\n` is measuring a
+  different quantity than the one that determines what the user sees — see
+  **Mutate along the axis your assertion constrains**.
+
+This is the same shape as a green e2e-matrix run against the wrong rows
+(CLAUDE.md's gate-derivation rule): the run is genuinely green, the command was
+genuinely correct, and it answers a question adjacent to the one being claimed.
+Note also that a first attempt at pinning this in `internal/config/errors_test.go`
+measured the budget *relative to the table* rather than from the end of the
+message, which made it green both pre- and post-fix — inert while looking like
+the physical-row check. The assertion has to be anchored to the thing that
+actually scrolls.
+
 ### The honest limit
 
 Those instances are spread **near-evenly across four strata — committed harness

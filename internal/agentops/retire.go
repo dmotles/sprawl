@@ -230,13 +230,26 @@ func runTeardownScript(deps *RetireDeps, sprawlRoot string, agentState *state.Ag
 		return
 	}
 
+	// A config we cannot read means teardown is SKIPPED. The severity stays
+	// best-effort (this function's doc comment says so, and a teardown script
+	// FAILURE only warns below) because aborting a retire over a config typo
+	// would strand the agent in `retiring`, which the lifecycle contract treats
+	// as terminal-ish. What QUM-1086 fixes is the SILENCE: this was a bare
+	// `return` that emitted nothing at all.
+	//
+	// The stderr warning is the load-bearing half — deps.Checkpoint is nil
+	// whenever there is no call-log logger (Real.composeCheckpoint returns nil),
+	// so a checkpoint alone would be invisible in most real runs.
 	cfg, err := deps.LoadConfig(sprawlRoot)
 	if err != nil {
+		fmt.Fprintf(os.Stderr, "Warning: could not load .sprawl/config.yaml (%v)\n"+
+			"  — skipping worktree.teardown for %s\n", err, agentState.Name)
+		cpRetire(deps, "retire.teardown-config-error", "agent", agentState.Name, "err", err.Error())
 		return
 	}
 
-	teardownScript, ok := cfg.Get("worktree.teardown")
-	if !ok || teardownScript == "" {
+	teardownScript := cfg.WorktreeTeardown
+	if teardownScript == "" {
 		return
 	}
 

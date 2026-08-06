@@ -2,6 +2,7 @@ package rootinit
 
 import (
 	"context"
+	"fmt"
 	"io"
 	"os"
 	"os/exec"
@@ -133,13 +134,28 @@ func gitCurrentBranch(repoRoot string) (string, error) {
 // `memory_model` override if present. Returns "" on any error so callers
 // fall back to Deps.MemoryModel (which is DefaultMemoryModel unless set).
 func defaultLoadMemoryModel(sprawlRoot string) string {
-	cfg, err := config.Load(sprawlRoot)
+	return loadMemoryModelFrom(config.Load, os.Stderr, sprawlRoot)
+}
+
+// loadMemoryModelFrom is defaultLoadMemoryModel with its config loader and
+// warning writer injected, so the error path is testable.
+//
+// A config that fails to load WARNS and falls back to the default model
+// (QUM-1086) rather than failing: killing post-session consolidation over a
+// config typo loses the session summary, which costs more than using the default
+// model. Silence was the defect, not the severity.
+//
+// Note this path is unreachable in the normal flow now that runEnter loads the
+// config authoritatively before anything else — the only way to reach it is a
+// config edited mid-session. That is exactly why a warning is proportionate
+// here, where a hard error is proportionate in cmd/hubd (a separate process with
+// no upstream check at all).
+func loadMemoryModelFrom(load func(string) (*config.Config, error), warn io.Writer, sprawlRoot string) string {
+	cfg, err := load(sprawlRoot)
 	if err != nil {
+		fmt.Fprintf(warn, "[rootinit] warning: could not load .sprawl/config.yaml (%v)\n"+
+			"  — using the default memory model\n", err)
 		return ""
 	}
-	v, ok := cfg.Get("memory_model")
-	if !ok {
-		return ""
-	}
-	return v
+	return cfg.MemoryModel
 }

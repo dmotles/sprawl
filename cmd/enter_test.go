@@ -14,6 +14,7 @@ import (
 	"time"
 
 	tea "charm.land/bubbletea/v2"
+	"github.com/dmotles/sprawl/internal/config"
 	"github.com/dmotles/sprawl/internal/rootinit"
 	"github.com/dmotles/sprawl/internal/sprawlmcp"
 	"github.com/dmotles/sprawl/internal/sprawlmcp/calllog"
@@ -579,8 +580,10 @@ func TestEnter_CleanShutdown_StopsRuntimeBackedAgentsViaShutdown(t *testing.T) {
 		runProgram: func(tea.Model, func(func(tea.Msg))) error {
 			return nil
 		},
-		newSession:    nil,
-		newSupervisor: func(_ string, _ *calllog.Logger) (supervisor.Supervisor, *sprawlmcp.Server) { return mockSup, nil },
+		newSession: nil,
+		newSupervisor: func(_ string, _ *calllog.Logger, _ *config.Config) (supervisor.Supervisor, *sprawlmcp.Server) {
+			return mockSup, nil
+		},
 	}
 
 	err := runEnter(deps)
@@ -988,8 +991,10 @@ func TestEnter_SharedSupervisor_ThreadedEndToEnd(t *testing.T) {
 		runProgram: func(tea.Model, func(func(tea.Msg))) error {
 			return nil
 		},
-		newSession:    factory.newSession,
-		newSupervisor: func(_ string, _ *calllog.Logger) (supervisor.Supervisor, *sprawlmcp.Server) { return sentinelSup, nil },
+		newSession: factory.newSession,
+		newSupervisor: func(_ string, _ *calllog.Logger, _ *config.Config) (supervisor.Supervisor, *sprawlmcp.Server) {
+			return sentinelSup, nil
+		},
 	}
 
 	if err := runEnter(deps); err != nil {
@@ -1072,7 +1077,7 @@ func TestDefaultEnterDeps_SupervisorCallerIsWeave(t *testing.T) {
 		t.Fatal("newSupervisor is nil")
 	}
 	tmpDir := t.TempDir()
-	sup, _ := deps.newSupervisor(tmpDir, nil)
+	sup, _ := deps.newSupervisor(tmpDir, nil, nil)
 	if sup == nil {
 		t.Fatal("newSupervisor returned nil")
 	}
@@ -1188,10 +1193,12 @@ func TestEnter_RegistersWeaveInRuntimeRegistry(t *testing.T) {
 			}
 			return ""
 		},
-		getwd:         func() (string, error) { return tmpDir, nil },
-		runProgram:    func(tea.Model, func(func(tea.Msg))) error { return nil },
-		newSession:    registeringNewSession,
-		newSupervisor: func(_ string, _ *calllog.Logger) (supervisor.Supervisor, *sprawlmcp.Server) { return mockSup, nil },
+		getwd:      func() (string, error) { return tmpDir, nil },
+		runProgram: func(tea.Model, func(func(tea.Msg))) error { return nil },
+		newSession: registeringNewSession,
+		newSupervisor: func(_ string, _ *calllog.Logger, _ *config.Config) (supervisor.Supervisor, *sprawlmcp.Server) {
+			return mockSup, nil
+		},
 	}
 
 	if err := runEnter(deps); err != nil {
@@ -1227,10 +1234,12 @@ func TestRunEnter_CallsRecoverAgentsWhenFlagFalse(t *testing.T) {
 			}
 			return ""
 		},
-		runProgram:    func(tea.Model, func(func(tea.Msg))) error { return nil },
-		newSession:    nil,
-		newSupervisor: func(_ string, _ *calllog.Logger) (supervisor.Supervisor, *sprawlmcp.Server) { return mockSup, nil },
-		noResume:      false,
+		runProgram: func(tea.Model, func(func(tea.Msg))) error { return nil },
+		newSession: nil,
+		newSupervisor: func(_ string, _ *calllog.Logger, _ *config.Config) (supervisor.Supervisor, *sprawlmcp.Server) {
+			return mockSup, nil
+		},
+		noResume: false,
 	}
 
 	if err := runEnter(deps); err != nil {
@@ -1258,10 +1267,12 @@ func TestRunEnter_NoResumeFlagSkipsRecoverAgents(t *testing.T) {
 			}
 			return ""
 		},
-		runProgram:    func(tea.Model, func(func(tea.Msg))) error { return nil },
-		newSession:    nil,
-		newSupervisor: func(_ string, _ *calllog.Logger) (supervisor.Supervisor, *sprawlmcp.Server) { return mockSup, nil },
-		noResume:      true,
+		runProgram: func(tea.Model, func(func(tea.Msg))) error { return nil },
+		newSession: nil,
+		newSupervisor: func(_ string, _ *calllog.Logger, _ *config.Config) (supervisor.Supervisor, *sprawlmcp.Server) {
+			return mockSup, nil
+		},
+		noResume: true,
 	}
 
 	if err := runEnter(deps); err != nil {
@@ -1323,9 +1334,11 @@ func captureMsgsViaOnStart(t *testing.T, tmpDir string, mockSup supervisor.Super
 			// synchronous-no-dispatch; return immediately.
 			return nil
 		},
-		newSession:    nil,
-		newSupervisor: func(_ string, _ *calllog.Logger) (supervisor.Supervisor, *sprawlmcp.Server) { return mockSup, nil },
-		noResume:      noResume,
+		newSession: nil,
+		newSupervisor: func(_ string, _ *calllog.Logger, _ *config.Config) (supervisor.Supervisor, *sprawlmcp.Server) {
+			return mockSup, nil
+		},
+		noResume: noResume,
 	}
 
 	if err := runEnter(deps); err != nil {

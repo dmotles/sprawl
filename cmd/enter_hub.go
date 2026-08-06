@@ -38,9 +38,20 @@ const hubTailIdentity = "weave"
 // runs fully offline), and any token/dial/auth failure is logged (endpoint
 // host-only, token never) and swallowed. It must never return an error to the
 // caller — the TUI starts regardless.
-func defaultHubDialOut(getenv func(string) string, logW io.Writer, sprawlRoot string) {
+//
+// cfg is the project config, ALREADY LOADED AND VALIDATED by runEnter. QUM-1086
+// removed a config.Load here whose `err == nil` guard could only hide a failure
+// the caller had already handled; since this function may not return an error,
+// eliminating the load was the only disposition that does not reintroduce a
+// silent arm. nil is accepted and means "no project config" (test doubles).
+//
+// Note the USER config load below is deliberately NOT threaded in the same way:
+// internal/config/user.go is out of scope for QUM-1086 (audited, no
+// dual-representation defect), so this function is not "fully injected" — only
+// its project-config half is.
+func defaultHubDialOut(getenv func(string) string, logW io.Writer, sprawlRoot string, cfg *config.Config) {
 	var projectURL, tokenFile string
-	if cfg, err := config.Load(sprawlRoot); err == nil && cfg != nil {
+	if cfg != nil {
 		projectURL = cfg.HubURL
 		tokenFile = cfg.HubTokenFile
 	}

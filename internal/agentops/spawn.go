@@ -209,10 +209,21 @@ func prepareSpawn(deps *SpawnDeps, family, agentType, prompt, branch string, sub
 		}
 
 		// Run worktree setup script if configured
+		// A config we cannot read is FATAL here, not a warning (QUM-1086).
+		// worktree.setup is what installs the QUM-808 pre-commit guard and the
+		// QUM-837 reference-transaction guard, so continuing would hand out an
+		// agent worktree with no main-protection controls and say so only in a
+		// stderr line that `sprawl enter` has redirected into a log file.
+		// The severity matches the setup-script FAILURE path below, which
+		// already aborts and removes the worktree.
 		cfg, cfgErr := deps.LoadConfig(sprawlRoot)
 		if cfgErr != nil {
-			fmt.Fprintf(os.Stderr, "Warning: could not load config: %v\n", cfgErr)
-		} else if setupScript, ok := cfg.Get("worktree.setup"); ok && setupScript != "" {
+			_ = deps.WorktreeRemove(sprawlRoot, worktreePath, true)
+			return nil, fmt.Errorf("loading .sprawl/config.yaml for %s's worktree setup: %w\n"+
+				"worktree.setup installs the QUM-808 pre-commit and QUM-837 reference-transaction "+
+				"commit guards; refusing to spawn an agent without them", agentName, cfgErr)
+		}
+		if setupScript := cfg.WorktreeSetup; setupScript != "" {
 			setupEnv := map[string]string{
 				"SPRAWL_AGENT_IDENTITY": agentName,
 				"SPRAWL_ROOT":           sprawlRoot,

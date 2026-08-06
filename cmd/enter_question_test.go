@@ -8,6 +8,7 @@ import (
 
 	tea "charm.land/bubbletea/v2"
 
+	"github.com/dmotles/sprawl/internal/config"
 	"github.com/dmotles/sprawl/internal/sprawlmcp"
 	"github.com/dmotles/sprawl/internal/sprawlmcp/calllog"
 	"github.com/dmotles/sprawl/internal/supervisor"
@@ -49,8 +50,10 @@ func TestEnter_RegistersAndUnregistersQuestionConsumer(t *testing.T) {
 			}
 			return nil
 		},
-		newSession:    nil,
-		newSupervisor: func(_ string, _ *calllog.Logger) (supervisor.Supervisor, *sprawlmcp.Server) { return mockSup, nil },
+		newSession: nil,
+		newSupervisor: func(_ string, _ *calllog.Logger, _ *config.Config) (supervisor.Supervisor, *sprawlmcp.Server) {
+			return mockSup, nil
+		},
 	}
 
 	if err := runEnter(deps); err != nil {
@@ -114,8 +117,10 @@ func TestEnter_QuestionsForwarder_SendsMsgOnSignal(t *testing.T) {
 			<-doneCh
 			return nil
 		},
-		newSession:    nil,
-		newSupervisor: func(_ string, _ *calllog.Logger) (supervisor.Supervisor, *sprawlmcp.Server) { return mockSup, nil },
+		newSession: nil,
+		newSupervisor: func(_ string, _ *calllog.Logger, _ *config.Config) (supervisor.Supervisor, *sprawlmcp.Server) {
+			return mockSup, nil
+		},
 	}
 
 	runErr := make(chan error, 1)
@@ -205,8 +210,10 @@ func TestEnter_QuestionsForwarder_TerminatesOnHandoffDone(t *testing.T) {
 			// Return immediately so cmd/enter.go closes handoffDone.
 			return nil
 		},
-		newSession:    nil,
-		newSupervisor: func(_ string, _ *calllog.Logger) (supervisor.Supervisor, *sprawlmcp.Server) { return mockSup, nil },
+		newSession: nil,
+		newSupervisor: func(_ string, _ *calllog.Logger, _ *config.Config) (supervisor.Supervisor, *sprawlmcp.Server) {
+			return mockSup, nil
+		},
 	}
 
 	if err := runEnter(deps); err != nil {

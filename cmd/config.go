@@ -30,13 +30,13 @@ func resolveConfigDeps() *configDeps {
 var configCmd = &cobra.Command{
 	Use:   "config",
 	Short: "Manage project configuration",
+	// The key reference is GENERATED from the Config struct (QUM-1086), not
+	// hand-maintained — the list that used to live here documented 3 of the 9
+	// keys. Embedding config.Reference() verbatim means the same text a user sees
+	// after breaking the file is reachable before they break it.
 	Long: `Manage project-level configuration stored in .sprawl/config.yaml.
 
-Known keys:
-  validate            Shell command to run for post-merge validation (e.g. "make validate", "npm test")
-  worktree.setup      Bash script to run in each new agent worktree before the agent starts (e.g. "npm install")
-  worktree.teardown   Bash script to run in each agent worktree before removal on retire
-
+` + config.Reference() + `
 Examples:
   sprawl config set validate "make test"
   sprawl config set worktree.setup "npm install"
@@ -116,7 +116,9 @@ func runConfigSet(deps *configDeps, key, value string) error {
 		return err
 	}
 
-	cfg.Set(key, value)
+	if err := cfg.Set(key, value); err != nil {
+		return err
+	}
 
 	if err := cfg.Save(); err != nil {
 		return err
@@ -137,11 +139,30 @@ func runConfigGet(deps *configDeps, key string) error {
 		return err
 	}
 
-	val, ok := cfg.Get(key)
-	if ok {
-		fmt.Fprintln(deps.stdout, val)
+	if !isKnownKey(key) {
+		// Printing nothing and exiting 0 (the previous behaviour) reads as "the
+		// key is set to empty".
+		//
+		// Built rather than hand-formatted so this path inherits the ordering the
+		// error type documents as load-bearing — the offending key last, nearest
+		// the prompt, or it scrolls off at 80x24 behind the reference table. It
+		// also picks up the did-you-mean, which the hand-rolled message lacked.
+		// FromSet because the wrong thing is the ARGUMENT, not the file.
+		return &config.UnknownKeysError{FromSet: true, Problems: []config.KeyProblem{{Key: key}}}
 	}
+	val, _ := cfg.Get(key)
+	fmt.Fprintln(deps.stdout, val)
 	return nil
+}
+
+// isKnownKey reports whether key is a recognized config key.
+func isKnownKey(key string) bool {
+	for _, k := range config.KnownKeys() {
+		if k == key {
+			return true
+		}
+	}
+	return false
 }
 
 // resolveConfigSetValue resolves the key and value for config set.

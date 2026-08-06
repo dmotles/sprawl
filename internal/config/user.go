@@ -33,6 +33,14 @@ func userConfigPath(userConfigDir func() (string, error)) (string, error) {
 
 // LoadUserConfig reads the user-level config. A missing file yields a
 // zero-value UserConfig and no error (nothing configured yet).
+//
+// QUM-1086 audit: this file was checked and does NOT share the
+// dual-representation defect that motivated that issue — UserConfig is a single
+// typed struct with a single yaml.Unmarshal and no parallel side map. It is
+// therefore deliberately out of scope, with no follow-up filed. Note the
+// consequence: unlike the project config, an unrecognized key HERE is still
+// silently ignored. That is a smaller hazard (the user config holds no
+// main-protection guards, only hub endpoint/token) but it is not "covered".
 func LoadUserConfig(userConfigDir func() (string, error)) (UserConfig, error) {
 	var cfg UserConfig
 	path, err := userConfigPath(userConfigDir)

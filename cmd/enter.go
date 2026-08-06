@@ -80,7 +80,7 @@ type enterDeps struct {
 	// MCP tool and the TUI HandoffRequested() listener observe the same
 	// channel. QUM-329.
 	newSession      func(sprawlRoot string, sup supervisor.Supervisor, forceFresh bool, onResumeFailure func()) (tui.SessionBackend, bool, error)
-	newSupervisor   func(sprawlRoot string, logger *calllog.Logger) (supervisor.Supervisor, *sprawlmcp.Server)
+	newSupervisor   func(sprawlRoot string, logger *calllog.Logger, cfg *config.Config) (supervisor.Supervisor, *sprawlmcp.Server)
 	finalizeHandoff func(ctx context.Context, sprawlRoot string, stdout io.Writer, events chan<- rootinit.ConsolidationEvent) error
 	// noResume, when true, skips the QUM-372 child-agent auto-resume scan.
 	// Set via the `--no-resume` flag on the enter cobra command. Useful when
@@ -115,7 +115,7 @@ type enterDeps struct {
 	// register this host with the hub. It MUST be non-fatal and non-blocking:
 	// a missing hub config is a clean no-op (sprawl stays fully offline), and
 	// any dial/auth failure is logged and swallowed. QUM-877.
-	hubDialOut func(sprawlRoot string)
+	hubDialOut func(sprawlRoot string, cfg *config.Config)
 }
 
 // resolveAccentColor returns the persisted accent color, seeding a randomly-
@@ -281,13 +281,13 @@ func resolveEnterDeps() *enterDeps {
 		getenv:     os.Getenv,
 		getwd:      os.Getwd,
 		pickAccent: runtimecfg.PickAccentColor,
-		hubDialOut: func(sprawlRoot string) { defaultHubDialOut(os.Getenv, os.Stderr, sprawlRoot) },
+		hubDialOut: func(sprawlRoot string, cfg *config.Config) { defaultHubDialOut(os.Getenv, os.Stderr, sprawlRoot, cfg) },
 		finalizeHandoff: func(ctx context.Context, sprawlRoot string, stdout io.Writer, events chan<- rootinit.ConsolidationEvent) error {
 			deps := rootinit.DefaultDeps()
 			deps.LogPrefix = "[enter]"
 			return rootinit.FinalizeHandoff(ctx, deps, sprawlRoot, stdout, events)
 		},
-		newSupervisor: func(sprawlRoot string, logger *calllog.Logger) (supervisor.Supervisor, *sprawlmcp.Server) {
+		newSupervisor: func(sprawlRoot string, logger *calllog.Logger, cfg *config.Config) (supervisor.Supervisor, *sprawlmcp.Server) {
 			// CallerName is what gets stamped into Parent when this
 			// supervisor's Spawn() creates a child (cmd/enter.go's supervisor
 			// now serves the MCP spawn tool since QUM-329 unified it).
@@ -319,9 +319,10 @@ func resolveEnterDeps() *enterDeps {
 			mcpServer := sprawlmcp.New(sup).WithCallLog(logger)
 			// QUM-722: surface project config so toolPause's default
 			// timeout honors `pause_timeout_seconds` from .sprawl/config.yaml.
-			if cfg, cErr := config.Load(sprawlRoot); cErr == nil && cfg != nil {
-				mcpServer.WithConfig(cfg)
-			}
+			// QUM-1086: cfg comes from runEnter's single authoritative Load —
+			// re-loading here would swallow a parse error in the TUI launch path,
+			// which is exactly where a broken config costs you the main guards.
+			mcpServer.WithConfig(cfg)
 			childBridge := host.NewMCPBridge()
 			childBridge.Register("sprawl", mcpServer)
 			sup.SetChildMCPConfig(
@@ -631,13 +632,34 @@ func runEnter(deps *enterDeps) error {
 		fmt.Fprintf(os.Stderr, "SPRAWL_ROOT not set — defaulting to %s\n", sprawlRoot)
 	}
 
+	// QUM-1086: the SINGLE authoritative project-config load. Everything
+	// downstream takes this *Config rather than re-loading, and a parse error is
+	// fatal HERE, for three reasons:
+	//
+	//   - It is returned, not printed, so cobra surfaces it on the real terminal.
+	//     This point is ~450 lines before the TUI's stderr redirect and before
+	//     deps.runProgram, so the multi-line key reference cannot end up in
+	//     .sprawl/logs/tui-stderr-*.log where nobody reads it.
+	//   - It is BEFORE AcquireWeaveLock, so a user-fixable typo never takes a
+	//     process-wide lock.
+	//   - `.sprawl/config.yaml` carries worktree.setup, which installs the
+	//     QUM-808 and QUM-837 commit guards into every new agent worktree.
+	//     Launching a session against a config we could not read is what silently
+	//     disabled them (QUM-1078).
+	//
+	// A missing config file is NOT an error — Load returns a zero-value config.
+	cfg, err := config.Load(sprawlRoot)
+	if err != nil {
+		return err
+	}
+
 	// Single-weave invariant: acquire the flock before any init work, and
 	// hold it for the lifetime of the sprawl enter process (including
 	// across TUI-driven session restarts). Released on return.
-	lock, err := rootinit.AcquireWeaveLock(sprawlRoot)
-	if err != nil {
-		printWeaveLockError(os.Stderr, err, sprawlRoot)
-		return err
+	lock, lockErr := rootinit.AcquireWeaveLock(sprawlRoot)
+	if lockErr != nil {
+		printWeaveLockError(os.Stderr, lockErr, sprawlRoot)
+		return lockErr
 	}
 	defer func() { _ = lock.Release() }()
 
@@ -692,7 +714,7 @@ func runEnter(deps *enterDeps) error {
 	// a goroutine so a slow/unreachable hub can never block or fail startup.
 	// A no-op when no hub is configured (the common offline path).
 	if deps.hubDialOut != nil {
-		go deps.hubDialOut(sprawlRoot)
+		go deps.hubDialOut(sprawlRoot, cfg)
 	}
 
 	pickAccent := deps.pickAccent
@@ -742,7 +764,7 @@ func runEnter(deps *enterDeps) error {
 	var sup supervisor.Supervisor
 	var mcpServer *sprawlmcp.Server
 	if deps.newSupervisor != nil {
-		sup, mcpServer = deps.newSupervisor(sprawlRoot, callLogger)
+		sup, mcpServer = deps.newSupervisor(sprawlRoot, callLogger, cfg)
 	}
 
 	// QUM-372: walk persisted child agents and resume any that were in a
@@ -787,10 +809,9 @@ func runEnter(deps *enterDeps) error {
 	}
 	model := tui.NewAppModel(accentColor, repoName, buildVersion, bridge, sup, sprawlRoot, restartFunc)
 	// QUM-588: read .sprawl/config.yaml's validate_popup_after_seconds and
-	// install on the AppModel. Failure to load is non-fatal — defaults apply.
-	if cfg, cErr := config.Load(sprawlRoot); cErr == nil && cfg != nil {
-		model.SetValidatePopupAfter(cfg.ValidatePopupAfter())
-	}
+	// install on the AppModel. QUM-1086: cfg is runEnter's authoritative config,
+	// non-nil by construction here; the accessor applies the default.
+	model.SetValidatePopupAfter(cfg.ValidatePopupAfter())
 
 	// QUM-728: wire the incident-snapshot producer used by Ctrl+\.
 	if sup != nil {

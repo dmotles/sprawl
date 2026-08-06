@@ -16,7 +16,7 @@ import (
 func TestDefaultHubDialOut_OfflineNoOp(t *testing.T) {
 	t.Setenv("XDG_CONFIG_HOME", t.TempDir()) // isolate from the dev's real user config
 	var buf bytes.Buffer
-	defaultHubDialOut(func(string) string { return "" }, &buf, t.TempDir())
+	defaultHubDialOut(func(string) string { return "" }, &buf, t.TempDir(), nil)
 	if buf.Len() != 0 {
 		t.Fatalf("offline path should be silent, got: %q", buf.String())
 	}
@@ -34,7 +34,7 @@ func TestDefaultHubDialOut_URLButNoTokenSkips(t *testing.T) {
 		}
 		return ""
 	}
-	defaultHubDialOut(getenv, &buf, t.TempDir())
+	defaultHubDialOut(getenv, &buf, t.TempDir(), nil)
 	out := buf.String()
 	if !strings.Contains(out, "no token") {
 		t.Fatalf("expected a no-token skip message, got: %q", out)
@@ -65,7 +65,7 @@ func TestDefaultHubDialOut_BadTokenFileModeSkips(t *testing.T) {
 	// possible (env is the token VALUE, not a path), so exercise the file path
 	// through a written config.
 	writeHubConfig(t, root, "localhost:8080", "tok")
-	defaultHubDialOut(getenv, &buf, root)
+	defaultHubDialOut(getenv, &buf, root, mustLoadConfig(t, root))
 	if !strings.Contains(buf.String(), "0600") {
 		t.Fatalf("expected a 0600 mode rejection, got: %q", buf.String())
 	}
@@ -82,7 +82,7 @@ func TestDefaultHubDialOut_UserConfigURLWiredIn(t *testing.T) {
 		t.Fatal(err)
 	}
 	var buf bytes.Buffer
-	defaultHubDialOut(func(string) string { return "" }, &buf, t.TempDir())
+	defaultHubDialOut(func(string) string { return "" }, &buf, t.TempDir(), nil)
 	if !strings.Contains(buf.String(), "no token") {
 		t.Fatalf("expected user-config URL to reach the no-token skip path, got: %q", buf.String())
 	}
@@ -110,4 +110,17 @@ func writeHubConfig(t *testing.T, root, hubURL, tokenFile string) {
 	if err := os.WriteFile(filepath.Join(dir, "config.yaml"), []byte(content), 0o644); err != nil {
 		t.Fatal(err)
 	}
+}
+
+// mustLoadConfig loads the project config for a root, failing the test on error.
+// QUM-1086: defaultHubDialOut takes an already-validated *Config from its
+// caller instead of loading one itself, so these tests do the load explicitly —
+// which keeps them exercising the real parser rather than a hand-built struct.
+func mustLoadConfig(t *testing.T, root string) *config.Config {
+	t.Helper()
+	cfg, err := config.Load(root)
+	if err != nil {
+		t.Fatalf("config.Load(%s): %v", root, err)
+	}
+	return cfg
 }

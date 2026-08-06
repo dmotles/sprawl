@@ -73,7 +73,7 @@ func TestNewSession_ReusesSupervisorMCPBridge(t *testing.T) {
 	}
 
 	tmpDir := t.TempDir()
-	sup, _ := deps.newSupervisor(tmpDir, nil)
+	sup, _ := deps.newSupervisor(tmpDir, nil, nil)
 	if sup == nil {
 		t.Fatal("newSupervisor returned nil")
 	}
@@ -123,7 +123,7 @@ func TestSupervisorMCPBridge_ProductionUsesAccessor(t *testing.T) {
 	}
 
 	tmpDir := t.TempDir()
-	sup, _ := deps.newSupervisor(tmpDir, nil)
+	sup, _ := deps.newSupervisor(tmpDir, nil, nil)
 	if sup == nil {
 		t.Fatal("newSupervisor returned nil")
 	}
@@ -168,7 +168,7 @@ func TestNewSupervisor_BridgeStableAfterChildMCPConfigChurn(t *testing.T) {
 	}
 
 	tmpDir := t.TempDir()
-	sup, _ := deps.newSupervisor(tmpDir, nil)
+	sup, _ := deps.newSupervisor(tmpDir, nil, nil)
 	if sup == nil {
 		t.Fatal("newSupervisor returned nil")
 	}

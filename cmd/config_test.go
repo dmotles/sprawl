@@ -57,8 +57,9 @@ func TestConfigSet_WritesValue(t *testing.T) {
 func TestConfigSet_CreatesSprawlDir(t *testing.T) {
 	deps, tmpDir := newTestConfigDeps(t)
 
-	// Do NOT create .sprawl/ dir — runConfigSet should handle it
-	err := runConfigSet(deps, "foo", "bar")
+	// Do NOT create .sprawl/ dir — runConfigSet should handle it.
+	// QUM-1086: `foo` is no longer an accepted key, so this uses a real one.
+	err := runConfigSet(deps, "validate", "make test")
 	if err != nil {
 		t.Fatalf("runConfigSet error: %v", err)
 	}
@@ -89,23 +90,44 @@ func TestConfigGet_ExistingKey(t *testing.T) {
 	}
 }
 
-func TestConfigGet_MissingKey(t *testing.T) {
-	deps, tmpDir := newTestConfigDeps(t)
+// QUM-1086 CONTRACT CHANGE: `config get` distinguishes "recognized but unset"
+// from "not a key at all". It used to print nothing and exit 0 for both, so a
+// typo looked exactly like an empty value — a silent success on the one command
+// a user runs to check whether a key took effect. Unset still prints an empty
+// line and exits 0; an unrecognized key is now an error carrying the reference.
+func TestConfigGet_UnsetVsUnrecognizedKey(t *testing.T) {
+	t.Run("recognized but unset prints nothing and succeeds", func(t *testing.T) {
+		deps, tmpDir := newTestConfigDeps(t)
+		configDir := filepath.Join(tmpDir, ".sprawl")
+		os.MkdirAll(configDir, 0o755)
+		os.WriteFile(filepath.Join(configDir, "config.yaml"), []byte(""), 0o644)
 
-	// Create empty config
-	configDir := filepath.Join(tmpDir, ".sprawl")
-	os.MkdirAll(configDir, 0o755)
-	os.WriteFile(filepath.Join(configDir, "config.yaml"), []byte(""), 0o644)
+		if err := runConfigGet(deps, "hub_url"); err != nil {
+			t.Fatalf("runConfigGet on a recognized-but-unset key must succeed: %v", err)
+		}
+		stdout := deps.stdout.(*bytes.Buffer).String()
+		if strings.TrimSpace(stdout) != "" {
+			t.Errorf("stdout should be empty for an unset key, got: %q", stdout)
+		}
+	})
 
-	err := runConfigGet(deps, "nonexistent")
-	if err != nil {
-		t.Fatalf("runConfigGet error: %v", err)
-	}
+	t.Run("unrecognized key errors with the reference", func(t *testing.T) {
+		deps, tmpDir := newTestConfigDeps(t)
+		configDir := filepath.Join(tmpDir, ".sprawl")
+		os.MkdirAll(configDir, 0o755)
+		os.WriteFile(filepath.Join(configDir, "config.yaml"), []byte(""), 0o644)
 
-	stdout := deps.stdout.(*bytes.Buffer).String()
-	if stdout != "" {
-		t.Errorf("stdout should be empty for missing key, got: %q", stdout)
-	}
+		err := runConfigGet(deps, "nonexistent")
+		if err == nil {
+			t.Fatal("runConfigGet on an unrecognized key must fail, not print nothing and exit 0")
+		}
+		if !strings.Contains(err.Error(), "nonexistent") {
+			t.Errorf("error must name the key; got: %v", err)
+		}
+		if deps.stdout.(*bytes.Buffer).Len() != 0 {
+			t.Errorf("nothing may be printed to stdout for an unrecognized key")
+		}
+	})
 }
 
 func TestConfigShow_DumpsConfig(t *testing.T) {
