@@ -632,9 +632,15 @@ Dead claims worth calling out:
   `cmd/messages_test.go`), `Retire`'s signature wrong (it gained a `ctx` and now returns
   `([]string, error)`), and three identifiers vaporised (`messagesDeps`, `defaultRetireDeps`,
   `defaultMessagesDeps` — zero hits tree-wide). **CLAUDE.md line 552 points readers here.**
-- **`internal/shlint` is absent from the working tree *and from all git history*** (`git log
-  --all -- internal/shlint` → empty). A ~50-line evidence subsection rests on it. See §6.2 for
-  why this one matters beyond the skill.
+- **No `internal/shlint` path has ever existed** — not in the working tree, and not at any commit
+  (`git log --all -- internal/shlint` → empty). A ~50-line evidence subsection rests on it. See
+  §6.2 for why this one matters beyond the skill.
+
+  Scope that claim precisely, because a looser probe contradicts it: the *string* `shlint` does
+  appear in the tree (`.claude/skills/testing-practices/SKILL.md:163`), and `git log --all
+  -S'shlint'` returns 5 commits. Neither touches a path under `internal/shlint`. What is
+  established is the **path**, which is what the citation asserts and what a reader would try to
+  open; it is not established that the name was never discussed. (Credit: `sentry`.)
 - Its two opening `go test -run` examples name tests that do not exist
   (`TestRetire_HappyPathDeletesState`, `TestMessagesSend_HappyPath`).
 - Counts have drifted exactly as its own § *Which tree is your claim about?* warns: "75 tracked
