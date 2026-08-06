@@ -93,6 +93,50 @@ the block-boundary case are covered by table cases in `TestScanSkillDoc`;
 `TestToolNameDeclRE` pins that the ban-list oracle keys on a tool *declaration*
 rather than on a mention inside another tool's description prose.
 
+### Review round (second commit)
+
+An independent review of the first commit found four real defects, all in the
+guard rather than the prose. All are fixed, each with a control that was
+observed failing:
+
+| defect | fix | control observed |
+|---|---|---|
+| **High.** `liveReportStatusProps` delimited report_status's schema by scanning forward to the next `"required"` *anywhere in the file*. Remove report_status's own `"required"` and the match ran into the following tool, silently admitting `agent` / `no_validate` as valid arguments — the exact silent-wrong-set failure the guard exists to prevent. | Delimit by brace balance over report_status's own literal, then scope the property scan to the inside of its `"properties"` sub-block. | Differential: with `"required"` deleted from tools.go, the new extraction returns `{state, summary}` (pass) while the old one FAILs with `contains "agent"` / `contains "no_validate"`. |
+| **High.** The leak control asserted the extracted set lacked `to`/`body` — `send_message`'s properties, declared *earlier* in the file. Since the scan only ever ran forward, that assertion could not fail under any mutation. | Assert against the forward neighbour (`agent`, `no_validate`) as well as the container key `properties`. | Same differential as above — the control now fires. |
+| **Medium.** Braces inside string literals broke the skill-side block walk in both directions: `summary: "{x"` ran it to EOF and misattributed later prose; `state: "a}b"` closed it a line early and **missed** a real bad argument. | Strip quoted strings before counting braces; bound the walk and report an unterminated block loudly instead of scanning to EOF. | Removing the strip FAILs both new table cases; removing the bound FAILs the unterminated-block case with a misattributed `detail:` at line 51. |
+| **Medium.** `schemaPropertyRE` also matched the container key, so `properties` itself counted as a valid report_status argument. | Take only depth-1 keys inside the properties sub-block. | Covered by the leak control's `properties` entry. |
+| **Low.** `message(` matched English prose ("the commit `message(s)` must be clear"). | Require a backtick, since skills write tool names in backticks. | Reverting to the loose form FAILs the new prose table case. |
+| **Low.** The table test passed the production ban list rather than a fixture. | Local fixture. | n/a — hygiene. |
+
+The reviewer independently re-derived the e2e-matrix row set for this file set
+and confirmed zero rows are owed. It also flagged that the first commit
+message justified the test's location partly by which validation gate it would
+avoid; the honest reason is that it reuses `cmd/skills_sync_test.go`'s helpers
+and is not a test of `internal/sprawlmcp` behaviour, and that is what should
+have led.
+
+### Repo-wide check: is any agent anywhere still told to call a dead tool?
+
+The property is not "does `send_async` appear in `.claude/skills/`" — it is
+"does any shipped instruction reach an agent naming a tool that does not
+exist." Agent prompts are Go string constants in `internal/agent/`, compiled
+into the binary, and invisible to a markdown grep.
+
+Probe: `git grep -n -E 'send_async|send_interrupt'` over the whole tracked
+tree, and again scoped to `internal/agent/**`.
+
+Result: **zero** hits under `internal/agent/`. Positive control, same probe
+and same path scope against a live tool name, finds 42 `send_message`
+references across `prompt_mode.go`, `prompt_child_sections.go`,
+`wake_prompts.go` and the golden files — so the probe demonstrably reaches the
+compiled prompt text.
+
+Tree-wide, the remaining hits are all either regression tests that name the
+strings *in order to ban them* (`internal/sprawlmcp/tool_description_sync_test.go`,
+`server_sendmessage_test.go`, and this new guard), explanatory comments, or
+historical records under `docs/` and `CHANGELOG.md` that correctly narrate the
+removal. None instructs an agent to call anything.
+
 ## What I found and deliberately left alone
 
 Swept the other six `.claude/skills/` for the same defect class — dead MCP
