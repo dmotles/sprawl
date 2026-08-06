@@ -39,6 +39,9 @@ type adapterMockSession struct {
 	interruptErr   error
 	cancelResults  map[string]bool
 	cancelCalls    []string
+	// cancelErrs maps a uuid to an error CancelAsyncMessage returns for it,
+	// simulating a partial-cancel wire failure (QUM-1112).
+	cancelErrs map[string]error
 }
 
 func (m *adapterMockSession) WriteUserMessage(_ context.Context, msg protocol.UserMessage) error {
@@ -57,7 +60,11 @@ func (m *adapterMockSession) CancelAsyncMessage(_ context.Context, uuid string) 
 	m.mu.Lock()
 	m.cancelCalls = append(m.cancelCalls, uuid)
 	res := m.cancelResults[uuid]
+	err := m.cancelErrs[uuid]
 	m.mu.Unlock()
+	if err != nil {
+		return false, err
+	}
 	return res, nil
 }
 
@@ -1418,4 +1425,37 @@ func expandAdapterBatch(t *testing.T, msg tea.Msg) []tea.Msg {
 		}
 	}
 	return out
+}
+
+// TestTUIAdapter_SendAllNow_PartialFailure_CarriesPreservedText is the QUM-1112
+// WIRING proof: the runtime can hand the already-cancelled text back and the TUI
+// can restore it, and the feature is still broken if the adapter in between
+// drops it. Driven through a real UnifiedRuntime so the failure is end-to-end.
+func TestTUIAdapter_SendAllNow_PartialFailure_CarriesPreservedText(t *testing.T) {
+	mock := &adapterMockSession{cancelResults: map[string]bool{}, cancelErrs: map[string]error{}}
+	rt, a := buildAdapter(t, mock)
+
+	first, err := rt.WriteUserPrompt(context.Background(), "first draft", "next")
+	if err != nil {
+		t.Fatalf("WriteUserPrompt: %v", err)
+	}
+	second, err := rt.WriteUserPrompt(context.Background(), "second draft", "next")
+	if err != nil {
+		t.Fatalf("WriteUserPrompt: %v", err)
+	}
+	mock.mu.Lock()
+	mock.cancelResults[first] = true
+	mock.cancelErrs[second] = errors.New("cancel wire failure")
+	mock.mu.Unlock()
+
+	res, ok := runCmd(t, a.SendAllNow()).(tui.SendAllNowResultMsg)
+	if !ok {
+		t.Fatalf("SendAllNow() did not return a tui.SendAllNowResultMsg")
+	}
+	if res.Err == nil {
+		t.Fatalf("SendAllNowResultMsg.Err = nil, want the injected cancel failure")
+	}
+	if res.PreservedText != "first draft" {
+		t.Errorf("SendAllNowResultMsg.PreservedText = %q, want %q — the adapter dropped the runtime's handback, so the cancelled text is unreachable (QUM-1112)", res.PreservedText, "first draft")
+	}
 }

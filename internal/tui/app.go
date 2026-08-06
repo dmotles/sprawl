@@ -1347,8 +1347,26 @@ func (m AppModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			if m.turnState == TurnThinking {
 				m.setTurnState(TurnIdle)
 			}
+			// QUM-1112: the flush cancelled these prompts before failing, so their
+			// bubbles are already dropped and they are no longer recallable — the
+			// input is the only surface left. Prepend rather than SetValue: text
+			// typed during the in-flight flush must survive too (the preserved
+			// text was submitted first, so it goes first).
+			toastText := fmt.Sprintf("send-all-now failed: %v", msg.Err)
+			if msg.PreservedText != "" {
+				if cur := m.input.Value(); cur != "" {
+					m.input.SetValue(msg.PreservedText + "\n" + cur)
+				} else {
+					m.input.SetValue(msg.PreservedText)
+				}
+				// The recovery claim goes BEFORE the error: toasts render on one
+				// line and are truncated to the pane width (no wrap), and %v is
+				// unbounded, so a long error would eat the only actionable part of
+				// the message.
+				toastText = fmt.Sprintf("send-all-now failed, your text was restored to the input: %v", msg.Err)
+			}
 			return m, m.toasts.Spawn(Toast{
-				Text:      fmt.Sprintf("send-all-now failed: %v", msg.Err),
+				Text:      toastText,
 				Style:     ToastError,
 				DismissOn: TimerDismiss(4 * time.Second),
 			})

@@ -1278,7 +1278,7 @@ func TestSendAllNow_NowWriteAtTurnBoundary_SurfacesInterrupt(t *testing.T) {
 
 	writePendingUser(t, rt, mock, "send me now", "next")
 	openTurnBoundary(t, rt)
-	if err := rt.SendAllNow(context.Background()); err != nil {
+	if _, err := rt.SendAllNow(context.Background()); err != nil {
 		t.Fatalf("SendAllNow: %v", err)
 	}
 	rt.routeFrame(resultFrame(t, true, 42), backend.TurnInfo{Autonomous: true, EndOfTurn: true})
@@ -1365,7 +1365,7 @@ func TestSendAllNow_NowWritePreemptMidTurn_SurfacesInterruptNotError(t *testing.
 
 	// Ctrl+G send-all-now: cancels the pending prompt and writes one now-priority
 	// message that preempts the in-flight turn.
-	if err := rt.SendAllNow(context.Background()); err != nil {
+	if _, err := rt.SendAllNow(context.Background()); err != nil {
 		t.Fatalf("SendAllNow: %v", err)
 	}
 
@@ -1439,7 +1439,7 @@ func TestSendAllNow_NowWriteArm_DoesNotLeakToNextTurn(t *testing.T) {
 	// Turn 1: preempted by send-all-now.
 	writePendingUser(t, rt, mock, "send me now", "next")
 	openTurn(t, rt)
-	if err := rt.SendAllNow(context.Background()); err != nil {
+	if _, err := rt.SendAllNow(context.Background()); err != nil {
 		t.Fatalf("SendAllNow: %v", err)
 	}
 	rt.routeFrame(resultFrame(t, true, 5), backend.TurnInfo{Autonomous: true, EndOfTurn: true})

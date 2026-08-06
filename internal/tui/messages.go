@@ -692,6 +692,11 @@ type PromptsRecalledMsg struct {
 // SendAllNowResultMsg reports the outcome of a send-all-now flush (QUM-824).
 type SendAllNowResultMsg struct {
 	Err error
+	// PreservedText is text that was cancelled out of the runtime's pending set
+	// but never made it onto the wire, handed back for the TUI to restore into
+	// the input (QUM-1112). Non-empty only when Err != nil — on the success path
+	// the text is on the wire and restoring it would duplicate the submission.
+	PreservedText string
 }
 
 // SessionInitializedMsg signals that the Claude session is ready.

@@ -2,6 +2,7 @@ package runtime
 
 import (
 	"context"
+	"errors"
 	"sort"
 	"strings"
 	"testing"
@@ -175,7 +176,7 @@ func TestSendAllNow_SingleNowWrite_SupersedesPending(t *testing.T) {
 	b := writePendingUser(t, rt, mock, "B", "next")
 	c := writePendingUser(t, rt, mock, "C", "next")
 
-	if err := rt.SendAllNow(context.Background()); err != nil {
+	if _, err := rt.SendAllNow(context.Background()); err != nil {
 		t.Fatalf("SendAllNow: %v", err)
 	}
 
@@ -243,7 +244,7 @@ func TestSendAllNow_PublishesUserMessageSentForNowWrite(t *testing.T) {
 	a := writePendingUser(t, rt, mock, "AAA", "next")
 	b := writePendingUser(t, rt, mock, "BBB", "next")
 
-	if err := rt.SendAllNow(context.Background()); err != nil {
+	if _, err := rt.SendAllNow(context.Background()); err != nil {
 		t.Fatalf("SendAllNow: %v", err)
 	}
 
@@ -294,7 +295,7 @@ func TestSendAllNow_NothingPending_NoSentEvent(t *testing.T) {
 	ch, unsub := rt.EventBus().SubscribeNamed("sendnow-noop-test", 16)
 	defer unsub()
 
-	if err := rt.SendAllNow(context.Background()); err != nil {
+	if _, err := rt.SendAllNow(context.Background()); err != nil {
 		t.Fatalf("SendAllNow: %v", err)
 	}
 
@@ -313,7 +314,7 @@ func TestSendAllNow_NothingPending_NoOp(t *testing.T) {
 	rt := New(RuntimeConfig{Name: "weave", Session: mock})
 
 	before := mock.writeCount()
-	if err := rt.SendAllNow(context.Background()); err != nil {
+	if _, err := rt.SendAllNow(context.Background()); err != nil {
 		t.Fatalf("SendAllNow: %v", err)
 	}
 	if mock.writeCount() != before {
@@ -336,7 +337,7 @@ func TestSendAllNow_OnlyCancelledTextConcatenated(t *testing.T) {
 	mock.cancelResults[b] = false // already executing — excluded from resubmit
 	c := writePendingUser(t, rt, mock, "C", "next")
 
-	if err := rt.SendAllNow(context.Background()); err != nil {
+	if _, err := rt.SendAllNow(context.Background()); err != nil {
 		t.Fatalf("SendAllNow: %v", err)
 	}
 
@@ -382,7 +383,7 @@ func TestSendAllNow_IgnoresSystemKind(t *testing.T) {
 	mock.mu.Unlock()
 	userUUID := writePendingUser(t, rt, mock, "typed", "next")
 
-	if err := rt.SendAllNow(context.Background()); err != nil {
+	if _, err := rt.SendAllNow(context.Background()); err != nil {
 		t.Fatalf("SendAllNow: %v", err)
 	}
 
@@ -430,7 +431,7 @@ func TestSendAllNow_SystemFrame_StaysNextPriority(t *testing.T) {
 	mock.mu.Unlock()
 	writePendingUser(t, rt, mock, "typed", "next")
 
-	if err := rt.SendAllNow(context.Background()); err != nil {
+	if _, err := rt.SendAllNow(context.Background()); err != nil {
 		t.Fatalf("SendAllNow: %v", err)
 	}
 
@@ -450,5 +451,343 @@ func TestSendAllNow_SystemFrame_StaysNextPriority(t *testing.T) {
 	}
 	if seen != 1 {
 		t.Errorf("writes carrying the system frame = %d, want exactly 1 (never re-written at `now`)", seen)
+	}
+}
+
+// --- QUM-1112: SendAllNow must never destroy already-cancelled text ---
+
+// textSet is a set of prompt texts, used to answer the QUM-1112 reachability
+// question structurally rather than by string-containment.
+type textSet map[string]bool
+
+func (s textSet) has(text string) bool { return s[text] }
+
+func (s textSet) keys() []string {
+	out := make([]string, 0, len(s))
+	for k := range s {
+		out = append(out, k)
+	}
+	sort.Strings(out)
+	return out
+}
+
+// splitJoined explodes a newline-joined blob back into the individual prompt
+// texts SendAllNow coalesced. "" means nothing was handed back (NOT one empty
+// prompt). This is why every fixture prompt below must be single-line — see the
+// guard in reachability.
+func splitJoined(joined string) []string {
+	if joined == "" {
+		return nil
+	}
+	return strings.Split(joined, "\n")
+}
+
+// reachability partitions the typed prompt texts into the three places one may
+// legitimately live after a SendAllNow: handed back to the caller (→ restored
+// to the TUI input), still pending in the outstanding set (→ reachable via
+// Ctrl+U), or written to the CLI stdin (→ on the wire). This is the QUM-1112
+// invariant made checkable: a text in NONE of the three has been destroyed.
+// Each set is built structurally (returned value / entry state / write trace),
+// never by grepping a struct that happens to still hold it.
+//
+// The sets are sets of LINES, so a multi-line fixture prompt would read as two
+// texts and quietly invalidate the instrument; `fixtures` is the full set of
+// typed texts and is guarded for that.
+func reachability(t *testing.T, rt *UnifiedRuntime, mock *mockUnifiedSession, recovered string, wireFrom int, fixtures []string) (handedBack, stillPending, onWire textSet) {
+	t.Helper()
+	for _, f := range fixtures {
+		if strings.Contains(f, "\n") {
+			t.Fatalf("fixture prompt %q contains a newline; reachability partitions by line and cannot attribute it", f)
+		}
+	}
+	handedBack, stillPending, onWire = textSet{}, textSet{}, textSet{}
+	for _, s := range splitJoined(recovered) {
+		handedBack[s] = true
+	}
+	for _, e := range rt.Outstanding() {
+		if e.kind == kindUser && e.state == statePending {
+			stillPending[e.text] = true
+		}
+	}
+	trace := mock.writeTrace()
+	if wireFrom > len(trace) {
+		t.Fatalf("wireFrom=%d exceeds write trace length %d", wireFrom, len(trace))
+	}
+	for _, w := range trace[wireFrom:] {
+		for _, s := range splitJoined(w.Message.Content) {
+			onWire[s] = true
+		}
+	}
+	return handedBack, stillPending, onWire
+}
+
+// assertHandbackWireDisjoint pins the stronger half of the QUM-1112 contract:
+// the invariant says text must be reachable in AT LEAST ONE of the three
+// places, but text in BOTH the handback and the wire is a distinct defect —
+// the caller restores a prompt the model already received, and the user
+// re-sends it. Cheaper to see than the loss it replaces, and quieter.
+func assertHandbackWireDisjoint(t *testing.T, handedBack, onWire textSet) {
+	t.Helper()
+	for text := range handedBack {
+		if onWire.has(text) {
+			t.Errorf("text %q is BOTH handed back (%v) and on the wire (%v) — restoring it to the input duplicates a prompt the model already received (QUM-1112)", text, handedBack.keys(), onWire.keys())
+		}
+	}
+}
+
+// countEvents tallies published RuntimeEvents of one type, by UUID.
+func countEvents(events []RuntimeEvent, typ RuntimeEventType) map[string]int {
+	out := map[string]int{}
+	for _, ev := range events {
+		if ev.Type == typ {
+			out[ev.UUID]++
+		}
+	}
+	return out
+}
+
+// TestSendAllNow_PartialCancelFailure_PreservesCancelledText is the QUM-1112
+// crux. With two prompts pending and one prompt's cancel failing on the wire,
+// the OTHER has already been flipped out of statePending (invisible to Ctrl+U)
+// and its bubble already ZoneDropped by the TUI. If SendAllNow then returns
+// early and drops the collected texts, that text exists nowhere: not in the
+// input, not in the outstanding set, not on the wire. The user's typed prompt is
+// destroyed with only a generic error toast.
+//
+// The assertion therefore measures REACHABILITY, not the returned error: every
+// typed text must be found in at least one of {handed back, still pending, on
+// the wire}. An assertion that only checked `err != nil` would pass against the
+// defect.
+//
+// Both failure positions are exercised. cancelPendingUser is best-effort today
+// (it records firstErr and continues), so the two readings "everything that
+// actually cancelled" and "everything collected before the first error" coincide
+// at this commit; failing the FIRST uuid guards the case where a future refactor
+// makes that helper bail early, which would destroy the later prompt's text
+// while a last-uuid-only fixture stayed green.
+func TestSendAllNow_PartialCancelFailure_PreservesCancelledText(t *testing.T) {
+	for _, tc := range []struct {
+		name        string
+		failIdx     int
+		wantBack    string // exact recovered text
+		wantPending string // the failed-cancel prompt, left recallable
+	}{
+		{name: "second cancel fails", failIdx: 1, wantBack: "A", wantPending: "B"},
+		{name: "first cancel fails", failIdx: 0, wantBack: "B", wantPending: "A"},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			mock := &mockUnifiedSession{cancelResults: map[string]bool{}, cancelErrs: map[string]error{}}
+			rt := New(RuntimeConfig{Name: "weave", Session: mock})
+			ch, unsub := rt.EventBus().SubscribeNamed("qum1112-partial-cancel", 32)
+			defer unsub()
+
+			fixtures := []string{"A", "B"}
+			uuids := []string{
+				writePendingUser(t, rt, mock, "A", "next"),
+				writePendingUser(t, rt, mock, "B", "next"),
+			}
+			injected := errors.New("cancel wire failure")
+			mock.mu.Lock()
+			mock.cancelErrs[uuids[tc.failIdx]] = injected
+			mock.mu.Unlock()
+
+			// uuid of the prompt that DID cancel — the one whose text is at risk.
+			okUUID := uuids[1-tc.failIdx]
+			failUUID := uuids[tc.failIdx]
+
+			wireFrom := len(mock.writeTrace())
+			recovered, err := rt.SendAllNow(context.Background())
+			if !errors.Is(err, injected) {
+				t.Fatalf("SendAllNow err = %v, want the injected cancel failure (a swallowed error shows the user the wrong cause)", err)
+			}
+
+			handedBack, stillPending, onWire := reachability(t, rt, mock, recovered, wireFrom, fixtures)
+
+			for _, text := range fixtures {
+				if !handedBack.has(text) && !stillPending.has(text) && !onWire.has(text) {
+					t.Errorf("typed text %q is UNREACHABLE after a partial-cancel failure: "+
+						"not handed back to the caller (%v), not still pending in the outstanding set (%v), "+
+						"not on the wire (%v) — the user's text was destroyed (QUM-1112)",
+						text, handedBack.keys(), stillPending.keys(), onWire.keys())
+				}
+			}
+
+			// AC 2 "state which": the successfully-cancelled prompt is handed back
+			// to the caller (→ the TUI input); the failed-cancel prompt is
+			// untouched and stays in the outstanding set (→ Ctrl+U). The handback
+			// choice is not arbitrary: its cancel already succeeded on the wire, so
+			// leaving it statePending would be a lie — a later Ctrl+U would cancel
+			// it again, get cancelled:false, markConsumed it, and drop the text
+			// silently. Pinning both choices also rejects a fix that preserves the
+			// text somewhere ELSE (writing it at `now` while the failed one is
+			// still queued, reordering the conversation).
+			if recovered != tc.wantBack {
+				t.Errorf("recovered text = %q, want exactly %q", recovered, tc.wantBack)
+			}
+			if stillPending.has(tc.wantBack) {
+				t.Errorf("still-pending set = %v, must NOT contain %q — it was flipped to stateCancelled", stillPending.keys(), tc.wantBack)
+			}
+			if !stillPending.has(tc.wantPending) {
+				t.Errorf("still-pending set = %v, want the failed-cancel %q left pending and recallable", stillPending.keys(), tc.wantPending)
+			}
+			if handedBack.has(tc.wantPending) {
+				t.Errorf("handed-back set = %v, must NOT contain %q — it is still queued at the CLI; handing it back too would duplicate it", handedBack.keys(), tc.wantPending)
+			}
+			assertHandbackWireDisjoint(t, handedBack, onWire)
+			if len(onWire) != 0 {
+				// Abort-over-partial-send: the flush is all-or-nothing. Writing the
+				// cancelled text at `now` while the failed one is still queued at
+				// `next` would silently reorder the user's prompts, and the caller
+				// has no way to learn that only part of the flush landed.
+				t.Errorf("wire writes after the failed flush = %v, want none (the flush aborts)", onWire.keys())
+			}
+
+			// The handback is only SAFE because the TUI has already dropped the
+			// bubble for the cancelled prompt (EventUserMessageCancelled →
+			// ZoneDrop). If that publish ever stops happening on this path, the
+			// bubble survives, the handback lands in the input too, and the user
+			// sees the prompt twice.
+			events := drainEvents(ch)
+			cancelled := countEvents(events, EventUserMessageCancelled)
+			if cancelled[okUUID] != 1 {
+				t.Errorf("EventUserMessageCancelled for the cancelled prompt = %d, want exactly 1 (its bubble must be dropped, or the handback duplicates it)", cancelled[okUUID])
+			}
+			if cancelled[failUUID] != 0 {
+				t.Errorf("EventUserMessageCancelled published %d time(s) for the FAILED-cancel prompt, want 0 (its bubble must survive — it is still queued)", cancelled[failUUID])
+			}
+			if sent := countEvents(events, EventUserMessageSent); len(sent) != 0 {
+				t.Errorf("EventUserMessageSent published %v on an aborted flush, want none (a phantom bubble plus the handback duplicates the prompt)", sent)
+			}
+		})
+	}
+}
+
+// TestSendAllNow_WriteFailureAfterCancel_PreservesCancelledText covers the
+// SECOND loss site of the same invariant: every entry cancels cleanly, then the
+// coalesced now-write fails. writeMessage deletes its own outstanding entry on a
+// write error, so after that point the joined text exists nowhere in the process
+// unless SendAllNow hands it back. A fix that only patches the cancel-error
+// early return still fails this.
+//
+// NOTE: the `onWire` leg of the reachability disjunction is structurally zero
+// here — the mock returns writeErr BEFORE recording the write, which is the
+// point. TestSendAllNow_Success_ReturnsNoRecoveredText is the proof that leg can
+// be non-empty at all.
+func TestSendAllNow_WriteFailureAfterCancel_PreservesCancelledText(t *testing.T) {
+	mock := &mockUnifiedSession{cancelResults: map[string]bool{}, cancelErrs: map[string]error{}}
+	rt := New(RuntimeConfig{Name: "weave", Session: mock})
+	ch, unsub := rt.EventBus().SubscribeNamed("qum1112-write-fail", 32)
+	defer unsub()
+
+	fixtures := []string{"A", "B"}
+	a := writePendingUser(t, rt, mock, "A", "next")
+	b := writePendingUser(t, rt, mock, "B", "next")
+
+	wireFrom := len(mock.writeTrace())
+	injected := errors.New("stdin closed")
+	mock.mu.Lock()
+	mock.writeErr = injected
+	mock.mu.Unlock()
+
+	recovered, err := rt.SendAllNow(context.Background())
+	if !errors.Is(err, injected) {
+		t.Fatalf("SendAllNow err = %v, want the injected write failure", err)
+	}
+
+	handedBack, stillPending, onWire := reachability(t, rt, mock, recovered, wireFrom, fixtures)
+
+	for _, text := range fixtures {
+		if !handedBack.has(text) && !stillPending.has(text) && !onWire.has(text) {
+			t.Errorf("typed text %q is UNREACHABLE after a post-cancel write failure: "+
+				"handedBack=%v stillPending=%v onWire=%v (QUM-1112)",
+				text, handedBack.keys(), stillPending.keys(), onWire.keys())
+		}
+	}
+	assertHandbackWireDisjoint(t, handedBack, onWire)
+	if recovered != "A\nB" {
+		t.Errorf("recovered text = %q, want %q — the handback is the ONLY surviving copy", recovered, "A\nB")
+	}
+	if len(stillPending) != 0 {
+		t.Errorf("still-pending set = %v, want empty (both entries were cancelled)", stillPending.keys())
+	}
+
+	events := drainEvents(ch)
+	cancelled := countEvents(events, EventUserMessageCancelled)
+	for _, u := range []string{a, b} {
+		if cancelled[u] != 1 {
+			t.Errorf("EventUserMessageCancelled for %s = %d, want exactly 1 (bubbles dropped, so the handback cannot duplicate)", u, cancelled[u])
+		}
+	}
+	if sent := countEvents(events, EventUserMessageSent); len(sent) != 0 {
+		t.Errorf("EventUserMessageSent published %v despite the write failing, want none (phantom bubble)", sent)
+	}
+}
+
+// TestSendAllNow_Success_ReturnsNoRecoveredText is the negative control against
+// over-fixing: on the happy path the text is on the WIRE, so handing it back too
+// would make the TUI restore text it already sent (duplicate submission). It is
+// also the only positive observation of a non-empty `onWire` set, which makes it
+// the control for that leg of the reachability instrument.
+//
+// Mutation-verified: `return "", nil` → `return joined, nil` at SendAllNow's
+// tail fails this with `recovered text = "A\nB", want ""`.
+func TestSendAllNow_Success_ReturnsNoRecoveredText(t *testing.T) {
+	mock := &mockUnifiedSession{cancelResults: map[string]bool{}}
+	rt := New(RuntimeConfig{Name: "weave", Session: mock})
+
+	fixtures := []string{"A", "B"}
+	writePendingUser(t, rt, mock, "A", "next")
+	writePendingUser(t, rt, mock, "B", "next")
+
+	wireFrom := len(mock.writeTrace())
+	recovered, err := rt.SendAllNow(context.Background())
+	if err != nil {
+		t.Fatalf("SendAllNow: %v", err)
+	}
+
+	handedBack, stillPending, onWire := reachability(t, rt, mock, recovered, wireFrom, fixtures)
+	assertHandbackWireDisjoint(t, handedBack, onWire)
+	if recovered != "" {
+		t.Errorf("recovered text = %q, want \"\" on the success path (handedBack=%v) — the text is on the wire and must not also be restored to the input", recovered, handedBack.keys())
+	}
+	if !onWire.has("A") || !onWire.has("B") {
+		t.Errorf("wire set = %v, want both %q and %q", onWire.keys(), "A", "B")
+	}
+	if len(stillPending) != 0 {
+		t.Errorf("still-pending set = %v, want empty", stillPending.keys())
+	}
+}
+
+// TestRecall_PartialCancelFailure_Unchanged is AC 4: Recall already returns the
+// partial text alongside the error and must keep doing so.
+//
+// Mutation-verified: making Recall early-return `"", err` on a partial cancel
+// failure fails this with `Recall recovered text = "", want "A"`.
+func TestRecall_PartialCancelFailure_Unchanged(t *testing.T) {
+	mock := &mockUnifiedSession{cancelResults: map[string]bool{}, cancelErrs: map[string]error{}}
+	rt := New(RuntimeConfig{Name: "weave", Session: mock})
+
+	writePendingUser(t, rt, mock, "A", "next")
+	b := writePendingUser(t, rt, mock, "B", "next")
+	injected := errors.New("cancel wire failure")
+	mock.mu.Lock()
+	mock.cancelErrs[b] = injected
+	mock.mu.Unlock()
+
+	recovered, err := rt.Recall(context.Background())
+	if !errors.Is(err, injected) {
+		t.Fatalf("Recall err = %v, want the injected cancel failure", err)
+	}
+	if recovered != "A" {
+		t.Errorf("Recall recovered text = %q, want %q alongside the error", recovered, "A")
+	}
+	pending := textSet{}
+	for _, e := range rt.Outstanding() {
+		if e.kind == kindUser && e.state == statePending {
+			pending[e.text] = true
+		}
+	}
+	if !pending.has("B") {
+		t.Errorf("still-pending set = %v, want the failed-cancel %q left pending", pending.keys(), "B")
 	}
 }

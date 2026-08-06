@@ -1307,7 +1307,7 @@ func TestQUM1000_WrongfulSweep_LosesRecallNotDelivery(t *testing.T) {
 				// now-write. P must not be in it — the CLI still holds the original,
 				// so resending it would DUPLICATE the prompt rather than recover it.
 				n0 := len(f.mock.writeTrace())
-				if err := f.rt.SendAllNow(ctx); err != nil {
+				if _, err := f.rt.SendAllNow(ctx); err != nil {
 					t.Fatalf("SendAllNow: %v", err)
 				}
 				trace := f.mock.writeTrace()

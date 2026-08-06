@@ -36,6 +36,10 @@ type mockUnifiedSession struct {
 	cancelResults map[string]bool
 	// cancelCalls records, in order, the uuids passed to CancelAsyncMessage.
 	cancelCalls []string
+	// cancelErrs maps a uuid to an error CancelAsyncMessage should return for
+	// it, simulating a partial-cancel wire failure (QUM-1112). The call is
+	// still recorded, so cancelledUUIDs() shows the attempt.
+	cancelErrs map[string]error
 	// cancelHook, if set, runs inside CancelAsyncMessage before recording.
 	cancelHook func(uuid string)
 	// writeErr, if non-nil, is returned by WriteUserMessage instead of writing
@@ -71,7 +75,11 @@ func (m *mockUnifiedSession) CancelAsyncMessage(_ context.Context, uuid string) 
 	m.mu.Lock()
 	m.cancelCalls = append(m.cancelCalls, uuid)
 	res := m.cancelResults[uuid]
+	err := m.cancelErrs[uuid]
 	m.mu.Unlock()
+	if err != nil {
+		return false, err
+	}
 	return res, nil
 }
 

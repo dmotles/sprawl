@@ -74,7 +74,8 @@ type SessionBackend interface {
 
 	// SendAllNow cancels still-pending human-typed prompts and resubmits them
 	// as one now-priority message (QUM-824 — weave-only UX). Emits
-	// SendAllNowResultMsg.
+	// SendAllNowResultMsg — whose PreservedText, on failure, carries text that
+	// was cancelled but never sent and is the only surviving copy (QUM-1112).
 	SendAllNow() tea.Cmd
 
 	// Close shuts down the underlying session.

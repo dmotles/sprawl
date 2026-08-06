@@ -362,8 +362,12 @@ func (a *TUIAdapter) SendAllNow() tea.Cmd {
 			// of a session restart. Mirrors Interrupt's nil-runtime precedent.
 			return tui.SendAllNowResultMsg{Err: ErrNoRuntime}
 		}
-		err := rt.SendAllNow(context.Background())
-		return tui.SendAllNowResultMsg{Err: err}
+		// QUM-1112: `preserved` is text the runtime cancelled but could not send.
+		// It is non-empty only alongside an error, and it is the ONLY surviving
+		// copy — dropping it here destroys the user's typed prompt just as surely
+		// as the runtime's old early return did.
+		preserved, err := rt.SendAllNow(context.Background())
+		return tui.SendAllNowResultMsg{PreservedText: preserved, Err: err}
 	}
 }
 

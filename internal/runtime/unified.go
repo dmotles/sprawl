@@ -1437,18 +1437,62 @@ func (rt *UnifiedRuntime) Recall(ctx context.Context) (string, error) {
 // for a replay echo (QUM-824; see ConfirmDeliveredWithoutReplay for why the echo
 // cannot be waited on — and, per QUM-1068, why it usually arrives anyway). A
 // no-op returning nil if nothing was pending / nothing cancelled.
-func (rt *UnifiedRuntime) SendAllNow(ctx context.Context) error {
+//
+// INVARIANT (QUM-1112): no path may leave text that was flipped out of
+// statePending without either re-writing it or handing it back to the caller.
+// Cancelling is irreversible from the runtime's side — a cancelled entry is
+// filtered out of snapshotPendingUser (so Ctrl+U can never see it again) and its
+// EventUserMessageCancelled has already told the TUI to drop the bubble — so an
+// early return that discards those texts DESTROYS the user's typed input.
+//
+// The invariant is "at least one", but the reachable behaviour is stronger and
+// deliberate: handback and wire are DISJOINT — no text is ever both returned to
+// the caller and written, which would have the user restore and re-send a prompt
+// the model already received. See the write-error leg for the one shape that
+// could violate that and why it is unreachable.
+//
+// The returned string is that handback: non-empty ONLY alongside a non-nil
+// error, carrying the newline-joined text of the entries that actually
+// cancelled, in submit order, for the caller to restore to the input. On success
+// it is "" — the text is on the wire, and returning it too would have the caller
+// restore a prompt that was already submitted. Entries whose cancel FAILED are
+// untouched (still statePending, still queued at the CLI) and are deliberately
+// absent from the handback; they remain reachable via Ctrl+U.
+func (rt *UnifiedRuntime) SendAllNow(ctx context.Context) (string, error) {
 	texts, err := rt.cancelPendingUser(ctx)
+	joined := strings.Join(texts, "\n")
 	if err != nil {
-		return err
+		// QUM-1112: a partial cancel. `texts` are already flipped out of
+		// statePending and their EventUserMessageCancelled already published, so
+		// they are gone from Ctrl+U and their TUI bubbles are already dropped.
+		// Hand them back rather than aborting with them on the floor. The flush
+		// itself aborts (nothing is written): writing these at `now` while the
+		// failed-cancel entry is still queued at `next` would silently reorder
+		// the user's prompts. Entries whose cancel FAILED are untouched and stay
+		// statePending, so they are excluded from `texts` and remain recallable.
+		return joined, err
 	}
 	if len(texts) == 0 {
-		return nil
+		return "", nil
 	}
-	joined := strings.Join(texts, "\n")
 	uuid, err := rt.writeMessage(ctx, joined, "now", kindUser, nil, nil)
 	if err != nil {
-		return err
+		// QUM-1112: same invariant at the second loss site. writeMessage deletes
+		// its own outstanding entry on a write error, so after this point the
+		// handback is the only surviving copy of the text.
+		//
+		// The handback cannot double-submit here. A write error means the frame
+		// did not land as a message: protocol.Writer.writeJSON emits ONE NDJSON
+		// line per frame, so an EPIPE partway through a >PIPE_BUF write leaves a
+		// truncated line with no terminating newline, which the CLI never parses
+		// as a message. The one shape that WOULD put a complete frame on the wire
+		// alongside an error is transport.Send's ctx-cancel race (it returns
+		// ctx.Err() while its writer goroutine may still complete the write) —
+		// unreachable today because the sole caller passes context.Background().
+		// Should a caller ever thread a cancellable ctx here, the handback stays
+		// the right trade anyway: a visible duplicate the user can see and delete
+		// beats silently destroying text they cannot recover.
+		return joined, err
 	}
 	// QUM-838: publish EventUserMessageSent (carrying the coalesced text) BEFORE
 	// ConfirmDeliveredWithoutReplay so the zone-add lands before the consume
@@ -1462,7 +1506,7 @@ func (rt *UnifiedRuntime) SendAllNow(ctx context.Context) error {
 	// EventBus seq-orders sent before consumed.
 	rt.eventBus.Publish(RuntimeEvent{Type: EventUserMessageSent, UUID: uuid, Prompt: joined})
 	rt.ConfirmDeliveredWithoutReplay(uuid)
-	return nil
+	return "", nil
 }
 
 // ClassifyBackendFault maps a backend session terminal error to a

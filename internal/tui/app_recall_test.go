@@ -291,3 +291,111 @@ func TestQueuedPrompt_TrackedInZoneAndRendered(t *testing.T) {
 		t.Errorf("queued prompt should render instantly as an inline bubble; got:\n%s", out)
 	}
 }
+
+// --- QUM-1112: preserved text from a failed send-all-now ---
+
+// TestSendAllNowResultMsg_PreservedText_RestoredToInput answers AC 2's "state
+// which" at the TUI layer: text the runtime cancelled but could not send is
+// restored to the INPUT, which is the only surface left after the pending-zone
+// bubble was dropped.
+func TestSendAllNowResultMsg_PreservedText_RestoredToInput(t *testing.T) {
+	fake := newFakeSessionBackend()
+	m := newTestAppModelWithBridge(t, fake)
+	resized, _ := m.Update(tea.WindowSizeMsg{Width: 80, Height: 24})
+	app := resized.(AppModel)
+
+	updated, _ := app.Update(SendAllNowResultMsg{Err: errors.New("now boom"), PreservedText: "A\nB"})
+	app = updated.(AppModel)
+
+	if app.input.Value() != "A\nB" {
+		t.Errorf("input value = %q, want the preserved text %q restored — otherwise the typed prompt is unreachable (QUM-1112)", app.input.Value(), "A\nB")
+	}
+	if app.sendAllNowInFlight {
+		t.Error("sendAllNowInFlight still latched after an errored result")
+	}
+}
+
+// TestSendAllNowResultMsg_PreservedText_DoesNotClobberTypedInput: restoring must
+// not itself destroy text — anything typed during the in-flight flush is kept,
+// with the preserved text prepended (it was submitted first).
+func TestSendAllNowResultMsg_PreservedText_DoesNotClobberTypedInput(t *testing.T) {
+	fake := newFakeSessionBackend()
+	m := newTestAppModelWithBridge(t, fake)
+	resized, _ := m.Update(tea.WindowSizeMsg{Width: 80, Height: 24})
+	app := resized.(AppModel)
+	app.input.SetValue("typed")
+
+	updated, _ := app.Update(SendAllNowResultMsg{Err: errors.New("now boom"), PreservedText: "A"})
+	app = updated.(AppModel)
+
+	if got := app.input.Value(); got != "A\ntyped" {
+		t.Errorf("input value = %q, want %q — neither the preserved nor the concurrently-typed text may be lost", got, "A\ntyped")
+	}
+}
+
+// TestSendAllNowResultMsg_PreservedText_Empty_LeavesInputUntouched is the
+// over-fix negative: a naive `SetValue(preserved + "\n" + old)` passes the two
+// tests above while injecting a stray leading newline into the user's input on
+// every success and every bare failure.
+func TestSendAllNowResultMsg_PreservedText_Empty_LeavesInputUntouched(t *testing.T) {
+	for _, tc := range []struct {
+		name string
+		msg  SendAllNowResultMsg
+	}{
+		{name: "success", msg: SendAllNowResultMsg{}},
+		{name: "bare failure", msg: SendAllNowResultMsg{Err: errors.New("now boom")}},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			fake := newFakeSessionBackend()
+			m := newTestAppModelWithBridge(t, fake)
+			resized, _ := m.Update(tea.WindowSizeMsg{Width: 80, Height: 24})
+			app := resized.(AppModel)
+			app.input.SetValue("half-typed thought")
+
+			updated, _ := app.Update(tc.msg)
+			app = updated.(AppModel)
+
+			if got := app.input.Value(); got != "half-typed thought" {
+				t.Errorf("input value = %q, want it byte-identical — nothing was preserved, so nothing may be injected", got)
+			}
+		})
+	}
+}
+
+// TestSendAllNowResultMsg_ToastDistinguishesPreserved is AC 3: the error surface
+// must distinguish "failed, your text is preserved in the input" from a bare
+// failure. Asserted on the specific claim the preserved branch commits to — a
+// bare `bare != preserved` delta is satisfied by appending a space — plus the
+// complement, that the bare branch does NOT make that claim.
+func TestSendAllNowResultMsg_ToastDistinguishesPreserved(t *testing.T) {
+	boom := errors.New("now boom")
+
+	toastText := func(t *testing.T, msg SendAllNowResultMsg) string {
+		t.Helper()
+		fake := newFakeSessionBackend()
+		m := newTestAppModelWithBridge(t, fake)
+		resized, _ := m.Update(tea.WindowSizeMsg{Width: 80, Height: 24})
+		app := resized.(AppModel)
+		updated, _ := app.Update(msg)
+		app = updated.(AppModel)
+		got := app.toasts.Toasts()
+		if len(got) != 1 {
+			t.Fatalf("toasts = %d for %+v, want exactly 1", len(got), msg)
+		}
+		return got[0].Text
+	}
+
+	bare := toastText(t, SendAllNowResultMsg{Err: boom})
+	preserved := toastText(t, SendAllNowResultMsg{Err: boom, PreservedText: "A"})
+
+	// The claim the user must be able to act on: their text is back in the input.
+	if !strings.Contains(preserved, "restored to the input") {
+		t.Errorf("preserved-branch toast = %q, want it to tell the user their text was restored to the input (QUM-1112 AC 3)", preserved)
+	}
+	if strings.Contains(bare, "restored to the input") {
+		t.Errorf("bare-failure toast = %q, must NOT claim text was restored — nothing was preserved", bare)
+	}
+	if bare == preserved {
+		t.Errorf("toast text is identical with and without preserved text (%q)", bare)
+	}
+}
