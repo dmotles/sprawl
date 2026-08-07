@@ -6,6 +6,10 @@
 # NDJSON log at .sprawl/logs/usage/weave/<session_id>.ndjson contains at least
 # one well-formed record with all 13 required schema keys.
 
+# QUM-1029: the number of assertions a COMPLETE, PASSING run of this row
+# makes. Five forced passes plus four symmetric gates. The required-keys loop asserts nothing itself — it accumulates into one gate after the loop.
+MIN_ASSERTIONS=9
+
 test_metadata() {
     echo "needs_claude=1 needs_tmux=1"
 }

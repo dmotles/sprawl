@@ -35,6 +35,10 @@
 #                            running; no wake needed" (ErrWakeNotNeeded
 #                            surfaced as success).
 
+# QUM-1029: the number of assertions a COMPLETE, PASSING run of this row
+# makes. Every pass site is forced on a green run — all the guards fail-and-return rather than skip. Scenario 3 is a pure echo SKIP block and contributes 0.
+MIN_ASSERTIONS=21
+
 test_metadata() {
     echo "needs_claude=1 needs_tmux=1 needs_jq=1 needs_build_tags=sprawl_test"
 }

@@ -40,12 +40,13 @@
 # containing arbitrary text, so a grep would match strings this test itself wrote
 # into the log.
 
-# Assertion-count floor. `e2e_print_results` (scripts/lib/e2e-common.sh) returns 0
-# whenever FAIL_COUNT is 0 — including for `0 passed, 0 failed` — and the driver
-# reads a row's exit status only, so neither layer can tell that a row asserted
-# nothing. That is the QUM-997 class (see /testing-practices § "The non-asserting
-# fallback"), and no e2e row currently carries a floor; the shared fix to
-# e2e_print_results is QUM-1029.
+# Assertion-count floor, now ENFORCED BY THE SHARED AGGREGATOR: QUM-1029 moved
+# the check into e2e_print_results (scripts/lib/e2e-common.sh), which reads this
+# declaration and fails the row when the observed count falls below it. Until
+# then this row carried the check itself and was the only e2e row with a floor
+# at all; that local copy is gone, the declaration stays.
+#
+# 13 is the count of assertions a COMPLETE, PASSING run of this row makes.
 #
 # TWO HONEST LIMITS, stated because the skill's own rule is that a guard with no
 # reachable failure path is not a check, and a comment that implies otherwise is
@@ -364,11 +365,6 @@ test_run() {
     echo ""
     echo "=== pane capture (plain) ==="
     capture_pane "$SESSION" | tail -40
-
-    local total=$((PASS_COUNT + FAIL_COUNT))
-    if [ "$total" -lt "$MIN_ASSERTIONS" ]; then
-        fail "only $total assertions ran, expected at least $MIN_ASSERTIONS — the row measured less than it claims"
-    fi
 
     e2e_print_results
 }

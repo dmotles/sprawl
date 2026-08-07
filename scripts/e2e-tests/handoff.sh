@@ -4,6 +4,10 @@
 # Drives weave to call mcp__sprawl__handoff and asserts the full
 # teardown / restart / session-id-rotation pipeline fires.
 
+# QUM-1029: the number of assertions a COMPLETE, PASSING run of this row
+# makes. The unconditional pass after launch plus six symmetric gates. The three fail-only early guards are off the green path and the polling loops hold no assertions.
+MIN_ASSERTIONS=7
+
 test_metadata() {
     echo "needs_claude=1 needs_tmux=1"
 }

@@ -13,6 +13,10 @@
 # `~/.claude/agents/oracle.md` on this host (we check); if Claude can resolve
 # `subagent_type=oracle` at all, it must be via the worktree-local file.
 
+# QUM-1029: the number of assertions a COMPLETE, PASSING run of this row
+# makes. Nine pass sites, less the wirelog negative-assertion block: it is guarded by a directory probe whose else arm only echoes a skip note.
+MIN_ASSERTIONS=8
+
 test_metadata() {
     echo "needs_claude=1 needs_tmux=1 needs_jq=1"
 }

@@ -20,6 +20,10 @@
 # submits coalesce into one multi-line bubble. The follow-up then sits queued
 # (dim) until the busy turn ends and the follow-up is consumed (bright).
 
+# QUM-1029: the number of assertions a COMPLETE, PASSING run of this row
+# makes. All six pass sites are the pass arms of symmetric gates whose other arm fails and returns.
+MIN_ASSERTIONS=6
+
 test_metadata() {
     echo "needs_claude=1 needs_tmux=1"
 }

@@ -13,6 +13,10 @@
 # Needs only the Go toolchain — no claude, tmux, or jq — so it runs unguarded in
 # the matrix. See docs/designs/hub/13-p1-local-e2e-and-manual-walkthrough.md.
 
+# QUM-1029: the number of assertions a COMPLETE, PASSING run of this row
+# makes. One symmetric gate on the go test exit status.
+MIN_ASSERTIONS=1
+
 test_metadata() {
     echo ""
 }

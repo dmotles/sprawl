@@ -9,6 +9,10 @@
 # Phase 2: SIGINT the sprawl process and assert clean exit within 10s
 #          (catches deadlocks in the coalescer's Close path).
 
+# QUM-1029: the number of assertions a COMPLETE, PASSING run of this row
+# makes. Three assertions on the green path; all three failure paths return without reaching the aggregator.
+MIN_ASSERTIONS=3
+
 test_metadata() {
     echo "needs_claude=1 needs_tmux=1"
 }

@@ -41,6 +41,10 @@
 #     surfaces nothing" is indistinguishable from "session survived" here.
 # Treat a failure as informative and a pass as inconclusive until QUM-958 lands.
 
+# QUM-1029: the number of assertions a COMPLETE, PASSING run of this row
+# makes. Five pass sites, less the busy-label gate whose else only echoes a note ("proceeding").
+MIN_ASSERTIONS=4
+
 test_metadata() {
     echo "needs_claude=1 needs_tmux=1"
 }

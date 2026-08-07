@@ -10,6 +10,10 @@
 # of the session, exercising the wedge-recovery path end-to-end without
 # needing to race a real slow subscriber. Not a public surface.
 
+# QUM-1029: the number of assertions a COMPLETE, PASSING run of this row
+# makes. Three passes; the middle is a symmetric gate and the last is unconditional (the preceding if arm is a pure failure path).
+MIN_ASSERTIONS=3
+
 test_metadata() {
     echo "needs_claude=1 needs_tmux=1"
 }

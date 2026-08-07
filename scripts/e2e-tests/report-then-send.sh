@@ -19,6 +19,10 @@
 #   3. assert the SENTINEL appears in weave's maildir (send_message survived the
 #      teardown race — the QUM-866 invariant).
 
+# QUM-1029: the number of assertions a COMPLETE, PASSING run of this row
+# makes. All four passes are unavoidable on a successful run; each alternative fails and returns.
+MIN_ASSERTIONS=4
+
 test_metadata() {
     echo "needs_claude=1 needs_tmux=1 needs_jq=1"
 }

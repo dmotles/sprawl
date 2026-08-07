@@ -16,6 +16,10 @@
 #      and surfaces the WakePromptBare ("You have been resumed",
 #      "Last status was paused") preamble.
 
+# QUM-1029: the number of assertions a COMPLETE, PASSING run of this row
+# makes. Twenty pass sites, less the phase-2 activity echo whose else arm only WARNs (the preamble is byte-pinned by unit tests instead). Each phase's outer gate is symmetric.
+MIN_ASSERTIONS=19
+
 test_metadata() {
     echo "needs_claude=1 needs_tmux=1 needs_jq=1"
 }

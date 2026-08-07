@@ -19,6 +19,10 @@
 #   7. Observational depth-2 canary (WARN-only): reviewer must not
 #      auto-spawn sub-agents.
 
+# QUM-1029: the number of assertions a COMPLETE, PASSING run of this row
+# makes. Twenty-seven pass sites, less three asymmetric WARN-only probes whose else arms merely echo. Phase 7 asserts nothing. The deep phase-6 nest is NOT skippable — its outer alternatives fail rather than skip.
+MIN_ASSERTIONS=24
+
 test_metadata() {
     echo "needs_claude=1 needs_tmux=1 needs_jq=1"
 }

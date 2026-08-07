@@ -39,6 +39,10 @@
 # re-inject regression; a storm is thousands, so even a few is suspicious.
 NOW_WRITE_STORM_BOUND=5
 
+# QUM-1029: the number of assertions a COMPLETE, PASSING run of this row
+# makes. All eight pass sites are green-reachable; the final chain's other arms fail. The nested empirical if/else only echoes.
+MIN_ASSERTIONS=8
+
 test_metadata() {
     echo "needs_claude=1 needs_tmux=1 needs_jq=1"
 }

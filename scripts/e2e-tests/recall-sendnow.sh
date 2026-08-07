@@ -22,6 +22,10 @@
 #      message that supersedes them. Asserts the two superseded uuids resolve as
 #      cancelled (no isReplay) and the single now message drives a turn.
 
+# QUM-1029: the number of assertions a COMPLETE, PASSING run of this row
+# makes. Eight pass sites, less the scenario-C echo check whose else only notes the nondeterministic now-preempt timing.
+MIN_ASSERTIONS=7
+
 test_metadata() {
     echo "needs_claude=1 needs_jq=1"
 }

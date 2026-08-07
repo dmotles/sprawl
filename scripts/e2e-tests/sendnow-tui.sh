@@ -28,6 +28,10 @@
 #      "Streaming..."), confirming the now-priority send actually delivered.
 #      (QUM-833 retired the "⏳ N queued" indicator; see the NOTE below.)
 
+# QUM-1029: the number of assertions a COMPLETE, PASSING run of this row
+# makes. The post-launch pass, sn_parity_check's two passes (called once), and the post-loop pass. The SN_ITERS loop contributes 0 — the count is env-overridable and its body only fails.
+MIN_ASSERTIONS=4
+
 test_metadata() {
     echo "needs_claude=1 needs_tmux=1"
 }

@@ -16,6 +16,10 @@
 #                              is preserved even when the CLI coalesces the
 #                              queue into a single model turn).
 
+# QUM-1029: the number of assertions a COMPLETE, PASSING run of this row
+# makes. Scenario A's gate, plus scenario B's `for u in $U1 $U2 $U3` loop — a fixed 3-element literal list with a symmetric body, so 3. Exceeds the naive site count because of the loop.
+MIN_ASSERTIONS=4
+
 test_metadata() {
     echo "needs_claude=1 needs_jq=1"
 }

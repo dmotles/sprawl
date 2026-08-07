@@ -820,7 +820,7 @@ Said plainly because this section tells you to prefer the named list to the numb
 
 | surface | mechanism | what looked like success |
 |---|---|---|
-| a test harness | aggregator with no assertion-count floor (QUM-1029, QUM-1044) | `0 passed / 0 failed`, exit 0 |
+| a test harness | aggregator with no assertion-count floor (QUM-1029 — **fixed** for the shared e2e aggregator: every row now declares `MIN_ASSERTIONS`; see /e2e-matrix) | `0 passed / 0 failed`, exit 0 |
 | a shell pipeline | verdict lost when piped, `pipefail` unset (QUM-1038) | exit 0 for a failed run |
 | **a build cache** | `(cached)` result reused across agents (this entry) | genuine exit 0, matching counts |
 | a documentation reference | a cited SHA that has rotted | a SHA that still resolves — to the wrong tree |

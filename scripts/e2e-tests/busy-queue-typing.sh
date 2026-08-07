@@ -41,6 +41,10 @@
 #     recall-sendnow.sh / QUM-821), so this is a soft note, not a hard gate —
 #     the cancel+supersede invariants are pinned by recall-sendnow.sh.
 
+# QUM-1029: the number of assertions a COMPLETE, PASSING run of this row
+# makes. Nine pass sites, less the two asymmetric gates whose else arms only echo a note. The queue helper asserts nothing at either call site.
+MIN_ASSERTIONS=7
+
 test_metadata() {
     echo "needs_claude=1 needs_tmux=1"
 }

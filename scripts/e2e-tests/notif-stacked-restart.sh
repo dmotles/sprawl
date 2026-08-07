@@ -27,6 +27,10 @@
 # precondition rather than assuming it from timing, and L2 asserts turn ENTRY
 # from the CLI's own result frames rather than from a pane citation.
 
+# QUM-1029: the number of assertions a COMPLETE, PASSING run of this row
+# makes. Five gates, plus assert_no_raw_tag called twice (1 each), plus a case arm and two more gates. Exceeds the naive site count because that helper's single pass site executes twice.
+MIN_ASSERTIONS=10
+
 test_metadata() {
     echo "needs_claude=1 needs_tmux=1"
 }

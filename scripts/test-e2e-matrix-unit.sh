@@ -51,7 +51,12 @@ FAIL=0
 # construction (the claude/skip paths are driven with PATH=/nonexistent rather than
 # by probing the host). Bump it when assertions are added or removed; a suite-size
 # figure is branch-relative, so re-measure rather than trusting this comment.
-MIN_ASSERTIONS=248
+#
+# 283 once QUM-1029 added section [17] (35 assertions: the per-row assertion floor).
+# Measured on the RED-first run — [17]'s totals are pass/fail-invariant, every one of
+# its assertions fires exactly once in either direction, so the figure does not move
+# when the implementation lands.
+MIN_ASSERTIONS=283
 # A [16b] nested child deliberately does NOT re-run section [16] (recursing would
 # fork-bomb, and counting there would corrupt the parity comparison), so it asserts
 # strictly fewer things and needs its own floor. Measured at de22410: 237; 238 after
@@ -59,7 +64,8 @@ MIN_ASSERTIONS=248
 # the same number [16] emits as `NESTED-FLOOR:`. Keeping it a separate literal rather
 # than reusing the parent's is the point — a child floor derived from the parent's
 # count would be the parity check again, and parity is what `0 == 0` satisfies.
-MIN_ASSERTIONS_NESTED=240
+# 275 once QUM-1029 added section [17], which the child DOES run.
+MIN_ASSERTIONS_NESTED=275
 
 # Pin the temp root. This suite runs inside `make validate` and therefore inside
 # the pre-commit hook, so it must not inherit the committing agent's TMPDIR:
@@ -100,6 +106,15 @@ for _v in "${UNIT_SCRUBBED_VARS[@]}"; do
 	UNIT_SCRUB_ARGS+=(-u "$_v")
 done
 unset "${UNIT_SCRUBBED_VARS[@]}"
+
+# MIN_ASSERTIONS is scrubbed from the DRIVER's environment but deliberately NOT
+# registered above: this suite assigns its own MIN_ASSERTIONS at the top of the
+# file, and the `unset` on the registry would destroy that floor. An operator
+# with `export MIN_ASSERTIONS=...` would otherwise have the export attribute
+# survive our assignment and hand the [17] fixture rows a floor they never
+# declared, turning the undeclared-floor case green for a reason unrelated to
+# the code under test.
+UNIT_SCRUB_ARGS+=(-u MIN_ASSERTIONS)
 
 # This file's own path, for the nested self-check in [16b]. Derived from
 # BASH_SOURCE, not $0: the Makefile invokes the suite by a relative path and
@@ -2059,6 +2074,360 @@ else
 		fi
 	fi
 	rm -f "$_nonce"
+fi
+
+# ----------------------------------------------------------------------------
+# 17. QUM-1029: a row that asserts NOTHING must not report PASS.
+#
+#     `e2e_print_results` (scripts/lib/e2e-common.sh) printed
+#     "=== Results: $PASS_COUNT passed, $FAIL_COUNT failed ===" and returned
+#     non-zero ONLY when FAIL_COUNT>0. A row that recorded neither a pass nor a
+#     fail therefore rendered "0 passed, 0 failed", returned 0, and the driver
+#     — which reads a row's EXIT STATUS ONLY and is structurally unable to see
+#     how much the row asserted — counted it in `pass_count` and in the
+#     "=== Matrix: N/N passed ===" line CLAUDE.md tells readers to scrape.
+#     Same governing principle as [14] and [15] (QUM-943): a harness that
+#     reports pass/fail must be unable to report pass for work it did not do.
+#
+#     The floor is PER-ROW and CALLER-SUPPLIED — each row declares a top-level
+#     `MIN_ASSERTIONS=<n>`. It is deliberately NOT derived from anything the
+#     harness measures: an aggregate-derived floor is satisfied by `0 == 0`,
+#     which is the very defect. An UNDECLARED floor is a failure too (17e),
+#     because a default would let the 33 pre-existing rows keep the defect
+#     silently, and a declared 0 / empty / negative / non-numeric floor is
+#     rejected (17f, 17g) because each of those is the defect wearing a
+#     declaration.
+#
+#     A floor breach is an ORDINARY FAILURE: driver exit 1, not the skip (3) or
+#     internal-invariant (4) statuses. So every negative case below asserts
+#     `rc -eq 1` exactly — `-ne 0` would be satisfied by 2/3/4, and in
+#     particular by exit 2 from a fixture that failed to write, which would let
+#     the whole section pass having run nothing.
+#
+#     These cases drive REAL fixture rows through the REAL driver — the fixture
+#     tree copies $LIB, so the modified aggregator is what runs. A test of the
+#     floor that never drives a zero-assertion row proves nothing, so 17d is the
+#     load-bearing case and 17h is its attributability baseline.
+# ----------------------------------------------------------------------------
+echo "[17] QUM-1029 per-row assertion floor: a row that asserts nothing cannot PASS"
+
+# Write a fixture row that makes $4 pass() and $5 fail() calls and then calls
+# the shared aggregator. $3 is emitted verbatim above test_run (the
+# MIN_ASSERTIONS declaration, or "" to declare none, or a whole pre-fix
+# aggregator for the 17h baseline).
+#
+# The heredoc delimiter is UNQUOTED so $2/$3/$4/$5 interpolate, and that is safe
+# for $3's own `$PASS_COUNT` references: bash does not re-expand a parameter's
+# VALUE. Everything meant to survive into the generated row is backslashed.
+#
+# The counting loop uses `while` + $((...)) rather than `seq` or `((i++))`: this
+# suite drives the driver with PATH scrubbed in places so fixtures must stay to
+# builtins, and `((i++))` returns 1 on the 0->1 step, which `set -e` would take
+# as a row failure.
+_unit_mk_assert_row() {
+	cat >"$1/$2.sh" <<EOF || return 1
+$3
+test_metadata() { echo ""; }
+test_run() {
+	: >"\${UNIT_MARKER_DIR:?UNIT_MARKER_DIR unset}/$2"
+	local i=0
+	while [ "\$i" -lt $4 ]; do i=\$((i + 1)); pass "$2 assertion \$i"; done
+	i=0
+	while [ "\$i" -lt $5 ]; do i=\$((i + 1)); fail "$2 negative \$i"; done
+	e2e_print_results
+}
+EOF
+}
+
+# A floor breach must be a DIAGNOSIS, not a crash. Without this, an
+# implementation that dereferences $MIN_ASSERTIONS bare would satisfy the
+# undeclared-floor case twice over — `set -u` aborts the row with a non-zero
+# status AND prints the literal string MIN_ASSERTIONS on stderr — while the
+# aggregator never ran and nothing about the floor was exercised. Ditto
+# `[ 0 -lt abc ]`, which exits 2 with "integer expression expected".
+#
+# Keyed on bash's OWN diagnostic format (`<source>: line <n>: <message>`) and
+# not on the phrases alone: a legitimate floor diagnostic that quotes the
+# declaration it rejected could contain "integer expression expected" or
+# "command not found" as text, and would then fail for the opposite of the
+# reason this exists.
+_unit_assert_no_shell_error() {
+	if printf '%s\n' "$1" | grep -qE ': line [0-9]+:.*(unbound variable|command not found|syntax error|integer expression expected)'; then
+		fail "$2 (the row died on a shell error, not on a floor diagnostic) err=$1"
+	else
+		pass "$2"
+	fi
+}
+
+# Assert the row's own verdict line. The driver prints exactly one of
+# `PASS <row>` / `FAIL <row>` / `SKIP <row>`, so this discriminates a failure
+# from a skip on the observable per-row side effect rather than on rc alone.
+_unit_assert_verdict() {
+	if printf '%s\n' "$1" | grep -qx "$2 $3"; then
+		pass "$4"
+	else
+		fail "$4 (no '$2 $3' verdict line) out=$1"
+	fi
+}
+
+if [ ! -r "$LIB" ] || [ ! -r "$DRIVER" ]; then
+	fail "17: QUM-1029 floor tests skipped (lib or driver missing)"
+else
+	FIXFLOOR=$(mktemp -d "$UNIT_TMP_ROOT/e2e-matrix-unit-floor.XXXXXX" 2>/dev/null)
+	if [ -z "$FIXFLOOR" ] || [ ! -d "$FIXFLOOR" ]; then
+		fail "17: could not mktemp the QUM-1029 fixture dir"
+	else
+		floor_setup_ok=1
+		_unit_mk_fixture_tree "$FIXFLOOR" || floor_setup_ok=0
+		FRD="$FIXFLOOR/e2e-tests"
+		MFLOOR="$FIXFLOOR/markers"
+
+		# An arithmetic-injection payload. An implementation using
+		# `(( total < MIN_ASSERTIONS ))` or `$((MIN_ASSERTIONS))` EXECUTES the
+		# command substitution inside it; the marker it would drop is asserted
+		# absent in 17g.
+		_floor_inject='MIN_ASSERTIONS='"'"'x[$(: >"$UNIT_MARKER_DIR/pwned")]'"'"''
+
+		#                   dir    row name            preamble             pass fail
+		_unit_mk_assert_row "$FRD" _unit_floor_exact   "MIN_ASSERTIONS=5"   5 0 || floor_setup_ok=0
+		_unit_mk_assert_row "$FRD" _unit_floor_over    "MIN_ASSERTIONS=5"   7 0 || floor_setup_ok=0
+		# Two-digit floor and a 4-count on purpose: single digits collide with
+		# the mktemp suffix and with the driver's own exit codes, so `grep 5`
+		# and `grep 3` could both be satisfied by a temp path in the output.
+		_unit_mk_assert_row "$FRD" _unit_floor_short   "MIN_ASSERTIONS=17"  4 0 || floor_setup_ok=0
+		_unit_mk_assert_row "$FRD" _unit_floor_zero    "MIN_ASSERTIONS=1"   0 0 || floor_setup_ok=0
+		_unit_mk_assert_row "$FRD" _unit_floor_undecl  ""                   3 0 || floor_setup_ok=0
+		_unit_mk_assert_row "$FRD" _unit_floor_zerodecl "MIN_ASSERTIONS=0"  0 0 || floor_setup_ok=0
+		_unit_mk_assert_row "$FRD" _unit_floor_metfail "MIN_ASSERTIONS=2"   1 1 || floor_setup_ok=0
+		# Bad declarations, each with FIVE real assertions: the count can never
+		# be the reason these fail, so only validation of the declaration can be.
+		_unit_mk_assert_row "$FRD" _unit_floor_junk    "MIN_ASSERTIONS=abc" 5 0 || floor_setup_ok=0
+		_unit_mk_assert_row "$FRD" _unit_floor_empty   "MIN_ASSERTIONS="    5 0 || floor_setup_ok=0
+		_unit_mk_assert_row "$FRD" _unit_floor_neg     "MIN_ASSERTIONS=-1"  5 0 || floor_setup_ok=0
+		_unit_mk_assert_row "$FRD" _unit_floor_inject  "$_floor_inject"     5 0 || floor_setup_ok=0
+
+		# 17h baseline: the PRE-FIX aggregator, re-defined by the row itself so
+		# nothing in the copied lib has to be mutated (rows are sourced AFTER
+		# the lib, so the row's definition wins).
+		_unit_mk_assert_row "$FRD" _unit_floor_baseline 'MIN_ASSERTIONS=1
+e2e_print_results() {
+	echo "=== Results: $PASS_COUNT passed, $FAIL_COUNT failed ==="
+	if [ "$FAIL_COUNT" -gt 0 ]; then return 1; fi
+	return 0
+}' 0 0 || floor_setup_ok=0
+
+		if [ "$floor_setup_ok" -ne 1 ]; then
+			# Skip rather than warn-and-continue: assertions run against a
+			# half-written fixture tree pass for reasons of their own.
+			fail "17: fixture setup failed (mkdir/cp/row write) — floor cases not run"
+		else
+			# --- 17a: floor 5, ran 5 -> passes (met exactly) --------------------
+			_unit_reset_markers "$MFLOOR"
+			_unit_run "$FIXFLOOR" "$MFLOOR" _unit_floor_exact
+			if [ "$_RC" -eq 0 ]; then
+				pass "17a: a row meeting its declared floor exactly passes"
+			else
+				fail "17a: floor 5 / 5 assertions was rejected (rc=$_RC) err=$_ERR"
+			fi
+
+			# --- 17b: floor 5, ran 7 -> passes (it is a floor, not an equality) --
+			_unit_reset_markers "$MFLOOR"
+			_unit_run "$FIXFLOOR" "$MFLOOR" _unit_floor_over
+			if [ "$_RC" -eq 0 ]; then
+				pass "17b: over-satisfying the floor passes (a floor, not an equality)"
+			else
+				fail "17b: floor 5 / 7 assertions was rejected (rc=$_RC) err=$_ERR"
+			fi
+
+			# --- 17c: floor 17, ran 4 -> fails, naming BOTH numbers -------------
+			_unit_reset_markers "$MFLOOR"
+			_unit_run "$FIXFLOOR" "$MFLOOR" _unit_floor_short
+			if [ "$_RC" -eq 1 ]; then
+				pass "17c: a row short of its declared floor fails the driver as an ordinary failure"
+			else
+				fail "17c: floor 17 / 4 assertions gave rc=$_RC (want 1 — not a skip(3) or internal error(4)) out=$_OUT"
+			fi
+			_unit_assert_summary "$_OUT" 0 1 "17c: the short row is NOT counted as passed"
+			_unit_assert_verdict "$_OUT" FAIL _unit_floor_short "17c: the short row gets a FAIL verdict line, not SKIP"
+			_unit_assert_ran "$MFLOOR" _unit_floor_short yes "17c: the short row really did execute"
+			# Both numbers, as standalone tokens, on ONE line that also names
+			# MIN_ASSERTIONS — the last clause is what stops a stderr line quoting
+			# a mktemp path like `…-floor.aB17xY4z` from satisfying this by itself.
+			# The word-bounding is not pedantry either: it catches an
+			# implementation that reports 5 observed instead of 4 because its own
+			# fail() incremented FAIL_COUNT before comparing.
+			if printf '%s\n' "$_ERR" | grep -F 'MIN_ASSERTIONS' |
+				grep -qE '(^|[^0-9])(17([^0-9]|$).*[^0-9]4([^0-9]|$)|4([^0-9]|$).*[^0-9]17([^0-9]|$))'; then
+				pass "17c: one stderr line names both the declared floor (17) and the observed count (4)"
+			else
+				fail "17c: no stderr line names both the floor and the observed count err=$_ERR"
+			fi
+			_unit_assert_no_shell_error "$_ERR" "17c: the short row was diagnosed, not crashed"
+
+			# --- 17d: floor 1, ran 0 -> fails. THE case this issue exists for. ---
+			_unit_reset_markers "$MFLOOR"
+			_unit_run "$FIXFLOOR" "$MFLOOR" _unit_floor_zero
+			if [ "$_RC" -eq 1 ]; then
+				pass "17d: a row that asserts NOTHING fails the driver as an ordinary failure"
+			else
+				fail "17d: a zero-assertion row gave rc=$_RC (want 1) out=$_OUT"
+			fi
+			_unit_assert_summary "$_OUT" 0 1 "17d: the zero-assertion row is NOT counted as passed"
+			_unit_assert_verdict "$_OUT" FAIL _unit_floor_zero "17d: the zero-assertion row gets a FAIL verdict line, not SKIP"
+			_unit_assert_ran "$MFLOOR" _unit_floor_zero yes "17d: the zero-assertion row really did execute"
+			# Proves the row asserted nothing rather than dying before it could —
+			# and pins that the "=== Results:" tally is still printed on the
+			# floor-breach path, so the run stays diagnosable.
+			if printf '%s\n' "$_OUT" | grep -qF '0 passed, 0 failed'; then
+				pass "17d: the row genuinely recorded no assertions (its own tally says so)"
+			else
+				fail "17d: the fixture row did not actually assert nothing out=$_OUT"
+			fi
+			_unit_assert_no_shell_error "$_ERR" "17d: the zero-assertion row was diagnosed, not crashed"
+
+			# --- 17e: no declaration at all -> fails ----------------------------
+			# Without this, adding the floor would leave every pre-existing row
+			# undeclared and therefore still defective, silently.
+			_unit_reset_markers "$MFLOOR"
+			_unit_run "$FIXFLOOR" "$MFLOOR" _unit_floor_undecl
+			if [ "$_RC" -eq 1 ]; then
+				pass "17e: a row declaring no floor fails even though it asserted 3 things"
+			else
+				fail "17e: an undeclared floor gave rc=$_RC (want 1) out=$_OUT"
+			fi
+			if printf '%s\n' "$_ERR" | grep -qF 'MIN_ASSERTIONS'; then
+				pass "17e: the diagnostic names MIN_ASSERTIONS so the row author knows what to add"
+			else
+				fail "17e: the undeclared-floor diagnostic does not name MIN_ASSERTIONS err=$_ERR"
+			fi
+			_unit_assert_no_shell_error "$_ERR" "17e: the undeclared floor was diagnosed, not crashed"
+
+			# --- 17f: MIN_ASSERTIONS=0 -> fails ---------------------------------
+			_unit_reset_markers "$MFLOOR"
+			_unit_run "$FIXFLOOR" "$MFLOOR" _unit_floor_zerodecl
+			if [ "$_RC" -eq 1 ]; then
+				pass "17f: a declared floor of 0 is rejected (a zero floor is the defect declared)"
+			else
+				fail "17f: MIN_ASSERTIONS=0 gave rc=$_RC (want 1) out=$_OUT"
+			fi
+			_unit_assert_no_shell_error "$_ERR" "17f: the zero floor was diagnosed, not crashed"
+
+			# --- 17g: malformed declarations -> fail, and never get evaluated ----
+			# Each of these rows asserts FIVE things, so a count shortfall can never
+			# be the reason it fails: only rejection of the declaration itself can.
+			# `-1` and the empty string matter because `[ 5 -lt -1 ]` is merely
+			# false and `[ 5 -lt "" ]` errors-and-is-false, so both sail through an
+			# implementation that validates "is an integer" or "is set".
+			for _bad in _unit_floor_junk _unit_floor_empty _unit_floor_neg _unit_floor_inject; do
+				_unit_reset_markers "$MFLOOR"
+				_unit_run "$FIXFLOOR" "$MFLOOR" "$_bad"
+				if [ "$_RC" -eq 1 ]; then
+					pass "17g: $_bad — a malformed floor is rejected rather than silently treated as 0"
+				else
+					fail "17g: $_bad gave rc=$_RC (want 1) out=$_OUT"
+				fi
+				_unit_assert_no_shell_error "$_ERR" "17g: $_bad was diagnosed, not crashed"
+				if [ "$_bad" = _unit_floor_inject ]; then
+					_unit_assert_ran "$MFLOOR" pwned no "17g: the floor value is compared, never evaluated as arithmetic"
+				fi
+			done
+
+			# --- 17i: a met floor must not MASK a real failure ------------------
+			# floor 2, one pass + one fail: observed 2 satisfies the floor, but the
+			# row failed and must still fail — and must fail for THAT reason, which
+			# is what the three discriminators below check. Counting only
+			# PASS_COUNT would give 1 < 2 and fail on the floor instead.
+			_unit_reset_markers "$MFLOOR"
+			_unit_run "$FIXFLOOR" "$MFLOOR" _unit_floor_metfail
+			if [ "$_RC" -eq 1 ]; then
+				pass "17i: satisfying the floor does not mask a recorded fail()"
+			else
+				fail "17i: a row with a fail() gave rc=$_RC (want 1) out=$_OUT"
+			fi
+			if printf '%s\n' "$_OUT" | grep -qF '=== Results: 1 passed, 1 failed ==='; then
+				pass "17i: the observed count includes fails — 1 pass + 1 fail meets a floor of 2"
+			else
+				fail "17i: the tally line does not read '1 passed, 1 failed' out=$_OUT"
+			fi
+			if printf '%s\n' "$_ERR" | grep -qF 'MIN_ASSERTIONS'; then
+				fail "17i: a met floor still emitted a floor diagnostic — the row failed for the wrong reason err=$_ERR"
+			else
+				pass "17i: a met floor emits no floor diagnostic; the fail() alone is the reason"
+			fi
+
+			# --- 17h: attributability baseline ----------------------------------
+			# NOT a positive or negative control in the QUM-1154 sense (its subject
+			# has the defect and the probe must stay QUIET, which is neither
+			# direction). It is a baseline: the row re-defines the PRE-FIX
+			# aggregator over the lib's and asserts nothing, and MUST come back
+			# PASS. That is what makes 17c-17g's red attributable to the aggregator
+			# rather than to some accident of the fixture harness — without it,
+			# 17d is unfalsifiable.
+			#
+			# It also pins, deliberately, that enforcement is LIB-LOCAL and a row
+			# can shadow it. A row can already bypass any gate by returning 0 (see
+			# [16c] on deliberate bypass); what the floor closes is the accident.
+			# If enforcement is ever moved into scripts/e2e-matrix.sh, this case
+			# must be re-designed, not deleted.
+			_unit_reset_markers "$MFLOOR"
+			_unit_run "$FIXFLOOR" "$MFLOOR" _unit_floor_baseline
+			if [ "$_RC" -eq 0 ]; then
+				pass "17h: baseline — the PRE-FIX aggregator still reports a zero-assertion row as PASS"
+			else
+				fail "17h: baseline did not reproduce the defect (rc=$_RC); 17c-17g are not attributable err=$_ERR"
+			fi
+		fi
+
+		case "$FIXFLOOR" in
+			"$UNIT_TMP_ROOT"/*) rm -rf "$FIXFLOOR" ;;
+			*) note "refusing to remove fixture dir '$FIXFLOOR' (not under $UNIT_TMP_ROOT/)" ;;
+		esac
+	fi
+fi
+
+# --- 17j: every real row declares a floor AND can be reached by it -----------
+# Three fixed assertions, not three per row, so the suite's own floor stays
+# stable as rows are added.
+#
+# The e2e_print_results check is the one that is easy to leave out and is
+# load-bearing: a per-row floor STRUCTURALLY CANNOT REACH a row that never
+# calls the aggregator (scripts/e2e-tests/merge-reuse.sh was exactly that — no
+# pass/fail, no aggregator, verdict resting entirely on return codes). Without
+# it, pasting a MIN_ASSERTIONS line at the top of such a row makes it look
+# accounted-for while the floor remains unreachable, which is this bug one
+# level up. The first assertion is the vacuity guard: a glob matching nothing
+# would otherwise report "every row declares a floor" having checked none.
+_floor_rows_seen=0
+_floor_rows_missing=""
+_floor_rows_unreachable=""
+for _r in "$REPO_ROOT"/scripts/e2e-tests/*.sh; do
+	[ -e "$_r" ] || continue
+	_floor_rows_seen=$((_floor_rows_seen + 1))
+	if ! grep -qE '^MIN_ASSERTIONS=[1-9][0-9]*$' "$_r"; then
+		_floor_rows_missing="$_floor_rows_missing ${_r##*/}"
+	fi
+	# `^[^#]*` requires the token to be reached without crossing a `#`, so a
+	# row that merely MENTIONS the aggregator in a comment — including the
+	# comment an author writes to explain why their row doesn't call it — does
+	# not satisfy this.
+	if ! grep -qE '^[^#]*e2e_print_results' "$_r"; then
+		_floor_rows_unreachable="$_floor_rows_unreachable ${_r##*/}"
+	fi
+done
+if [ "$_floor_rows_seen" -gt 0 ]; then
+	pass "17j: found $_floor_rows_seen row(s) under scripts/e2e-tests/ to check"
+else
+	fail "17j: no rows found under scripts/e2e-tests/ — the checks below would be vacuous"
+fi
+if [ -z "$_floor_rows_missing" ]; then
+	pass "17j: every row declares a top-level MIN_ASSERTIONS=<positive integer>"
+else
+	fail "17j: row(s) declare no MIN_ASSERTIONS floor:$_floor_rows_missing"
+fi
+if [ -z "$_floor_rows_unreachable" ]; then
+	pass "17j: every row calls e2e_print_results, so the declared floor can actually reach it"
+else
+	fail "17j: row(s) never call e2e_print_results, so their floor is unreachable:$_floor_rows_unreachable"
 fi
 
 # Summary

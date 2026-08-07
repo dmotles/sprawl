@@ -22,6 +22,10 @@
 # bug the computed answer never paints (pump parked), so the assertion fails;
 # after the fix it appears.
 
+# QUM-1029: the number of assertions a COMPLETE, PASSING run of this row
+# makes. All three passes are on the single green path; the later two are pass arms of symmetric gates.
+MIN_ASSERTIONS=3
+
 test_metadata() {
     echo "needs_claude=1 needs_tmux=1"
 }

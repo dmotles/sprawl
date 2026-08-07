@@ -3,6 +3,18 @@
 # Migrated from scripts/test-merge-reuse-e2e.sh (which remains in place).
 # Pure shell — no claude required.
 
+# QUM-1029: the count of assertions a COMPLETE run makes. This row is
+# fail-fast — every check that fails calls fail() and returns immediately
+# WITHOUT reaching e2e_print_results, because each later step depends on the
+# previous one having worked — so the only path that reaches the aggregator is
+# the full green path, and the floor can be exact rather than a lower bound.
+#
+# Until QUM-1029 this row called neither pass/fail nor e2e_print_results: its
+# verdict rested entirely on return codes, which made it the one row a per-row
+# floor could not reach at all. It was migrated rather than given a floor of 0,
+# because a floor of 0 is the defect wearing a declaration.
+MIN_ASSERTIONS=9
+
 test_metadata() {
     echo ""
 }
@@ -76,24 +88,37 @@ EOF
     echo ""
     echo "=== Step 3: sprawl merge engX (first time, B1 → main) ==="
     cd "$SPRAWL_ROOT"
-    "$SPRAWL_BIN" merge --no-validate "$AGENT_NAME" 2>&1 | sed 's/^/    /' || {
-        echo "FAIL: first merge returned non-zero" >&2
+    # The status checked here is the MERGE's, not sed's. It used to be
+    # `merge ... | sed ... || {...}`, which reads the exit status of the last
+    # element of the pipeline (`sed`, always 0 here) with no `pipefail` set —
+    # so a non-zero merge could never be detected and this check could never
+    # fire.
+    local MERGE1_OUTPUT MERGE1_RC=0
+    MERGE1_OUTPUT=$("$SPRAWL_BIN" merge --no-validate "$AGENT_NAME" 2>&1) || MERGE1_RC=$?
+    printf '%s\n' "$MERGE1_OUTPUT" | sed 's/^/    /'
+    if [ "$MERGE1_RC" -eq 0 ]; then
+        pass "first merge (B1 -> main) returned zero"
+    else
+        fail "first merge returned non-zero (rc=$MERGE1_RC)"
         return 1
-    }
+    fi
 
     local HEAD1
     HEAD1=$(git -C "$SPRAWL_ROOT" rev-parse HEAD)
     echo "  HEAD1=$HEAD1"
-    if [ "$HEAD1" = "$HEAD_BEFORE" ]; then
-        echo "FAIL: integration HEAD did not advance after first merge" >&2
+    if [ "$HEAD1" != "$HEAD_BEFORE" ]; then
+        pass "integration HEAD advanced after the first merge"
+    else
+        fail "integration HEAD did not advance after the first merge"
         return 1
     fi
-    if ! git -C "$SPRAWL_ROOT" show HEAD --stat | grep -q "foo.txt"; then
-        echo "FAIL: first merge did not include foo.txt" >&2
+    if git -C "$SPRAWL_ROOT" show HEAD --stat | grep -q "foo.txt"; then
+        pass "the first merge included foo.txt"
+    else
+        fail "the first merge did not include foo.txt"
         git -C "$SPRAWL_ROOT" show HEAD --stat >&2
         return 1
     fi
-    echo "  PASS: first merge advanced HEAD and includes foo.txt"
 
     echo ""
     echo "=== Step 4: simulate delegate reuse — engX checks out B2 with new commit ==="
@@ -104,8 +129,10 @@ EOF
 
     local STATE_BRANCH
     STATE_BRANCH=$(grep '"branch"' "$SPRAWL_ROOT/.sprawl/agents/${AGENT_NAME}.json" | head -1 | sed 's/.*"branch": *"\([^"]*\)".*/\1/')
-    if [ "$STATE_BRANCH" != "B1" ]; then
-        echo "FAIL: test setup broken — state branch is $STATE_BRANCH, expected B1" >&2
+    if [ "$STATE_BRANCH" = "B1" ]; then
+        pass "state.branch is still the stale B1 after the worktree moved to B2"
+    else
+        fail "test setup broken — state branch is $STATE_BRANCH, expected B1"
         return 1
     fi
     echo "  state.branch is still '$STATE_BRANCH' (stale, simulating delegate)"
@@ -114,45 +141,55 @@ EOF
 
     echo ""
     echo "=== Step 5: sprawl merge engX (after delegate-style branch swap) ==="
-    local MERGE_OUTPUT
-    MERGE_OUTPUT=$("$SPRAWL_BIN" merge --no-validate "$AGENT_NAME" 2>&1 || {
-        echo "FAIL: second merge returned non-zero" >&2
+    # The rc is captured OUTSIDE the command substitution. It used to be
+    # `MERGE_OUTPUT=$(... || { echo ...; return 1; })`, where the `return 1`
+    # executes in the substitution's own subshell and merely ends it — so
+    # test_run carried on past a failed second merge.
+    local MERGE_OUTPUT MERGE2_RC=0
+    MERGE_OUTPUT=$("$SPRAWL_BIN" merge --no-validate "$AGENT_NAME" 2>&1) || MERGE2_RC=$?
+    printf '%s\n' "$MERGE_OUTPUT" | sed 's/^/    /'
+    if [ "$MERGE2_RC" -eq 0 ]; then
+        pass "second merge (after the delegate-style branch swap) returned zero"
+    else
+        fail "second merge returned non-zero (rc=$MERGE2_RC)"
         return 1
-    })
-    echo "$MERGE_OUTPUT" | sed 's/^/    /'
+    fi
 
     local HEAD2
     HEAD2=$(git -C "$SPRAWL_ROOT" rev-parse HEAD)
     echo "  HEAD2=$HEAD2"
 
-    if [ "$HEAD2" = "$HEAD1" ]; then
-        echo "" >&2
-        echo "FAIL (QUM-511 reproduced): integration HEAD did NOT advance after delegate-style branch swap." >&2
-        echo "       merge silently no-op'd because it read stale agentState.Branch=B1 instead of" >&2
-        echo "       resolving the agent worktree's current branch (B2)." >&2
+    if [ "$HEAD2" != "$HEAD1" ]; then
+        pass "integration HEAD advanced after the delegate-style branch swap (QUM-511)"
+    else
+        fail "QUM-511 reproduced: integration HEAD did NOT advance after the delegate-style branch swap — merge no-op'd on the stale agentState.Branch=B1 instead of resolving the worktree's current branch (B2)"
         return 1
     fi
 
-    if ! git -C "$SPRAWL_ROOT" show HEAD --stat | grep -q "bar.txt"; then
-        echo "FAIL: second merge did not include bar.txt from B2" >&2
+    if git -C "$SPRAWL_ROOT" show HEAD --stat | grep -q "bar.txt"; then
+        pass "the second merge included bar.txt from B2"
+    else
+        fail "the second merge did not include bar.txt from B2"
         git -C "$SPRAWL_ROOT" show HEAD --stat >&2
         return 1
     fi
 
     if echo "$MERGE_OUTPUT" | grep -q "Nothing to merge"; then
-        echo "FAIL: merge reported 'Nothing to merge' but B2 has new commits" >&2
+        fail "merge reported 'Nothing to merge' but B2 has new commits"
         return 1
+    else
+        pass "merge did not report 'Nothing to merge'"
     fi
 
-    if ! echo "$MERGE_OUTPUT" | grep -q "B2"; then
-        echo "FAIL: merge stderr summary should mention resolved branch B2" >&2
+    if echo "$MERGE_OUTPUT" | grep -q "B2"; then
+        pass "the merge summary names the resolved branch B2"
+    else
+        fail "the merge summary should mention the resolved branch B2"
         echo "      output was:" >&2
         echo "$MERGE_OUTPUT" >&2
         return 1
     fi
 
     echo ""
-    echo "=== PASS: merge correctly followed agent worktree to B2 ==="
-    echo "OK"
-    return 0
+    e2e_print_results
 }

@@ -56,6 +56,10 @@
 # The script remains structurally correct: once the gap is closed the
 # 5 phases exercise exactly the validation §QUM-725 calls for.
 
+# QUM-1029: the number of assertions a COMPLETE, PASSING run of this row
+# makes. All twenty sites are on the green path (two unconditional, eighteen symmetric gates). The fail-only kill -0 probe and the PID-resolution loops add nothing.
+MIN_ASSERTIONS=20
+
 test_metadata() {
     echo "needs_claude=1 needs_tmux=1 needs_jq=1"
 }

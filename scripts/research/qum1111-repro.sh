@@ -45,6 +45,14 @@ REPO_ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)"
 # shellcheck source=../lib/e2e-common.sh
 . "$REPO_ROOT/scripts/lib/e2e-common.sh"
 
+# QUM-1029: e2e_print_results now enforces this declaration, so the hand-rolled
+# floor that used to sit next to the call at the bottom of main() is gone. 2 is
+# the number of assertions a COMPLETE, non-reproducing run makes: self_test's
+# single gate plus the post-launch pass. The per-iteration loop contributes 0 —
+# ITERS is caller-supplied and run_iteration can legitimately return with no
+# assertion at all.
+MIN_ASSERTIONS=2
+
 ITERS="${1:-4}"
 
 capture_ansi() { _stmux capture-pane -t "$1" -e -p 2>/dev/null || true; }
@@ -328,12 +336,6 @@ main() {
         return 1
     else
         echo "=== VERDICT: not reproduced ($EVALUABLE/$ITERS iterations evaluable) ==="
-    fi
-    # Assertion-count floor (CLAUDE.md): a run that asserted nothing is a
-    # harness failure, not a clean non-repro.
-    if [ "$((PASS_COUNT + FAIL_COUNT))" -lt 2 ]; then
-        echo "  FAIL: assertion-count floor — only $((PASS_COUNT + FAIL_COUNT)) assertions ran" >&2
-        return 1
     fi
     e2e_print_results
 }

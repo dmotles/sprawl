@@ -32,8 +32,69 @@ fail() {
     echo "  FAIL: $1" >&2
 }
 
+# QUM-1029: a row that asserts NOTHING must not report PASS. This used to
+# return non-zero only when FAIL_COUNT>0, so a row that recorded neither a pass
+# nor a fail rendered "0 passed, 0 failed", returned 0, and scripts/e2e-matrix.sh
+# — which reads a row's EXIT STATUS ONLY and is structurally unable to see how
+# much the row asserted — counted it in `pass_count` and in the
+# "=== Matrix: N/N passed ===" line CLAUDE.md tells readers to scrape.
+#
+# The floor is PER-ROW and CALLER-SUPPLIED: each row declares a top-level
+# `MIN_ASSERTIONS=<n>`. Deliberately NOT derived from anything measured here —
+# a floor computed from the corpus it checks is satisfied by an empty corpus,
+# which is the very defect. For the same reason an UNDECLARED floor fails
+# rather than defaulting: a default would let every existing row keep the
+# defect silently. So does a declared 0, which is that default wearing a
+# declaration.
+#
+# A breach is an ORDINARY FAILURE (the row returns 1, the driver buckets it
+# FAIL and exits 1). It is deliberately not a skip (3) or an internal-invariant
+# violation (4): a row that asserted nothing is a defect in the row, not an
+# unmet precondition and not a driver fault.
+#
+# What to declare: the minimum of PASS_COUNT+FAIL_COUNT over the paths that
+# COMPLETE THE ROW SUCCESSFULLY — reaching this function having called fail()
+# zero times and without an early return. Deliberately NOT the minimum over all
+# paths that reach here: a path that already called fail(), or that bailed
+# early, has already failed the row, so a floor that also fires on it costs a
+# line of extra diagnosis and nothing else. The only way a floor can turn an
+# HONEST run red is by exceeding what a legitimately-passing path asserts —
+# hence the minimum is taken over passing paths only. (Taking it over all paths
+# collapses almost every row to 1 or 0 via its `launch failed -> print -> return
+# 1` shortcut, which eliminates nothing.)
+#
+# On that green path: an if/else whose arms are pass/fail contributes 1; an
+# asymmetric if/else whose other arm only echoes a note contributes 0; a loop
+# contributes 0 unless it iterates a fixed literal list; a block that a
+# successful run can skip entirely contributes 0.
+#
+# Only builtins here: the matrix driver's own unit suite invokes it with PATH
+# scrubbed, and `${MIN_ASSERTIONS-}` (not a bare reference) keeps `set -u` from
+# aborting the row before this can diagnose it.
 e2e_print_results() {
     echo "=== Results: $PASS_COUNT passed, $FAIL_COUNT failed ==="
+    local declared=${MIN_ASSERTIONS-}
+    local observed=$((PASS_COUNT + FAIL_COUNT))
+    local breach=""
+    case "$declared" in
+        '')
+            breach="the row declared no MIN_ASSERTIONS floor — add a top-level MIN_ASSERTIONS=<n> naming the fewest assertions a complete run of this row makes (QUM-1029)"
+            ;;
+        # Compared as a STRING, never evaluated: `$(( ))` on a caller-supplied
+        # value executes any command substitution inside it.
+        *[!0-9]* | 0*)
+            breach="MIN_ASSERTIONS='$declared' is not a positive whole number, so it is not a floor — a floor of 0 is satisfied by a row that asserts nothing (QUM-1029)"
+            ;;
+        *)
+            if [ "$observed" -lt "$declared" ]; then
+                breach="only $observed assertion(s) ran but MIN_ASSERTIONS=$declared — the row measured less than it claims (QUM-1029)"
+            fi
+            ;;
+    esac
+    if [ -n "$breach" ]; then
+        echo "  FAIL: $breach" >&2
+        return 1
+    fi
     if [ "$FAIL_COUNT" -gt 0 ]; then
         return 1
     fi

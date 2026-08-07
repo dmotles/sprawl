@@ -22,6 +22,10 @@
 #   3. Answering the modal round-trips (weave reports the selected label),
 #      proving the watchdog re-armed cleanly on resume (re-seed path).
 
+# QUM-1029: the number of assertions a COMPLETE, PASSING run of this row
+# makes. All seven sites are on the green path: the unconditional pass after launch plus six symmetric pass/fail gates. The trust-folder and wire-log blocks assert nothing.
+MIN_ASSERTIONS=7
+
 test_metadata() {
     echo "needs_claude=1 needs_tmux=1 needs_jq=1"
 }

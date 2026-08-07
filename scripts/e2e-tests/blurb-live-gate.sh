@@ -13,6 +13,10 @@
 #   make build && bash scripts/e2e-matrix.sh blurb-live-gate
 # Requires: claude on PATH, tmux, jq.
 
+# QUM-1029: the number of assertions a COMPLETE, PASSING run of this row
+# makes. Six pass sites, but the keyword check is asymmetric — its else only echoes a NOTE, and a passing run can legitimately take that arm — so it contributes 0.
+MIN_ASSERTIONS=5
+
 test_metadata() {
     echo "needs_claude=1 needs_tmux=1 needs_jq=1"
 }

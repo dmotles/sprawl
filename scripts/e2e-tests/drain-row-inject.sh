@@ -5,6 +5,10 @@
 # Send → defaultNotifier → WakeForDelivery → claude prompt-inject →
 # drain-row citation pipeline is exercised end-to-end.
 
+# QUM-1029: the number of assertions a COMPLETE, PASSING run of this row
+# makes. The unconditional pass after launch plus three symmetric gates.
+MIN_ASSERTIONS=4
+
 test_metadata() {
     echo "needs_claude=1 needs_tmux=1 needs_jq=1"
 }

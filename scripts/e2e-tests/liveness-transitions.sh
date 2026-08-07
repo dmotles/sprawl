@@ -34,6 +34,10 @@
 # keyed by a per-phase token (so stale scrollback from an earlier phase can't
 # false-match).
 
+# QUM-1029: the number of assertions a COMPLETE, PASSING run of this row
+# makes. Seventeen pass sites, less the pgrep-guarded PID-swap check and the two inside phase 2 — both blocks have documented SKIP else-arms that assert nothing.
+MIN_ASSERTIONS=14
+
 test_metadata() {
     echo "needs_claude=1 needs_tmux=1 needs_jq=1 needs_build_tags=sprawl_test"
 }

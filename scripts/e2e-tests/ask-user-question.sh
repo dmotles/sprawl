@@ -12,6 +12,10 @@
 # The full original lives at scripts/test-ask-user-question-e2e.sh and is
 # untouched during soak.
 
+# QUM-1029: the number of assertions a COMPLETE, PASSING run of this row
+# makes. Thirteen symmetric pass/fail gates, all on the green path. The spawn-detect while-loops hold no assertions — the gate sits after the loop, on a flag.
+MIN_ASSERTIONS=13
+
 test_metadata() {
     echo "needs_claude=1 needs_tmux=1 needs_jq=1"
 }

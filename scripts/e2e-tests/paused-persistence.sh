@@ -22,6 +22,10 @@
 # call) so the .sprawl/agents/ state survives sprawl process restarts.
 # Only the tmux session is torn down + relaunched between phases.
 
+# QUM-1029: the number of assertions a COMPLETE, PASSING run of this row
+# makes. Twenty-six pass sites, less the four shutdown_sprawl gates whose else arms only echo a NOTE and one inside a PID-presence guard. Those four passes are in fact guaranteed today (the helper always returns 0), but the lower number survives an edit to it.
+MIN_ASSERTIONS=21
+
 test_metadata() {
     echo "needs_claude=1 needs_tmux=1 needs_jq=1"
 }

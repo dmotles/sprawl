@@ -23,6 +23,10 @@
 #   7. delegate against the retired agent surfaces the canonical
 #      TerminalAgentError ("no longer running")
 
+# QUM-1029: the number of assertions a COMPLETE, PASSING run of this row
+# makes. Thirteen pass sites, less the soft-signal gate whose else only echoes a NOTE. The final case contributes 1 — its non-pass arms fail.
+MIN_ASSERTIONS=12
+
 test_metadata() {
     echo "needs_claude=1 needs_tmux=1 needs_jq=1"
 }

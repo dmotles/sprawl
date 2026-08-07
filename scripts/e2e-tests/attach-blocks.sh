@@ -13,6 +13,10 @@
 # the TUI. The image-then-text block ordering mirrors the /attach assembly
 # contract (design §4).
 
+# QUM-1029: the number of assertions a COMPLETE, PASSING run of this row
+# makes. One assertion point (a symmetric pass/fail gate); both arms reach the aggregator.
+MIN_ASSERTIONS=1
+
 test_metadata() {
     echo "needs_claude=1 needs_jq=1"
 }

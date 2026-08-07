@@ -19,6 +19,10 @@
 # tokens (avoid stale-scrollback false matches), `mcp__sprawl__status`-driven
 # liveness reads, pgrep-keyed-by-session_id for live-process introspection.
 
+# QUM-1029: the number of assertions a COMPLETE, PASSING run of this row
+# makes. Thirty-two pass sites, less four that are DEAD CODE under an `if true` (the elif/else arms are unreachable), one inside a PID-presence guard, one asymmetric, and one case with a non-asserting default arm.
+MIN_ASSERTIONS=25
+
 test_metadata() {
     echo "needs_claude=1 needs_tmux=1 needs_jq=1"
 }

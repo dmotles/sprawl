@@ -45,6 +45,10 @@
 # sprawl→CLI (i.e. anything sprawl injects), dir:"out" is the CLI→sprawl tee,
 # which sprawl structurally cannot forge.
 
+# QUM-1029: the number of assertions a COMPLETE, PASSING run of this row
+# makes. Six symmetric gates, plus assert_no_injection called twice on the green path (1 each), plus two more gates. The sentinel check is asymmetric (else echoes a note) and contributes 0.
+MIN_ASSERTIONS=10
+
 test_metadata() {
     echo "needs_claude=1 needs_tmux=1 needs_jq=1"
 }

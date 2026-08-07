@@ -11,6 +11,10 @@
 #         (a) the 'inbox: N new message[s]' banner (QUM-473 §3) and
 #         (b) the '(1)' unread badge on the weave row.
 
+# QUM-1029: the number of assertions a COMPLETE, PASSING run of this row
+# makes. Fifteen pass sites, less one: the jq-vs-grep pair is a single assertion expressed as two mirrored arms.
+MIN_ASSERTIONS=14
+
 test_metadata() {
     echo "needs_claude=1 needs_tmux=1"
 }
