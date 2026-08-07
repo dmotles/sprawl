@@ -623,6 +623,23 @@ type UserMessageSentMsg struct {
 	// intercepts it locally and never emits an isReplay echo, so an optimistic
 	// entry would never settle and would stick as a phantom "queued" bubble.
 	Passthrough bool
+	// FromPump marks this msg as PUMP-DELIVERED — it consumed one WaitForEvent
+	// arm, so the reducer must re-arm the pump or it parks (QUM-826). This is
+	// the only user-message msg with mixed provenance: a tea.Cmd can also
+	// return it directly (SendMessage / SendPassthrough / SendAttachment),
+	// consuming no pump event, in which case re-arming would net-CREATE an arm
+	// — one permanently parked reader goroutine on the single tui-viewport
+	// channel per prompt, which destroys EventBus Seq ordering at the reducer
+	// and strands pending-zone entries (QUM-1111).
+	//
+	// The zero value means "cmd-returned, do not re-arm" deliberately: a
+	// producer that forgets the flag parks the pump, which QUM-826 proved is
+	// loudly visible, rather than leaking silently.
+	//
+	// CONTRACT for any SessionBackend or translator: set it iff the msg came
+	// out of the event pump. Sole set-site today: TranslateRuntimeEvent's
+	// EventUserMessageSent case (internal/tui/event_translate.go).
+	FromPump bool
 }
 
 // PassthroughMsg carries a backend-builtin passthrough command line (e.g.

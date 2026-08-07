@@ -785,22 +785,65 @@ func TestAppModel_CtrlC_ShowsConfirmDuringErrorDialog(t *testing.T) {
 	}
 }
 
-func TestAppModel_UserMessageSentMsg_ProducesWaitCmd(t *testing.T) {
-	mock := newFakeSessionBackend()
-	bridge := mock
-	m := newTestAppModelWithBridge(t, bridge)
-	resized, _ := m.Update(tea.WindowSizeMsg{Width: 80, Height: 24})
-	app := resized.(AppModel)
+// TestAppModel_UserMessageSentMsg_RearmsIffFromPump — QUM-1111.
+//
+// WaitForEvent is one-shot, so the reducer must re-arm it for a msg the pump
+// delivered (or the pump parks — QUM-826) and must NOT re-arm for one a tea.Cmd
+// returned directly (or the arm count grows unboundedly, one parked reader
+// goroutine per prompt, destroying EventBus Seq ordering at the reducer).
+// FromPump carries that provenance; both reducer legs (passthrough early
+// return + main tail) key on it.
+//
+// This is a cheap reducer-level pin. The real evidence is the arm-gauge suite
+// in internal/tuiruntime, which drives a real adapter + bus; fakeSessionBackend
+// reproduces only the cmd-returned leg and has no channel or Seq.
+func TestAppModel_UserMessageSentMsg_RearmsIffFromPump(t *testing.T) {
+	cases := []struct {
+		name      string
+		msg       UserMessageSentMsg
+		wantRearm bool
+	}{
+		{"cmd-returned", UserMessageSentMsg{UUID: "u1", Text: "hi"}, false},
+		{"cmd-returned passthrough", UserMessageSentMsg{UUID: "u2", Text: "/compact", Passthrough: true}, false},
+		{"pump-delivered", UserMessageSentMsg{UUID: "u3", Text: "hi", FromPump: true}, true},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			bridge := newFakeSessionBackend()
+			m := newTestAppModelWithBridge(t, bridge)
+			resized, _ := m.Update(tea.WindowSizeMsg{Width: 80, Height: 24})
+			app := resized.(AppModel)
 
-	// First send a message to set up bridge.events
-	sendCmd := bridge.SendMessage("test")
-	sendCmd() // sets bridge.events
+			before := bridge.waitCalls
+			if _, cmd := app.Update(tc.msg); (cmd != nil) != tc.wantRearm {
+				t.Errorf("cmd != nil = %v, want %v", cmd != nil, tc.wantRearm)
+			}
+			want := before
+			if tc.wantRearm {
+				want++
+			}
+			if got := bridge.waitCalls; got != want {
+				t.Errorf("WaitForEvent calls = %d, want %d", got, want)
+			}
+		})
+	}
+}
 
-	updated, cmd := app.Update(UserMessageSentMsg{})
-	_ = updated
+// TestAppModel_UserMessageSentMsg_NilBridge_NoPanic pins the nil guard on the
+// pump-delivered leg. Several tests build an AppModel with a nil bridge, and
+// an unguarded m.bridge.WaitForEvent() there segfaults the whole package.
+// Mutation watched: dropping the nil check inside rearmPump panics here with a
+// nil-pointer dereference.
+func TestAppModel_UserMessageSentMsg_NilBridge_NoPanic(t *testing.T) {
+	m := NewAppModel("colour212", "testrepo", "v0.1.0", nil, nil, "", nil)
+	updated, _ := m.Update(tea.WindowSizeMsg{Width: 80, Height: 24})
+	app := updated.(AppModel)
 
-	if cmd == nil {
-		t.Fatal("UserMessageSentMsg should produce a cmd to wait for next event")
+	if _, cmd := app.Update(UserMessageSentMsg{UUID: "u1", Text: "hi", FromPump: true}); cmd != nil {
+		t.Errorf("nil bridge produced a cmd (%T); want nil", cmd)
+	}
+	if _, cmd := app.Update(UserMessageSentMsg{UUID: "u2", Text: "/compact", Passthrough: true, FromPump: true}); cmd != nil {
+		t.Errorf("nil bridge (passthrough leg) produced a cmd (%T); want nil", cmd)
 	}
 }
 

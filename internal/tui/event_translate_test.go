@@ -181,7 +181,11 @@ func TestTranslateRuntimeEvent_UserMessageSent(t *testing.T) {
 		UUID:   "now-1",
 		Prompt: "AAA\nBBB",
 	}, InterruptedAsResult)
-	want := UserMessageSentMsg{UUID: "now-1", Text: "AAA\nBBB"}
+	// QUM-1111: FromPump is the pin that this — the SOLE pump-delivered
+	// construction site — marks provenance. A whole-struct compare means a
+	// future second producer that forgets the flag breaks a named test rather
+	// than silently parking the pump.
+	want := UserMessageSentMsg{UUID: "now-1", Text: "AAA\nBBB", FromPump: true}
 	if !reflect.DeepEqual(got, want) {
 		t.Fatalf("got %#v, want %#v", got, want)
 	}

@@ -1206,13 +1206,15 @@ func (m AppModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		// QUM-865: passthrough commands (e.g. /compact) are intercepted by the
 		// backend locally and never emit an isReplay echo, so we must NOT create
 		// a pending-zone entry — it would never settle and would stick as a
-		// phantom "queued" bubble. Forward-only; no optimistic render. Still
-		// re-arm the pump (QUM-826) so the backend's response renders live.
+		// phantom "queued" bubble. Forward-only; no optimistic render.
+		//
+		// QUM-1111: this leg used to re-arm unconditionally "so the backend's
+		// response renders live". That arm was always surplus — nothing sets
+		// Passthrough on a pump-delivered msg, so this leg is only ever reached
+		// from SendPassthrough's cmd, which consumed no pump event. The response
+		// still renders live on the arm that is already outstanding.
 		if msg.Passthrough {
-			if m.bridge != nil {
-				return m, m.bridge.WaitForEvent()
-			}
-			return m, nil
+			return m, m.rearmIfPumpDelivered(msg)
 		}
 		// QUM-833: the single eager-create + classify point. Every written frame
 		// becomes a uuid-keyed pending-zone entry — a system-notification frame
@@ -1261,12 +1263,9 @@ func (m AppModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		// OnDelivered → agentloop.MarkDelivered, wired in cmd/enter.go), which is a
 		// stronger guarantee than committing on a successful stdin write.
 		//
-		// QUM-826: this msg is pump-delivered and must re-arm WaitForEvent, or the
-		// bubbletea event pump parks here and live render freezes.
-		if m.bridge != nil {
-			return m, m.bridge.WaitForEvent()
-		}
-		return m, nil
+		// QUM-826/QUM-1111: re-arm WaitForEvent iff this msg was pump-delivered.
+		// It has mixed provenance — see rearmIfPumpDelivered.
+		return m, m.rearmIfPumpDelivered(msg)
 
 	case UserMessageConsumedMsg:
 		// QUM-833: the CLI consumed (isReplay) a tracked frame — it's now part of
@@ -2966,6 +2965,37 @@ func (m *AppModel) agentBufferFor(name string) *AgentBuffer {
 // chat region (QUM-673). AppendX writes flow through its vp, which owns the
 // sole ChatList render source (the cl handle is observe-only).
 func (m *AppModel) rootBuf() *AgentBuffer { return m.agentBufferFor(m.rootAgent) }
+
+// rearmIfPumpDelivered re-arms the one-shot event pump for a UserMessageSentMsg
+// iff the pump delivered it (QUM-1111). Both UserMessageSentMsg legs route
+// through here so they cannot drift apart. The unconditional re-arm lives in
+// rearmPump; this is the provenance-gated wrapper around it.
+//
+// WaitForEvent is one-shot: a reducer that receives a pump-delivered msg and
+// does not replace the arm parks the pump and freezes live render (QUM-826).
+// The inverse is just as real — UserMessageSentMsg is also returned directly
+// by SendMessage/SendPassthrough/SendAttachment, consuming no pump event, and
+// re-arming there adds an arm without retiring one. Each surplus arm is
+// another goroutine reading the single tui-viewport channel, so EventBus Seq
+// order stops surviving to the reducer: send-all-now's Sent(B)/Consumed(B)
+// pair can invert, ZoneSettle(B) no-ops against a zone that has no B yet, and
+// the entry ZoneAddUser(B) then creates can never settle (QUM-1068's
+// idempotency gate guarantees no second consume ack for that uuid).
+//
+// HISTORY, so the next auditor is not misled: the unconditional arm this
+// replaces was NOT a QUM-826 decision, despite the comment that used to sit
+// on it. It came from 93a92ba (QUM-198), when the bridge was per-turn and
+// arming after a send was the turn's only arm — correct then. QUM-826 touched
+// three genuinely pump-only reducers and not this one; its rationale was
+// retroactively back-filled onto these lines by 664ff74 (QUM-925 Slice A).
+// finalizeTurn's surviving IsContinuous() gate is the other fossil of the
+// per-turn model.
+func (m *AppModel) rearmIfPumpDelivered(msg UserMessageSentMsg) tea.Cmd {
+	if !msg.FromPump {
+		return nil
+	}
+	return m.rearmPump()
+}
 
 // observedVP returns the viewport for the currently-observed agent. Used
 // by View() and select-mode helpers.

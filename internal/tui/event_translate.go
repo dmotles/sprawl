@@ -61,7 +61,15 @@ func TranslateRuntimeEvent(ev sprawlrt.RuntimeEvent, interruptedFn func(sprawlrt
 		// QUM-838: a now-write (send-all-now) publishes this so the TUI tracks the
 		// coalesced message's fresh uuid in the pending zone (ZoneAddUser) before
 		// its consume settle relocates it into the committed transcript.
-		return UserMessageSentMsg{UUID: ev.UUID, Text: ev.Prompt}
+		//
+		// QUM-1111: this is the SOLE pump-delivered construction site of
+		// UserMessageSentMsg, so it is the only place FromPump is set — the
+		// reducer re-arms the one-shot pump iff it is. The child-stream path
+		// shares this translator, so a child's msg also carries FromPump, but
+		// applyChildStreamInner has no UserMessageSentMsg case (child msgs are
+		// enveloped in ChildStreamMsg, which re-arms its own pump), so it never
+		// reaches m.bridge.
+		return UserMessageSentMsg{UUID: ev.UUID, Text: ev.Prompt, FromPump: true}
 	case sprawlrt.EventUserMessageConsumed:
 		return UserMessageConsumedMsg{UUID: ev.UUID}
 	case sprawlrt.EventUserMessageCancelled:
