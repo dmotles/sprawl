@@ -5,9 +5,13 @@ description: Use BEFORE running e2e tests or calling a change validated, to answ
 
 # Mandatory-test e2e harness
 
-Relocated verbatim from `CLAUDE.md` §`## Validating Changes` item 5. The item
-numbering and indentation below are preserved from the source so that the
-per-row tacit notes travel byte-identically with the table they annotate.
+Copied verbatim from `CLAUDE.md` lines 794–938 at commit `c7093cc`. Provenance
+is pinned to a SHA and a line range rather than to a section ordinal, because
+an ordinal has to be maintained and a moment cannot go stale.
+
+The source's list-item numbering and 3-space indentation are preserved so this
+file stays byte-comparable against that range; reflowing 145 lines would make
+the copy unauditable. Nothing was reworded, condensed, or reordered.
 
 5. **Mandatory-test e2e harness.** When you touch any file listed in the table below, run `make test-e2e-matrix-<row>` for the corresponding row (or `make test-e2e-matrix` to run all rows).
 
