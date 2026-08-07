@@ -1,7 +1,7 @@
 .PHONY: validate build proto-check proto-gen proto-gen-web hub-web fmt-check lint test clean install fmt hooks leak-scan test-notify-tui-e2e test-handoff-e2e test-bridge-lifecycle-e2e test-exit-code-preservation test-parallel-agent-viewport-e2e test-tui-e2e test-leak-resistance-e2e test-merge-reuse-e2e test-ask-user-question-e2e test-drain-row-inject-e2e test-wake-live-e2e test-paste-coalesce-e2e test-e2e-matrix test-e2e-matrix-unit test-hooks-e2e test-hub-bootstrap test-hub-e2e test-wirelog-helpers-unit test-e2e-lockwait-unit test-gitignore-classes test-race test-race-gate always-loaded-budget test-always-loaded-budget-unit
 
 # Default target — full quality gauntlet
-validate: build proto-check fmt-check lint test-race-gate test-race test-wirelog-helpers-unit test-e2e-lockwait-unit test-e2e-matrix-unit test-always-loaded-budget-unit test-gitignore-classes leak-scan
+validate: build proto-check fmt-check lint test-race-gate test-race test-wirelog-helpers-unit test-e2e-lockwait-unit test-e2e-matrix-unit test-always-loaded-budget-unit always-loaded-budget test-gitignore-classes leak-scan
 
 BUF ?= buf
 
@@ -120,16 +120,29 @@ test-wirelog-helpers-unit:
 # scripts/always-loaded-budget.conf. See
 # docs/audits/2026-08-06-docs-restructure/budget-resolver.md.
 #
-# Deliberately NOT part of `validate`, for two reasons that both expire:
-# (1) it FAILS on the tree today — 810 in-tree lines against a 250 ceiling, plus
-#     the CLAUDE.md:3 mandated read of DESCRIPTION.md — and wiring a
-#     known-failing gate into validate just teaches people to bypass validate;
-# (2) CLAUDE.md is contended by another writer right now, so this change is not
-#     permitted to cut it.
-# Promote it into `validate` once the CLAUDE.md cut lands and that violation is
-# resolved. Its unit suite (below) IS in validate, which is what keeps the
-# mechanism from rotting while the gate waits — the same split as
-# `test-race-gate` guarding `test-race`.
+# IN `validate` since QUM-1155. It was held out for two reasons and both are now
+# discharged: (1) it FAILED on the tree — 938 in-tree lines against a 250 ceiling
+# plus the CLAUDE.md:3 mandated read of DESCRIPTION.md — and wiring a
+# known-failing gate into validate just teaches people to bypass validate;
+# (2) CLAUDE.md was contended by another writer. The cut landed, DESCRIPTION.md
+# is an allowlisted on-demand pointer, and the tree now measures 74 against 250.
+#
+# TRACKED-ONLY, AND THAT IS THE POLICY — NOT A LIMITATION TO LIFT. The enforced
+# set is the injected files that are git-tracked in the SPRAWL ROOT's index.
+# CLAUDE.local.md is gitignored and per-user: it loads on the machine that has it
+# and does not exist in a fresh clone. Enforcing it would make `make validate`
+# pass or fail as a function of whose checkout ran it, and would make the
+# recorded manifest list entries a clean clone cannot derive — measured: rc=1 on
+# a --depth 1 clone of a correct tree, landing on the one person who cannot fix
+# it by changing a tracked file. Untracked always-loaded files are still REPORTED
+# by the script, with their sizes, and counted in the verdict line's `untracked=`
+# field; they are excluded from the total, never hidden. Folding them back into
+# the enforced total is a REGRESSION, not an improvement.
+#
+# Its unit suite (below) is in validate too — the same split as `test-race-gate`
+# guarding `test-race`: the mechanism's own guard runs even when the live gate is
+# trivially green, and a broken MECHANISM is diagnosed before a failing
+# MEASUREMENT.
 always-loaded-budget:
 	bash scripts/always-loaded-budget.sh --check-manifest scripts/testdata/always-loaded-manifest.observed
 

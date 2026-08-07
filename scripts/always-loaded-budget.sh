@@ -35,6 +35,17 @@
 #     reported separately and EXCLUDED from the enforced total — they load, and
 #     we do not control them.
 #
+# WHAT IT ENFORCES VS WHAT IT MERELY REPORTS
+#
+# The ENFORCED set is GIT-TRACKED ONLY, and that is the policy, not a limitation
+# waiting to be lifted. CLAUDE.local.md is gitignored and per-user: it loads on
+# the machine that has it and does not exist in a fresh clone. Enforcing it makes
+# this gate — which is in `make validate` — pass or fail as a function of whose
+# checkout ran it, and makes the recorded manifest list entries a clean clone
+# cannot derive, so a correct tree exits 1. Untracked always-loaded files are
+# still REPORTED, with their sizes, and counted in the verdict line's untracked=
+# field. Folding them back into the enforced total is a REGRESSION.
+#
 # WHAT IT DELIBERATELY DOES NOT RESOLVE
 #
 # Prose read-instructions are not detected by understanding them. Detecting
@@ -110,7 +121,7 @@ while [ $# -gt 0 ]; do
 		shift
 		;;
 	-h | --help)
-		sed -n '2,53p' "${BASH_SOURCE[0]}"
+		sed -n '2,63p' "${BASH_SOURCE[0]}"
 		exit 0
 		;;
 	*) die_usage "unknown argument '$1'" ;;
@@ -197,6 +208,33 @@ ALLOWED="$WORK/allowed"
 awk '{sub(/#.*/, "")} NF {print $1}' "$ALLOW" >"$ALLOWED"
 is_allowlisted() { grep -qxF -- "$1" "$ALLOWED"; }
 
+# repo_rel PATH — PATH as git names it INSIDE THE CHECKOUT IT WAS INJECTED FROM,
+# for is_enforced() below. Structurally identical to norm(), minus the <worktree>
+# token: keep the two in step, because a drift means the report prints one
+# identity while the filter tests another.
+#
+# $ROOT is stripped BEFORE $SPRAWL_ROOT and that ORDER is the whole point. An
+# agent worktree lives UNDER the sprawl root at .sprawl/worktrees/<name>, a path
+# the root index never contains, so stripping $SPRAWL_ROOT first would map
+# <worktree>/CLAUDE.md to '.sprawl/worktrees/<name>/CLAUDE.md' — untracked —
+# emptying the enforced set for every agent and tripping the discovery floor.
+repo_rel() {
+	local p=$1
+	if [ "$ROOT" != "$SPRAWL_ROOT" ] && [ "${p#"$ROOT"/}" != "$p" ]; then
+		echo "${p#"$ROOT"/}"
+	elif [ "${p#"$SPRAWL_ROOT"/}" != "$p" ]; then
+		echo "${p#"$SPRAWL_ROOT"/}"
+	else
+		echo "$p" # outside both — never tracked
+	fi
+}
+
+# is_enforced PATH — is this injection in the ENFORCED set? Tracked-ness is a
+# property of the NAME in the sprawl root's index, not of the worktree copy's
+# bytes or history, which is what makes the verdict identical from every agent's
+# worktree. See the header's "WHAT IT ENFORCES VS WHAT IT MERELY REPORTS".
+is_enforced() { is_tracked "$(repo_rel "$1")"; }
+
 # norm PATH — display/manifest form: relative to the sprawl root, with the
 # worktree under test rendered as the literal token <worktree> so a manifest
 # recorded by one agent is comparable against another's.
@@ -224,6 +262,15 @@ IMPORTS_RESOLVED=0
 RESOLVE_ERR=""
 OOT_IMPORTS="$WORK/oot-imports"
 : >"$OOT_IMPORTS"
+# In-tree but untracked: excluded from the enforced total and from the manifest,
+# never dropped. lines \t normpath \t why
+UNTRACKED="$WORK/untracked"
+: >"$UNTRACKED"
+
+record_untracked() {
+	# $1 realpath, $2 why
+	printf '%s\t%s\t%s\n' "$(count_lines "$1")" "$(norm "$1")" "$2" >>"$UNTRACKED"
+}
 
 record() {
 	# $1 realpath, $2 kind (base|import)
@@ -270,6 +317,14 @@ $target
 			printf '%s\t%s\t%s\n' "$(count_lines "$target")" "$target" "@-imported by $(norm "$file")" >>"$OOT_IMPORTS"
 			continue
 		fi
+		# Tracked-only, by whatever route the file was reached. The out-of-tree
+		# branch above must stay FIRST: repo_rel of an out-of-tree path is
+		# meaningless. Not walking an excluded import's own imports keeps the
+		# enforced set a set no context header could contradict.
+		if ! is_enforced "$target"; then
+			record_untracked "$target" "@-imported by $(norm "$file")"
+			continue
+		fi
 		record "$target" import
 		walk_imports "$target" "$chain
 $target"
@@ -282,6 +337,16 @@ $target"
 
 add_injection() {
 	local f=$1
+	# The filter belongs HERE, not in record() and not in the ancestor loops
+	# below. In record() an excluded file's own @-imports would still be walked
+	# and enforced with no enforced parent; in the ancestor loop an untracked
+	# NEARER CLAUDE.md would stop terminating the walk and a more distant one the
+	# harness demonstrably does not load would be counted in its place. Shadowing
+	# is a fact about the harness; tracking is a policy about enforcement.
+	if ! is_enforced "$f"; then
+		record_untracked "$f" "always-loaded, but not tracked in the sprawl root's index"
+		return
+	fi
 	record "$f" base
 	walk_imports "$f" "$f"
 }
@@ -312,6 +377,7 @@ done
 
 INJECTIONS=$(wc -l <"$INJ" | tr -d ' ')
 IN_TREE=$(awk -F'\t' '{s+=$1} END{print s+0}' "$INJ")
+NUNTRACKED=$(wc -l <"$UNTRACKED" | tr -d ' ')
 
 # ---------------------------------------------------------------------------
 # Report
@@ -323,26 +389,52 @@ echo "  sprawl root:  $SPRAWL_ROOT"
 echo "  HEAD:         $(git -C "$ROOT" rev-parse --short HEAD 2>/dev/null || echo '(none)')"
 echo "  dirty files:  $(git -C "$ROOT" status --porcelain 2>/dev/null | wc -l | tr -d ' ')"
 echo
-echo "in-tree injections (enforced) — LINES WORDS CHARS INJECTION:"
+echo "in-tree injections (ENFORCED — GIT-TRACKED ONLY) — LINES WORDS CHARS INJECTION:"
 if [ "$INJECTIONS" -gt 0 ]; then
 	awk -F'\t' '{printf "  %6d %7d %8d  %s%s\n", $1, $2, $3, $4, ($6=="import" ? " (@-import)" : "")}' "$INJ"
 fi
 echo "  @-imports resolved: $IMPORTS_RESOLVED"
 echo "  in-tree total: $IN_TREE lines across $INJECTIONS injections"
 
+# Printed on EVERY run, "(none)" arm included: the policy has to be legible on a
+# clean machine too, which is exactly where nobody would otherwise learn it.
+echo
+echo "in-tree but UNTRACKED (reported, NOT enforced) — LINES  INJECTION:"
+if [ "$NUNTRACKED" -gt 0 ]; then
+	awk -F'\t' '{printf "  %6d  %s  [%s — NOT enforced]\n", $1, $2, $3}' "$UNTRACKED"
+else
+	echo "  (none — every always-loaded file resolved here is git-tracked)"
+fi
+echo "  policy: only GIT-TRACKED files are enforced. An untracked always-loaded file"
+echo "          — the gitignored per-user CLAUDE.local.md is the standing example — DOES"
+echo "          load, and is excluded from the total and from the recorded manifest on"
+echo "          purpose: it exists on one machine and not in a fresh clone, so enforcing"
+echo "          it would make this gate pass or fail per checkout and would fail the"
+echo "          manifest check on a correct tree. Including them is a REGRESSION."
+
 # Discovery floor. A resolver that finds nothing must refuse to report: a
 # plausible-looking total produced by an instrument blind to its target is the
 # whole failure family this script replaces.
 if [ "$INJECTIONS" -eq 0 ]; then
 	echo
-	echo "ALWAYS-LOADED: FAIL in_tree=0 ceiling=$CEILING violations=0 injections=0"
-	echo "error: resolved 0 in-tree injections under '$ROOT' — refusing to report a budget the instrument could not have measured" >&2
+	echo "ALWAYS-LOADED: FAIL in_tree=0 ceiling=$CEILING violations=0 injections=0 untracked=$NUNTRACKED"
+	# The leading sentence is byte-identical in both arms on purpose — it is what
+	# the suite asserts on, and rewording it would make that assertion pass for a
+	# different reason in one case and vanish in the other. The clause is appended
+	# on the SAME line because "found nothing" and "found things, none tracked"
+	# send an operator to two different places, and the second reads as a
+	# discovery bug that is not there.
+	FLOOR_MSG="error: resolved 0 in-tree injections under '$ROOT' — refusing to report a budget the instrument could not have measured"
+	if [ "$NUNTRACKED" -gt 0 ]; then
+		FLOOR_MSG="$FLOOR_MSG (note: $NUNTRACKED always-loaded file(s) WERE found but are untracked, and the enforced set is tracked-only — this is an empty ENFORCED set, not an empty tree; track them, or accept that they are not budgeted)"
+	fi
+	echo "$FLOOR_MSG" >&2
 	exit 1
 fi
 
 if [ -n "$RESOLVE_ERR" ]; then
 	echo
-	echo "ALWAYS-LOADED: FAIL in_tree=$IN_TREE ceiling=$CEILING violations=0 injections=$INJECTIONS"
+	echo "ALWAYS-LOADED: FAIL in_tree=$IN_TREE ceiling=$CEILING violations=0 injections=$INJECTIONS untracked=$NUNTRACKED"
 	echo "error: unresolvable @-import(s):$RESOLVE_ERR" >&2
 	exit 1
 fi
@@ -535,5 +627,5 @@ if [ "$IN_TREE" -gt "$CEILING" ]; then
 fi
 
 echo
-echo "ALWAYS-LOADED: $STATUS in_tree=$IN_TREE ceiling=$CEILING violations=$NVIOL injections=$INJECTIONS"
+echo "ALWAYS-LOADED: $STATUS in_tree=$IN_TREE ceiling=$CEILING violations=$NVIOL injections=$INJECTIONS untracked=$NUNTRACKED"
 exit "$RC"

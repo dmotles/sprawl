@@ -21,7 +21,18 @@ So the durable artifact here is the definition; 810 is what you get by reading
 through it, and a sixth derivation obeying it is *forced* to reproduce 810.
 
 **Definition — the in-tree always-loaded budget is the sum, in lines, over every
-INJECTION in the resolved set.**
+GIT-TRACKED INJECTION in the resolved set.**
+
+> **Amended 2026-08-07 (QUM-1155): "git-tracked" was added to this definition
+> when the gate was promoted into `validate`.** Untracked injections — the
+> gitignored per-user `CLAUDE.local.md` is the standing example — still load, and
+> the resolver still reports them with their sizes; they are excluded from the
+> enforced total and from the recorded manifest. The reason is determinism, not
+> tidiness: a per-user file makes the gate pass or fail as a function of whose
+> checkout ran it, and made a `--depth 1` clone of a correct tree exit 1 on a
+> manifest entry it could not derive. Every `810` and `938` below is a reading
+> taken under the ORIGINAL definition on the date stated, and is left as
+> recorded; the tree measures **74** under the amended one.
 
 1. **What counts as loaded: injection by the harness, and nothing else.** A file
    is in the set iff the harness places its contents in the agent's context
@@ -285,14 +296,16 @@ entry, and a build to run at all, for a job that is file-walking and line
 counting. The one thing Go would buy — real unit tests — the bash suite gets
 from fixtures for less.
 
-## Wiring, and the one thing that is deliberately not in `validate`
+## Wiring
 
 | target | in `validate`? | why |
 |---|---|---|
 | `make test-always-loaded-budget-unit` | **yes** | fixture-only, ~6s, reads nothing from the real tree, so an unrelated `CLAUDE.md` edit can never fail it |
-| `make always-loaded-budget` | **no** | it fails on the tree **today** (810 vs 250, plus the violation) |
+| `make always-loaded-budget` | **yes, since QUM-1155** | both blockers discharged: the cut took the tree to 74 against 250, and tracked-only enforcement makes the verdict identical in every checkout |
 
-Wiring a known-failing gate into `validate` teaches people to bypass `validate`.
+The row above read **no** until 2026-08-07, for the reason below. It was held out
+while it failed on the tree; wiring a known-failing gate into `validate` teaches
+people to bypass `validate`.
 The split is the same one `test-race-gate` uses: the mechanism's guard runs
 every time, the gate itself waits.
 
@@ -359,7 +372,8 @@ precondition would have published. The manifest is what turns it red.
 
 ## Red-first evidence
 
-94 assertions, in 10 blocks with **per-block** minima (a single grand-total
+94 assertions as first landed, 149 after QUM-1155 added the `tracked` block, in
+11 blocks with **per-block** minima (a single grand-total
 floor lets one block die at its first line while the others carry the run over
 it). Every assertion has been watched failing under a deliberate mutation of the
 resolver; the table records the mutation and what it printed. `scripts/` was
@@ -397,6 +411,47 @@ copied to a tempdir per mutation, so the real tree was never mutated.
 | M9 | manifest mismatch never fails | `a manifest entry the resolver does not derive fails: want '1', got '0'` (2 failures) |
 | M28 | manifest mismatch reports no detail | `no single line contained both 'derived but NOT recorded' and '<worktree>/CLAUDE.local.md'` |
 | M31 | re-record instruction removed | `the mismatch tells you to re-record the manifest: output did not contain 're-record'` |
+
+### QUM-1155: tracked-only enforcement, red-first
+
+The `tracked` block (42 assertions, 4 subshells) was written and watched failing
+against the unmodified resolver before any of the filter existed: **114 passed /
+22 failed, rc=1, every failure inside `BLOCK=tracked`.** What it printed:
+
+| assertion | printed |
+|---|---|
+| untracked `CLAUDE.local.md` copies excluded from the total | `want '30', got '42'` |
+| only the tracked injection is an enforced site | `want '1', got '3'` |
+| the excluded copies are counted on the verdict line | `want '2', got 'ALWAYS-LOADED: OK in_tree=42 … injections=3'` — `verdict_field` returns the whole line when the field is absent |
+| the excluded row is marked `NOT enforced` where it is listed | `no single line contained both '<worktree>/CLAUDE.local.md' and 'NOT enforced'` |
+| the ceiling is compared against the enforced total | `want '0', got '1'` at `CEILING=35`, between the enforced 30 and the raw 42 |
+| an untracked NEARER `CLAUDE.md` still shadows the tracked ancestor | `want '6', got '15'` |
+| a mandated read inside an untracked always-loaded file does not fire | `want '0', got '1'` |
+| an untracked `@`-import is excluded | `want '12', got '62'` |
+| **a manifest recording untracked copies fails (the fresh-clone rc=1)** | `want '1', got '0'` |
+
+The last row is the bug itself stated as an assertion: before the change, a
+manifest listing the per-user copies *passed* here and *failed* in a clean clone.
+
+**The fresh-clone control is the deliverable.** `--depth 1` clone, no
+`CLAUDE.local.md` present, rc captured directly from the resolver and never
+through a pipe:
+
+- **before**, `main`: `rc=1` — `recorded but NOT derived (…): CLAUDE.local.md`,
+  `ALWAYS-LOADED: FAIL in_tree=938 ceiling=250 violations=1 injections=1`
+- **after**, this branch: `rc=0` — `ALWAYS-LOADED: OK in_tree=74 ceiling=250
+  violations=0 injections=1 untracked=0`
+
+Note `untracked=0` in the clone versus `untracked=2` in a live worktree: that
+difference is precisely the quantity that used to decide the exit code, and no
+longer does.
+
+The pre-existing fixtures then needed a retrofit, which is the change's real
+cost: they tracked almost nothing, so under tracked-only enforcement they
+resolved 0 enforced injections and tripped the discovery floor. `track_ok`
+asserts the track took — comparing `git ls-files -- "$@" | wc -l` to `$#`, since
+`ls-files` over N pathspecs prints a line if **any** one is tracked — so a
+fixture precondition failure reports as itself instead of as a resolver defect.
 
 ### Defects found after it was green
 
@@ -508,7 +563,7 @@ absent.
 ## Running it
 
 ```bash
-make always-loaded-budget            # the live gate (exits 1 today, correctly)
+make always-loaded-budget            # the live gate (in `make validate` since QUM-1155)
 make test-always-loaded-budget-unit  # the fixture suite (in `make validate`)
 
 bash scripts/always-loaded-budget.sh --root . --ceiling 900   # ad-hoc
@@ -516,4 +571,4 @@ bash scripts/always-loaded-budget.sh --root . --ceiling 900   # ad-hoc
 
 Files: `scripts/always-loaded-budget.sh`, `.conf` (the ceiling), `.allow` (the
 mention allowlist), `scripts/testdata/always-loaded-manifest.observed` (the
-tripwire), `scripts/test-always-loaded-budget.sh` (94 assertions).
+tripwire), `scripts/test-always-loaded-budget.sh` (149 assertions).

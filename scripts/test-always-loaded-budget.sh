@@ -69,16 +69,17 @@ fi
 # (so counters cannot roll up in variables) and tags its ledger lines with
 # $BLOCK. Bump the number when you add or remove an assertion in that block.
 EXPECT_BLOCKS="
-multiplicity:10
-antidedup:2
-discovery:7
-imports:18
-readcheck:11
+multiplicity:11
+antidedup:3
+discovery:8
+imports:24
+readcheck:12
 mention:6
-ceiling:10
+ceiling:11
 usage:7
-report:9
-manifest:13
+report:10
+manifest:14
+tracked:42
 "
 
 BLOCK=unset
@@ -180,6 +181,28 @@ track() {
 	return 0
 }
 
+# track_ok REPO PATH... — track, and ASSERT it took. Since QUM-1155 the enforced
+# set is tracked-only, so an untracked fixture CLAUDE.md resolves to zero
+# enforced injections and trips the discovery floor — which reads exactly like a
+# resolver defect. One ledger line per call, so each block's floor moves by the
+# number of calls it makes.
+#
+# The count comparison is not decoration: `git ls-files -- a b c` prints a line
+# for any path that IS tracked, so a `-n` test passes on a PARTIAL track, and the
+# block's headline totals depend on the paths that silently failed. It asserts
+# the INDEX, matching the resolver's own `git ls-files` oracle — a resolver that
+# switched to `git ls-tree HEAD` would diverge here undetected.
+track_ok() {
+	local r=$1
+	shift
+	local want=$#
+	if track "$r" "$@" && [ "$(git -C "$r" ls-files -- "$@" | wc -l | tr -d ' ')" = "$want" ]; then
+		pass "setup: tracked all $want of: $*"
+	else
+		fail "setup FAILED: did not track all of '$*' — enforced totals in this block would be wrong, and would read as a resolver defect"
+	fi
+}
+
 conf() { echo "CEILING=$2" >"$1"; }
 
 # EMPTY_CFG — an EXISTING but empty out-of-tree config dir. Pointing the default
@@ -234,10 +257,19 @@ echo "--- injection multiplicity ---"
 	wt=$(add_worktree "$repo" a)
 	assert_setup "worktree fixture exists" -d "$wt"
 	nlines "$repo/CLAUDE.local.md" 7
-	mkdir -p "$repo/.sprawl"
+	mkdir -p "$repo/.sprawl" "$repo/docs"
 	nlines "$repo/.sprawl/CLAUDE.local.md" 3 # mid-level: separates "walk up" from "root+worktree"
 	nlines "$wt/CLAUDE.md" 30
 	nlines "$wt/CLAUDE.local.md" 5
+	# Enforcement is tracked-only, and tracked-ness is a property of the NAME in
+	# the ROOT index: <worktree>/CLAUDE.md is enforced because `CLAUDE.md` is
+	# tracked at the root. The three root copies below exist to put those names
+	# in the index; each is either shadowed or a descendant, so none is counted —
+	# which the totals in this block would catch immediately if one were.
+	nlines "$repo/CLAUDE.md" 999
+	nlines "$repo/.sprawl/CLAUDE.md" 500
+	nlines "$repo/docs/CLAUDE.md" 500
+	track_ok "$repo" CLAUDE.md CLAUDE.local.md .sprawl/CLAUDE.md .sprawl/CLAUDE.local.md docs/CLAUDE.md
 	c="$TMPPARENT/c1.conf"
 	conf "$c" 1000
 
@@ -250,8 +282,6 @@ echo "--- injection multiplicity ---"
 	# accumulates. Same directory, same walk, opposite treatment — measured from
 	# three live agent context headers (weave at the repo root, two managers in
 	# worktrees), not inferred.
-	nlines "$repo/CLAUDE.md" 999
-	nlines "$repo/.sprawl/CLAUDE.md" 500
 	run_budget "$wt" --conf "$c"
 	assert_eq "ancestor CLAUDE.md files are NOT counted when a nearer one exists" "45" "$(verdict_field in_tree)"
 
@@ -276,6 +306,8 @@ echo "--- injection multiplicity ---"
 	nlines "$repo/CLAUDE.local.md" 5
 	cp "$repo/CLAUDE.local.md" "$wt/CLAUDE.local.md"
 	nlines "$wt/CLAUDE.md" 10
+	nlines "$repo/CLAUDE.md" 77 # shadowed; exists to put the NAME in the root index
+	track_ok "$repo" CLAUDE.md CLAUDE.local.md
 	c="$TMPPARENT/c2.conf"
 	conf "$c" 1000
 	run_budget "$wt" --conf "$c"
@@ -299,6 +331,7 @@ echo "--- discovery floor / positive control ---"
 	assert_contains "empty repo names the zero-resolution" "$OUT$ERROUT" "resolved 0 in-tree injections"
 
 	nlines "$repo/CLAUDE.md" 40
+	track_ok "$repo" CLAUDE.md
 	run_budget "$repo" --conf "$c"
 	assert_eq "the resolver finds a file it is pointed at (main checkout, 40 lines)" "40" "$(verdict_field in_tree)"
 
@@ -335,6 +368,7 @@ echo "--- @-import resolution ---"
 	nlines "$repo/b.md" 10
 	nlines "$repo/CLAUDE.md" 9
 	prepend "@b.md" "$repo/CLAUDE.md"
+	track_ok "$repo" b.md CLAUDE.md
 	run_budget "$repo" --conf "$c"
 	assert_eq "A@->B chain counts both (10+10)" "20" "$(verdict_field in_tree)"
 	assert_contains "the report states how many imports resolved" "$OUT" "@-imports resolved: 1"
@@ -343,6 +377,7 @@ echo "--- @-import resolution ---"
 	nlines "$repo/c.md" 10
 	nlines "$repo/b.md" 9
 	prepend "@c.md" "$repo/b.md"
+	track_ok "$repo" c.md
 	run_budget "$repo" --conf "$c"
 	assert_eq "transitive A->B->C counts all three" "30" "$(verdict_field in_tree)"
 	assert_contains "the import counter is not stuck at 1" "$OUT" "@-imports resolved: 2"
@@ -359,6 +394,7 @@ echo "--- @-import resolution ---"
 	printf '@d.md\n' >"$repo/b.md"
 	printf '@d.md\n' >"$repo/c.md"
 	printf '@b.md\n@c.md\n' >"$repo/CLAUDE.md"
+	track_ok "$repo" CLAUDE.md b.md c.md d.md
 	run_budget "$repo" --conf "$c"
 	assert_eq "a diamond counts the shared import once per path (2+1+1+10+10)" "24" "$(verdict_field in_tree)"
 	assert_contains "the diamond resolves four imports, not three" "$OUT" "@-imports resolved: 4"
@@ -371,6 +407,7 @@ echo "--- @-import resolution ---"
 	conf "$c" 1000
 	printf '@b.md\n' >"$repo/CLAUDE.md"
 	printf '@CLAUDE.md\n' >"$repo/b.md"
+	track_ok "$repo" CLAUDE.md b.md
 	run_budget "$repo" --conf "$c"
 	assert_eq "an import cycle terminates and exits 0" "0" "$RC"
 	assert_eq "a cycle counts each file once per chain (1+1)" "2" "$(verdict_field in_tree)"
@@ -382,6 +419,7 @@ echo "--- @-import resolution ---"
 	c="$TMPPARENT/c9.conf"
 	conf "$c" 1000
 	printf '@nope.md\n' >"$repo/CLAUDE.md"
+	track_ok "$repo" CLAUDE.md
 	run_budget "$repo" --conf "$c"
 	assert_eq "a dangling @-import fails rather than skipping" "1" "$RC"
 	assert_contains "the dangling import names the unresolved path" "$OUT$ERROUT" "nope.md"
@@ -397,6 +435,7 @@ echo "--- @-import resolution ---"
 	nlines "$outside/global.md" 50
 	nlines "$repo/CLAUDE.md" 9
 	prepend "@$outside/global.md" "$repo/CLAUDE.md"
+	track_ok "$repo" CLAUDE.md
 	c="$TMPPARENT/c9b.conf"
 	conf "$c" 1000
 	run_budget "$repo" --conf "$c"
@@ -423,7 +462,11 @@ echo "--- read-instruction ban ---"
 	mkdir -p "$repo/docs" "$repo/scripts"
 	nlines "$repo/docs/x.md" 5
 	nlines "$repo/scripts/helper.sh" 2
-	track "$repo" docs/x.md scripts/helper.sh
+	# The root CLAUDE.md exists only to put the NAME in the root index, which is
+	# what makes the worktree copy enforced. It is shadowed by that copy and never
+	# counted — the totals elsewhere in this suite would catch it if it were.
+	nlines "$repo/CLAUDE.md" 3
+	track_ok "$repo" CLAUDE.md docs/x.md scripts/helper.sh
 	# `track` cannot fail silently here: three negative controls below assert
 	# violations=0, and an empty index would satisfy all of them for the wrong
 	# reason.
@@ -535,6 +578,7 @@ echo "--- ceiling ---"
 	# `other.md` is a control, not scenery: a resolver that globs every .md in
 	# the tree would count it and every total below would move.
 	nlines "$repo/other.md" 7
+	track_ok "$repo" CLAUDE.md big.md other.md
 	c="$TMPPARENT/c12.conf"
 
 	run_budget "$repo" --conf "$TMPPARENT/does-not-exist.conf"
@@ -623,6 +667,7 @@ echo "--- report shape ---"
 	nlines "$repo/imported.md" 12
 	nlines "$repo/CLAUDE.md" 27
 	prepend "@imported.md" "$repo/CLAUDE.md"
+	track_ok "$repo" CLAUDE.md imported.md
 	c="$TMPPARENT/c14.conf"
 	conf "$c" 100
 
@@ -670,6 +715,9 @@ echo "--- manifest tripwire ---"
 	nlines "$repo/CLAUDE.local.md" 7
 	nlines "$wt/CLAUDE.md" 30
 	nlines "$wt/CLAUDE.local.md" 5
+	# 4 lines: this is also the [root] perspective's CLAUDE.md further down.
+	nlines "$repo/CLAUDE.md" 4
+	track_ok "$repo" CLAUDE.md CLAUDE.local.md
 	c="$TMPPARENT/c15.conf"
 	conf "$c" 1000
 	man="$TMPPARENT/manifest15"
@@ -697,7 +745,6 @@ echo "--- manifest tripwire ---"
 	# first.
 	sman="$TMPPARENT/manifest15s"
 	printf '[worktree]\n<worktree>/CLAUDE.md\n<worktree>/CLAUDE.local.md\nCLAUDE.local.md\n[root]\nCLAUDE.md\nCLAUDE.local.md\n' >"$sman"
-	nlines "$repo/CLAUDE.md" 4
 	run_budget "$wt" --conf "$c" --check-manifest "$sman"
 	assert_eq "a sectioned manifest selects the [worktree] perspective from a worktree" "0" "$RC"
 	run_budget "$repo" --conf "$c" --check-manifest "$sman"
@@ -714,6 +761,164 @@ echo "--- manifest tripwire ---"
 	# names every injection, so a whole-output match here would pass vacuously
 	# with the mismatch detail entirely absent (watched: mutation M28).
 	assert_line_both "the missing-entry failure names the un-recorded injection" "$OUT$ERROUT" "derived but NOT recorded" "<worktree>/CLAUDE.local.md"
+)
+
+# ---------------------------------------------------------------------------
+# 9. Tracked-only enforcement (QUM-1155). The ENFORCED set is the injected files
+#    that are git-tracked in the SPRAWL ROOT's index. CLAUDE.local.md is
+#    gitignored and per-user: it loads here and does not exist in a fresh clone,
+#    so enforcing it makes `make validate` pass or fail as a function of whose
+#    checkout ran it, and makes the recorded manifest list entries a clean clone
+#    cannot derive. Untracked always-loaded files are still REPORTED with their
+#    sizes and counted on the verdict line — excluded, never hidden.
+# ---------------------------------------------------------------------------
+echo "--- tracked-only enforcement ---"
+(
+	BLOCK=tracked
+	# The real repo's shape in miniature: a tracked CLAUDE.md at both levels, an
+	# untracked CLAUDE.local.md at both.
+	repo=$(new_repo)
+	assert_setup "repo fixture exists" -d "$repo/.git"
+	wt=$(add_worktree "$repo" a)
+	assert_setup "worktree fixture exists" -d "$wt"
+	nlines "$repo/CLAUDE.md" 11
+	nlines "$repo/CLAUDE.local.md" 7
+	nlines "$wt/CLAUDE.md" 30
+	nlines "$wt/CLAUDE.local.md" 5
+	c="$TMPPARENT/c16.conf"
+	conf "$c" 1000
+	track_ok "$repo" CLAUDE.md
+	assert_setup "CLAUDE.local.md is deliberately NOT tracked" -z "$(git -C "$repo" ls-files CLAUDE.local.md)"
+
+	run_budget "$wt" --conf "$c"
+	# 30/1/2 do NOT discriminate on their own: a basename blocklist ("skip
+	# anything called CLAUDE.local.md") — the most tempting wrong fix, given the
+	# motivating bug — produces all three. Subshells 2 and 4 are what kill it,
+	# via files that no name match would catch. Do not delete them thinking they
+	# are variants of this one.
+	assert_eq "untracked CLAUDE.local.md copies are excluded from the enforced total" "30" "$(verdict_field in_tree)"
+	assert_eq "only the tracked injection is an enforced site" "1" "$(verdict_field injections)"
+	assert_eq "the excluded copies are COUNTED on the verdict line, not dropped" "2" "$(verdict_field untracked)"
+	# Path AND exclusion marker on ONE line. A size-only check cannot tell which
+	# TABLE the row is in, so an implementation that subtracts the file from the
+	# total while still rendering it as enforced would pass — and that report
+	# contradicts its own verdict line, which is the state an operator hits.
+	assert_line_both "the excluded worktree copy is marked NOT enforced where it is listed" "$OUT" "<worktree>/CLAUDE.local.md" "NOT enforced"
+	assert_line_both "the excluded root copy is reported with its size, not vanished" "$OUT" "CLAUDE.local.md" "7"
+	assert_contains "the report states the tracked-only policy" "$OUT" "GIT-TRACKED"
+	assert_eq "an otherwise-clean tracked-only run exits 0" "0" "$RC"
+
+	# The ceiling must be compared against the ENFORCED total, which is the whole
+	# gate. 35 sits between the enforced 30 and the unfiltered 42: a resolver that
+	# reports 30 but still compares 42 fails here and nowhere else in this block.
+	cmid="$TMPPARENT/c16mid.conf"
+	conf "$cmid" 35
+	run_budget "$wt" --conf "$cmid"
+	assert_eq "the ceiling is compared against the enforced total, not the raw one" "0" "$RC"
+	assert_not_contains "and no over-ceiling diagnostic is printed" "$OUT$ERROUT" "over the ceiling"
+
+	# The fresh-clone rc=1 this slice removes, reproduced as an assertion: a
+	# manifest recording the untracked copies (which is what the pre-QUM-1155
+	# resolver derived) must now FAIL, because a clean clone cannot derive them.
+	man="$TMPPARENT/manifest16"
+	printf '<worktree>/CLAUDE.md\n' >"$man"
+	run_budget "$wt" --conf "$c" --check-manifest "$man"
+	assert_eq "a tracked-only manifest matches" "0" "$RC"
+	printf '<worktree>/CLAUDE.md\n<worktree>/CLAUDE.local.md\nCLAUDE.local.md\n' >"$man"
+	run_budget "$wt" --conf "$c" --check-manifest "$man"
+	assert_eq "a manifest recording untracked copies fails (the fresh-clone rc=1)" "1" "$RC"
+	assert_line_both "and it names an entry a clean clone cannot derive" "$OUT$ERROUT" "recorded but NOT derived" "CLAUDE.local.md"
+)
+(
+	BLOCK=tracked
+	# Shadowing is a fact about the HARNESS; tracking is a policy about
+	# ENFORCEMENT, and conflating them silently substitutes a file no agent
+	# loads. An untracked NEARER CLAUDE.md must still shadow the tracked
+	# ancestor — it is excluded from the total, not replaced by the ancestor.
+	repo=$(new_repo)
+	assert_setup "repo fixture exists" -d "$repo/.git"
+	wt=$(add_worktree "$repo" a)
+	assert_setup "worktree fixture exists" -d "$wt"
+	mkdir -p "$repo/.sprawl" "$repo/docs"
+	nlines "$repo/CLAUDE.md" 40
+	nlines "$repo/CLAUDE.local.md" 6
+	nlines "$repo/docs/x.md" 5
+	nlines "$repo/.sprawl/CLAUDE.md" 9 # NEARER than $repo/CLAUDE.md, and untracked
+	c="$TMPPARENT/c17.conf"
+	conf "$c" 1000
+	# The tracked/untracked assignment is INVERTED from subshell 1 on purpose:
+	# here CLAUDE.local.md is the tracked file and a CLAUDE.md is the untracked
+	# one, so nothing in this scenario can be satisfied by a filename rule.
+	track_ok "$repo" CLAUDE.md CLAUDE.local.md docs/x.md
+	assert_setup "the nearer CLAUDE.md is untracked" -z "$(git -C "$repo" ls-files .sprawl/CLAUDE.md)"
+
+	run_budget "$wt" --conf "$c"
+	assert_eq "an untracked NEARER CLAUDE.md still shadows the tracked ancestor (6, not 46)" "6" "$(verdict_field in_tree)"
+	assert_eq "the shadowing copy is counted as excluded, not silently dropped" "1" "$(verdict_field untracked)"
+	assert_line_both "and it is reported with its size, not vanished" "$OUT" ".sprawl/CLAUDE.md" "9"
+
+	# Per-machine determinism, the whole point: a mandated read inside an
+	# untracked always-loaded file must NOT fire, or validate goes red on the one
+	# machine that has the file and green everywhere else.
+	printf 'Read `docs/x.md` first.\n' >"$repo/.sprawl/CLAUDE.md"
+	run_budget "$wt" --conf "$c"
+	assert_eq "a mandated read inside an untracked always-loaded file does not fire" "0" "$(verdict_field violations)"
+	# Re-asserted: without it, an exclusion that broke on this path would make the
+	# total 7 and BOTH assertions either side would still pass.
+	assert_eq "and the shrunk untracked file is still excluded from the total" "6" "$(verdict_field in_tree)"
+	assert_eq "and the run is clean" "0" "$RC"
+)
+(
+	BLOCK=tracked
+	# The floor must still refuse an empty ENFORCED set — but say which of the
+	# two states it is, or the operator hunts a discovery bug that is not there.
+	repo=$(new_repo)
+	assert_setup "repo fixture exists" -d "$repo/.git"
+	nlines "$repo/CLAUDE.md" 40
+	c="$TMPPARENT/c18.conf"
+	conf "$c" 1000
+	assert_setup "nothing in the fixture is tracked" -z "$(git -C "$repo" ls-files)"
+	run_budget "$repo" --conf "$c"
+	assert_eq "an all-untracked tree does NOT exit 0" "1" "$RC"
+	assert_contains "the floor's existing wording is preserved" "$OUT$ERROUT" "resolved 0 in-tree injections"
+	# On the SAME line as the floor message. An unscoped substring match would be
+	# satisfied by the policy banner and the untracked= field, which this run
+	# prints regardless — so it would stop discriminating the moment the feature
+	# lands, which is precisely when it needs to.
+	assert_line_both "and the floor message itself distinguishes an empty ENFORCED set from an empty tree" "$OUT$ERROUT" "resolved 0 in-tree injections" "untracked"
+)
+(
+	BLOCK=tracked
+	# An @-import from a tracked file to an untracked file is excluded too:
+	# the enforced set is uniformly tracked-only, whatever route reached it.
+	# This also pins that EDITING a tracked file does not un-track it — an
+	# implementation keying off `git status --porcelain` would get this wrong.
+	repo=$(new_repo)
+	assert_setup "repo fixture exists" -d "$repo/.git"
+	nlines "$repo/CLAUDE.md" 11
+	c="$TMPPARENT/c19.conf"
+	conf "$c" 1000
+	track_ok "$repo" CLAUDE.md
+	nlines "$repo/local-notes.md" 50
+	prepend "@local-notes.md" "$repo/CLAUDE.md"
+	assert_setup "the import target is untracked" -z "$(git -C "$repo" ls-files local-notes.md)"
+
+	run_budget "$repo" --conf "$c"
+	assert_eq "an untracked @-import is excluded from the enforced total (12, not 62)" "12" "$(verdict_field in_tree)"
+	assert_eq "the tracked base is still the only enforced site" "1" "$(verdict_field injections)"
+	assert_contains "the import still RESOLVED — exclusion is not a walker failure" "$OUT" "@-imports resolved: 1"
+	assert_eq "the excluded import is counted, not silently dropped" "1" "$(verdict_field untracked)"
+	assert_line_both "the excluded import is reported with its size" "$OUT" "local-notes.md" "50"
+
+	# Mutation on the axis, and the fresh-clone state: track the same file and it
+	# comes back into the enforced set. Also pins that `untracked=0` is PRINTED on
+	# a fully-tracked tree — verdict_field returns the whole line when a field is
+	# absent, so an implementation that omits the field when zero is otherwise
+	# invisible here, and zero is what a clean clone reports.
+	track_ok "$repo" local-notes.md
+	run_budget "$repo" --conf "$c"
+	assert_eq "tracking the import folds it back into the enforced total" "62" "$(verdict_field in_tree)"
+	assert_eq "a fully-tracked tree reports untracked=0, it does not omit the field" "0" "$(verdict_field untracked)"
 )
 
 # ---------------------------------------------------------------------------

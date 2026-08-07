@@ -32,20 +32,39 @@
 #
 # Out-of-tree entries are deliberately omitted: they are reported by the script
 # but are not part of the enforced in-tree set.
+# TRACKED-ONLY, since QUM-1155. This file records the ENFORCED set, which is the
+# subset of the observed injections that are git-tracked in the sprawl root's
+# index. Both CLAUDE.local.md copies were recorded here and are now deliberately
+# ABSENT. Nothing above changed: they still load, the three headers still say so,
+# and the resolver still reports them with their sizes under "in-tree but
+# UNTRACKED".
+#
+# They are gone from THIS FILE because CLAUDE.local.md is gitignored and
+# per-user. In a fresh clone it does not exist, so the resolver derives a set
+# without it — and every recorded-but-not-derived entry is a FAILURE by design
+# ("absence is trivially true"). The old recording therefore made a correct clean
+# clone exit 1, measured on a --depth 1 clone of main. Do NOT re-add them, and do
+# NOT add an [untracked] section: either one re-creates that failure, on every
+# machine except the one that happens to hold the file.
+#
+# Consequence to accept rather than fix: the CLAUDE.local.md doubling is no
+# longer pinned by this tripwire, because the doubled file is the untracked one.
+# It is still pinned by the resolver's untracked report (which prints both copies
+# with distinct paths) and by the multiplicity assertions in
+# scripts/test-always-loaded-budget.sh.
+#
 # TWO perspectives, both observed, selected by where --root points. Recording
 # only one makes the other false-fail, and "re-record" would then break the
 # first — a ping-pong between two correct readings.
 
-# An agent in a worktree (forge, hex): the worktree CLAUDE.md, and BOTH copies
-# of CLAUDE.local.md.
+# An agent in a worktree (forge, hex, byte): of the three files that load, only
+# the worktree CLAUDE.md is tracked. The two CLAUDE.local.md copies are reported,
+# not enforced.
 [worktree]
 <worktree>/CLAUDE.md
-<worktree>/CLAUDE.local.md
-CLAUDE.local.md
 
-# weave, at the main checkout with no worktree: the root pair. This is the
-# observation that proves root CLAUDE.md is not skipped for an intrinsic
-# reason — it loads here, and is shadowed by the nearer copy in a worktree.
+# weave, at the main checkout with no worktree. This is still the observation
+# that proves root CLAUDE.md is not skipped for an intrinsic reason — it loads
+# here, and is shadowed by the nearer copy in a worktree.
 [root]
 CLAUDE.md
-CLAUDE.local.md
