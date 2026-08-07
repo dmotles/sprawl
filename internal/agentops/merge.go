@@ -2,6 +2,7 @@ package agentops
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"io"
 	"strings"
@@ -48,10 +49,41 @@ type MergeOutcome struct {
 	QueueWait time.Duration
 }
 
-// Merge squash-merges agentName's branch into the caller's current branch.
-func Merge(ctx context.Context, deps *MergeDeps, agentName, messageOverride string, noValidate, dryRun bool) (*MergeOutcome, error) {
+// ErrMessageOverrideRetired is returned for a non-empty message override.
+//
+// It REFUSES rather than ignores, and the asymmetry between the two surfaces is
+// what decides that. Cobra errors on an unknown flag, so deleting `--message`
+// would fail loudly for CLI callers — but encoding/json SILENTLY DROPS an
+// unknown property, so deleting `message:` from the MCP tool's struct would
+// make it a no-op that every agent goes on passing and no one is told about.
+// Since one surface cannot fail loudly by deletion, both are made to fail
+// loudly by refusal.
+var ErrMessageOverrideRetired = errors.New("the merge engine no longer creates a commit, so a commit message has nothing to apply to")
+
+// Merge fast-forwards agentName's branch into the caller's current branch,
+// after rebasing and validating it in the agent's own worktree.
+//
+// salvagingTerminalAgent relaxes precondition 4 (the agent must be active or
+// have reported complete). It is named for what it PERMITS rather than for the
+// check it disables, deliberately: a parameter called skipPrecondition4 or
+// force invites being set to make an error go away, whereas this one can only
+// be passed by someone who means it. Set true ONLY by the retire path, where
+// the agent is being torn down and its branch is the entire point — an agent
+// that died with commits is legitimately mergeable, while precondition 4 exists
+// to stop merging an agent that never got going (QUM-625).
+func Merge(ctx context.Context, deps *MergeDeps, agentName, messageOverride string, noValidate, dryRun, salvagingTerminalAgent bool) (*MergeOutcome, error) {
 	if err := agent.ValidateName(agentName); err != nil {
 		return nil, err
+	}
+
+	// Refused FIRST, before any precondition work: the caller asked for
+	// something the engine cannot do, and doing most of a merge before saying
+	// so would be worse than saying so immediately.
+	if messageOverride != "" {
+		return nil, fmt.Errorf("%w (QUM-1087): the agent's own commits are fast-forwarded as they are.\n"+
+			"To land a single commit with a message you choose, squash on the agent's branch first, then merge:\n"+
+			"  git -C <agent worktree> reset --soft $(git merge-base HEAD <parent branch>) && git -C <agent worktree> commit",
+			ErrMessageOverrideRetired)
 	}
 
 	sprawlRoot := deps.Getenv("SPRAWL_ROOT")
@@ -89,7 +121,7 @@ func Merge(ctx context.Context, deps *MergeDeps, agentName, messageOverride stri
 	// reported completion (LastReportState=="complete"). QUM-625 Q1: the old
 	// allow-set {active, done} is reproduced under the new axes — "done" is no
 	// longer a Status value; completion lives on the outcome axis.
-	if agentState.Status != state.StatusActive && agentState.LastReportState != ReportStateComplete {
+	if !salvagingTerminalAgent && agentState.Status != state.StatusActive && agentState.LastReportState != ReportStateComplete {
 		return nil, fmt.Errorf("agent %q cannot be merged (status: %q). Agent must be active or have reported complete", agentName, agentState.Status)
 	}
 
@@ -164,7 +196,7 @@ func Merge(ctx context.Context, deps *MergeDeps, agentName, messageOverride stri
 		if StagedOnlyPorcelain(agentStatus) {
 			return nil, fmt.Errorf(
 				"agent %q worktree has STAGED content its branch does not contain, and no unstaged edits.\n"+
-					"That is the shape a PREVIOUS FAILED MERGE leaves behind — the engine's `git reset --soft` ran and the squash commit did not (QUM-1100) — and also what an agent that staged work without committing looks like.\n"+
+					"That is the shape a PREVIOUS FAILED MERGE leaves behind when it was run by a PRE-QUM-1087 engine — its `git reset --soft` ran and its squash commit did not (QUM-1100) — and also what an agent that staged work without committing looks like. The current engine creates no commit and cannot produce this, so on an up-to-date binary the second cause is the likely one.\n"+
 					"Do NOT discard or clean this worktree before checking: if it is the former, the staged tree may be the only live copy of the agent's work.\n"+
 					"Check, in this order:\n"+
 					"  git -C %s rev-parse --abbrev-ref HEAD   # which branch is it really on\n"+
@@ -191,7 +223,6 @@ func Merge(ctx context.Context, deps *MergeDeps, agentName, messageOverride stri
 		AgentWorktree:   agentState.Worktree,
 		ParentBranch:    targetBranch,
 		ParentWorktree:  callerWorktree,
-		MessageOverride: messageOverride,
 		NoValidate:      noValidate,
 		ValidateCmd:     sprawlCfg.Validate,
 		ValidateTimeout: sprawlCfg.ValidateTimeoutDuration(),
@@ -216,7 +247,7 @@ func Merge(ctx context.Context, deps *MergeDeps, agentName, messageOverride stri
 
 	if !dryRun {
 		fmt.Fprintf(deps.Stderr, "Merged agent %q (branch %s) into %s\n", agentName, resolvedBranch, targetBranch)
-		fmt.Fprintf(deps.Stderr, "  Squash commit: %s\n", result.CommitHash)
+		fmt.Fprintf(deps.Stderr, "  %s is now at: %s\n", targetBranch, result.MergedTip)
 		fmt.Fprintf(deps.Stderr, "  Agent %s is still active (not retired)\n", agentName)
 		fmt.Fprintf(deps.Stderr, "  Branch %s preserved (shows in git branch --merged)\n", resolvedBranch)
 	}

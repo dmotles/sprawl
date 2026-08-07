@@ -2,21 +2,20 @@ package merge
 
 import (
 	"context"
-	"errors"
 	"fmt"
 	"io"
 	"path/filepath"
 	"reflect"
-	"regexp"
 	"strings"
 	"time"
 
 	"github.com/dmotles/sprawl/internal/state"
 )
 
-// DefaultValidateTimeout is the default timeout for post-merge validation
-// when neither Config.ValidateTimeout nor a project-level override is set.
-// QUM-496.
+// DefaultValidateTimeout is the default timeout for the validation run, which
+// since QUM-1087 happens BEFORE the parent is touched — it is pre-merge, not
+// post-merge. Applies when neither Config.ValidateTimeout nor a project-level
+// override is set. QUM-496.
 const DefaultValidateTimeout = 10 * time.Minute
 
 // PremergeRefPrefix roots the recovery refs written before every non-noop,
@@ -44,44 +43,21 @@ func premergeRefs(agentName string, now time.Time) (agentRef, parentRef string) 
 	return base + "/agent", base + "/parent"
 }
 
-// CommitRecord is one commit from the agent branch's range: the pair a
-// squash destroys and this package has to carry forward.
-type CommitRecord struct {
-	// SHA is the full 40-char hash. Recorded in full, not abbreviated:
-	// abbreviation length depends on repository size, so a record that is
-	// unambiguous in a fixture can be ambiguous in a real repo — and after
-	// the squash this SHA is the only handle relating the merged commit to
-	// what was reviewed.
-	SHA string
-
-	// Message is the raw %B body with its trailing newline trimmed.
-	Message string
-}
-
-// Subject returns the commit's first line.
-func (c CommitRecord) Subject() string {
-	if i := strings.IndexByte(c.Message, '\n'); i >= 0 {
-		return c.Message[:i]
-	}
-	return c.Message
-}
-
 // Config holds the parameters for a merge operation.
 type Config struct {
-	SprawlRoot      string
-	AgentName       string
-	AgentBranch     string
-	AgentWorktree   string
-	ParentBranch    string
-	ParentWorktree  string
-	MessageOverride string
-	NoValidate      bool
-	ValidateCmd     string
-	DryRun          bool
-	AgentState      *state.AgentState
+	SprawlRoot     string
+	AgentName      string
+	AgentBranch    string
+	AgentWorktree  string
+	ParentBranch   string
+	ParentWorktree string
+	NoValidate     bool
+	ValidateCmd    string
+	DryRun         bool
+	AgentState     *state.AgentState
 
-	// ValidateTimeout caps the duration of post-merge validation. Zero means
-	// use DefaultValidateTimeout. QUM-496.
+	// ValidateTimeout caps the duration of the validation run (pre-merge since
+	// QUM-1087). Zero means use DefaultValidateTimeout. QUM-496.
 	ValidateTimeout time.Duration
 }
 
@@ -90,19 +66,23 @@ type Deps struct {
 	LockAcquire  func(lockPath string) (unlock func(), err error)
 	GitMergeBase func(repoRoot, a, b string) (string, error)
 
-	// GitLogRange returns the commits in base..head, oldest first, restricted
-	// to the branch's own line of development. It is the SOURCE OF THE SQUASH
-	// COMMIT MESSAGE (QUM-1105) — the agent's commit messages are the durable
-	// record, and after the squash they exist only here.
-	GitLogRange func(worktree, base, head string) ([]CommitRecord, error)
-
 	GitRevParseHead func(worktree string) (string, error)
-	GitResetSoft    func(worktree, ref string) error
-	GitCommit       func(worktree, message string) (string, error)
-	GitRebase       func(worktree, onto string) error
-	GitRebaseAbort  func(worktree string) error
-	GitFFMerge      func(worktree, branch string) error
-	GitResetHard    func(worktree string) error
+
+	// GitRevParseRef resolves rev to a full SHA. The ff-merge predicate reads
+	// the tip of the REF `git merge --ff-only` will resolve, not the
+	// worktree's HEAD; where those diverge a HEAD-based check asserts a
+	// property of a different object than the merge acts on (QUM-1088 was
+	// exactly that shape).
+	GitRevParseRef func(worktree, rev string) (string, error)
+
+	// GitIsAncestor reports whether ancestor is an ancestor of descendant.
+	// Exit 1 is git's FALSE answer and arrives as (false, nil) — only a real
+	// git failure returns an error.
+	GitIsAncestor func(worktree, ancestor, descendant string) (bool, error)
+
+	GitRebase      func(worktree, onto string) error
+	GitRebaseAbort func(worktree string) error
+	GitFFMerge     func(worktree, branch string) error
 
 	// RunTestsStreaming runs the validate command, streaming each output
 	// line into sink as it is produced and honoring ctx for cancellation.
@@ -143,17 +123,45 @@ type Deps struct {
 
 // Result holds the outcome of a merge operation.
 type Result struct {
-	CommitHash   string
-	WasNoOp      bool
-	PreSquashSHA string
+	// MergedTip is the parent branch's tip AFTER the fast-forward — i.e. the
+	// commit the parent now points at, read back from the parent worktree.
+	//
+	// It replaces the old CommitHash, which reported the squash commit's hash
+	// captured BEFORE the rebase. After the rebase that object existed on no
+	// ref, so the field named a commit nobody could look up. Reporting the
+	// post-ff parent tip cannot have that failure mode: it is read from the
+	// ref, after the ref moved, and it is the same value the SHA-equality
+	// predicate already compares.
+	MergedTip string
+
+	WasNoOp bool
 }
 
-// Merge performs the squash+rebase+fast-forward merge sequence.
-// Steps: acquire lock, check for zero commits, squash, rebase, ff-merge,
-// validate, write poke, release lock.
+// Merge rebases the agent's branch onto the parent's, validates the REBASED
+// TREE IN THE AGENT WORKTREE, and only then fast-forwards the parent onto it.
+// Steps: acquire lock, check for zero commits, write recovery refs, rebase,
+// prove fast-forwardability, validate, ff-merge, prove the ref moved, poke,
+// release lock.
 //
-// ctx drives post-merge validation; ValidateTimeout (or DefaultValidateTimeout)
-// is layered on top to bound runaway validate commands (QUM-496/QUM-524).
+// THE ORDER IS THE POINT (QUM-1087). The parent is mutated exactly once,
+// forward-only, after the tree is already known good — so there is no rollback
+// of the parent to get wrong, and this package contains no primitive that could
+// perform one. Every confirmed loss mode in the previous design lived in the
+// window between "the parent was mutated" and "the tree was known good":
+//
+//   - S5b: the agent's content was already upstream under a different SHA, so
+//     the rebase dropped it and `--ff-only` exited 0 WITHOUT MOVING the parent.
+//     The validate-failure rollback then rewound a pre-existing parent commit.
+//   - S5c: a second merge landed during the first's validation, and the first's
+//     rollback removed the second's work while leaving its own.
+//
+// Neither is patched here; both are structurally absent. Note also that the
+// engine creates NO commit: the agent's own commits are fast-forwarded as they
+// are, which additionally removes the QUM-1083 squash-then-rebase divergence
+// class (a downstream branch stays a genuine ancestor).
+//
+// ctx drives validation; ValidateTimeout (or DefaultValidateTimeout) is layered
+// on top to bound runaway validate commands (QUM-496/QUM-524).
 func Merge(ctx context.Context, cfg *Config, deps *Deps) (*Result, error) {
 	// Dry-run: show plan without making changes or acquiring lock.
 	if cfg.DryRun {
@@ -184,8 +192,9 @@ func Merge(ctx context.Context, cfg *Config, deps *Deps) (*Result, error) {
 		return &Result{WasNoOp: true}, nil
 	}
 
-	// Step 3: Record recovery point.
-	preSquashSHA := agentHead
+	// Step 3: Record the recovery point. The first mutation is now the rebase,
+	// so this is the agent branch's tip as the rebase will find it.
+	preRebaseSHA := agentHead
 
 	// Step 3a (QUM-1090): write the premerge recovery refs BEFORE the first
 	// mutation. Both the reads and the writes here are pre-mutation, so a
@@ -197,16 +206,6 @@ func Merge(ctx context.Context, cfg *Config, deps *Deps) (*Result, error) {
 	}
 	agentRef, parentRef := premergeRefs(cfg.AgentName, deps.Now())
 
-	// Step 3b (QUM-1105): derive the commit message from the agent's own
-	// commits, still before the first mutation. Deriving here rather than at
-	// the commit means a branch we cannot describe is refused while it is
-	// intact, instead of after `reset --soft` has rewound it to the merge
-	// base — the QUM-1100 window, entered for a reason that is knowable in
-	// advance.
-	commitMsg, err := deriveCommitMessage(cfg, deps, mergeBase, agentHead, agentRef)
-	if err != nil {
-		return nil, err
-	}
 	// Written in SprawlRoot, not the agent worktree: refs are shared across
 	// worktrees, and SprawlRoot is the one path still guaranteed to exist on
 	// the retire path, which removes the agent worktree.
@@ -220,31 +219,91 @@ func Merge(ctx context.Context, cfg *Config, deps *Deps) (*Result, error) {
 		agentRef, agentHead, parentRef, parentTip)
 	cpMerge(deps, "merge.premerge-refs-written", "agent_ref", agentRef, "parent_ref", parentRef)
 
-	// Step 4: Squash agent's branch.
-	if err := deps.GitResetSoft(cfg.AgentWorktree, mergeBase); err != nil {
-		return nil, fmt.Errorf("squash reset: %w", err)
-	}
-
-	commitHash, err := deps.GitCommit(cfg.AgentWorktree, commitMsg)
-	if err != nil {
-		return nil, commitFailureError(cfg, deps, err, preSquashSHA, mergeBase, agentRef, parentRef)
-	}
-	cpMerge(deps, "merge.squash-committed", "commit", commitHash)
-
-	// Step 5: Rebase onto parent.
+	// Step 4: Rebase the agent's branch onto the parent's. THE FIRST MUTATION,
+	// and it is confined to the agent's own branch.
 	if err := deps.GitRebase(cfg.AgentWorktree, cfg.ParentBranch); err != nil {
 		_ = deps.GitRebaseAbort(cfg.AgentWorktree)
-		return nil, rebaseFailureError(cfg, deps, preSquashSHA, agentRef, parentRef)
+		return nil, rebaseFailureError(cfg, deps, preRebaseSHA, agentRef, parentRef)
 	}
 	cpMerge(deps, "merge.rebased")
 
-	// Step 6: Fast-forward merge on parent.
-	if err := deps.GitFFMerge(cfg.ParentWorktree, cfg.AgentBranch); err != nil {
-		return nil, fmt.Errorf("fast-forward merge failed (this is unexpected after a clean rebase): %w", err)
+	// Step 5: Prove the rebase produced a fast-forwardable branch, BEFORE
+	// validation and therefore before anything expensive.
+	//
+	// rebasedTip is read from the REF, and it is the value EVERY later step is
+	// stated in: the ff-precondition just below, the fast-forward itself, and
+	// the post-ff equality check. One object, read once, so those three cannot
+	// disagree about what "the validated tree" means.
+	//
+	// This read used to be justified by "`git merge --ff-only <branch>`
+	// resolves a name, so read the ref the merge will act on, not HEAD".
+	// That justification is now FALSE: step 7 fast-forwards this SHA, and a
+	// SHA resolves to itself. With the precondition below held, reading HEAD
+	// here would be EQUIVALENT; the ref is preferred only because it is the
+	// object the caller named.
+	//
+	// What is left is an UNSTATED PRECONDITION, recorded here rather than
+	// checked: that cfg.AgentBranch names the branch this worktree is actually
+	// on, so the tree validation STARTS ON is the tree this SHA points at.
+	// agentops.Merge — the only caller — holds it, because it derives
+	// AgentBranch from the worktree HEAD and refuses a detached HEAD. It is
+	// NOT enforced here.
+	//
+	// Note the precondition is NECESSARY, NOT SUFFICIENT, and the
+	// counterexample is in this package: the branch can move DURING validation
+	// (a live agent, or a validate command that commits — see
+	// TestMergeSafety_AgentBranchMovesDuringValidation), at which point the
+	// worktree's tree and this SHA diverge with the precondition still
+	// holding. What defends against that is not this read but step 7 merging
+	// this SHA and step 8's exact equality check.
+	rebasedTip, err := deps.GitRevParseRef(cfg.SprawlRoot, cfg.AgentBranch)
+	if err != nil {
+		return nil, fmt.Errorf("reading the rebased tip of %s: %w", cfg.AgentBranch, err)
 	}
-	cpMerge(deps, "merge.ff-merged")
+	// Captured HERE, before validation, so a later ff refusal can distinguish
+	// "the rebase was wrong" from "the parent moved underneath us". Those have
+	// different causes and different remedies, and reporting one as the other
+	// sends the caller to the wrong place.
+	parentTipBeforeValidate, err := deps.GitRevParseHead(cfg.ParentWorktree)
+	if err != nil {
+		return nil, fmt.Errorf("reading parent HEAD before validation: %w", err)
+	}
+	// ARGUMENT ORDER IS LOAD-BEARING. This asks "is the PARENT contained in the
+	// REBASED BRANCH" — the question whose true answer means fast-forwardable.
+	// Reversed it asks whether the branch is contained in the parent, a
+	// different claim that is also true whenever the two are equal (CLAUDE.md's
+	// "check that the question the command answers is the question you are
+	// claiming").
+	//
+	// What a swap actually costs, measured rather than assumed: it is invisible
+	// to the mock-based unit tests (their GitIsAncestor stub returns true
+	// regardless of arguments) and it BREAKS four real-git scenario tests, since
+	// post-rebase the parent is a strict ancestor so the reversed question
+	// answers false and the merge refuses. An earlier version of this comment
+	// claimed a swap would "leave the check green and inert" everywhere; the
+	// negative control refuted that.
+	ffOK, err := deps.GitIsAncestor(cfg.SprawlRoot, parentTipBeforeValidate, rebasedTip)
+	if err != nil {
+		// A git failure is NOT the same as a false answer: one is a broken
+		// repository to report, the other a rebase to diagnose.
+		return nil, fmt.Errorf("checking fast-forwardability of %s onto %s: %w", cfg.AgentBranch, cfg.ParentBranch, err)
+	}
+	if !ffOK {
+		return nil, fmt.Errorf(
+			"the rebase %s: parent %s is at %s, which is not contained in the rebased branch %s (%s).\n"+
+				"This is a signal to surface, not something the merge should reconcile: step 1 did not rebase correctly.\n"+
+				"Nothing was merged and the parent was not touched.\n%s",
+			ffPredicateFailure, cfg.ParentBranch, parentTipBeforeValidate, cfg.AgentBranch, rebasedTip,
+			refPairText(agentRef, parentRef))
+	}
+	cpMerge(deps, "merge.ff-precondition-ok", "parent_tip", parentTipBeforeValidate, "rebased_tip", rebasedTip)
 
-	// Step 7: Post-merge validation.
+	// Step 6: Validate THE REBASED TREE, IN THE AGENT WORKTREE.
+	//
+	// Post-rebase that tree is exactly what the parent would contain, so this
+	// is the same assertion the old design made — moved to a place where a red
+	// result costs nothing, because the parent has not been touched. A failure
+	// here has nothing to undo.
 	if !cfg.NoValidate && cfg.ValidateCmd != "" {
 		// QUM-588: open a persistent validate log under .sprawl/logs/ so
 		// every validate run is post-hoc inspectable via less/tail. The
@@ -257,7 +316,7 @@ func Merge(ctx context.Context, cfg *Config, deps *Deps) (*Result, error) {
 		} else {
 			logPath = vlog.Path()
 		}
-		cpMerge(deps, "merge.validate-started", "cmd", cfg.ValidateCmd, "log_path", logPath)
+		cpMerge(deps, "merge.validate-started", "cmd", cfg.ValidateCmd, "dir", cfg.AgentWorktree, "log_path", logPath)
 		timeout := cfg.ValidateTimeout
 		if timeout <= 0 {
 			timeout = DefaultValidateTimeout
@@ -269,55 +328,152 @@ func Merge(ctx context.Context, cfg *Config, deps *Deps) (*Result, error) {
 			}
 			cpMerge(deps, "merge.validate-line", "line", line)
 		}
-		output, err := deps.RunTestsStreaming(validateCtx, cfg.ParentWorktree, cfg.ValidateCmd, sink)
+		output, verr := deps.RunTestsStreaming(validateCtx, cfg.AgentWorktree, cfg.ValidateCmd, sink)
 		cancel()
 		if vlog != nil {
-			vlog.Finish(err)
+			vlog.Finish(verr)
 		}
-		if err != nil {
-			cpMerge(deps, "merge.validate-ended", "exit", "nonzero", "log_path", logPath, "error", err.Error())
-			if resetErr := deps.GitResetHard(cfg.ParentWorktree); resetErr != nil {
-				fmt.Fprintf(deps.Stderr, "WARNING: rollback (git reset --hard HEAD~1) failed: %v\n", resetErr)
-			}
+		if verr != nil {
+			cpMerge(deps, "merge.validate-ended", "exit", "nonzero", "log_path", logPath, "error", verr.Error())
 			truncated := truncateOutput(output, 50)
 			suffix := ""
 			if logPath != "" {
 				suffix = fmt.Sprintf("\nFull validate log: %s", logPath)
 			}
-			// QUM-1090, deliberate asymmetry with the rebase-failure path
-			// above: we name the recovery refs but do NOT restore the agent
-			// branch here. A rebase conflict means the merge did not happen,
-			// so the squash is a pure artifact of a failed attempt and
-			// undoing it is a plain undo. A validate failure means the merge
-			// DID happen and was rejected on quality — the squashed+rebased
-			// branch is a legitimate, content-complete state to iterate on,
-			// and rewinding it would silently discard the rebase work. The
-			// premerge refs make recovery a one-liner either way, so
-			// automating it here adds risk without adding recoverability.
-			// Keeping this path to a message-only change also means QUM-1087,
-			// which reorders validate to run before the ff-merge, has nothing
-			// to re-reason about here.
-			return nil, fmt.Errorf("post-merge validation failed: tests fail after merging %s into %s\nMerge rolled back. Your branch is back to its pre-merge state.\n%s%s\nRecovery refs:\n  %s\n  %s\nUse --no-validate to skip validation", cfg.AgentName, cfg.ParentBranch, truncated, suffix, agentRef, parentRef)
+			// NOTHING TO ROLL BACK, and that is the whole of QUM-1087. The
+			// parent was never touched, so this path performs no repair — it
+			// reports. The agent's branch is left rebased on purpose: it is a
+			// legitimate, content-complete state to fix forward from, and the
+			// recovery refs cover the attempt either way.
+			// verr is WRAPPED, not just described. The output is for a human;
+			// the wrapped error is what lets a caller (and a test) establish
+			// WHICH failure path this is rather than pattern-matching prose.
+			return nil, fmt.Errorf("validation failed on the rebased tree of %s (in %s); %s was NOT modified: %w\n%s%s\n%s\nFix the failure on the agent's branch and re-run the merge, or use --no-validate to skip validation",
+				cfg.AgentName, cfg.AgentWorktree, cfg.ParentBranch, verr, truncated, suffix,
+				refPairText(agentRef, parentRef))
 		}
 		cpMerge(deps, "merge.validate-ended", "exit", "0", "log_path", logPath)
 	} else if !cfg.NoValidate && cfg.ValidateCmd == "" {
-		fmt.Fprintf(deps.Stderr, "WARNING: no validate command configured; skipping post-merge validation.\n  Configure with: sprawl config set validate \"<command>\"\n  See: sprawl config --help\n")
+		fmt.Fprintf(deps.Stderr, "WARNING: no validate command configured; skipping validation.\n  Configure with: sprawl config set validate \"<command>\"\n  See: sprawl config --help\n")
 	}
 
-	// Step 8: Write poke BEFORE releasing lock.
+	// Step 7: Fast-forward the parent. THE ONLY MUTATION OF THE PARENT.
+	//
+	// Fast-forward to the EXACT SHA that was validated, never to the branch
+	// NAME. A name is resolved by git at ff time, and the agent's branch can
+	// move between the validation and this call — the per-agent flock has no
+	// second taker, so a live agent can commit during its own merge, and since
+	// QUM-1087 validation runs in that agent's worktree for as long as a
+	// validate takes. Merging the name would then advance the parent onto a tip
+	// nothing validated, and the engine would only notice afterwards, having
+	// already mutated the parent. Merging the SHA makes "the parent receives
+	// exactly the tree that passed" true by construction instead of detected
+	// after the fact.
+	if err := deps.GitFFMerge(cfg.ParentWorktree, rebasedTip); err != nil {
+		return nil, ffMergeFailureError(cfg, deps, err, parentTipBeforeValidate, rebasedTip, agentRef, parentRef)
+	}
+	cpMerge(deps, "merge.ff-merged")
+
+	// Step 9: Prove it was a PURE REF MOVE. `--ff-only` exiting 0 does not
+	// establish this — it exits 0 without moving the parent at all when already
+	// up to date, which is exactly what made S5b possible. Only SHA equality
+	// discriminates that case, so it is asserted rather than implied.
+	parentTipAfter, err := deps.GitRevParseHead(cfg.ParentWorktree)
+	if err != nil {
+		return nil, fmt.Errorf("reading parent HEAD after the fast-forward: %w", err)
+	}
+	if parentTipAfter != rebasedTip {
+		// Inequality has two causes with OPPOSITE severities, and reporting one
+		// as the other is the same over-claiming mistake ffMergeFailureError's
+		// default leg had. Distinguish them instead of guessing:
+		//
+		//   - the rebased tip is NOT an ancestor of the parent: nothing of ours
+		//     landed. This is the S5b shape (`--ff-only` exited 0 while already
+		//     up to date) and it is the serious one.
+		//   - the rebased tip IS an ancestor: our work DID land and the parent
+		//     then moved further, i.e. something else committed in the window
+		//     between our ff and this read. Benign, and possible because
+		//     mergeSem only serialises in-process merges — the separate-process
+		//     CLI (QUM-1089) and a human both bypass it.
+		//
+		// A read failure here must not be reported as either, so it is a third
+		// branch rather than a silent default.
+		landed, ancErr := deps.GitIsAncestor(cfg.SprawlRoot, rebasedTip, parentTipAfter)
+		switch {
+		case ancErr != nil:
+			return nil, fmt.Errorf(
+				"the fast-forward reported success but %s is at %s, not at the rebased tip %s, and whether the\n"+
+					"merge landed could not be determined (%v). Inspect %s before re-running.\n%s",
+				cfg.ParentBranch, parentTipAfter, rebasedTip, ancErr, cfg.ParentBranch,
+				refPairText(agentRef, parentRef))
+		case landed:
+			// Our work is on the parent, but the parent's tip is NOT the tree
+			// that was validated. Do NOT call this benign: one of its two causes
+			// means the parent now carries content validation never saw.
+			//
+			//   - the AGENT branch moved during validation, so the ff carried a
+			//     newer tip than the one that was validated. The per-agent flock
+			//     has no second taker, so a live agent can commit during its own
+			//     merge, and validation now runs in its worktree for minutes.
+			//   - something committed to the parent AFTER our ff. mergeSem
+			//     cannot prevent that for the separate-process CLI (QUM-1089) or
+			//     for a human.
+			// The first is the reason this is loud rather than informational.
+			return nil, fmt.Errorf(
+				"the fast-forward landed %s on %s, but %s is now at %s while the tree that was VALIDATED was %s.\n"+
+					"Your work is on %s and nothing was lost — but its tip is not the tree validation passed, so\n"+
+					"%s is not known good. Either the agent branch moved during validation (a live agent can\n"+
+					"commit during its own merge) or something committed to %s after the merge.\n"+
+					"Verify %s before relying on it.\n%s",
+				cfg.AgentBranch, cfg.ParentBranch, cfg.ParentBranch, parentTipAfter, rebasedTip,
+				cfg.ParentBranch, cfg.ParentBranch, cfg.ParentBranch, cfg.ParentBranch,
+				refPairText(agentRef, parentRef))
+		default:
+			return nil, fmt.Errorf(
+				"the fast-forward reported success but NOTHING WAS MERGED: %s is at %s and the rebased tip %s is\n"+
+					"not contained in it.\n"+
+					"`git merge --ff-only` exits 0 without moving the branch when it is already up to date, so its\n"+
+					"exit status cannot establish that the merge landed — this is exactly the case that made the\n"+
+					"old rollback rewind a pre-existing parent commit. The parent was not modified by this merge.\n%s",
+				cfg.ParentBranch, parentTipAfter, rebasedTip, refPairText(agentRef, parentRef))
+		}
+	}
+	cpMerge(deps, "merge.ff-verified", "parent_tip", parentTipAfter)
+
+	// A POST-REBASE NO-OP is reported, not detected-and-reclassified.
+	//
+	// If the rebase dropped everything (the agent's delta was already upstream
+	// under other SHAs), rebasedTip equals the parent tip, the ff is a ref move
+	// to where the parent already is, and the equality above holds — so this is
+	// a legitimate success and QUM-1087 explicitly lists reclassifying it as
+	// out of scope. Step 3's no-op check cannot see it; that runs pre-rebase.
+	//
+	// But "Merged agent X" with an unchanged parent tip is the kind of output
+	// this whole series exists to stop people misreading, so SAY so rather than
+	// let the caller infer a landing from a success. Deliberately not
+	// Result.WasNoOp: that would change the callers' control flow, which is the
+	// out-of-scope part.
+	if parentTipAfter == parentTipBeforeValidate {
+		fmt.Fprintf(deps.Stderr,
+			"NOTE: %s did not move (%s). The rebase found the agent's changes already present on %s\n"+
+				"under different SHAs, so there was nothing new to fast-forward. The content IS on %s;\n"+
+				"this merge added no commits.\n",
+			cfg.ParentBranch, parentTipAfter, cfg.ParentBranch, cfg.ParentBranch)
+		cpMerge(deps, "merge.post-rebase-noop", "parent_tip", parentTipAfter)
+	}
+
+	// Step 10: Write poke BEFORE releasing lock.
 	pokeMsg := fmt.Sprintf(
-		"Your branch %q was just rebased and fast-forward merged into %q. "+
-			"Your commit history has changed — any previous commits have been squashed. "+
-			"Your worktree is clean and your branch is up to date with the parent.",
+		"Your branch %q was just rebased onto %q and fast-forward merged into it. "+
+			"Your commits were kept as they are — nothing was squashed — but they have new SHAs, "+
+			"so do not reference the old ones. Your worktree is clean and your branch is up to "+
+			"date with the parent.",
 		cfg.AgentBranch, cfg.ParentBranch)
 	_ = deps.WritePoke(cfg.SprawlRoot, cfg.AgentName, pokeMsg)
 	cpMerge(deps, "merge.poke-written")
 
-	// Step 9: Release flock (handled by defer unlock()).
-	return &Result{
-		CommitHash:   commitHash,
-		PreSquashSHA: preSquashSHA,
-	}, nil
+	// Step 11: Release flock (handled by defer unlock()).
+	return &Result{MergedTip: parentTipAfter}, nil
 }
 
 func dryRun(cfg *Config, deps *Deps) (*Result, error) { //nolint:unparam // error return kept for interface consistency
@@ -346,188 +502,33 @@ func dryRun(cfg *Config, deps *Deps) (*Result, error) { //nolint:unparam // erro
 		return &Result{WasNoOp: true}, nil
 	}
 
-	// Derivation comes AFTER the no-op return, matching Merge's ordering —
-	// otherwise the two disagree about when the message is even needed. The
-	// recovery ref is named as "" here: a dry run writes none, and printing
-	// an invented ref name would be a claim about a ref that does not exist.
-	//
-	// A revision we failed to read is NOT handed to git as the literal
-	// "(unknown)": that would report the wrong cause (a bogus revision)
-	// instead of the real one (the read that failed).
-	var commitMsg string
-	msgErr := errors.Join(baseErr, headErr)
-	if msgErr == nil {
-		commitMsg, msgErr = deriveCommitMessage(cfg, deps, mergeBase, agentHead, "")
-	}
-
-	// A dry run mutates nothing, so a derivation failure is reported and the
-	// plan still printed — but it is reported as the blocker it is, since the
-	// real merge will refuse for the same reason.
-	if msgErr != nil {
-		fmt.Fprintf(deps.Stderr, "  Commit message: CANNOT BE DERIVED — this merge would FAIL:\n    %v\n", msgErr)
-	} else {
-		fmt.Fprintf(deps.Stderr, "  Commit message:\n%s\n", "    "+strings.ReplaceAll(commitMsg, "\n", "\n    "))
-	}
-	fmt.Fprintf(deps.Stderr, "  Steps: acquire lock → squash → rebase → ff-merge")
+	// The plan names no squash and no commit: the engine creates neither. It
+	// also states WHERE validation runs, because that is the difference the
+	// caller can observe and the thing QUM-1087 changed.
+	fmt.Fprintf(deps.Stderr, "  Steps: acquire lock → rebase %s onto %s", cfg.AgentBranch, cfg.ParentBranch)
 	if !cfg.NoValidate && cfg.ValidateCmd != "" {
-		fmt.Fprintf(deps.Stderr, " → validate (%s)", cfg.ValidateCmd)
+		fmt.Fprintf(deps.Stderr, " → validate (%s) in %s", cfg.ValidateCmd, cfg.AgentWorktree)
 	} else if !cfg.NoValidate && cfg.ValidateCmd == "" {
 		fmt.Fprintf(deps.Stderr, " → validate (skipped - not configured)")
 	}
-	fmt.Fprintf(deps.Stderr, " → poke → release lock\n")
+	fmt.Fprintf(deps.Stderr, " → ff-merge into %s → poke → release lock\n", cfg.ParentBranch)
+	// No commit COUNT: the engine no longer reads the agent's commit range
+	// (GitLogRange went with the squash), so any number printed here would be
+	// invented. The first cut printed a hardcoded 0, which every non-noop dry
+	// run reported as "the agent's 0 commit(s)".
+	fmt.Fprintf(deps.Stderr, "  The agent's own commits land as-is; no squash commit is created.\n")
 
 	return &Result{}, nil
 }
 
-// errNoDerivableMessage is returned when the agent branch's range yields no
-// commit to derive a message from. Deliberately not a fallback: see
-// buildMergeCommitMessage.
-var errNoDerivableMessage = errors.New("no commit message could be derived")
-
-// buildMergeCommitMessage composes the squash commit message (QUM-1105).
-//
-// On a squash merge the agent's own commit message IS the durable record —
-// the source commits stop being reachable from any branch, and the branch
-// itself is deleted at retire. So this reads the commits.
-//
-// It used to read AgentState.LastReportMessage instead, and that is worth
-// stating as a class rather than as a bug: LastReportMessage is a ≤160-char
-// status ping written for a TUI line and updated asynchronously, under no
-// obligation to be current at merge time. Substituting it was not a
-// formatting problem but reading a field whose contract does not include
-// being true later — and the failure was silent, because the merge reported
-// success and the diff was correct. The observed case replaced a 455-line
-// verified message with a one-liner naming a SHA three amends old.
-//
-// It is therefore NOT a fallback here, in any form. An empty derivation is an
-// error, and the caller's remedy is to say what the merge is for via
-// messageOverride, which remains the highest-precedence source.
-//
-// recoveryRef names the premerge /agent ref (QUM-1090) so a reader of the
-// squash can find the originals; empty on the dry-run path, where no ref is
-// written.
-func buildMergeCommitMessage(agent *state.AgentState, parentBranch, messageOverride string, commits []CommitRecord, recoveryRef string) (string, error) {
-	const coAuthor = "Co-Authored-By: Claude <noreply@anthropic.com>"
-
-	if messageOverride != "" {
-		return messageOverride + "\n\n" + coAuthor, nil
-	}
-	if len(commits) == 0 {
-		return "", errNoDerivableMessage
-	}
-
-	var body strings.Builder
-	if len(commits) == 1 {
-		// Byte-for-byte, subject line included: the point is that a reader of
-		// the parent branch sees exactly what the agent wrote. The provenance
-		// trailers below are appended to this, so "verbatim" is a claim about
-		// the BODY, not about the whole message — the earlier wording said
-		// the latter and was false.
-		body.WriteString(commits[0].Message)
-	} else {
-		fmt.Fprintf(&body, "%s: %s (+%d more)\n", agent.Name, commits[0].Subject(), len(commits)-1)
-		for _, c := range commits {
-			body.WriteString("\n" + c.Message + "\n")
-		}
-	}
-
-	// Provenance is emitted as TRAILERS, not as a free-text footer, and this
-	// is the whole reason the block looks like this.
-	//
-	// git only parses the message's LAST paragraph as trailers. A free-text
-	// footer appended after the body therefore demotes every trailer the
-	// agent wrote — `Refs:`, `Signed-off-by:`, its own `Co-Authored-By:` —
-	// out of the trailer block. They remain visible as text and stop being
-	// readable by `git interpret-trailers`, by GitHub's co-author
-	// attribution, and by anything else that parses them. That is precisely
-	// the QUM-1105 failure shape one level down: preserved to the eye,
-	// silently degraded to every machine.
-	//
-	// So: all-trailer lines, and appended to the agent's own trailer block
-	// (single newline) when the body already ends in one, rather than
-	// starting a competing paragraph after it.
-	var t strings.Builder
-	fmt.Fprintf(&t, "Squash-Merge: %s -> %s\nSprawl-Agent: %s (%s, %s)\n", agent.Branch, parentBranch, agent.Name, agent.Type, agent.Family)
-	for _, c := range commits {
-		// Source commits stop being reachable from any branch once the squash
-		// lands; this and the recovery ref are how a reader gets back to them.
-		fmt.Fprintf(&t, "Source-Commit: %s %s\n", c.SHA, c.Subject())
-	}
-	if recoveryRef != "" {
-		fmt.Fprintf(&t, "Premerge-Ref: %s\n", recoveryRef)
-	}
-
-	trimmed := strings.TrimRight(body.String(), "\n")
-	sep := "\n\n"
-	if endsWithTrailerBlock(trimmed) {
-		sep = "\n"
-	}
-	msg := trimmed + sep + t.String()
-
-	// Case-insensitively, because git's trailer matching is: an agent
-	// following CLAUDE.md writes `Co-Authored-By: Claude Opus 5 <...>`, which
-	// does not contain this exact line, so an exact-match guard appends a
-	// SECOND, conflicting co-author to every convention-following commit.
-	if !strings.Contains(strings.ToLower(msg), "co-authored-by:") {
-		msg += coAuthor + "\n"
-	}
-	return msg, nil
-}
-
-// trailerLine matches a git trailer line: `Token: value`, token being
-// alphanumerics and dashes.
-var trailerLine = regexp.MustCompile(`^[A-Za-z0-9-]+:( |$)`)
-
-// endsWithTrailerBlock reports whether body's last paragraph is entirely
-// trailer lines (plus their folded continuations).
-//
-// Deliberately STRICTER than git's own rule, which accepts a paragraph that
-// is only partly trailers. The two directions are not symmetric: judging a
-// trailer paragraph to be prose costs a blank line, while judging a prose
-// paragraph to be trailers glues our lines onto the end of the agent's last
-// sentence. Only the conservative error is recoverable by reading.
-func endsWithTrailerBlock(body string) bool {
-	paras := strings.Split(body, "\n\n")
-	lines := strings.Split(paras[len(paras)-1], "\n")
-	for _, l := range lines {
-		if strings.HasPrefix(l, " ") || strings.HasPrefix(l, "\t") {
-			continue // folded continuation of the previous trailer
-		}
-		if !trailerLine.MatchString(l) {
-			return false
-		}
-	}
-	return true
-}
-
-// deriveCommitMessage reads the agent branch's commits and composes the
-// squash message. Run BEFORE the first mutation: a branch this cannot
-// describe must not first be rewound to its merge base.
-func deriveCommitMessage(cfg *Config, deps *Deps, mergeBase, agentHead, recoveryRef string) (string, error) {
-	commits, err := deps.GitLogRange(cfg.AgentWorktree, mergeBase, agentHead)
-	if err != nil {
-		return "", fmt.Errorf("reading the agent's commits in %s..%s: %w%s", mergeBase, agentHead, err, explicitMessageRemedy)
-	}
-	msg, err := buildMergeCommitMessage(cfg.AgentState, cfg.ParentBranch, cfg.MessageOverride, commits, recoveryRef)
-	if err != nil {
-		return "", fmt.Errorf("%w from %s..%s: the range contains no non-merge commit on the branch's own first-parent line%s", err, mergeBase, agentHead, explicitMessageRemedy)
-	}
-	return msg, nil
-}
-
-// explicitMessageRemedy is appended to every message-derivation failure.
-// Derivation failing REFUSES the merge, so without it the caller is stuck;
-// the override path is the escape hatch and has to be named.
-const explicitMessageRemedy = "\nRe-run supplying the commit message explicitly: `sprawl merge --message \"...\"`, or `message:` on the merge MCP tool."
-
-// restoreAgentBranch compare-and-swaps refs/heads/<AgentBranch> back to
-// preSquashSHA, refusing unless the ref currently reads expectedSHA.
+// restoreAgentBranch compare-and-swaps the branch HEAD is on back to
+// preRebaseSHA, refusing unless the ref currently reads expectedSHA.
 //
 // Run in the AGENT WORKTREE (not SprawlRoot, unlike the premerge writes):
 // raw `update-ref` does not honour git's "branch is checked out in another
 // worktree" protection, so issuing it from the worktree whose HEAD points at
 // the branch keeps HEAD and the ref moving together.
-func restoreAgentBranch(cfg *Config, deps *Deps, preSquashSHA, expectedSHA string) error {
+func restoreAgentBranch(cfg *Config, deps *Deps, preRebaseSHA, expectedSHA string) error {
 	// Resolve the branch from HEAD, NOT from cfg.AgentBranch. On the retire
 	// path AgentBranch is the stale spawn-time name (QUM-1088), and keying
 	// the CAS on the merge base does not protect against a wrong NAME: once
@@ -547,118 +548,60 @@ func restoreAgentBranch(cfg *Config, deps *Deps, preSquashSHA, expectedSHA strin
 	if !strings.HasPrefix(ref, "refs/heads/") {
 		return fmt.Errorf("refusing to restore: HEAD of %s is %q, not a branch", cfg.AgentWorktree, ref)
 	}
-	return deps.GitUpdateRefCAS(cfg.AgentWorktree, ref, preSquashSHA, expectedSHA)
+	return deps.GitUpdateRefCAS(cfg.AgentWorktree, ref, preRebaseSHA, expectedSHA)
 }
 
-// commitFailureError undoes the `reset --soft` and builds the caller-facing
-// error when the squash commit fails (QUM-1100).
-//
-// `git commit` is a SUBPROCESS: it runs the pre-commit hook, which runs
-// `make validate`. A non-zero exit is therefore ROUTINE, and the window
-// between the reset and a completed commit is as wide as a validate run, on
-// every merge. It fired in production on 2026-08-06 when an unrelated test
-// flake failed the hook, leaving 3026 insertions across 30 files reachable
-// from no ref — and the retry then blamed the agent for "uncommitted
-// changes" that were the engine's own orphaned squash.
-//
-// THE RESTORE IS REF-ONLY, AND THAT IS SUFFICIENT. This is a different
-// argument from rebaseFailureError's, resting on different facts — do not
-// merge the two comments. `git reset --soft` writes ONLY the ref; a
-// hook-rejected `git commit` writes nothing at all: no tree, no commit, no
-// ref update, and no index change. So the index still holds preSquashSHA's
-// exact tree, and the "staged changes" the retry saw were the UNCHANGED
-// index compared against a REWOUND HEAD. `update-ref` touches neither index
-// nor worktree, so putting the ref back exactly reverses the reset and
-// `git status` is clean again (verified directly, and byte-identically in
-// the live incident before recovery).
-//
-// NEVER add a reset, checkout or read-tree here. In the crash variant of
-// this window the index is the ONLY live copy of the work, and destroying it
-// is precisely what the incident nearly did.
-//
-// The CAS oldSHA is the MERGE BASE, not a freshly-read HEAD. mergeBase is
-// the value this engine itself wrote, so the swap asserts "the ref is still
-// where my reset put it, therefore undoing my reset is safe" — a provable
-// undo rather than a blind rewind with a CAS-shaped window. It also makes
-// the RealGitCommit edge safe, where `git commit` SUCCEEDS and only the
-// follow-up hash read fails: HEAD is then a real commit, and keying on
-// mergeBase refuses instead of rewinding it.
-func commitFailureError(cfg *Config, deps *Deps, cause error, preSquashSHA, mergeBase, agentRef, parentRef string) error {
-	refPair := fmt.Sprintf("Recovery refs:\n  %s\n  %s", agentRef, parentRef)
-
-	casErr := restoreAgentBranch(cfg, deps, preSquashSHA, mergeBase)
-	if casErr == nil {
-		cpMerge(deps, "merge.squash-commit-failed", "restored", "true",
-			"branch", cfg.AgentBranch, "restored_to", preSquashSHA)
-		return fmt.Errorf("squash commit: %w\nBranch %s %s %s: the `git reset --soft` was undone. The engine did not touch the index or worktree; if a hook staged or modified files before failing, those remain.\n%s",
-			cause, cfg.AgentBranch, premergeRestoredClaim, preSquashSHA, refPair)
-	}
-	cpMerge(deps, "merge.squash-commit-failed", "restored", "false",
-		"branch", cfg.AgentBranch, "cas_error", casErr.Error())
-	// Deliberately names no branch to update: on the retire path
-	// cfg.AgentBranch is the stale spawn-time name (QUM-1088), so a
-	// ready-made one-liner would aim recovery at the wrong branch.
-	return fmt.Errorf("squash commit: %w\n"+
-		"WARNING: the agent branch is NOT at its pre-merge tip %s and could NOT be auto-restored (%v).\n"+
-		"The agent's commits may be reachable ONLY from the recovery ref below.\n"+
-		"Do NOT discard, clean or check out the agent worktree before recovering: the squash content may exist only in its index.\n"+
-		"Confirm which branch is actually checked out:\n"+
-		"  git -C %s rev-parse --abbrev-ref HEAD\n"+
-		"then, ONLY if that branch is not AHEAD of the recovery ref, point it there\n"+
-		"with a compare-and-swap (if it has commits the ref lacks, do NOT point it there):\n"+
-		"  git -C %s log --oneline <that-branch>\n"+
-		"  git update-ref refs/heads/<that-branch> %s $(git -C %s rev-parse <that-branch>)\n%s",
-		cause, preSquashSHA, casErr, cfg.AgentWorktree, cfg.AgentWorktree, agentRef, cfg.AgentWorktree, refPair)
-}
-
-// rebaseFailureError restores the agent branch to its pre-squash tip and
+// rebaseFailureError restores the agent branch to its pre-rebase tip and
 // builds the caller-facing error (QUM-1090 part B).
 //
-// `git rebase --abort` returns the branch to the SQUASH commit, not to the
-// original tip, so before this the tool printed a manual `git reset --hard`
-// for a human to run — and manual recovery after a squash is historically
-// where the damage happens (CLAUDE.md, QUM-1083). Doing it in the tool
-// removes the step.
+// `git rebase --abort` returns the branch to ORIG_HEAD, so on the
+// abort-succeeded path the compare-and-swap below writes the value the ref
+// already holds. THAT IS NOT A POINTLESS WRITE — it is the only thing that
+// ASSERTS the abort actually worked. RealGitRebaseAbort swallows every error
+// and always returns nil, so a partial abort is invisible to this caller; the
+// CAS is its sole detector. On a partial abort HEAD is detached mid-rebase,
+// GitSymbolicRefHead errors, and the loud leg below fires.
 //
-// The restore needs no worktree reset. Two facts, both load-bearing:
-// `reset --soft` preserved the index and worktree, so the squash commit's
-// TREE is byte-identical to preSquashSHA's; and `rebase --abort` restores
-// the index and worktree to that squash commit. Together, moving the ref
-// back to preSquashSHA leaves the checkout matching its new HEAD and
-// `git status` clean. (An agent worktree with uncommitted work cannot reach
-// here at all — agentops refuses a dirty worktree before calling Merge.)
+// QUM-1087 CHANGED THE ARGUMENT HERE, and the old one must not be carried
+// forward. It read: "`reset --soft` preserved the index and worktree, so the
+// squash commit's TREE is byte-identical to preRebaseSHA's; and `rebase
+// --abort` restores the index and worktree to that squash commit." Both
+// premises are gone — there is no `reset --soft` and no squash commit. What
+// remains is simpler and stands on its own: the abort restores branch, index
+// and worktree together to ORIG_HEAD, which IS preRebaseSHA. (An agent
+// worktree with uncommitted work cannot reach here at all — agentops refuses a
+// dirty worktree before calling Merge.)
 //
 // Run in the AGENT WORKTREE, not SprawlRoot, unlike the premerge writes:
 // raw `update-ref` does NOT honour git's "branch is checked out in another
 // worktree" protection, so issuing it from the worktree whose HEAD points at
 // that branch is what keeps that worktree's index consistent with the move.
 //
-// Compare-and-swap, never a blind write. Note the CAS oldSHA is read from
-// HEAD, while the ref being swapped is refs/heads/<cfg.AgentBranch>; those
-// coincide on the merge path (agentops resolves AgentBranch from the
-// worktree's CurrentBranch, QUM-511) and diverge on the retire path, which
-// still passes the stale spawn-time name (QUM-1088). The safety on that path
-// rests on the CAS REFUSING, not on the read being the right ref.
-func rebaseFailureError(cfg *Config, deps *Deps, preSquashSHA, agentRef, parentRef string) error {
-	refPair := fmt.Sprintf("Recovery refs:\n  %s\n  %s", agentRef, parentRef)
+// Compare-and-swap, never a blind write. The CAS oldSHA is read from HEAD,
+// while the ref being swapped is resolved from HEAD too (see
+// restoreAgentBranch) — so on the retire path, where cfg.AgentBranch is the
+// stale spawn-time name (QUM-1088), the safety rests on the CAS REFUSING
+// rather than on the advertised name being right.
+func rebaseFailureError(cfg *Config, deps *Deps, preRebaseSHA, agentRef, parentRef string) error {
+	refPair := refPairText(agentRef, parentRef)
 
 	curTip, why := deps.GitRevParseHead(cfg.AgentWorktree)
 	if why == nil {
-		why = restoreAgentBranch(cfg, deps, preSquashSHA, curTip)
+		why = restoreAgentBranch(cfg, deps, preRebaseSHA, curTip)
 		if why == nil {
 			return fmt.Errorf("rebase failed (conflicts likely). Aborted rebase.\nBranch %s %s %s.\n%s",
-				cfg.AgentBranch, premergeRestoredClaim, preSquashSHA, refPair)
+				cfg.AgentBranch, premergeRestoredClaim, preRebaseSHA, refPair)
 		}
 	}
 	// Deliberately does NOT print a `git update-ref refs/heads/<branch>`
 	// one-liner. The CAS refused, which means we do not know which branch is
 	// actually damaged — and on the retire path cfg.AgentBranch is the stale
 	// spawn-time name, so naming it would aim the caller's recovery at the
-	// WRONG branch while leaving the damaged one at the squash commit. That
-	// is the QUM-1083 failure mode with extra steps. Name the ref, make the
-	// caller confirm the branch.
+	// WRONG branch while leaving the damaged one mid-rebase. That is the
+	// QUM-1083 failure mode with extra steps. Name the ref, make the caller
+	// confirm the branch.
 	return fmt.Errorf("rebase failed (conflicts likely). Aborted rebase.\n"+
-		"Could NOT auto-restore the agent branch (%v); it is left at the squash commit.\n"+
+		"Could NOT auto-restore the agent branch (%v); it is left wherever `git rebase --abort` got to.\n"+
 		"Confirm which branch is actually checked out before recovering:\n"+
 		"  git -C %s rev-parse --abbrev-ref HEAD\n"+
 		"then, ONLY if that branch is not AHEAD of the recovery ref, point it there\n"+
@@ -666,6 +609,73 @@ func rebaseFailureError(cfg *Config, deps *Deps, preSquashSHA, agentRef, parentR
 		"  git -C %s log --oneline <that-branch>\n"+
 		"  git update-ref refs/heads/<that-branch> %s $(git -C %s rev-parse <that-branch>)\n%s",
 		why, cfg.AgentWorktree, cfg.AgentWorktree, agentRef, cfg.AgentWorktree, refPair)
+}
+
+// refPairText renders the recovery-ref pair. BOTH refs, always: the /agent ref
+// covers agent-branch damage, and the /parent ref is what makes a wrongly
+// advanced parent a one-liner. A message naming only one of them omits exactly
+// the half the reader may need (CLAUDE.md).
+func refPairText(agentRef, parentRef string) string {
+	return fmt.Sprintf("Recovery refs:\n  %s\n  %s", agentRef, parentRef)
+}
+
+// The two ff-failure diagnoses, as named constants because each must identify
+// its path UNIQUELY. The two causes are different and their remedies are
+// different — a bad rebase is fixed by re-rebasing, a moved parent by
+// re-running — so a shared phrase would send half the callers to the wrong
+// remedy. The tests assert each path emits its own phrase AND not the other's.
+const (
+	ffPredicateFailure = "did not produce a fast-forwardable branch"
+	parentMovedFailure = "moved during validation"
+)
+
+// ffMergeFailureError diagnoses a refused `git merge --ff-only`.
+//
+// It RE-READS the parent tip rather than reusing the pre-validate value,
+// because that read is what distinguishes the two causes. Without it the
+// engine would have to guess, and the natural guess ("the rebase was wrong")
+// is the wrong diagnosis in the common case: the expected reason for a refusal
+// here is that another merge landed while validation was running, which is a
+// race with a defined remedy, not an anomaly.
+func ffMergeFailureError(cfg *Config, deps *Deps, cause error, parentTipBeforeValidate, rebasedTip, agentRef, parentRef string) error {
+	refPair := refPairText(agentRef, parentRef)
+
+	nowTip, readErr := deps.GitRevParseHead(cfg.ParentWorktree)
+	switch {
+	case readErr != nil:
+		return fmt.Errorf("fast-forward merge of %s into %s was refused: %w\n"+
+			"(could not re-read %s to diagnose why: %v)\nThe parent was not modified by this merge.\n%s",
+			cfg.AgentBranch, cfg.ParentBranch, cause, cfg.ParentBranch, readErr, refPair)
+	case nowTip != parentTipBeforeValidate:
+		return fmt.Errorf("fast-forward merge of %s into %s was refused: %w\n"+
+			"%s %s: it was at %s when validation started and is now at %s — another merge landed while this one was validating.\n"+
+			"This is the correct outcome, not an error to reconcile: nothing of yours was merged and the parent keeps the other merge's work.\n"+
+			"Re-rebase onto the new tip and re-run the merge.\n%s",
+			cfg.AgentBranch, cfg.ParentBranch, cause,
+			cfg.ParentBranch, parentMovedFailure, parentTipBeforeValidate, nowTip, refPair)
+	default:
+		// The parent did not move, so this is NOT the validation race. It does
+		// NOT follow that the rebase is at fault, and this branch must not
+		// claim it does: `git merge --ff-only` also refuses when the PARENT
+		// WORKTREE has local changes it would overwrite, with the branch a
+		// perfectly good descendant. That is reachable here — precondition 7
+		// checks the caller's worktree clean at merge START, and validation now
+		// runs elsewhere for minutes, during which the parent checkout (a live
+		// weave or human working tree) can acquire edits. Verified directly
+		// against git: parent tip unmoved, `--is-ancestor` true, `--ff-only`
+		// exits 1 with "Your local changes ... would be overwritten by merge".
+		//
+		// So name both candidates and let git's own message (wrapped above)
+		// discriminate. Asserting the rebase would send the caller to re-rebase,
+		// which fixes nothing when the real problem is a dirty parent.
+		return fmt.Errorf("fast-forward merge of %s into %s was refused: %w\n"+
+			"%s is still at %s, so nothing moved underneath this merge and re-running will not help by itself.\n"+
+			"Either the rebase %s (rebased tip %s), or the %s worktree has local changes that the\n"+
+			"fast-forward would overwrite — git's message above says which.\n"+
+			"The parent branch was not modified.\n%s",
+			cfg.AgentBranch, cfg.ParentBranch, cause,
+			cfg.ParentBranch, nowTip, ffPredicateFailure, rebasedTip, cfg.ParentBranch, refPair)
+	}
 }
 
 // premergeRestoredClaim is the phrase the rebase-failure path uses when it
@@ -700,8 +710,18 @@ func NilSeams(d *Deps) (missing []string, checked int) {
 }
 
 // MinDepsSeams is the assertion-count floor for NilSeams: the number of
-// mandatory func seams Deps carries. Bump it deliberately when adding one.
-const MinDepsSeams = 16
+// mandatory func seams Deps carries.
+//
+// Move it deliberately in EITHER DIRECTION — down on a removal as well as up on
+// an addition — and say which seams moved. "Bump it when adding one" (the
+// previous wording) gives the next reader no way to tell a deliberate DROP from
+// a reflect walk that stopped seeing fields, and the whole purpose of a floor is
+// to catch the latter.
+//
+// QUM-1087: removed GitLogRange, GitResetSoft, GitCommit, GitResetHard with the
+// squash and the parent rollback (16 → 12); added GitRevParseRef and
+// GitIsAncestor for the ref-move predicate (12 → 14).
+const MinDepsSeams = 14
 
 // cpMerge calls deps.Checkpoint if non-nil. Safe to call with nil dep.
 func cpMerge(d *Deps, step string, kv ...any) {

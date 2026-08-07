@@ -40,9 +40,13 @@ func recordRefWrites(deps *Deps) (*[]refWrite, *[]casWrite) {
 
 // TestMerge_PremergeRefsWrittenBeforeFirstMutation is the QUM-1090 ordering
 // gate: both recovery refs must exist before the merge mutates anything.
-// GitResetSoft is the first mutation, so "before reset-soft" is the whole
-// claim. Negative control: moving the ref-write block below GitResetSoft (or
-// deleting it) must turn this red.
+//
+// THE FIRST MUTATION IS NOW THE REBASE (QUM-1087 removed the squash, so there
+// is no `reset --soft` to be first). Retargeting this at the rebase is not a
+// cosmetic edit: had it kept pointing at a deleted seam it would have gone
+// vacuous — the seam is never called, so "the refs came before it" would be
+// trivially true. Negative control: moving the ref-write block below
+// GitRebase, or deleting it, must turn this red.
 func TestMerge_PremergeRefsWrittenBeforeFirstMutation(t *testing.T) {
 	deps := newTestDeps()
 	cfg := newTestConfig()
@@ -52,13 +56,9 @@ func TestMerge_PremergeRefsWrittenBeforeFirstMutation(t *testing.T) {
 		order = append(order, "update-ref:"+ref)
 		return nil
 	}
-	deps.GitResetSoft = func(worktree, ref string) error {
-		order = append(order, "reset-soft")
+	deps.GitRebase = func(worktree, onto string) error {
+		order = append(order, "rebase")
 		return nil
-	}
-	deps.GitCommit = func(worktree, message string) (string, error) {
-		order = append(order, "commit")
-		return "ccc333", nil
 	}
 
 	if _, err := Merge(context.Background(), cfg, deps); err != nil {
@@ -69,7 +69,7 @@ func TestMerge_PremergeRefsWrittenBeforeFirstMutation(t *testing.T) {
 	var refIdx []int
 	for i, op := range order {
 		switch {
-		case op == "reset-soft":
+		case op == "rebase":
 			resetIdx = i
 		case strings.HasPrefix(op, "update-ref:"):
 			refIdx = append(refIdx, i)
@@ -187,8 +187,7 @@ func TestMerge_PremergeRefWriteFailure_AbortsBeforeMutation(t *testing.T) {
 				return nil
 			}
 			var mutated bool
-			deps.GitResetSoft = func(worktree, ref string) error { mutated = true; return nil }
-			deps.GitCommit = func(worktree, message string) (string, error) { mutated = true; return "ccc333", nil }
+			deps.GitRebase = func(worktree, onto string) error { mutated = true; return nil }
 
 			_, err := Merge(context.Background(), cfg, deps)
 			if err == nil {
@@ -253,7 +252,7 @@ func TestMerge_RebaseFailure_RestoresAgentBranchViaCAS(t *testing.T) {
 		t.Errorf("CAS ref = %q, want refs/heads/sprawl/test-agent", got.ref)
 	}
 	if got.newSHA != "bbb222" {
-		t.Errorf("CAS newSHA = %q, want the pre-squash tip bbb222", got.newSHA)
+		t.Errorf("CAS newSHA = %q, want the pre-rebase tip bbb222", got.newSHA)
 	}
 	if got.oldSHA != "squash999" {
 		t.Errorf("CAS oldSHA = %q, want the observed post-abort tip squash999", got.oldSHA)
@@ -348,8 +347,11 @@ func TestMerge_FailureErrorsNameRecoveryRefs(t *testing.T) {
 				return "FAIL", fmt.Errorf("tests failed")
 			}
 		}},
-		{"commit-failure", func(d *Deps) {
-			d.GitCommit = func(string, string) (string, error) { return "", fmt.Errorf("hook rejected") }
+		{"ff-precondition-failure", func(d *Deps) {
+			d.GitIsAncestor = func(string, string, string) (bool, error) { return false, nil }
+		}},
+		{"ff-refused", func(d *Deps) {
+			d.GitFFMerge = func(string, string) error { return fmt.Errorf("Not possible to fast-forward") }
 		}},
 	}
 	for _, tc := range cases {
@@ -491,111 +493,6 @@ func TestRealDeps_NoNilSeams(t *testing.T) {
 
 // --- QUM-1100: the squash commit fails after `reset --soft` ------------
 
-// TestMerge_CommitFailure_RestoresAgentBranchViaCAS — the production defect.
-// `git commit` runs the pre-commit hook, so a non-zero exit is ROUTINE; when
-// it happens the `reset --soft` has already moved the branch to the merge
-// base and the work survives only in the index. The engine must undo its own
-// reset.
-//
-// The CAS oldSHA is the MERGE BASE, not a freshly-read HEAD, and that is the
-// crux: mergeBase is the value this engine itself wrote, so the swap asserts
-// "the ref is still where my reset put it, therefore undoing my reset is
-// safe". A read-HEAD oldSHA would instead be a blind rewind wearing CAS
-// clothing — it would happily rewind a real commit in the RealGitCommit edge
-// where `git commit` SUCCEEDED and only the follow-up hash read failed.
-//
-// Negative controls: (M1) delete the CAS call; (M2) pass preSquashSHA as
-// oldSHA; (M5) CAS the parent branch instead. Each must produce named FAILs
-// here, and M5 in particular must fail the ref-identity assertion — a
-// mutation that rewinds a DIFFERENT branch is the one that otherwise produces
-// plausible-looking failures.
-func TestMerge_CommitFailure_RestoresAgentBranchViaCAS(t *testing.T) {
-	deps := newTestDeps()
-	cfg := newTestConfig()
-	refs, cas := recordRefWrites(deps)
-
-	deps.GitCommit = func(worktree, message string) (string, error) {
-		return "", fmt.Errorf("git commit: exit status 1: pre-commit hook rejected")
-	}
-	var rebased, ffMerged, validated bool
-	deps.GitRebase = func(string, string) error { rebased = true; return nil }
-	deps.GitFFMerge = func(string, string) error { ffMerged = true; return nil }
-	deps.RunTestsStreaming = func(context.Context, string, string, func(string)) (string, error) {
-		validated = true
-		return "", nil
-	}
-
-	_, err := Merge(context.Background(), cfg, deps)
-	if err == nil {
-		t.Fatal("expected an error when the squash commit fails")
-	}
-	if len(*cas) != 1 {
-		t.Fatalf("want exactly 1 CAS restore, got %d: %+v", len(*cas), *cas)
-	}
-	got := (*cas)[0]
-	if got.worktree != "/worktree/agent" {
-		t.Errorf("CAS worktree = %q, want /worktree/agent", got.worktree)
-	}
-	if got.ref != "refs/heads/sprawl/test-agent" {
-		t.Errorf("CAS ref = %q, want refs/heads/sprawl/test-agent (the AGENT branch)", got.ref)
-	}
-	if got.newSHA != "bbb222" {
-		t.Errorf("CAS newSHA = %q, want the pre-squash tip bbb222", got.newSHA)
-	}
-	if got.oldSHA != "aaa111" {
-		t.Errorf("CAS oldSHA = %q, want the merge base aaa111 — the value the engine's own reset wrote", got.oldSHA)
-	}
-	if len(*refs) != 2 {
-		t.Errorf("want only the 2 premerge writes, got %+v (a forced restore would show here)", *refs)
-	}
-	if rebased || ffMerged || validated {
-		t.Errorf("merge must stop after a failed squash commit; rebase=%v ff=%v validate=%v", rebased, ffMerged, validated)
-	}
-	if !strings.Contains(err.Error(), "bbb222") {
-		t.Errorf("error must name the restored tip, got: %v", err)
-	}
-	if !strings.Contains(err.Error(), premergeRestoredPhrase) {
-		t.Errorf("error must state the branch was restored, got: %v", err)
-	}
-}
-
-// TestMerge_CommitFailure_CASRefused_IsLouderAndPrintsPremergeRef — AC:
-// a refused restore is a distinct, louder outcome, never silent.
-func TestMerge_CommitFailure_CASRefused_IsLouderAndPrintsPremergeRef(t *testing.T) {
-	deps := newTestDeps()
-	cfg := newTestConfig()
-	refs, _ := recordRefWrites(deps)
-	deps.GitCommit = func(string, string) (string, error) {
-		return "", fmt.Errorf("git commit: exit status 1")
-	}
-	deps.GitUpdateRefCAS = func(worktree, ref, newSHA, oldSHA string) error {
-		return fmt.Errorf("cannot lock ref %q: is at deadbeef but expected %s", ref, oldSHA)
-	}
-
-	_, err := Merge(context.Background(), cfg, deps)
-	if err == nil {
-		t.Fatal("expected an error")
-	}
-	msg := err.Error()
-	if !strings.Contains(msg, "WARNING") {
-		t.Errorf("a refused restore must be louder than the restored case, got: %v", err)
-	}
-	if !strings.Contains(msg, testPremergeBase+"/agent") {
-		t.Errorf("refused error must name the premerge agent ref, got: %v", err)
-	}
-	if strings.Contains(msg, premergeRestoredPhrase) {
-		t.Errorf("refused error must NOT claim the branch was restored, got: %v", err)
-	}
-	// QUM-1090 decision 8 standing rule: never print a one-liner naming a
-	// branch derived from cfg.AgentBranch (stale on the retire path).
-	if strings.Contains(msg, "git update-ref refs/heads/sprawl/test-agent") {
-		t.Errorf("must not prescribe update-ref against the advertised branch name, got: %v", err)
-	}
-	if len(*refs) != 2 {
-		t.Errorf("a refusal must not force the branch ref; unconditional writes = %+v", *refs)
-	}
-}
-
 // TestMerge_FailureErrors_NeverPrescribeAManualHardReset — cross-leg
 // invariant. Manual post-squash recovery is where the damage historically
 // happens (QUM-1083), and in the QUM-1100 incident the index was the only
@@ -606,8 +503,8 @@ func TestMerge_FailureErrors_NeverPrescribeAManualHardReset(t *testing.T) {
 			return fmt.Errorf("refused")
 		}
 	}
-	commitFails := func(d *Deps) {
-		d.GitCommit = func(string, string) (string, error) { return "", fmt.Errorf("hook rejected") }
+	ffRefused := func(d *Deps) {
+		d.GitFFMerge = func(string, string) error { return fmt.Errorf("Not possible to fast-forward") }
 	}
 	rebaseFails := func(d *Deps) {
 		d.GitRebase = func(string, string) error { return fmt.Errorf("CONFLICT") }
@@ -621,8 +518,10 @@ func TestMerge_FailureErrors_NeverPrescribeAManualHardReset(t *testing.T) {
 		name  string
 		setup []func(*Deps)
 	}{
-		{"commit-failure/restored", []func(*Deps){commitFails}},
-		{"commit-failure/refused", []func(*Deps){commitFails, casFails}},
+		{"ff-refused", []func(*Deps){ffRefused}},
+		{"ff-precondition-false", []func(*Deps){func(d *Deps) {
+			d.GitIsAncestor = func(string, string, string) (bool, error) { return false, nil }
+		}}},
 		{"rebase-failure/restored", []func(*Deps){rebaseFails}},
 		{"rebase-failure/refused", []func(*Deps){rebaseFails, casFails}},
 		{"validate-failure", []func(*Deps){validateFails}},
@@ -645,113 +544,6 @@ func TestMerge_FailureErrors_NeverPrescribeAManualHardReset(t *testing.T) {
 	}
 }
 
-// TestMerge_CommitFailure_Checkpoints — the outcome must be visible in the
-// forensic log, distinguishably per leg. The QUM-1090 forensics were built
-// entirely from checkpoints.
-func TestMerge_CommitFailure_Checkpoints(t *testing.T) {
-	for _, tc := range []struct {
-		name       string
-		casErr     error
-		wantSuffix string
-	}{
-		{"restored", nil, "restored=true"},
-		{"refused", fmt.Errorf("refused"), "restored=false"},
-	} {
-		t.Run(tc.name, func(t *testing.T) {
-			deps := newTestDeps()
-			cfg := newTestConfig()
-			deps.GitCommit = func(string, string) (string, error) {
-				return "", fmt.Errorf("hook rejected")
-			}
-			deps.GitUpdateRefCAS = func(string, string, string, string) error { return tc.casErr }
-
-			var steps []string
-			deps.Checkpoint = func(step string, kv ...any) {
-				s := step
-				for i := 0; i+1 < len(kv); i += 2 {
-					s += fmt.Sprintf(" %v=%v", kv[i], kv[i+1])
-				}
-				steps = append(steps, s)
-			}
-			if _, err := Merge(context.Background(), cfg, deps); err == nil {
-				t.Fatal("expected an error")
-			}
-			joined := strings.Join(steps, "\n")
-			if !strings.Contains(joined, "merge.squash-commit-failed") {
-				t.Errorf("want a merge.squash-commit-failed checkpoint, got:\n%s", joined)
-			}
-			if !strings.Contains(joined, tc.wantSuffix) {
-				t.Errorf("want the checkpoint to record %s, got:\n%s", tc.wantSuffix, joined)
-			}
-			if strings.Contains(joined, "merge.squash-committed") {
-				t.Errorf("must not report a squash-committed checkpoint when the commit failed:\n%s", joined)
-			}
-		})
-	}
-}
-
-// TestMerge_CommitFailure_RestoresTheBranchHEADIsOn_NotTheAdvertisedName —
-// QUM-1100 follow-up found in review. cfg.AgentBranch is the STALE
-// spawn-time name on the retire path (QUM-1088), and keying the CAS on the
-// merge base does NOT protect against a wrong NAME: after a first merge,
-// merge-base(main, staleBranch) EQUALS the stale branch's tip, so the CAS
-// succeeds on the wrong ref, fast-forwards a branch nobody asked about,
-// leaves the real branch rewound, and reports restored=true.
-//
-// Reproduced in real git before this test was written. The restore must
-// therefore target the branch HEAD actually points at — which is exactly
-// what the refused-leg message already tells a human to do.
-func TestMerge_CommitFailure_RestoresTheBranchHEADIsOn_NotTheAdvertisedName(t *testing.T) {
-	deps := newTestDeps()
-	cfg := newTestConfig()
-	cfg.AgentBranch = "sprawl/stale-spawn-time-name"
-	deps.GitSymbolicRefHead = func(worktree string) (string, error) {
-		return "refs/heads/sprawl/actually-checked-out", nil
-	}
-	_, cas := recordRefWrites(deps)
-	deps.GitCommit = func(string, string) (string, error) {
-		return "", fmt.Errorf("hook rejected")
-	}
-
-	_, err := Merge(context.Background(), cfg, deps)
-	if err == nil {
-		t.Fatal("expected an error")
-	}
-	if len(*cas) != 1 {
-		t.Fatalf("want 1 CAS, got %d: %+v", len(*cas), *cas)
-	}
-	if got := (*cas)[0].ref; got != "refs/heads/sprawl/actually-checked-out" {
-		t.Errorf("CAS ref = %q, want the branch HEAD is on, not the advertised %q", got, cfg.AgentBranch)
-	}
-}
-
-// TestMerge_CommitFailure_DetachedHead_RefusesToRestore — if we cannot
-// establish which branch to restore, refuse loudly rather than guess at
-// cfg.AgentBranch.
-func TestMerge_CommitFailure_DetachedHead_RefusesToRestore(t *testing.T) {
-	deps := newTestDeps()
-	cfg := newTestConfig()
-	_, cas := recordRefWrites(deps)
-	deps.GitSymbolicRefHead = func(string) (string, error) {
-		return "", fmt.Errorf("fatal: ref HEAD is not a symbolic ref")
-	}
-	deps.GitCommit = func(string, string) (string, error) { return "", fmt.Errorf("hook rejected") }
-
-	_, err := Merge(context.Background(), cfg, deps)
-	if err == nil {
-		t.Fatal("expected an error")
-	}
-	if len(*cas) != 0 {
-		t.Errorf("must not CAS any ref when the branch cannot be resolved, got %+v", *cas)
-	}
-	if !strings.Contains(err.Error(), "WARNING") {
-		t.Errorf("an unresolvable branch must be reported loudly, got: %v", err)
-	}
-	if strings.Contains(err.Error(), premergeRestoredPhrase) {
-		t.Errorf("must not claim a restore that did not happen, got: %v", err)
-	}
-}
-
 // TestMerge_FailureErrors_NeverPrescribeABlindRefWrite — CLAUDE.md's rule,
 // added in this series: "a blind write cannot tell 'I am fixing this' from
 // 'someone else already did'". The refused leg was handing the operator the
@@ -762,9 +554,6 @@ func TestMerge_FailureErrors_NeverPrescribeABlindRefWrite(t *testing.T) {
 		name  string
 		setup func(*Deps)
 	}{
-		{"commit-failure", func(d *Deps) {
-			d.GitCommit = func(string, string) (string, error) { return "", fmt.Errorf("hook rejected") }
-		}},
 		{"rebase-failure", func(d *Deps) {
 			d.GitRebase = func(string, string) error { return fmt.Errorf("CONFLICT") }
 		}},

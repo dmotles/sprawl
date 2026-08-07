@@ -624,8 +624,13 @@ func (s *Server) toolReportStatus(ctx context.Context, args json.RawMessage) (st
 
 func (s *Server) toolMerge(ctx context.Context, args json.RawMessage) (string, error) {
 	var p struct {
-		Agent      string `json:"agent"`
-		AgentName  string `json:"agent_name"` // QUM-666: deprecated synonym
+		Agent     string `json:"agent"`
+		AgentName string `json:"agent_name"` // QUM-666: deprecated synonym
+		// Still PARSED, though no longer advertised in the schema, and
+		// deliberately so: encoding/json silently drops an unknown property, so
+		// deleting this field would turn `message:` into a no-op that agents go
+		// on passing and nobody is told about. Kept so agentops.Merge can refuse
+		// it loudly (QUM-1087 — the engine creates no commit).
 		Message    string `json:"message"`
 		NoValidate bool   `json:"no_validate"`
 	}

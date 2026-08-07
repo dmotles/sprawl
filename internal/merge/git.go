@@ -54,100 +54,59 @@ func RealGitRevParseHead(worktree string) (string, error) {
 	return strings.TrimSpace(string(out)), nil
 }
 
-// RealGitResetSoft performs a soft reset to the given ref.
-func RealGitResetSoft(worktree, ref string) error {
-	cmd := exec.Command("git", "reset", "--soft", ref)
-	cmd.Dir = worktree
-	out, err := cmd.CombinedOutput()
-	if err != nil {
-		return fmt.Errorf("git reset --soft %s: %w: %s", ref, err, strings.TrimSpace(string(out)))
-	}
-	return nil
-}
-
-// RealGitLogRange returns the commits in base..head, oldest first.
+// RealGitRevParseRef resolves rev to a full SHA in worktree.
 //
-// --first-parent --no-merges, and both are load-bearing. An agent that merges
-// another branch into its own would otherwise pull that branch's commit
-// messages into its squash: --no-merges drops the merge commit's own
-// boilerplate subject, and --first-parent drops the side branch it brought in.
-// Neither flag subsumes the other (pinned by S12 in
-// commit_message_scenario_test.go, which fails if either is removed).
-//
-// -z rather than newline separation: commit bodies contain blank lines, so a
-// newline-delimited stream has no unambiguous record boundary. With --format,
-// -z terminates each record with a NUL.
-func RealGitLogRange(worktree, base, head string) ([]CommitRecord, error) {
-	// `head --not base` rather than `base..head`: identical to git, but it
-	// keeps both revisions as their own argv elements instead of a
-	// concatenated string, which is what the rest of this file does and what
-	// keeps the gosec G204 rule satisfied honestly rather than by nolint.
-	cmd := exec.Command("git", "log", "--reverse", "--first-parent", "--no-merges",
-		"-z", "--format=%H%n%B", head, "--not", base, "--")
+// Distinct from RealGitRevParseHead, and the distinction is load-bearing for
+// the QUM-1087 ref-move predicate: `git merge --ff-only <branch>` resolves a
+// NAME, so the predicate must read the tip of that same ref. A HEAD-based read
+// asserts a property of a potentially different object than the one the merge
+// acts on — and this engine has already shipped one defect of exactly that
+// shape (QUM-1088, the stale advertised branch).
+func RealGitRevParseRef(worktree, rev string) (string, error) {
+	// `rev-list -n 1` rather than `rev-parse`, and that choice carries two
+	// properties this seam needs.
+	//
+	// First, a bare `git rev-parse <unknown>` ECHOES ITS ARGUMENT BACK and exits
+	// 0, so it would return the input string dressed up as a SHA; the ff-merge
+	// predicate would then compare a branch NAME against a real SHA and refuse a
+	// good merge with an incomprehensible message. rev-list errors instead.
+	//
+	// Second, it resolves to a COMMIT (peeling an annotated tag), which
+	// `rev-parse --verify` would not. The obvious spelling for that is
+	// `--verify <rev>^{commit}`, but that requires string-concatenating the
+	// caller's rev into one argv element — which is both a gosec G204 finding and
+	// the thing the rest of this file deliberately avoids (see RealGitMergeBase
+	// and RealGitLogRange: revisions stay their own argv elements, and the
+	// trailing `--` keeps a rev from being read as a path).
+	cmd := exec.Command("git", "rev-list", "-n", "1", "--end-of-options", rev, "--")
 	cmd.Dir = worktree
 	out, err := cmd.Output()
 	if err != nil {
-		// git's own diagnosis, not just "exit status 128": a failure here
-		// REFUSES the merge, so this is the one read in this file where the
-		// caller most needs to know why.
-		var ee *exec.ExitError
-		if errors.As(err, &ee) && len(ee.Stderr) > 0 {
-			return nil, fmt.Errorf("git log %s..%s: %w: %s", base, head, err, strings.TrimSpace(string(ee.Stderr)))
-		}
-		return nil, fmt.Errorf("git log %s..%s: %w", base, head, err)
+		return "", fmt.Errorf("git rev-list -n 1 %s: %w", rev, err)
 	}
-	var records []CommitRecord
-	// Records are `<sha>\n<message>\0`, so the only empty element is the tail
-	// after the final NUL. Keyed on exactly that rather than on a whitespace
-	// test: a commit created with --allow-empty-message is `<sha>\n`, which a
-	// TrimSpace guard would still keep, but the precise test cannot ever drop
-	// a real commit from the SHA index.
-	for _, rec := range strings.Split(string(out), "\x00") {
-		if rec == "" {
-			continue
-		}
-		sha, msg, _ := strings.Cut(rec, "\n")
-		records = append(records, CommitRecord{
-			SHA:     strings.TrimSpace(sha),
-			Message: strings.TrimRight(msg, "\n"),
-		})
-	}
-	return records, nil
+	return strings.TrimSpace(string(out)), nil
 }
 
-// RealGitCommit creates a commit with the given message and returns the short hash.
+// RealGitIsAncestor reports whether ancestor is an ancestor of descendant.
 //
-// The message goes in on stdin (-F -), never as `-m <message>`. Linux caps a
-// SINGLE argument at MAX_ARG_STRLEN (128 KiB) regardless of ARG_MAX, and a
-// derived message carrying an agent's real commit bodies passes that easily —
-// `-m` fails at fork/exec with "argument list too long" before git runs.
-// Stdin is set explicitly: a nil Stdin would let git inherit the parent's,
-// which in TUI mode is the session's own input (cf. git_stdio_leak_test.go).
-//
-// --cleanup=verbatim, and NOT the `whitespace` default. Being explicit is
-// what defeats a user's `commit.cleanup=strip`, which would silently delete
-// every '#'-leading line of an agent's message — and a code block is where
-// those live. But `whitespace` is itself lossy in ways that matter for the
-// messages we now carry: measured, it strips trailing whitespace from every
-// line and collapses runs of blank lines. A blank context line in an
-// embedded diff is a single space; a markdown hard break is two trailing
-// spaces. `verbatim` is byte-faithful and defeats `strip` just as well, so
-// it strictly dominates.
-func RealGitCommit(worktree, message string) (string, error) {
-	cmd := exec.Command("git", "commit", "--cleanup=verbatim", "-F", "-")
+// Exit 1 is git's FALSE answer, not a failure, and it is returned as
+// (false, nil). Folding it into the error would make a legitimate "not an
+// ancestor" indistinguishable from a broken repository — and the caller's two
+// responses are opposite: one is a diagnosis to surface, the other is a bug to
+// report. Any other non-zero exit is a real error.
+func RealGitIsAncestor(worktree, ancestor, descendant string) (bool, error) {
+	cmd := exec.Command("git", "merge-base", "--is-ancestor", "--end-of-options", ancestor, descendant)
 	cmd.Dir = worktree
-	cmd.Stdin = strings.NewReader(message)
 	out, err := cmd.CombinedOutput()
-	if err != nil {
-		return "", fmt.Errorf("git commit: %w: %s", err, strings.TrimSpace(string(out)))
+	if err == nil {
+		return true, nil
 	}
-	hashCmd := exec.Command("git", "rev-parse", "--short", "HEAD")
-	hashCmd.Dir = worktree
-	hashOut, err := hashCmd.Output()
-	if err != nil {
-		return "", fmt.Errorf("git rev-parse --short HEAD: %w", err)
+	var ee *exec.ExitError
+	if errors.As(err, &ee) && ee.ExitCode() == 1 {
+		return false, nil
 	}
-	return strings.TrimSpace(string(hashOut)), nil
+	return false, fmt.Errorf("git merge-base --is-ancestor %s %s: %w: %s",
+		ancestor, descendant, err, strings.TrimSpace(string(out)))
 }
 
 // RealGitRebase rebases the current branch onto the given branch.
@@ -177,24 +136,17 @@ func RealGitRebaseAbort(worktree string) error {
 	return nil
 }
 
-// RealGitFFMerge performs a fast-forward-only merge of the given branch.
+// RealGitFFMerge performs a fast-forward-only merge of the given revision.
+//
+// Callers pass a SHA, not a branch name — see the call site in Merge. `git merge
+// --ff-only <sha>` is as valid as with a name, and it removes the window where
+// the name resolves to something newer than what was validated.
 func RealGitFFMerge(worktree, branch string) error {
 	cmd := exec.Command("git", "merge", "--ff-only", "--", branch)
 	cmd.Dir = worktree
 	out, err := cmd.CombinedOutput()
 	if err != nil {
 		return fmt.Errorf("git merge --ff-only %s: %w: %s", branch, err, strings.TrimSpace(string(out)))
-	}
-	return nil
-}
-
-// RealGitResetHard resets the worktree to HEAD~1.
-func RealGitResetHard(worktree string) error {
-	cmd := exec.Command("git", "reset", "--hard", "HEAD~1")
-	cmd.Dir = worktree
-	out, err := cmd.CombinedOutput()
-	if err != nil {
-		return fmt.Errorf("git reset --hard HEAD~1: %w: %s", err, strings.TrimSpace(string(out)))
 	}
 	return nil
 }
@@ -256,14 +208,12 @@ func RealDeps(stderr io.Writer) *Deps {
 	return &Deps{
 		LockAcquire:        RealLockAcquire,
 		GitMergeBase:       RealGitMergeBase,
-		GitLogRange:        RealGitLogRange,
 		GitRevParseHead:    RealGitRevParseHead,
-		GitResetSoft:       RealGitResetSoft,
-		GitCommit:          RealGitCommit,
+		GitRevParseRef:     RealGitRevParseRef,
+		GitIsAncestor:      RealGitIsAncestor,
 		GitRebase:          RealGitRebase,
 		GitRebaseAbort:     RealGitRebaseAbort,
 		GitFFMerge:         RealGitFFMerge,
-		GitResetHard:       RealGitResetHard,
 		RunTestsStreaming:  RealRunTestsStreaming,
 		WritePoke:          RealWritePoke,
 		GitUpdateRef:       RealGitUpdateRef,

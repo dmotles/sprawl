@@ -65,7 +65,7 @@ A manager receives a task from its parent and decides how to execute it. Its cor
 1. **Decompose** — Break the task into 3-10 subtasks. No more. If a subtask is still too big, spawn a sub-manager for it. If it's small enough (a few hundred lines, one module, one commit's worth of changes), spawn an engineer.
 2. **Dispatch** — Spawn the right agents for each subtask. Managers can spawn engineers, researchers, and other managers.
 3. **Wait and respond** — Sit and wait for agents to report back. When work comes in, decide what to do with it.
-4. **Integrate** — When an engineer reports done, the manager evaluates the work. If it's good (possibly after having a researcher or QA agent review it), it uses `sprawl merge` to squash-merge the engineer's branch into the manager's integration branch. If the work is bad, the manager has two choices:
+4. **Integrate** — When an engineer reports done, the manager evaluates the work. If it's good (possibly after having a researcher or QA agent review it), it uses `sprawl merge` to land the engineer's branch on the manager's integration branch — the engine rebases the branch, validates it in the engineer's own worktree, and fast-forwards, so the engineer's individual commits land as they are. If the work is bad, the manager has two choices:
    - **Abandon and respawn**: scrap the work and spawn a new engineer with corrected instructions based on what went wrong.
    - **Spawn forward**: if it's close but needs tweaks, send follow-up work to the same agent (who has context) or spawn a new one to fix the issues from where the previous one left off.
 5. **Manage agents** — Managers can reuse idle agents for follow-up work (the agent retains its session context) or kill unresponsive agents via the `kill` MCP tool.
@@ -104,7 +104,7 @@ The system operates on a small set of simple rules:
 
 2. **Managers decompose and delegate.** When a manager receives a task, it decides: is this big enough to warrant sub-managers, or can I hand this directly to an IC? This decision is made autonomously by each manager. A manager should own no more than 3-10 subtasks at a time.
 
-3. **Managers own integration.** Each engineering manager has its own integration branch. When an IC's work is deemed ready, the manager uses `sprawl merge` to squash-merge it in. When all subtasks are integrated, the manager reports up that its branch is ready.
+3. **Managers own integration.** Each engineering manager has its own integration branch. When an IC's work is deemed ready, the manager uses `sprawl merge` to land it (rebase, validate, fast-forward — the engine creates no squash commit; squashing is the branch owner's choice beforehand). When all subtasks are integrated, the manager reports up that its branch is ready.
 
 4. **Managers handle failure.** When work comes back wrong, the manager decides: abandon and respawn with better instructions, or spawn forward to fix from where it is. The manager exercises judgment.
 

@@ -351,10 +351,51 @@ Finally, retire the original: once `<my-branch>-rebased` passes both checks,
 point the merge at it, or `git branch -f <my-branch> <my-branch>-rebased` so
 the name everyone else is using follows the recovered work.
 
+### The merge engine mutates the parent once, forward-only (QUM-1087)
+
+`sprawl merge` (and the `retire` MCP tool with `merge: true`, which routes
+through the same engine — note there is no `sprawl retire` CLI command)
+**rebases the agent's branch onto the parent's, validates that rebased tree in
+the agent's own worktree, and only then fast-forwards the parent onto it.** The
+parent is mutated exactly once, after the tree is already known good, so there
+is no rollback of the parent — and `internal/merge` contains no primitive that
+could perform one. `RealGitResetHard` was deleted, not merely left uncalled.
+
+Two consequences worth knowing before reading the code:
+
+* **`--ff-only` exiting 0 does not mean the parent moved.** It exits 0 without
+  moving anything when already up to date, which is what let a validate-failure
+  rollback rewind a *pre-existing parent commit* whenever the agent's content
+  was already upstream. So the engine asserts the ref move directly:
+  `merge-base --is-ancestor <parent-tip> <rebased-tip>` before, and exact SHA
+  equality of the parent's tip against the rebased tip after. Mind the argument
+  order — reversed, it asks a different question that is also true when the two
+  are equal.
+* **The engine creates no commit.** The agent's own commits are fast-forwarded
+  as they are; squashing is the branch owner's decision before declaring done.
+  This also deletes the QUM-1083 hazard class outright: a downstream branch
+  stays a genuine ancestor, so there is no double-presence and no cherry-pick
+  recovery to perform.
+
+**Accepted cost, recorded so it is not re-litigated: the agent's intermediate
+commits land on the parent individually, and whether each was hook-validated is
+a property of the repository, not of sprawl.** In *this* repo each was validated
+by `scripts/pre-commit`, installed by *this repo's own* `.sprawl/config.yaml`
+`worktree.setup` (and by `make hooks`). **Sprawl installs no hooks in any repo it
+drives** — so in any other repo the intermediate commits carry no validation at
+all, and even here `git commit --no-verify` defeats the hook (the same
+skippability that motivated the QUM-837 reference-transaction backstop). What
+gates the landing is the engine's own validate run on the rebased tip; the
+per-commit hook is a per-repo bonus. Do not restate this as "every commit is
+hook-validated" — that sentence is true of one repository and false of the
+mechanism. And `git bisect` on the parent can therefore land on a commit with no
+*enforced* guarantee of being green. This is not an invitation to add a
+per-commit validation loop.
+
 ### Pre-merge recovery refs (QUM-1090)
 
 Every non-noop, non-dry-run `merge` writes two refs **before its first
-mutation**, so a failed or crashed merge is recoverable from a ref rather
+mutation** (now the rebase), so a failed or crashed merge is recoverable from a ref rather
 than from the reflog:
 
 ```
@@ -375,6 +416,21 @@ The agent ref covers agent-branch damage; the **parent** ref is what makes a
 wrongly-rewound `main` a one-liner, and a rewound `main` is the loss mode
 that motivated this. A check that finds `/agent`, passes, and never looks
 for `/parent` misses exactly the half that was added.
+
+**The `/parent` ref survives QUM-1087, on a different argument.** After
+QUM-1087 the engine never rewinds the parent — the ff-merge is the parent's
+only mutation and it is forward-only — so the original "the rollback might
+rewind the wrong commit" justification is gone. It stays for two reasons that
+are true of the new flow: (1) *forward is not safe by itself* — `--ff-only`
+guarantees the parent only advances, and guarantees nothing about **what** it
+advances onto; advancing `main` onto a rebased branch nobody intended is
+precisely the QUM-1088 stale-branch defect, which *reported success*, and
+recovery from "the parent advanced to the wrong tree" is `git update-ref
+refs/heads/main <parentRef>` only because the ref exists. And (2) it is the
+durable witness for the headline claim "a validate failure leaves the parent's
+SHA byte-identical" — something a reader may need to check after the fact,
+possibly after a `git gc`, which the reflog cannot answer. Do not "simplify"
+the pair to one ref on the grounds that the rollback is gone.
 
 `refs/sprawl/premerge/` is owned **exclusively** by this mechanism, so
 anything under it is tool output by construction. That is load-bearing, not
@@ -418,6 +474,19 @@ because that amend happened to be message-only*. An amend that touched the
 tree would have left the ref pointing at a tree nobody wanted — **still
 looking authoritative**. That is luck, not design, and it is the failure
 mode a per-attempt name does not have.
+
+The scope of that hazard is wider than "has anyone branched from it".
+**An amend is unsafe once someone has *cited* the SHA, not only once someone
+has *branched from* it.** A citation is a reference too: a mutation-verification
+result quoted by SHA, a `Source-Commit:` trailer, a review note, an issue
+comment, a line of evidence in a commit message. An amend replaces the object
+those name and — exactly as above — **nothing announces it**; the citation goes
+on looking authoritative while describing a commit that no longer exists.
+Declined in practice during this series: commit `f7b2779` had been
+mutation-verified by SHA and the result quoted as evidence, so an amend that the
+letter of the rule permitted was refused and a follow-up commit written instead.
+Two commits cost a line of history; a citation that silently names the wrong
+object costs the evidence itself.
 
 The timestamp in that name is **millisecond** precision, and the first live
 exercise of the feature is why that is not fussiness:
@@ -615,10 +684,15 @@ SIGKILLed session's stale entry cannot mislead the next one.
 Sprawl reads `.sprawl/config.yaml` for project-level settings:
 
 ```yaml
-validate: "make validate"   # command to run for post-merge validation
+validate: "make validate"   # command run on the rebased tree to validate a merge
 ```
 
-If no config file exists or the `validate` key is absent, post-merge validation is skipped with a warning. Use `--no-validate` on `sprawl merge` to explicitly skip validation.
+Since QUM-1087 this is **not** post-merge validation: the engine rebases the
+agent's branch, runs this command on the rebased tree **in the agent's own
+worktree**, and only fast-forwards the parent if it passes. A failure leaves the
+parent's SHA byte-identical. If no config file exists or the `validate` key is
+absent, validation is skipped with a warning. Use `--no-validate` on `sprawl
+merge` to explicitly skip it.
 
 ## Repo Layout
 
@@ -641,6 +715,13 @@ This repo IS Sprawl. The `.sprawl/` directory at the repo root stores agent stat
 **Tests required**: Every file in `cmd/` and `internal/` has a corresponding `_test.go`. Keep it that way. **Read `/testing-practices` before writing any tests for the first time** — it covers the dependency injection pattern, mock conventions, and common pitfalls.
 
 **Every new assertion must demonstrate it CAN fail** — a negative control, a mutation, or a red-first run — and you must record which one and what it printed; an assertion nobody has watched fail is a claim, not a check. Any harness that aggregates its own results needs an **assertion-count floor**, so a run reporting `0 passed / 0 failed` exits non-zero instead of green (worked example: `scripts/test-wirelog-helpers-unit.sh`). A **parent-commit** control proves a failure is *pre-existing*, never that it is *acceptable*; read `/testing-practices` § **Assertion Rigor** before writing or reviewing any assertion.
+
+**A watched failure proves the instrument works, not that it measures the right thing.** Red-first is necessary and **not sufficient**. An assertion can fail for a reason you chose, on behaviour the correct design does not have — and in the transcript that is indistinguishable from one that caught something real. Two instances from the QUM-1105/QUM-1087 series, both by the same author, days apart:
+
+* An assertion written against the derived squash message's trailer block was watched failing, and what it pinned was **a blank line the correct design does not emit**. The failure was genuine, the instrument worked, and the measurement was of nothing.
+* An argument-order assertion (`merge-base --is-ancestor <parent> <branch>`) was watched failing red-first, and its comment then claimed a swap "leaves every other assertion green" — inferring, from the one red it had seen, that it was the *only* guard. The negative control refuted that: swapping the arguments also failed four real-git scenario tests, because post-rebase the parent is a strict ancestor and the reversed question answers false. The claim in the comment was false while every individual observation behind it was true.
+
+So after watching red, state separately **what the assertion would let through**, and prefer a control that mutates the **production** behaviour you care about over one that mutates the test. The sharpest form is a mutation that leaves every other assertion green: if exactly one test fails, that test is the one carrying the claim. **Write the prediction down before running the control** — the second instance above was caught only because the prediction was recorded and turned out not to match, and a prediction formed after seeing the output cannot fail to match. If nothing fails, the claim is unguarded no matter how much red you have already seen.
 
 **No fallback branch may silently succeed (QUM-997).** Any validation or test script must exit non-zero when something it checks actually fails. The shape to know by sight is `cond && ok "…" || <arm that neither counts a failure nor fails the run>` — and its if/else twin, `if cond; then pass; else <something that isn't fail>; fi`, including a missing `else`. A skip on an unmet precondition must exit **77**, never 0. A harness using `set +e` (to report all failures rather than the first) has given up the mechanism that makes an early death loud and therefore **must** carry an assertion-count floor. `/testing-practices` § **The non-asserting fallback** has both spellings, the corollaries, and the audit that found six live instances of this class — five of them structural rather than lexical, two inside `make validate`, one of which printed `40 PASS / 15 FAIL / exit 0`. It also records that a deterministic parser for this class was **built and rejected**: it acquired four separate blind spots of the same class it detected, one blinding 462 lines across 5 harnesses while every aggregate counter stayed byte-identical. Do not rebuild it; the defence is manual review against that checklist.
 

@@ -33,7 +33,7 @@ func TestRealRetire_AbandonTrue_CallsStopAbandonNotStop(t *testing.T) {
 	if err := rt.Start(); err != nil {
 		t.Fatalf("runtime start: %v", err)
 	}
-	r.retireFn = func(_ context.Context, _ *agentops.RetireDeps, name string, _, _, _, _, _, _ bool) ([]string, error) {
+	r.retireFn = func(_ context.Context, _ *agentops.RetireDeps, name string, _, _, _, _, _ bool) ([]string, error) {
 		return []string{name}, state.DeleteAgent(tmpDir, name)
 	}
 
@@ -67,7 +67,7 @@ func TestRealRetire_AbandonFalse_CallsStopNotStopAbandon(t *testing.T) {
 	if err := rt.Start(); err != nil {
 		t.Fatalf("runtime start: %v", err)
 	}
-	r.retireFn = func(_ context.Context, _ *agentops.RetireDeps, name string, _, _, _, _, _, _ bool) ([]string, error) {
+	r.retireFn = func(_ context.Context, _ *agentops.RetireDeps, name string, _, _, _, _, _ bool) ([]string, error) {
 		return []string{name}, state.DeleteAgent(tmpDir, name)
 	}
 

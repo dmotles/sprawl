@@ -70,8 +70,8 @@ type Real struct {
 	killDeps   *agentops.KillDeps
 
 	spawnFn  func(*agentops.SpawnDeps, string, string, string, string, bool) (*state.AgentState, error)
-	mergeFn  func(context.Context, *agentops.MergeDeps, string, string, bool, bool) (*agentops.MergeOutcome, error)
-	retireFn func(context.Context, *agentops.RetireDeps, string, bool, bool, bool, bool, bool, bool) ([]string, error)
+	mergeFn  func(context.Context, *agentops.MergeDeps, string, string, bool, bool, bool) (*agentops.MergeOutcome, error)
+	retireFn func(context.Context, *agentops.RetireDeps, string, bool, bool, bool, bool, bool) ([]string, error)
 	killFn   func(*agentops.KillDeps, string, bool) error
 
 	// Handoff seams + signal channel. The channel is buffered (size 1) and
@@ -339,10 +339,6 @@ func NewReal(cfg Config) (*Real, error) {
 			GitBranchDelete:     agentops.RealGitBranchDelete,
 			GitBranchIsMerged:   agentops.RealGitBranchIsMerged,
 			GitBranchSafeDelete: agentops.RealGitBranchSafeDelete,
-			DoMerge:             merge.Merge,
-			NewMergeDeps:        newMergeDeps,
-			LoadAgent:           state.LoadAgent,
-			CurrentBranch:       agentops.GitCurrentBranch,
 			GitUnmergedCommits:  agentops.RealGitUnmergedCommits,
 			LoadConfig:          config.Load,
 			RunScript:           agentops.RunBashScript,
@@ -667,6 +663,17 @@ func (r *Real) Spawn(ctx context.Context, req SpawnRequest) (*AgentInfo, error) 
 // MergeDeps whose Getenv reports it as SPRAWL_AGENT_IDENTITY so the parent-
 // equality check inside agentops.Merge sees the correct caller. See QUM-487.
 func (r *Real) Merge(ctx context.Context, caller, agentName, message string, noValidate bool) (*MergeOutcome, error) {
+	// salvagingTerminalAgent=false, and it is hard-coded here rather than
+	// threaded through the public signature so it CANNOT be set by an ordinary
+	// caller. Only mergeForRetire passes true, and only it can.
+	return r.merge(ctx, caller, agentName, message, noValidate, false)
+}
+
+// merge is the single serialised merge path. Both the ordinary Merge and the
+// retire-time merge go through it, which is what makes mergeSem, the queue
+// checkpoints and the caller-identity plumbing common to both — the QUM-1088
+// bypass existed precisely because retire had its own route to the engine.
+func (r *Real) merge(ctx context.Context, caller, agentName, message string, noValidate, salvagingTerminalAgent bool) (*MergeOutcome, error) {
 	effective := r.effectiveCallerOr(ctx, caller)
 
 	// Detect contention BEFORE acquiring the sem so we capture who we'd
@@ -706,7 +713,7 @@ func (r *Real) Merge(ctx context.Context, caller, agentName, message string, noV
 		cp("merge.starting", "line", fmt.Sprintf("waited=%s behind=%s", queueWait.Round(time.Millisecond), behind))
 	}
 
-	outcome, err := r.mergeFn(ctx, r.mergeDepsForCaller(ctx, effective), agentName, message, noValidate, false)
+	outcome, err := r.mergeFn(ctx, r.mergeDepsForCaller(ctx, effective), agentName, message, noValidate, false, salvagingTerminalAgent)
 	if err != nil {
 		return nil, err
 	}
@@ -715,6 +722,71 @@ func (r *Real) Merge(ctx context.Context, caller, agentName, message string, noV
 		outcome.QueueWait = queueWait
 	}
 	return outcome, nil
+}
+
+// childrenStillPending is mergeForRetire's third argument, named for the
+// CONDITION rather than for the flag that usually implies it.
+//
+// The distinction is load-bearing and getting it wrong was a real defect in the
+// first cut: passing `cascade` here refused `retire --merge --cascade` on BOTH
+// paths, including the runtime-backed one where the cascade loop has ALREADY
+// torn the children down — defeating the very ordering that path was arranged
+// to achieve. The question the merge needs answered is not "did the caller ask
+// for a cascade" but "are this agent's children still present right now",
+// because that is what agentops.Merge's precondition 5 actually tests.
+type childrenStillPending bool
+
+// mergeForRetire performs the merge half of `retire --merge` by routing through
+// r.Merge — the ONE engine — rather than doing it inline.
+//
+// This is the QUM-1088 fix, and it is a fix by DELETION: agentops.Retire used to
+// build a merge.Config from agentState.Branch, the spawn-time name, and merged
+// the wrong branch while reporting success. Everything that path was missing
+// comes for free here: worktree-HEAD branch resolution (QUM-511), the
+// detached-HEAD refusal, the clean-worktree preconditions 7 and 8, and mergeSem
+// — which retire previously bypassed entirely (116 of ~570 historical merges
+// took the retire path, unserialised).
+//
+// It runs BEFORE the runtime is stopped, and that ordering is forced rather than
+// chosen. runtime.Stop stamps StatusFaulted on an agent that never reported
+// complete, and agentops.Merge's precondition 4 refuses a faulted agent — so
+// stopping first would make the Stop itself cause the merge to be refused. The
+// obvious-looking "stop the agent before merging it" is therefore wrong here.
+//
+// The residual concern that ordering raises — a live agent committing mid-merge
+// — is real, pre-existing, and identical on the far busier plain Real.Merge
+// path, where a live runtime is the normal case. The per-agent flock in
+// merge.Merge is the nominal control and currently has no second taker
+// anywhere; that gap is tracked separately and deliberately not papered over
+// here for retire alone.
+func (r *Real) mergeForRetire(ctx context.Context, caller, agentName string, pending childrenStillPending, noValidate bool) error {
+	// Precondition 5 of agentops.Merge refuses a merge whose agent still has
+	// live children.
+	//
+	//   - runtime-backed path: Real.Retire's own cascade loop has already run,
+	//     so the children are gone and the merge proceeds. pending=false.
+	//   - runtime-less path: the cascade recursion happens INSIDE
+	//     agentops.Retire, AFTER this point, so the children are still present
+	//     and the merge would be refused with a message about children rather
+	//     than about what the caller should do. pending=cascade.
+	//
+	// On that second path, refuse explicitly and name the remedy. A narrow,
+	// honest regression: the alternative is hoisting the cascade recursion out
+	// of agentops.Retire, which is QUM-852 territory (resolved-orphan teardown)
+	// and does not belong in this commit. Tracked as QUM-1131.
+	if pending {
+		return fmt.Errorf("cannot merge %q while cascade-retiring it: its children are torn down by the retire itself, and a merge is refused while an agent has live children.\n"+
+			"Cascade-retire the children first, then retire --merge the parent:\n"+
+			"  retire({agent: \"<each child>\", cascade: true})\n"+
+			"  retire({agent: %q, merge: true})", agentName, agentName)
+	}
+	// salvagingTerminalAgent: TRUE. This is the retire path, where the agent is
+	// being torn down and its branch is the whole point of the operation. An
+	// agent that died or faulted with commits on its branch is legitimately
+	// mergeable — refusing it would leave no supported way to salvage the work
+	// and push people to manual git, which is what this series exists to stop.
+	_, err := r.merge(ctx, caller, agentName, "" /* no message override */, noValidate, true /* salvagingTerminalAgent */)
+	return err
 }
 
 // Retire accepts a `caller` parameter for the same reason as Merge — see
@@ -769,6 +841,21 @@ func (r *Real) Retire(ctx context.Context, caller string, agentName string, merg
 				retired = append(retired, sub...)
 			}
 		}
+		// Merge BEFORE stopping the runtime (see mergeForRetire) and before any
+		// teardown, so a validate failure leaves the worktree, the branch and
+		// the state file all present and usable. With cascade, note that the
+		// children above are already gone — "aborts before any teardown" is a
+		// claim about THIS agent, not about its descendants.
+		if mergeFirst {
+			// pending=false: the cascade loop above has already torn the
+			// children down, so precondition 5 is satisfied and cascade+merge
+			// works on this path. Passing `cascade` here would refuse it and
+			// throw away the ordering this branch is arranged for.
+			if err := r.mergeForRetire(ctx, effective, agentName, false, noValidate); err != nil {
+				return nil, fmt.Errorf("merge before retire failed, so %q was NOT retired (worktree, branch and state are intact): %w", agentName, err)
+			}
+		}
+
 		stopCtx, cancel := withRuntimeStopTimeout(ctx)
 		defer cancel()
 		cp := retireDeps.Checkpoint
@@ -799,7 +886,7 @@ func (r *Real) Retire(ctx context.Context, caller string, agentName string, merg
 		if stopErr != nil {
 			return nil, stopErr
 		}
-		self, err := r.retireFn(ctx, retireDeps, agentName, false /* cascade already handled */, false /* force */, abandon, mergeFirst, true /* yes */, noValidate)
+		self, err := r.retireFn(ctx, retireDeps, agentName, false /* cascade already handled */, false /* force */, abandon, mergeFirst, true /* yes */)
 		if err != nil {
 			return nil, err
 		}
@@ -810,7 +897,14 @@ func (r *Real) Retire(ctx context.Context, caller string, agentName string, merg
 	// QUM-739: retire is the legitimate cleanup path for terminal agents;
 	// the TerminalAgentError gate that used to live here trapped zombies.
 	// Keep the gate on send_message / peek (still callers of TerminalAgentError).
-	retired, err := r.retireFn(ctx, retireDeps, agentName, cascade, false /* force */, abandon, mergeFirst, true /* yes */, noValidate)
+	if mergeFirst {
+		// pending=cascade: on THIS path the cascade recursion happens inside
+		// agentops.Retire, below, so the children are still present.
+		if err := r.mergeForRetire(ctx, effective, agentName, childrenStillPending(cascade), noValidate); err != nil {
+			return nil, fmt.Errorf("merge before retire failed, so %q was NOT retired (worktree, branch and state are intact): %w", agentName, err)
+		}
+	}
+	retired, err := r.retireFn(ctx, retireDeps, agentName, cascade, false /* force */, abandon, mergeFirst, true /* yes */)
 	if err != nil {
 		if cascade {
 			r.reconcileRuntimeTreeFromState(agentName)

@@ -174,7 +174,7 @@ func claudeCodeSidechainGuidance() string {
 	return claudeCodeSidechainGuidanceTemplate
 }
 
-const rootMergeRetireBlock = `- When pulling in agent work, use merge({agent: "<agent>"}) which squash-merges into your branch with linear history. The agent stays alive and its branch is preserved — merge acquires a lock so the agent pauses automatically during the rebase. Use dry_run: true to preview, no_validate: true if you've already validated manually, and message: "<msg>" to override the commit message. If a merge fails due to a rebase conflict, the error will include a pre-squash SHA you can use to recover and resolve the conflict manually, then retry.
+const rootMergeRetireBlock = `- When pulling in agent work, use merge({agent: "<agent>"}). It rebases the agent's branch onto yours, validates the rebased tree in the agent's own worktree, and then fast-forwards your branch onto it — so the agent's individual commits land as they are, nothing is squashed, and your branch is only ever moved forward after the tree is known good. The agent stays alive and its branch is preserved. Use no_validate: true if you've already validated manually. If you want the work to land as one commit, squash on the agent's branch first — the engine will not do it for you. If a merge fails, your branch was not modified — the one exception is stated in the error itself: if the fast-forward succeeded and something else moved your branch immediately afterwards, the error says so and says your work DID land. The error names the recovery refs under refs/sprawl/premerge/ and distinguishes a rebase conflict, a validation failure, and your branch moving underneath the merge.
 - When you're done with an agent entirely, use retire({agent: "<agent>", merge: true}) to merge and retire in one shot. Use retire({agent: "<agent>"}) to shut down without merging (refuses if unmerged commits exist). Use retire({agent: "<agent>", abandon: true}) to discard work and retire. If abandon warns about unmerged commits or a live process and requires confirmation, STOP and confirm with the user — do not automatically force it.`
 
 const rootCommands = `KEY TOOLS (MCP):
@@ -188,9 +188,8 @@ const rootCommands = `KEY TOOLS (MCP):
   kill({agent: "<agent>"})                         — Emergency stop. Leaves worktree intact but does not clean up fully.
 
   Merging:
-  merge({agent: "<agent>"})                        — Pull in an agent's work via squash-merge. The agent stays alive and the branch is preserved.
-  merge({agent: "<agent>", message: "<msg>"})      — Override the default squash commit message.
-  merge({agent: "<agent>", no_validate: true})     — Skip pre-merge and post-merge test validation.
+  merge({agent: "<agent>"})                        — Rebase an agent's branch onto yours, validate it there, then fast-forward. Its commits land as-is; no squash. The agent stays alive and the branch is preserved.
+  merge({agent: "<agent>", no_validate: true})     — Skip validation. It normally runs on the rebased tree BEFORE your branch is touched.
 
   Messaging (prefer MCP over the CLI when available):
   send_message({to: "<agent>", body: "<markdown>", interrupt: false})  — Durable correspondence channel. Lands in the recipient's inbox, increments unread, retrievable via messages_read. interrupt=false (default) is strictly cooperative — message lands at the recipient's next turn boundary. interrupt=true is RARE (parent→descendant urgent only): jumps the queue AND requests preemption (best-effort during MCP-tool-waits; honored for streaming/thinking only — see QUM-549; use kill for hard recovery from a wedged MCP call). The first line of body serves as the subject-equivalent in the inbox. For routine status pings, prefer report_status.
@@ -278,21 +277,34 @@ const managerDelegateVsMessages = `DELEGATE VS. MESSAGES VS. STATUS — WHEN TO 
 - Rules of thumb: (1) if you're telling an agent to *do* something, use delegate; (2) if you're telling an agent *about* something (and want it retrievable), use send_message; (3) if you're announcing your own state, use report_status.`
 
 const managerIntegrationTemplate = `# INTEGRATION:
-Use merge({agent: "<agent>"}) to land work on your integration branch. The merge
-produces a clean squash-merge with linear history. The agent stays alive and
-the branch is preserved. A lock is acquired so the agent pauses automatically
-during the rebase.
+Use merge({agent: "<agent>"}) to land work on your integration branch. It rebases
+the agent's branch onto yours, validates the rebased tree in the agent's own
+worktree, and only then fast-forwards your branch onto it. Your branch is mutated
+exactly once, forward-only, after the tree is already green — so a failed merge
+leaves it byte-identical and there is nothing to undo. The agent's individual
+commits land as they are: the engine creates no squash commit. The agent stays
+alive and its branch is preserved.
 
 Flow: agent reports done → verify their work → merge({agent: "<agent>"}) → (optionally) retire({agent: "<agent>"})
 
-Use retire({agent: "<agent>", merge: true}) to merge and retire in one shot.
+Use retire({agent: "<agent>", merge: true}) to merge and retire in one shot. It
+goes through the same engine, so it resolves the agent's real current branch and
+is serialized against other merges. Teardown only happens if the merge succeeds.
 
 Options for merge:
-  message: "<msg>"       — Override the default squash commit message.
-  no_validate: true      — Skip pre-merge and post-merge test validation. Use when you've already validated manually.
+  no_validate: true      — Skip validation. Use when you've already validated manually.
 
-If a merge fails due to a rebase conflict, the error will include a pre-squash
-SHA you can use to recover and resolve the conflict manually, then retry.
+If you want the work to land as ONE commit with a message you choose, squash on
+the agent's branch yourself before merging; the engine will not do it and
+message: is refused.
+
+If a merge fails, your branch was not modified, with one exception the error
+states explicitly: if the fast-forward succeeded and something else moved your
+branch immediately afterwards, the error says so and confirms your work landed.
+Otherwise the error distinguishes a rebase conflict, a validation failure, and
+your branch having moved during validation (re-run in that last case), and it
+names the recovery refs under
+refs/sprawl/premerge/<agent>/<timestamp>/{agent,parent}.
 
 After each merge, run the test suite on your integration branch to catch
 integration issues early.`

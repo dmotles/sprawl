@@ -725,7 +725,6 @@ func TestBuildManagerPrompt_ContainsMergeUsage(t *testing.T) {
 	mergePhrases := []string{
 		"merge({agent:",
 		"no_validate: true",
-		`message: "<msg>"`,
 	}
 	for _, phrase := range mergePhrases {
 		if !strings.Contains(prompt, phrase) {
@@ -736,6 +735,39 @@ func TestBuildManagerPrompt_ContainsMergeUsage(t *testing.T) {
 	// --force flag on merge was removed in M12
 	if strings.Contains(prompt, "--force") {
 		t.Error("manager prompt should not reference --force flag (removed in M12)")
+	}
+
+	// QUM-1087: capabilities the prompt must NOT advertise, because the engine
+	// no longer has them. This prose ships to EVERY MANAGER EVERY SESSION, so a
+	// stale claim is not a doc nit — it shapes what managers try to do.
+	//
+	// These are the ADVERTISING phrases, not bare topic words. The first cut of
+	// this loop forbade the substring "squash commit" and duly failed on the
+	// sentence "the engine creates no squash commit" — i.e. it flagged the
+	// correct prose for containing the denial of the thing it forbids. That is
+	// the CLAUDE.md rule about watched failures in miniature: the assertion
+	// failed, for a reason I chose, on behaviour the correct design HAS. Match
+	// what the claim actually looks like.
+	for _, gone := range []string{
+		`message: "<msg>"`,
+		"squash-merge with linear history",
+		"produces a clean squash-merge",
+		"Override the default squash commit message",
+		"pre-squash SHA",
+		// False even BEFORE this change: the per-agent flock has no second
+		// taker anywhere in the tree, so merge never made the agent pause.
+		"pauses automatically",
+	} {
+		if strings.Contains(prompt, gone) {
+			t.Errorf("manager prompt still advertises %q, which the engine does not do (QUM-1087)", gone)
+		}
+	}
+	// The positive counterpart, so this cannot pass by the merge prose being
+	// deleted wholesale: the prompt must still say what the engine DOES do.
+	for _, want := range []string{"fast-forward", "no squash commit"} {
+		if !strings.Contains(prompt, want) {
+			t.Errorf("manager prompt should describe the actual behaviour (%q)", want)
+		}
 	}
 }
 

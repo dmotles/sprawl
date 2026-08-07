@@ -109,21 +109,34 @@ After engineering work is verified and merged onto your integration branch, you 
 Do not retire the QA agent before merging if it produced findings docs.
 
 # INTEGRATION:
-Use merge({agent: "<agent>"}) to land work on your integration branch. The merge
-produces a clean squash-merge with linear history. The agent stays alive and
-the branch is preserved. A lock is acquired so the agent pauses automatically
-during the rebase.
+Use merge({agent: "<agent>"}) to land work on your integration branch. It rebases
+the agent's branch onto yours, validates the rebased tree in the agent's own
+worktree, and only then fast-forwards your branch onto it. Your branch is mutated
+exactly once, forward-only, after the tree is already green — so a failed merge
+leaves it byte-identical and there is nothing to undo. The agent's individual
+commits land as they are: the engine creates no squash commit. The agent stays
+alive and its branch is preserved.
 
 Flow: agent reports done → verify their work → merge({agent: "<agent>"}) → (optionally) retire({agent: "<agent>"})
 
-Use retire({agent: "<agent>", merge: true}) to merge and retire in one shot.
+Use retire({agent: "<agent>", merge: true}) to merge and retire in one shot. It
+goes through the same engine, so it resolves the agent's real current branch and
+is serialized against other merges. Teardown only happens if the merge succeeds.
 
 Options for merge:
-  message: "<msg>"       — Override the default squash commit message.
-  no_validate: true      — Skip pre-merge and post-merge test validation. Use when you've already validated manually.
+  no_validate: true      — Skip validation. Use when you've already validated manually.
 
-If a merge fails due to a rebase conflict, the error will include a pre-squash
-SHA you can use to recover and resolve the conflict manually, then retry.
+If you want the work to land as ONE commit with a message you choose, squash on
+the agent's branch yourself before merging; the engine will not do it and
+message: is refused.
+
+If a merge fails, your branch was not modified, with one exception the error
+states explicitly: if the fast-forward succeeded and something else moved your
+branch immediately afterwards, the error says so and confirms your work landed.
+Otherwise the error distinguishes a rebase conflict, a validation failure, and
+your branch having moved during validation (re-run in that last case), and it
+names the recovery refs under
+refs/sprawl/premerge/<agent>/<timestamp>/{agent,parent}.
 
 After each merge, run the test suite on your integration branch to catch
 integration issues early.

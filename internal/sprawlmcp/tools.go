@@ -195,7 +195,7 @@ func baseToolDefinitions() []map[string]any {
 		},
 		{
 			"name":        "merge",
-			"description": "Squash-merge an agent's branch into the current branch. The agent is NOT retired — it stays alive and can continue working. Acquires a per-sprawl-root lock; concurrent merges queue and run sequentially.",
+			"description": "Rebase an agent's branch onto the current branch, validate the rebased tree in the agent's worktree, then fast-forward. The agent's own commits land as-is; no squash commit is created (squash on the agent's branch first if you want one). Your branch is mutated once, forward-only, after the tree is green — a failed merge leaves it byte-identical. The agent is NOT retired. Acquires a per-sprawl-root lock; concurrent merges queue and run sequentially.",
 			"inputSchema": map[string]any{
 				"type": "object",
 				"properties": map[string]any{
@@ -203,13 +203,9 @@ func baseToolDefinitions() []map[string]any {
 						"type":        "string",
 						"description": "Name of the agent whose branch to merge",
 					},
-					"message": map[string]any{
-						"type":        "string",
-						"description": "Override the squash commit message",
-					},
 					"no_validate": map[string]any{
 						"type":        "boolean",
-						"description": "Skip post-merge test validation",
+						"description": "Skip validation. Validation runs on the rebased tree in the agent's worktree BEFORE the caller's branch is touched, so skipping it means the branch is fast-forwarded unvalidated.",
 					},
 				},
 				"required": []string{"agent"},
@@ -227,7 +223,7 @@ func baseToolDefinitions() []map[string]any {
 					},
 					"merge": map[string]any{
 						"type":        "boolean",
-						"description": "Squash-merge the agent's work into the caller's branch before retiring. Mutually exclusive with abandon.",
+						"description": "Merge the agent's work into the caller's branch before retiring, using the same engine as the merge tool (rebase, validate in the agent's worktree, fast-forward; no squash commit). Teardown happens only if the merge succeeds. Mutually exclusive with abandon.",
 					},
 					"abandon": map[string]any{
 						"type":        "boolean",

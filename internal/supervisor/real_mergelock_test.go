@@ -46,7 +46,7 @@ func TestMerge_SerializesConcurrent(t *testing.T) {
 	releaseA := make(chan struct{})
 	releaseB := make(chan struct{})
 
-	r.mergeFn = func(_ context.Context, _ *agentops.MergeDeps, name, _ string, _, _ bool) (*agentops.MergeOutcome, error) {
+	r.mergeFn = func(_ context.Context, _ *agentops.MergeDeps, name, _ string, _, _ bool, _ bool) (*agentops.MergeOutcome, error) {
 		atomic.AddInt64(&entered, 1)
 		enteredCh <- name
 		switch name {
@@ -167,7 +167,7 @@ func TestMerge_BlockedCallerCancelUnblocks(t *testing.T) {
 	enteredA := make(chan struct{})
 	releaseA := make(chan struct{})
 
-	r.mergeFn = func(_ context.Context, _ *agentops.MergeDeps, name, _ string, _, _ bool) (*agentops.MergeOutcome, error) {
+	r.mergeFn = func(_ context.Context, _ *agentops.MergeDeps, name, _ string, _, _ bool, _ bool) (*agentops.MergeOutcome, error) {
 		if name == "agent-a" {
 			close(enteredA)
 			<-releaseA
@@ -234,7 +234,7 @@ func TestMerge_BlockedCallerCancelUnblocks(t *testing.T) {
 // QueuedBehind / QueueWait values on its outcome.
 func TestMerge_UncontendedNoQueueMessage(t *testing.T) {
 	r, _ := newFakeReal(t)
-	r.mergeFn = func(context.Context, *agentops.MergeDeps, string, string, bool, bool) (*agentops.MergeOutcome, error) {
+	r.mergeFn = func(context.Context, *agentops.MergeDeps, string, string, bool, bool, bool) (*agentops.MergeOutcome, error) {
 		return &agentops.MergeOutcome{NoOp: false, ResolvedBranch: "main"}, nil
 	}
 	outcome, err := r.Merge(context.Background(), "", "alpha", "", false)
@@ -260,7 +260,7 @@ func TestMerge_NonMergeOpsNotSerialized(t *testing.T) {
 
 	enteredA := make(chan struct{})
 	releaseA := make(chan struct{})
-	r.mergeFn = func(_ context.Context, _ *agentops.MergeDeps, _, _ string, _, _ bool) (*agentops.MergeOutcome, error) {
+	r.mergeFn = func(_ context.Context, _ *agentops.MergeDeps, _, _ string, _, _ bool, _ bool) (*agentops.MergeOutcome, error) {
 		close(enteredA)
 		<-releaseA
 		return &agentops.MergeOutcome{}, nil
@@ -335,7 +335,7 @@ func TestMerge_EmitsQueuedAndStartingCheckpoints(t *testing.T) {
 
 	enteredA := make(chan struct{})
 	releaseA := make(chan struct{})
-	r.mergeFn = func(_ context.Context, _ *agentops.MergeDeps, name, _ string, _, _ bool) (*agentops.MergeOutcome, error) {
+	r.mergeFn = func(_ context.Context, _ *agentops.MergeDeps, name, _ string, _, _ bool, _ bool) (*agentops.MergeOutcome, error) {
 		if name == "agent-a" {
 			close(enteredA)
 			<-releaseA

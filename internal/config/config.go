@@ -43,7 +43,14 @@ import (
 //     accessors below, and Load deliberately does NOT prefill them, so Save can
 //     never freeze today's default into a user's file.
 type Config struct {
-	Validate                  string `yaml:"validate,omitempty" sprawl:"purpose=Shell command run for post-merge validation"`
+	// QUM-1087 moved WHEN this runs: the merge engine now rebases the agent's
+	// branch, runs this on the REBASED tree in the agent's own worktree, and
+	// only then fast-forwards the parent. It is therefore no longer "post-merge"
+	// — it is the gate the merge passes through, and the parent is never touched
+	// on a failure. The wording lives here rather than in cmd/config.go because
+	// QUM-1086 made this tag the single source for `sprawl config --help`, the
+	// unrecognized-key error, and `Reference()`.
+	Validate                  string `yaml:"validate,omitempty" sprawl:"purpose=Shell command run on the rebased tree to validate a merge before the parent branch is touched"`
 	ValidateTimeout           string `yaml:"validate_timeout,omitempty" sprawl:"purpose=Max wall-clock for validate as a Go duration (e.g. 20m); empty means the caller default"`
 	ValidatePopupAfterSeconds int    `yaml:"validate_popup_after_seconds,omitempty" sprawl:"default=10,purpose=Seconds before the TUI auto-opens the validate-output popup"`
 	// PauseTimeoutSeconds is the default escalation budget (in seconds) for

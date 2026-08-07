@@ -33,10 +33,10 @@ func newFakeReal(t *testing.T) (*Real, string) {
 	r.spawnFn = func(*agentops.SpawnDeps, string, string, string, string, bool) (*state.AgentState, error) {
 		return nil, errors.New("spawnFn not overridden")
 	}
-	r.mergeFn = func(context.Context, *agentops.MergeDeps, string, string, bool, bool) (*agentops.MergeOutcome, error) {
+	r.mergeFn = func(context.Context, *agentops.MergeDeps, string, string, bool, bool, bool) (*agentops.MergeOutcome, error) {
 		return nil, errors.New("mergeFn not overridden")
 	}
-	r.retireFn = func(context.Context, *agentops.RetireDeps, string, bool, bool, bool, bool, bool, bool) ([]string, error) {
+	r.retireFn = func(context.Context, *agentops.RetireDeps, string, bool, bool, bool, bool, bool) ([]string, error) {
 		return nil, errors.New("retireFn not overridden")
 	}
 	r.killFn = func(*agentops.KillDeps, string, bool) error {
@@ -131,7 +131,7 @@ func TestMerge_ForwardsArgs(t *testing.T) {
 
 	var gotName, gotMsg string
 	var gotNoValidate, gotDryRun bool
-	r.mergeFn = func(_ context.Context, _ *agentops.MergeDeps, name, msg string, noValidate, dryRun bool) (*agentops.MergeOutcome, error) {
+	r.mergeFn = func(_ context.Context, _ *agentops.MergeDeps, name, msg string, noValidate, dryRun, salvage bool) (*agentops.MergeOutcome, error) {
 		gotName, gotMsg, gotNoValidate, gotDryRun = name, msg, noValidate, dryRun
 		return &agentops.MergeOutcome{}, nil
 	}
@@ -147,7 +147,7 @@ func TestMerge_ForwardsArgs(t *testing.T) {
 
 func TestMerge_PropagatesError(t *testing.T) {
 	r, _ := newFakeReal(t)
-	r.mergeFn = func(context.Context, *agentops.MergeDeps, string, string, bool, bool) (*agentops.MergeOutcome, error) {
+	r.mergeFn = func(context.Context, *agentops.MergeDeps, string, string, bool, bool, bool) (*agentops.MergeOutcome, error) {
 		return nil, errors.New("dirty tree")
 	}
 	_, err := r.Merge(context.Background(), "", "ratz", "", false)
@@ -161,17 +161,25 @@ func TestRetire_ForwardsFlags(t *testing.T) {
 	saveTestAgent(t, tmpDir, &state.AgentState{Name: "ghost", Type: "researcher", Parent: "weave", Status: "active"})
 
 	var got struct {
-		name                                                 string
-		cascade, force, abandon, mergeFirst, yes, noValidate bool
+		name                                     string
+		cascade, force, abandon, mergeFirst, yes bool
 	}
-	r.retireFn = func(_ context.Context, _ *agentops.RetireDeps, name string, cascade, force, abandon, mergeFirst, yes, noValidate bool) ([]string, error) {
+	// mergeFirst=true now routes through Real.Merge before teardown
+	// (QUM-1088), so this stub is required: without it the merge would reach
+	// the real agentops.Merge.
+	var mergeCalled, gotMergeNoValidate bool
+	r.mergeFn = func(_ context.Context, _ *agentops.MergeDeps, name, msg string, noValidate, dryRun, salvage bool) (*agentops.MergeOutcome, error) {
+		mergeCalled = true
+		gotMergeNoValidate = noValidate
+		return &agentops.MergeOutcome{}, nil
+	}
+	r.retireFn = func(_ context.Context, _ *agentops.RetireDeps, name string, cascade, force, abandon, mergeFirst, yes bool) ([]string, error) {
 		got.name = name
 		got.cascade = cascade
 		got.force = force
 		got.abandon = abandon
 		got.mergeFirst = mergeFirst
 		got.yes = yes
-		got.noValidate = noValidate
 		return []string{name}, nil
 	}
 
@@ -196,8 +204,18 @@ func TestRetire_ForwardsFlags(t *testing.T) {
 	if got.force {
 		t.Error("force should be false")
 	}
-	if got.noValidate {
-		t.Error("noValidate should be false")
+	// The routing itself, asserted here rather than assumed: mergeFirst must
+	// reach the merge ENGINE, not just be forwarded as a flag. Before QUM-1088
+	// it was forwarded and the merge happened inline in agentops, bypassing
+	// mergeSem and using the stale spawn-time branch.
+	if !mergeCalled {
+		t.Error("mergeFirst did not route through Real.Merge")
+	}
+	// noValidate is no longer forwarded to retireFn — validation belongs to the
+	// merge, which now happens in Real.Retire itself. Asserted where it is now
+	// observable: on the merge call.
+	if gotMergeNoValidate {
+		t.Error("noValidate should be false on the merge call")
 	}
 }
 
@@ -205,7 +223,7 @@ func TestRetire_AbandonMode(t *testing.T) {
 	r, tmpDir := newFakeReal(t)
 	saveTestAgent(t, tmpDir, &state.AgentState{Name: "ghost", Type: "researcher", Parent: "weave", Status: "active"})
 	var gotAbandon, gotMergeFirst bool
-	r.retireFn = func(_ context.Context, _ *agentops.RetireDeps, _ string, _, _, abandon, mergeFirst, _, _ bool) ([]string, error) {
+	r.retireFn = func(_ context.Context, _ *agentops.RetireDeps, _ string, _, _, abandon, mergeFirst, _ bool) ([]string, error) {
 		gotAbandon, gotMergeFirst = abandon, mergeFirst
 		return nil, nil
 	}
@@ -224,7 +242,7 @@ func TestRetire_MergeAndAbandonRejectedBeforeCascade(t *testing.T) {
 	r, tmpDir := newFakeReal(t)
 	saveTestAgent(t, tmpDir, &state.AgentState{Name: "ghost", Type: "researcher", Parent: "weave", Status: "active"})
 	called := false
-	r.retireFn = func(context.Context, *agentops.RetireDeps, string, bool, bool, bool, bool, bool, bool) ([]string, error) {
+	r.retireFn = func(context.Context, *agentops.RetireDeps, string, bool, bool, bool, bool, bool) ([]string, error) {
 		called = true
 		return nil, nil
 	}
@@ -237,22 +255,90 @@ func TestRetire_MergeAndAbandonRejectedBeforeCascade(t *testing.T) {
 	}
 }
 
-func TestRetire_CascadeAndNoValidate(t *testing.T) {
+func TestRetire_CascadeForwarded_AndNoValidateReachesTheMerge(t *testing.T) {
 	r, tmpDir := newFakeReal(t)
 	saveTestAgent(t, tmpDir, &state.AgentState{Name: "ghost", Type: "researcher", Parent: "weave", Status: "active"})
-	var gotCascade, gotNoValidate bool
-	r.retireFn = func(_ context.Context, _ *agentops.RetireDeps, _ string, cascade, _, _, _, _, noValidate bool) ([]string, error) {
-		gotCascade, gotNoValidate = cascade, noValidate
+	var gotCascade, gotMergeNoValidate bool
+	r.retireFn = func(_ context.Context, _ *agentops.RetireDeps, _ string, cascade, _, _, _, _ bool) ([]string, error) {
+		gotCascade = cascade
 		return nil, nil
 	}
-	if _, err := r.Retire(context.Background(), "", "ghost", true /* merge */, false, true /* cascade */, true /* noValidate */); err != nil {
+	r.mergeFn = func(_ context.Context, _ *agentops.MergeDeps, _, _ string, noValidate, _, _ bool) (*agentops.MergeOutcome, error) {
+		gotMergeNoValidate = noValidate
+		return &agentops.MergeOutcome{}, nil
+	}
+	// mergeFirst=false: merge+cascade is refused on this path — see
+	// TestRetire_MergeFirstWithCascade_RefusesWithARemedy.
+	if _, err := r.Retire(context.Background(), "", "ghost", false /* merge */, false, true /* cascade */, true /* noValidate */); err != nil {
 		t.Fatalf("Retire: %v", err)
 	}
 	if !gotCascade {
 		t.Error("cascade should be true")
 	}
-	if !gotNoValidate {
-		t.Error("noValidate should be true")
+
+	// noValidate is no longer a retireFn parameter: retire validates nothing,
+	// the merge does. Assert it where it is now observable.
+	r2, tmp2 := newFakeReal(t)
+	saveTestAgent(t, tmp2, &state.AgentState{Name: "ghost2", Type: "researcher", Parent: "weave", Status: "active"})
+	r2.retireFn = func(_ context.Context, _ *agentops.RetireDeps, _ string, _, _, _, _, _ bool) ([]string, error) {
+		return nil, nil
+	}
+	r2.mergeFn = func(_ context.Context, _ *agentops.MergeDeps, _, _ string, noValidate, _, _ bool) (*agentops.MergeOutcome, error) {
+		gotMergeNoValidate = noValidate
+		return &agentops.MergeOutcome{}, nil
+	}
+	if _, err := r2.Retire(context.Background(), "", "ghost2", true /* merge */, false, false, true /* noValidate */); err != nil {
+		t.Fatalf("Retire: %v", err)
+	}
+	if !gotMergeNoValidate {
+		t.Error("noValidate must reach the merge call")
+	}
+}
+
+// TestRetire_MergeFirstWithCascade_RefusesWithARemedy pins the deliberate,
+// narrow regression from QUM-1087's retire folding.
+//
+// agentops.Merge's precondition 5 refuses a merge whose agent still has live
+// children. On the runtime-backed path that is satisfied because Real.Retire's
+// own cascade loop has already torn them down. On THIS path (no live runtime)
+// the cascade recursion happens inside agentops.Retire — after the merge would
+// run — so the children are still there and the merge would be refused with a
+// message about children rather than about what the caller should do.
+//
+// Refusing explicitly with the remedy was chosen over hoisting the cascade
+// recursion, which is QUM-852 territory. The remedy is asserted, not just the
+// refusal: an error that does not say what to do next is a dead end
+// (/cli-ux-best-practices).
+func TestRetire_MergeFirstWithCascade_RefusesWithARemedy(t *testing.T) {
+	r, tmpDir := newFakeReal(t)
+	saveTestAgent(t, tmpDir, &state.AgentState{Name: "ghost", Type: "researcher", Parent: "weave", Status: "active"})
+
+	var mergeCalled, retireCalled bool
+	r.mergeFn = func(_ context.Context, _ *agentops.MergeDeps, _, _ string, _, _, _ bool) (*agentops.MergeOutcome, error) {
+		mergeCalled = true
+		return &agentops.MergeOutcome{}, nil
+	}
+	r.retireFn = func(_ context.Context, _ *agentops.RetireDeps, _ string, _, _, _, _, _ bool) ([]string, error) {
+		retireCalled = true
+		return nil, nil
+	}
+
+	_, err := r.Retire(context.Background(), "", "ghost", true /* mergeFirst */, false, true /* cascade */, false)
+	if err == nil {
+		t.Fatal("expected retire --merge --cascade to be refused on the runtime-less path")
+	}
+	if mergeCalled {
+		t.Error("the merge must not be attempted when it would be refused for having live children")
+	}
+	// Nothing torn down: the refusal happens before any teardown, so the agent
+	// is left exactly as it was and the caller can follow the remedy.
+	if retireCalled {
+		t.Error("teardown ran despite the merge being refused")
+	}
+	for _, want := range []string{"cascade-retire the children first", "merge: true"} {
+		if !strings.Contains(strings.ToLower(err.Error()), want) {
+			t.Errorf("the error must name the remedy (%q), got: %v", want, err)
+		}
 	}
 }
 
@@ -645,7 +731,7 @@ func TestRetire_FallsBackToRegistry_WhenJSONMissing(t *testing.T) {
 		}
 
 		var retireCalls []string
-		r.retireFn = func(_ context.Context, _ *agentops.RetireDeps, name string, _, _, _, _, _, _ bool) ([]string, error) {
+		r.retireFn = func(_ context.Context, _ *agentops.RetireDeps, name string, _, _, _, _, _ bool) ([]string, error) {
 			// Load-bearing contract: by the time retireFn runs, the JSON
 			// must exist on disk so agentops.Retire's state.LoadAgent
 			// succeeds. Real.Retire must reconcile from the runtime
@@ -689,7 +775,7 @@ func TestRetire_FallsBackToRegistry_WhenJSONMissing(t *testing.T) {
 
 		// retireFn returns nil if invoked; with no registry entry and no JSON,
 		// Retire has nothing to fall back to and should surface an error.
-		r.retireFn = func(context.Context, *agentops.RetireDeps, string, bool, bool, bool, bool, bool, bool) ([]string, error) {
+		r.retireFn = func(context.Context, *agentops.RetireDeps, string, bool, bool, bool, bool, bool) ([]string, error) {
 			return nil, nil
 		}
 
@@ -817,8 +903,6 @@ func TestE2E_StateDivergenceFullFlow(t *testing.T) {
 		GitBranchDelete:     func(string, string) error { return nil },
 		GitBranchIsMerged:   func(string, string) (bool, error) { return true, nil },
 		GitBranchSafeDelete: func(string, string) error { return nil },
-		LoadAgent:           state.LoadAgent,
-		CurrentBranch:       func(string) (string, error) { return "main", nil },
 		GitUnmergedCommits:  func(string, string) ([]string, error) { return nil, nil },
 		LoadConfig:          func(string) (*config.Config, error) { return &config.Config{}, nil },
 		RunScript:           func(string, string, map[string]string) ([]byte, error) { return nil, nil },
@@ -984,7 +1068,7 @@ func TestMerge_PassesCallerIdentityToAgentopsGetenv(t *testing.T) {
 	}
 
 	var capturedIdentity string
-	r.mergeFn = func(_ context.Context, deps *agentops.MergeDeps, _, _ string, _, _ bool) (*agentops.MergeOutcome, error) {
+	r.mergeFn = func(_ context.Context, deps *agentops.MergeDeps, _, _ string, _, _, _ bool) (*agentops.MergeOutcome, error) {
 		capturedIdentity = deps.Getenv("SPRAWL_AGENT_IDENTITY")
 		return &agentops.MergeOutcome{}, nil
 	}
@@ -1004,7 +1088,7 @@ func TestMerge_FallsBackToContextCallerIdentity(t *testing.T) {
 	r, _ := newFakeReal(t)
 
 	var capturedIdentity string
-	r.mergeFn = func(_ context.Context, deps *agentops.MergeDeps, _, _ string, _, _ bool) (*agentops.MergeOutcome, error) {
+	r.mergeFn = func(_ context.Context, deps *agentops.MergeDeps, _, _ string, _, _, _ bool) (*agentops.MergeOutcome, error) {
 		capturedIdentity = deps.Getenv("SPRAWL_AGENT_IDENTITY")
 		return &agentops.MergeOutcome{}, nil
 	}
@@ -1024,7 +1108,7 @@ func TestMerge_FallsBackToCallerNameWhenCallerEmptyAndNoCtxIdentity(t *testing.T
 	r, _ := newFakeReal(t)
 
 	var capturedIdentity string
-	r.mergeFn = func(_ context.Context, deps *agentops.MergeDeps, _, _ string, _, _ bool) (*agentops.MergeOutcome, error) {
+	r.mergeFn = func(_ context.Context, deps *agentops.MergeDeps, _, _ string, _, _, _ bool) (*agentops.MergeOutcome, error) {
 		capturedIdentity = deps.Getenv("SPRAWL_AGENT_IDENTITY")
 		return &agentops.MergeOutcome{}, nil
 	}
@@ -1047,9 +1131,20 @@ func TestRetire_PassesCallerIdentityToAgentopsGetenv(t *testing.T) {
 	})
 
 	var capturedIdentity string
-	r.retireFn = func(_ context.Context, deps *agentops.RetireDeps, _ string, _, _, _, _, _, _ bool) ([]string, error) {
+	r.retireFn = func(_ context.Context, deps *agentops.RetireDeps, _ string, _, _, _, _, _ bool) ([]string, error) {
 		capturedIdentity = deps.Getenv("SPRAWL_AGENT_IDENTITY")
 		return nil, nil
+	}
+
+	// mergeFirst=true now routes through Real.Merge first (QUM-1088), so the
+	// caller identity has to reach BOTH calls. Capturing it on the merge too is
+	// not incidental: agentops.Merge's parent-equality precondition is checked
+	// against this identity, so a merge that ran under the supervisor's own
+	// identity instead of the caller's would refuse a legitimate merge.
+	var mergeIdentity string
+	r.mergeFn = func(_ context.Context, deps *agentops.MergeDeps, _, _ string, _, _, _ bool) (*agentops.MergeOutcome, error) {
+		mergeIdentity = deps.Getenv("SPRAWL_AGENT_IDENTITY")
+		return &agentops.MergeOutcome{}, nil
 	}
 
 	// Manager tower invokes retire on its child finn through the MCP server.
@@ -1059,6 +1154,9 @@ func TestRetire_PassesCallerIdentityToAgentopsGetenv(t *testing.T) {
 	}
 	if capturedIdentity != "tower" {
 		t.Errorf("SPRAWL_AGENT_IDENTITY in retireFn = %q, want %q (QUM-487)", capturedIdentity, "tower")
+	}
+	if mergeIdentity != "tower" {
+		t.Errorf("SPRAWL_AGENT_IDENTITY in mergeFn = %q, want %q", mergeIdentity, "tower")
 	}
 }
 
@@ -1070,9 +1168,20 @@ func TestRetire_FallsBackToContextCallerIdentity(t *testing.T) {
 	})
 
 	var capturedIdentity string
-	r.retireFn = func(_ context.Context, deps *agentops.RetireDeps, _ string, _, _, _, _, _, _ bool) ([]string, error) {
+	r.retireFn = func(_ context.Context, deps *agentops.RetireDeps, _ string, _, _, _, _, _ bool) ([]string, error) {
 		capturedIdentity = deps.Getenv("SPRAWL_AGENT_IDENTITY")
 		return nil, nil
+	}
+
+	// mergeFirst=true now routes through Real.Merge first (QUM-1088), so the
+	// caller identity has to reach BOTH calls. Capturing it on the merge too is
+	// not incidental: agentops.Merge's parent-equality precondition is checked
+	// against this identity, so a merge that ran under the supervisor's own
+	// identity instead of the caller's would refuse a legitimate merge.
+	var mergeIdentity string
+	r.mergeFn = func(_ context.Context, deps *agentops.MergeDeps, _, _ string, _, _, _ bool) (*agentops.MergeOutcome, error) {
+		mergeIdentity = deps.Getenv("SPRAWL_AGENT_IDENTITY")
+		return &agentops.MergeOutcome{}, nil
 	}
 
 	ctx := backendpkg.WithCallerIdentity(context.Background(), "tower")
@@ -1082,6 +1191,9 @@ func TestRetire_FallsBackToContextCallerIdentity(t *testing.T) {
 	}
 	if capturedIdentity != "tower" {
 		t.Errorf("SPRAWL_AGENT_IDENTITY = %q, want %q (context fallback)", capturedIdentity, "tower")
+	}
+	if mergeIdentity != "tower" {
+		t.Errorf("SPRAWL_AGENT_IDENTITY in mergeFn = %q, want %q", mergeIdentity, "tower")
 	}
 }
 
@@ -1120,7 +1232,7 @@ func TestRetire_CascadePropagatesCallerToRecursiveRetire(t *testing.T) {
 	}
 
 	capturedIdentitiesByAgent := map[string]string{}
-	r.retireFn = func(_ context.Context, deps *agentops.RetireDeps, name string, _, _, _, _, _, _ bool) ([]string, error) {
+	r.retireFn = func(_ context.Context, deps *agentops.RetireDeps, name string, _, _, _, _, _ bool) ([]string, error) {
 		capturedIdentitiesByAgent[name] = deps.Getenv("SPRAWL_AGENT_IDENTITY")
 		return []string{name}, nil
 	}
@@ -1326,7 +1438,7 @@ func TestReal_Retire_TerminalStatus_DelegatesCleanup(t *testing.T) {
 	})
 
 	var retireCalls int
-	r.retireFn = func(context.Context, *agentops.RetireDeps, string, bool, bool, bool, bool, bool, bool) ([]string, error) {
+	r.retireFn = func(context.Context, *agentops.RetireDeps, string, bool, bool, bool, bool, bool) ([]string, error) {
 		retireCalls++
 		return nil, nil
 	}

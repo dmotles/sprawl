@@ -4,10 +4,10 @@ import (
 	"context"
 	"os"
 	"path/filepath"
+	"reflect"
 	"testing"
 
 	"github.com/dmotles/sprawl/internal/config"
-	"github.com/dmotles/sprawl/internal/merge"
 	"github.com/dmotles/sprawl/internal/state"
 )
 
@@ -59,13 +59,7 @@ func TestRetire_EmitsCheckpoints(t *testing.T) {
 		GitBranchDelete:     func(string, string) error { return nil },
 		GitBranchIsMerged:   func(string, string) (bool, error) { return false, nil },
 		GitBranchSafeDelete: func(string, string) error { return nil },
-		DoMerge: func(_ context.Context, cfg *merge.Config, deps *merge.Deps) (*merge.Result, error) {
-			return &merge.Result{WasNoOp: true}, nil
-		},
-		NewMergeDeps:       func() *merge.Deps { return &merge.Deps{} },
-		LoadAgent:          state.LoadAgent,
-		CurrentBranch:      func(string) (string, error) { return "main", nil },
-		GitUnmergedCommits: func(string, string) ([]string, error) { return nil, nil },
+		GitUnmergedCommits:  func(string, string) ([]string, error) { return nil, nil },
 		LoadConfig: func(string) (*config.Config, error) {
 			return &config.Config{}, nil
 		},
@@ -77,7 +71,7 @@ func TestRetire_EmitsCheckpoints(t *testing.T) {
 		},
 	}
 
-	if _, err := Retire(context.Background(), deps, agentName, false, false, false, false, false, false); err != nil {
+	if _, err := Retire(context.Background(), deps, agentName, false, false, false, false, false); err != nil {
 		t.Fatalf("Retire: %v", err)
 	}
 
@@ -131,8 +125,6 @@ func TestRetire_NilCheckpointSafe(t *testing.T) {
 		GitBranchDelete:     func(string, string) error { return nil },
 		GitBranchIsMerged:   func(string, string) (bool, error) { return false, nil },
 		GitBranchSafeDelete: func(string, string) error { return nil },
-		LoadAgent:           state.LoadAgent,
-		CurrentBranch:       func(string) (string, error) { return "main", nil },
 		GitUnmergedCommits:  func(string, string) ([]string, error) { return nil, nil },
 		LoadConfig: func(string) (*config.Config, error) {
 			return &config.Config{}, nil
@@ -146,7 +138,7 @@ func TestRetire_NilCheckpointSafe(t *testing.T) {
 			t.Errorf("nil Checkpoint panicked: %v", r)
 		}
 	}()
-	if _, err := Retire(context.Background(), deps, agentName, false, false, false, false, false, false); err != nil {
+	if _, err := Retire(context.Background(), deps, agentName, false, false, false, false, false); err != nil {
 		t.Fatalf("Retire: %v", err)
 	}
 }
@@ -202,8 +194,6 @@ func TestRetire_Subagent_SkipsWorktreeAndBranchDelete(t *testing.T) {
 			return false, nil
 		},
 		GitBranchSafeDelete: func(string, string) error { deletedBranch = true; return nil },
-		LoadAgent:           state.LoadAgent,
-		CurrentBranch:       func(string) (string, error) { return "main", nil },
 		GitUnmergedCommits:  func(string, string) ([]string, error) { return nil, nil },
 		LoadConfig: func(string) (*config.Config, error) {
 			return &config.Config{}, nil
@@ -212,7 +202,7 @@ func TestRetire_Subagent_SkipsWorktreeAndBranchDelete(t *testing.T) {
 	}
 
 	// abandon=true, yes=true: typical sub-agent retire path.
-	if _, err := Retire(context.Background(), deps, agentName, false, false, true, false, true, false); err != nil {
+	if _, err := Retire(context.Background(), deps, agentName, false, false, true, false, true); err != nil {
 		t.Fatalf("Retire: %v", err)
 	}
 
@@ -280,7 +270,7 @@ func TestRetire_TerminalStatuses_Succeed(t *testing.T) {
 				deps := terminalRetireDeps(sprawlRoot)
 				_, err := Retire(context.Background(), deps, agentName,
 					false /* cascade */, false /* force */, abandon,
-					false /* mergeFirst */, true /* yes */, false /* noValidate */)
+					false /* mergeFirst */, true /* yes */)
 				if err != nil {
 					t.Fatalf("Retire(status=%q, abandon=%v): unexpected error: %v", status, abandon, err)
 				}
@@ -342,7 +332,7 @@ func TestRetire_TerminalChildren_DoNotRequireCascade(t *testing.T) {
 	// cascade=false: must still succeed because all children are terminal.
 	if _, err := Retire(context.Background(), deps, parentName,
 		false /* cascade */, false /* force */, false, /* abandon */
-		false /* mergeFirst */, false /* yes */, false /* noValidate */); err != nil {
+		false /* mergeFirst */, false /* yes */); err != nil {
 		t.Fatalf("Retire parent with terminal-only children: %v", err)
 	}
 }
@@ -379,8 +369,7 @@ func TestRetire_ActiveChildBlocks(t *testing.T) {
 	}
 
 	deps := terminalRetireDeps(sprawlRoot)
-	_, err := Retire(context.Background(), deps, parentName,
-		false, false, false, false, false, false)
+	_, err := Retire(context.Background(), deps, parentName, false, false, false, false, false)
 	if err == nil {
 		t.Fatalf("Retire of parent with active child must fail without --cascade")
 	}
@@ -458,7 +447,7 @@ func TestRetire_Cascade_TearsDownResolvedOrphanChildren(t *testing.T) {
 
 			deps, rec := recordingRetireDeps(sprawlRoot)
 			retired, err := Retire(context.Background(), deps, "parent",
-				true /* cascade */, false /* force */, true /* abandon */, false /* mergeFirst */, true /* yes */, false /* noValidate */)
+				true /* cascade */, false /* force */, true /* abandon */, false /* mergeFirst */, true /* yes */)
 			if err != nil {
 				t.Fatalf("Retire cascade: %v", err)
 			}
@@ -488,8 +477,7 @@ func TestRetire_Cascade_ReturnsRetiredSet_BottomUp(t *testing.T) {
 	saveTestAgent(t, sprawlRoot, "grand", "child", state.StatusComplete)
 
 	deps, _ := recordingRetireDeps(sprawlRoot)
-	retired, err := Retire(context.Background(), deps, "parent",
-		true, false, true, false, true, false)
+	retired, err := Retire(context.Background(), deps, "parent", true, false, true, false, true)
 	if err != nil {
 		t.Fatalf("Retire cascade: %v", err)
 	}
@@ -513,8 +501,7 @@ func TestRetire_Cascade_Recursive_ResolvedOrphanGrandchild(t *testing.T) {
 	grandWT := saveTestAgent(t, sprawlRoot, "grand", "child", state.StatusFaulted)
 
 	deps, _ := recordingRetireDeps(sprawlRoot)
-	if _, err := Retire(context.Background(), deps, "parent",
-		true, false, true, false, true, false); err != nil {
+	if _, err := Retire(context.Background(), deps, "parent", true, false, true, false, true); err != nil {
 		t.Fatalf("Retire cascade: %v", err)
 	}
 	if _, err := state.LoadAgent(sprawlRoot, "grand"); err == nil {
@@ -536,8 +523,7 @@ func TestRetire_Cascade_Recurses_ThroughOrphanIntermediate(t *testing.T) {
 	leafWT := saveTestAgent(t, sprawlRoot, "leaf", "mid", state.StatusComplete)
 
 	deps, _ := recordingRetireDeps(sprawlRoot)
-	retired, err := Retire(context.Background(), deps, "parent",
-		true, false, true, false, true, false)
+	retired, err := Retire(context.Background(), deps, "parent", true, false, true, false, true)
 	if err != nil {
 		t.Fatalf("Retire cascade: %v", err)
 	}
@@ -564,8 +550,7 @@ func TestRetire_Cascade_ExcludesRetiredRetiringChildren(t *testing.T) {
 	saveTestAgent(t, sprawlRoot, "leaving", "parent", state.StatusRetiring)
 
 	deps, rec := recordingRetireDeps(sprawlRoot)
-	retired, err := Retire(context.Background(), deps, "parent",
-		true, false, true, false, true, false)
+	retired, err := Retire(context.Background(), deps, "parent", true, false, true, false, true)
 	if err != nil {
 		t.Fatalf("Retire cascade: %v", err)
 	}
@@ -584,8 +569,7 @@ func TestRetire_ReturnsOwnName_NonCascade(t *testing.T) {
 	saveTestAgent(t, sprawlRoot, "solo", "weave", state.StatusComplete)
 
 	deps, _ := recordingRetireDeps(sprawlRoot)
-	retired, err := Retire(context.Background(), deps, "solo",
-		false, false, true, false, true, false)
+	retired, err := Retire(context.Background(), deps, "solo", false, false, true, false, true)
 	if err != nil {
 		t.Fatalf("Retire: %v", err)
 	}
@@ -604,8 +588,7 @@ func TestRetire_Cascade_Abandon_DeletesOrphanChildBranches(t *testing.T) {
 		saveTestAgent(t, sprawlRoot, "kid", "parent", state.StatusComplete)
 
 		deps, rec := recordingRetireDeps(sprawlRoot)
-		if _, err := Retire(context.Background(), deps, "parent",
-			true, false, true /* abandon */, false, true, false); err != nil {
+		if _, err := Retire(context.Background(), deps, "parent", true, false, true /* abandon */, false, true); err != nil {
 			t.Fatalf("Retire cascade abandon: %v", err)
 		}
 		if !contains(rec.branchesDeleted, "dmotles/kid") {
@@ -621,8 +604,7 @@ func TestRetire_Cascade_Abandon_DeletesOrphanChildBranches(t *testing.T) {
 		deps, rec := recordingRetireDeps(sprawlRoot)
 		// GitBranchIsMerged returns false in terminalRetireDeps, so an
 		// unmerged branch is preserved (not force-deleted) without abandon.
-		if _, err := Retire(context.Background(), deps, "parent",
-			true, false, false /* abandon */, false, true, false); err != nil {
+		if _, err := Retire(context.Background(), deps, "parent", true, false, false /* abandon */, false, true); err != nil {
 			t.Fatalf("Retire cascade: %v", err)
 		}
 		// The child must still be fully torn down (teardown-minus-branch),
@@ -634,6 +616,78 @@ func TestRetire_Cascade_Abandon_DeletesOrphanChildBranches(t *testing.T) {
 			t.Errorf("child branch force-deleted without abandon; GitBranchDelete calls = %v", rec.branchesDeleted)
 		}
 	})
+}
+
+// TestRetireDeps_HasNoMergeSeams stops the second merge call site coming back.
+//
+// QUM-1088 was caused by this layer having its own merge: it built a
+// merge.Config from the STALE spawn-time agentState.Branch while
+// agentops.Merge had resolved the worktree's real HEAD since QUM-511. The fix
+// was deletion, and a deletion is only durable if reintroducing it fails.
+// Structural, not a comment: no DoMerge seam, no merge to do.
+func TestRetireDeps_HasNoMergeSeams(t *testing.T) {
+	tp := reflect.TypeOf(RetireDeps{})
+	for _, name := range []string{"DoMerge", "NewMergeDeps"} {
+		if _, ok := tp.FieldByName(name); ok {
+			t.Errorf("RetireDeps carries a %q seam again.\n"+
+				"The merge belongs to the supervisor (Real.Retire -> Real.Merge -> agentops.Merge), which is\n"+
+				"where worktree-HEAD branch resolution, the detached-HEAD refusal, preconditions 7/8 and\n"+
+				"mergeSem all live. A second call site here is how QUM-1088 happened.", name)
+		}
+	}
+}
+
+// TestRetire_MergeFirst_DoesNotMerge pins what mergeFirst still MEANS here.
+//
+// It no longer performs a merge — the supervisor does that before calling this
+// function. What it still does is select the branch-delete behaviour:
+// GitBranchSafeDelete ("we merged it; delete it if git agrees it is merged")
+// instead of the preserve-and-warn default. That is easy to lose, because a
+// reader who greps for uses of mergeFirst finds only a switch arm and may
+// conclude the parameter is dead.
+//
+// (The red demonstration of the QUM-1088 loss this replaced lived here, driving
+// real git through the inline merge block. With the block deleted there is
+// nothing at this layer to demonstrate it against; the live version is
+// TestRetire_MergeFirst_MergesWorktreeHeadBranch_NotStateBranch in
+// internal/supervisor, which drives the real engine through the real routing.)
+func TestRetire_MergeFirst_DoesNotMerge(t *testing.T) {
+	sprawlRoot := t.TempDir()
+	wt := filepath.Join(sprawlRoot, ".sprawl", "worktrees", "m")
+	if err := os.MkdirAll(wt, 0o750); err != nil {
+		t.Fatalf("mkdir: %v", err)
+	}
+	if err := state.SaveAgent(sprawlRoot, &state.AgentState{
+		Name: "m", Type: "engineer", Family: "engineering",
+		Branch: "agent/m", Worktree: wt, Parent: "weave", Status: "active",
+	}); err != nil {
+		t.Fatalf("SaveAgent: %v", err)
+	}
+
+	deps := terminalRetireDeps(sprawlRoot)
+	deps.Getenv = func(key string) string {
+		switch key {
+		case "SPRAWL_ROOT":
+			return sprawlRoot
+		case "SPRAWL_AGENT_IDENTITY":
+			return "weave"
+		}
+		return ""
+	}
+	var safeDeleted, forceDeleted bool
+	deps.GitBranchSafeDelete = func(string, string) error { safeDeleted = true; return nil }
+	deps.GitBranchDelete = func(string, string) error { forceDeleted = true; return nil }
+
+	if _, err := Retire(context.Background(), deps, "m", false, false, false, true /* mergeFirst */, true); err != nil {
+		t.Fatalf("Retire: %v", err)
+	}
+
+	if !safeDeleted {
+		t.Error("mergeFirst must still select GitBranchSafeDelete; if this is failing, the parameter has been treated as dead and branch-deletion behaviour changed silently")
+	}
+	if forceDeleted {
+		t.Error("mergeFirst must never force-delete the branch")
+	}
 }
 
 // terminalRetireDeps builds RetireDeps suitable for the QUM-739 tests above.
@@ -653,8 +707,6 @@ func terminalRetireDeps(sprawlRoot string) *RetireDeps {
 		GitBranchDelete:     func(string, string) error { return nil },
 		GitBranchIsMerged:   func(string, string) (bool, error) { return false, nil },
 		GitBranchSafeDelete: func(string, string) error { return nil },
-		LoadAgent:           state.LoadAgent,
-		CurrentBranch:       func(string) (string, error) { return "main", nil },
 		GitUnmergedCommits:  func(string, string) ([]string, error) { return nil, nil },
 		LoadConfig: func(string) (*config.Config, error) {
 			return &config.Config{}, nil

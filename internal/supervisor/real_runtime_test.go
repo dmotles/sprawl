@@ -612,7 +612,7 @@ func TestRealRetire_CascadeRemovesDescendantRuntimesAfterSuccess(t *testing.T) {
 		saveTestAgent(t, tmpDir, agentState)
 		ensureRuntime(t, r, tmpDir, agentState)
 	}
-	r.retireFn = func(_ context.Context, _ *agentops.RetireDeps, _ string, _, _, _, _, _, _ bool) ([]string, error) {
+	r.retireFn = func(_ context.Context, _ *agentops.RetireDeps, _ string, _, _, _, _, _ bool) ([]string, error) {
 		return nil, nil
 	}
 
@@ -635,7 +635,7 @@ func TestRealRetire_FailedPersistLeavesRuntimeUnchanged(t *testing.T) {
 	agentState := testAgentState("alice")
 	saveTestAgent(t, tmpDir, agentState)
 	rt := ensureRuntime(t, r, tmpDir, agentState)
-	r.retireFn = func(context.Context, *agentops.RetireDeps, string, bool, bool, bool, bool, bool, bool) ([]string, error) {
+	r.retireFn = func(context.Context, *agentops.RetireDeps, string, bool, bool, bool, bool, bool) ([]string, error) {
 		return nil, errors.New("boom")
 	}
 
@@ -668,7 +668,7 @@ func TestRealRetire_StartedRuntimeFailureLeavesRuntimeNotStarted(t *testing.T) {
 	if err := rt.Start(); err != nil {
 		t.Fatalf("runtime start: %v", err)
 	}
-	r.retireFn = func(context.Context, *agentops.RetireDeps, string, bool, bool, bool, bool, bool, bool) ([]string, error) {
+	r.retireFn = func(context.Context, *agentops.RetireDeps, string, bool, bool, bool, bool, bool) ([]string, error) {
 		return nil, errors.New("boom")
 	}
 
@@ -701,7 +701,7 @@ func TestRealRetire_RuntimeBackedAgentStopsRuntimeBeforeLegacyRetireFn(t *testin
 	if err := rt.Start(); err != nil {
 		t.Fatalf("runtime start: %v", err)
 	}
-	r.retireFn = func(_ context.Context, _ *agentops.RetireDeps, name string, cascade, force, abandon, mergeFirst, yes, noValidate bool) ([]string, error) {
+	r.retireFn = func(_ context.Context, _ *agentops.RetireDeps, name string, cascade, force, abandon, mergeFirst, yes bool) ([]string, error) {
 		if name != "alice" {
 			t.Fatalf("retireFn name = %q, want alice", name)
 		}
@@ -744,7 +744,7 @@ func TestRealRetire_RuntimeBackedAgentRequiresCascadeWhenChildrenExist(t *testin
 	if err := rt.Start(); err != nil {
 		t.Fatalf("runtime start: %v", err)
 	}
-	r.retireFn = func(context.Context, *agentops.RetireDeps, string, bool, bool, bool, bool, bool, bool) ([]string, error) {
+	r.retireFn = func(context.Context, *agentops.RetireDeps, string, bool, bool, bool, bool, bool) ([]string, error) {
 		t.Fatal("retireFn should not run when active children require --cascade")
 		return nil, nil
 	}
@@ -806,7 +806,7 @@ func TestRealRetire_OfflineCleanupWhenNoRuntimeIsLive(t *testing.T) {
 	r, tmpDir := newFakeReal(t)
 	agentState := testAgentState("alice")
 	saveTestAgent(t, tmpDir, agentState)
-	r.retireFn = func(context.Context, *agentops.RetireDeps, string, bool, bool, bool, bool, bool, bool) ([]string, error) {
+	r.retireFn = func(context.Context, *agentops.RetireDeps, string, bool, bool, bool, bool, bool) ([]string, error) {
 		return []string{"alice"}, state.DeleteAgent(tmpDir, "alice")
 	}
 
@@ -917,7 +917,7 @@ func TestRealRetire_CascadeFailureRemovesDescendantsAlreadyRetiredOnDisk(t *test
 		saveTestAgent(t, tmpDir, agentState)
 		ensureRuntime(t, r, tmpDir, agentState)
 	}
-	r.retireFn = func(_ context.Context, _ *agentops.RetireDeps, _ string, _, _, _, _, _, _ bool) ([]string, error) {
+	r.retireFn = func(_ context.Context, _ *agentops.RetireDeps, _ string, _, _, _, _, _ bool) ([]string, error) {
 		if err := state.DeleteAgent(tmpDir, "bob"); err != nil {
 			return nil, err
 		}
@@ -1031,7 +1031,7 @@ func TestRealRetire_EmitsRuntimeStopCheckpoints(t *testing.T) {
 
 	// Make retireFn emit the three existing checkpoints via deps.Checkpoint
 	// so we can assert ordering relative to the new runtime-stop pair.
-	r.retireFn = func(_ context.Context, deps *agentops.RetireDeps, name string, _, _, _, _, _, _ bool) ([]string, error) {
+	r.retireFn = func(_ context.Context, deps *agentops.RetireDeps, name string, _, _, _, _, _ bool) ([]string, error) {
 		if deps.Checkpoint != nil {
 			deps.Checkpoint("retire.preflight", "agent_name", name)
 			deps.Checkpoint("retire.checkpoint-saved", "agent_name", name)
@@ -1127,7 +1127,7 @@ func TestRealRetire_RuntimeStopDoneIncludesWaitTimeoutTrue(t *testing.T) {
 		t.Fatalf("calllog.Open: %v", err)
 	}
 	r.SetCallLogger(logger)
-	r.retireFn = func(_ context.Context, _ *agentops.RetireDeps, name string, _, _, _, _, _, _ bool) ([]string, error) {
+	r.retireFn = func(_ context.Context, _ *agentops.RetireDeps, name string, _, _, _, _, _ bool) ([]string, error) {
 		return []string{name}, state.DeleteAgent(tmpDir, name)
 	}
 

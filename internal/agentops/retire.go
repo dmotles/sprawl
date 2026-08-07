@@ -9,7 +9,6 @@ import (
 
 	"github.com/dmotles/sprawl/internal/agent"
 	"github.com/dmotles/sprawl/internal/config"
-	"github.com/dmotles/sprawl/internal/merge"
 	"github.com/dmotles/sprawl/internal/messages"
 	"github.com/dmotles/sprawl/internal/state"
 )
@@ -23,10 +22,6 @@ type RetireDeps struct {
 	GitBranchDelete     func(repoRoot, branchName string) error
 	GitBranchIsMerged   func(repoRoot, branchName string) (bool, error)
 	GitBranchSafeDelete func(repoRoot, branchName string) error
-	DoMerge             func(ctx context.Context, cfg *merge.Config, deps *merge.Deps) (*merge.Result, error)
-	NewMergeDeps        func() *merge.Deps
-	LoadAgent           func(sprawlRoot, name string) (*state.AgentState, error)
-	CurrentBranch       func(repoRoot string) (string, error)
 	GitUnmergedCommits  func(repoRoot, branchName string) ([]string, error)
 	LoadConfig          func(sprawlRoot string) (*config.Config, error)
 	RunScript           func(script, workDir string, env map[string]string) ([]byte, error)
@@ -39,7 +34,13 @@ type RetireDeps struct {
 // Retire fully tears down an agent after its owning runtime has already been
 // stopped by the live weave session, or during offline cleanup with no live
 // weave session present.
-func Retire(ctx context.Context, deps *RetireDeps, agentName string, cascade, force, abandon, mergeFirst, yes, noValidate bool) ([]string, error) {
+// Retire tears down an agent after its runtime has already been stopped.
+//
+// There is no noValidate parameter: validation belongs to the merge, and the
+// merge now happens in the supervisor before this is called. Threading a
+// validate flag through a function that never validates anything would be a
+// parameter that only looks meaningful.
+func Retire(ctx context.Context, deps *RetireDeps, agentName string, cascade, force, abandon, mergeFirst, yes bool) ([]string, error) {
 	if err := agent.ValidateName(agentName); err != nil {
 		return nil, err
 	}
@@ -59,56 +60,32 @@ func Retire(ctx context.Context, deps *RetireDeps, agentName string, cascade, fo
 		return nil, fmt.Errorf("agent %q not found: %w", agentName, err)
 	}
 
-	// Merge before retire if requested (must happen before "retiring" checkpoint)
-	if mergeFirst {
-		callerName := deps.Getenv("SPRAWL_AGENT_IDENTITY")
-		if callerName == "" {
-			return nil, fmt.Errorf("--merge requires SPRAWL_AGENT_IDENTITY to be set")
-		}
-		if agentState.Subagent {
-			return nil, fmt.Errorf("agent %q is a subagent and has no branch to merge", agentName)
-		}
-		if agentState.Parent != callerName {
-			return nil, fmt.Errorf("cannot merge %q: you are not its parent (parent is %q)", agentName, agentState.Parent)
-		}
-		callerWorktree := sprawlRoot
-		if a, err := deps.LoadAgent(sprawlRoot, callerName); err == nil {
-			callerWorktree = a.Worktree
-		}
-		targetBranch, err := deps.CurrentBranch(callerWorktree)
-		if err != nil {
-			return nil, fmt.Errorf("determining current branch: %w", err)
-		}
-		sprawlCfg, err := deps.LoadConfig(sprawlRoot)
-		if err != nil {
-			return nil, fmt.Errorf("loading config: %w", err)
-		}
-		cfg := &merge.Config{
-			SprawlRoot:      sprawlRoot,
-			AgentName:       agentName,
-			AgentBranch:     agentState.Branch,
-			AgentWorktree:   agentState.Worktree,
-			ParentBranch:    targetBranch,
-			ParentWorktree:  callerWorktree,
-			NoValidate:      noValidate,
-			ValidateCmd:     sprawlCfg.Validate,
-			ValidateTimeout: sprawlCfg.ValidateTimeoutDuration(),
-			AgentState:      agentState,
-		}
-		mergeDeps := deps.NewMergeDeps()
-		if mergeDeps != nil && deps.Checkpoint != nil {
-			mergeDeps.Checkpoint = deps.Checkpoint
-		}
-		result, err := deps.DoMerge(ctx, cfg, mergeDeps)
-		if err != nil {
-			return nil, fmt.Errorf("merge before retire failed: %w", err)
-		}
-		if result.WasNoOp {
-			fmt.Fprintf(os.Stderr, "Nothing to merge: %s has no new commits\n", agentName)
-		} else {
-			fmt.Fprintf(os.Stderr, "Merged %q into %s (%s)\n", agentName, targetBranch, result.CommitHash)
-		}
-	}
+	// NO MERGE HAPPENS HERE (QUM-1087 / QUM-1088). mergeFirst is still
+	// accepted, and it still means something — see below — but the merge
+	// itself is performed by the SUPERVISOR before it calls this function
+	// (supervisor.Real.Retire → Real.Merge → agentops.Merge → merge.Merge).
+	//
+	// This block used to build a merge.Config inline from agentState.Branch,
+	// the SPAWN-TIME name. agentops.Merge learned in QUM-511 not to trust that
+	// field and to resolve the worktree's real HEAD; this path never got the
+	// fix, so once delegate reuse moved a worktree onto a later branch the
+	// engine split across two branches — `merge-base` and `--ff-only` used the
+	// stale name while the rebase mutated the checked-out one. Reproduced: the
+	// merge REPORTED SUCCESS, the parent received only the stale branch's
+	// content, the agent's current work never landed, and retire then deleted
+	// the branch and worktree because it was "already merged" (true of the
+	// stale branch). Nothing surfaced the loss.
+	//
+	// The fix is deletion, not a second copy of QUM-511's resolution. Routing
+	// through the one engine also picks up the detached-HEAD refusal, the
+	// clean-worktree preconditions this path lacked (7 and 8), and mergeSem,
+	// which Real.Retire(mergeFirst) previously bypassed entirely.
+	//
+	// mergeFirst's REMAINING job is printRetireSuccess's branch-delete
+	// messaging: it selects GitBranchSafeDelete ("we merged it, delete it if
+	// git agrees it is merged") over the preserve-and-warn default. Do not
+	// delete the parameter as unused — that silently changes branch-deletion
+	// behaviour. Pinned by TestRetire_MergeFirst_DoesNotMerge.
 
 	// If already in "retiring" state, resume from where we left off (crash recovery)
 	if agentState.Status == "retiring" {
@@ -179,7 +156,7 @@ func Retire(ctx context.Context, deps *RetireDeps, agentName string, cascade, fo
 			return nil, fmt.Errorf("checking children: %w", err)
 		}
 		for _, child := range children {
-			sub, err := Retire(ctx, deps, child.Name, true, force, abandon, false, yes, noValidate)
+			sub, err := Retire(ctx, deps, child.Name, true, force, abandon, false, yes)
 			if err != nil {
 				return nil, fmt.Errorf("retiring child %s: %w", child.Name, err)
 			}

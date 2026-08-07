@@ -3,7 +3,6 @@ package merge
 import (
 	"bytes"
 	"context"
-	"errors"
 	"fmt"
 	"io"
 	"strings"
@@ -21,27 +20,54 @@ var testNow = time.Date(2026, 5, 18, 12, 0, 0, 123000000, time.UTC)
 // agent name produce.
 const testPremergeBase = "refs/sprawl/premerge/test-agent/20260518T120000.123Z"
 
+// Fixture tip sentinels. Distinct per role, which is what lets an assertion
+// about the PARENT tip fail when handed the branch tip and vice versa.
+const (
+	testMergeBase = "aaa111"
+	testAgentTip  = "bbb222"
+	testParentTip = "ppp444"
+)
+
+// newTestDeps builds a Deps whose seams MODEL the repository, rather than
+// returning a constant per seam.
+//
+// The ff-merge in particular has to move the parent (QUM-1087): the engine
+// proves step 3 was a pure ref move by reading the parent tip back and
+// requiring it to equal the rebased branch tip. A fixture whose GitFFMerge is
+// an inert no-op makes that predicate UNSATISFIABLE — every test using the
+// fixture would fail on the correct implementation, and the pressure would be
+// to weaken the predicate rather than fix the fixture. So the mutable
+// parentTip below is not incidental convenience; it is what keeps the
+// invariant assertable.
 func newTestDeps() *Deps {
+	parentTip := testParentTip
 	return &Deps{
 		LockAcquire:  func(lockPath string) (func(), error) { return func() {}, nil },
-		GitMergeBase: func(repoRoot, a, b string) (string, error) { return "aaa111", nil },
+		GitMergeBase: func(repoRoot, a, b string) (string, error) { return testMergeBase, nil },
 		// QUM-1090: worktree-aware so a test asserting "the parent ref got
 		// the PARENT tip" cannot pass vacuously by both tips being equal.
 		GitRevParseHead: func(worktree string) (string, error) {
 			if worktree == "/worktree/parent" {
-				return "ppp444", nil
+				return parentTip, nil
 			}
-			return "bbb222", nil
+			return testAgentTip, nil
 		},
-		GitLogRange: func(worktree, base, head string) ([]CommitRecord, error) {
-			return []CommitRecord{{SHA: "d00dfeed" + strings.Repeat("0", 32), Message: "COMMIT-SUBJ-SENTINEL\n\nCOMMIT-BODY-SENTINEL"}}, nil
+		GitRevParseRef: func(worktree, rev string) (string, error) {
+			if rev == "sprawl/test-agent" {
+				return testAgentTip, nil
+			}
+			return parentTip, nil
 		},
-		GitResetSoft:   func(worktree, ref string) error { return nil },
-		GitCommit:      func(worktree, message string) (string, error) { return "ccc333", nil },
+		GitIsAncestor:  func(worktree, ancestor, descendant string) (bool, error) { return true, nil },
 		GitRebase:      func(worktree, onto string) error { return nil },
 		GitRebaseAbort: func(worktree string) error { return nil },
-		GitFFMerge:     func(worktree, branch string) error { return nil },
-		GitResetHard:   func(worktree string) error { return nil },
+		// Models the ref move: the parent ends up at the branch tip. See the
+		// doc comment above — an inert no-op here would make the engine's
+		// post-ff SHA-equality check impossible to satisfy.
+		GitFFMerge: func(worktree, branch string) error {
+			parentTip = testAgentTip
+			return nil
+		},
 		RunTestsStreaming: func(ctx context.Context, dir, command string, sink func(string)) (string, error) {
 			return "ok", nil
 		},
@@ -70,9 +96,6 @@ func newTestConfig() *Config {
 			Type:   "engineer",
 			Family: "engineering",
 			Branch: "sprawl/test-agent",
-			// A sentinel, not prose: any test that lets the status blurb reach
-			// a commit message fails by name rather than by looking plausible.
-			LastReportMessage: blurbSentinel,
 		},
 	}
 }
@@ -91,24 +114,6 @@ func TestMerge_HappyPath(t *testing.T) {
 		return func() { unlockCalled = true }, nil
 	}
 
-	var resetSoftCalled bool
-	deps.GitResetSoft = func(worktree, ref string) error {
-		resetSoftCalled = true
-		if worktree != "/worktree/agent" {
-			t.Errorf("reset-soft worktree = %q, want /worktree/agent", worktree)
-		}
-		if ref != "aaa111" {
-			t.Errorf("reset-soft ref = %q, want merge-base aaa111", ref)
-		}
-		return nil
-	}
-
-	var commitWorktree string
-	deps.GitCommit = func(worktree, message string) (string, error) {
-		commitWorktree = worktree
-		return "abc1234", nil
-	}
-
 	var rebaseCalled bool
 	deps.GitRebase = func(worktree, onto string) error {
 		rebaseCalled = true
@@ -122,15 +127,22 @@ func TestMerge_HappyPath(t *testing.T) {
 	}
 
 	var ffMergeCalled bool
+	innerFF := deps.GitFFMerge
 	deps.GitFFMerge = func(worktree, branch string) error {
 		ffMergeCalled = true
 		if worktree != "/worktree/parent" {
 			t.Errorf("ff-merge worktree = %q, want /worktree/parent", worktree)
 		}
-		if branch != "sprawl/test-agent" {
-			t.Errorf("ff-merge branch = %q, want sprawl/test-agent", branch)
+		// The VALIDATED SHA, not the branch name. A name is resolved by git at
+		// ff time and can point somewhere newer than what was validated
+		// (QUM-1087 B1), so the engine passes the tip it verified.
+		if branch != testAgentTip {
+			t.Errorf("ff-merge rev = %q, want the validated tip %q (not a branch name — it would re-resolve)", branch, testAgentTip)
 		}
-		return nil
+		if branch == cfg.AgentBranch {
+			t.Errorf("ff-merge was given the branch NAME %q; it must be given the validated SHA", branch)
+		}
+		return innerFF(worktree, branch)
 	}
 
 	var pokeCalled bool
@@ -153,20 +165,16 @@ func TestMerge_HappyPath(t *testing.T) {
 	if result.WasNoOp {
 		t.Error("result should not be a no-op")
 	}
-	if result.CommitHash != "abc1234" {
-		t.Errorf("commit hash = %q, want abc1234", result.CommitHash)
+	// The ff'd parent tip, read back from the ref — never a commit the engine
+	// invented, and never one that exists on no ref (QUM-1087).
+	if result.MergedTip != testAgentTip {
+		t.Errorf("MergedTip = %q, want the post-ff parent tip %q", result.MergedTip, testAgentTip)
 	}
 	if !lockAcquired {
 		t.Error("lock should be acquired")
 	}
 	if !unlockCalled {
 		t.Error("unlock should be called")
-	}
-	if !resetSoftCalled {
-		t.Error("git reset --soft should be called")
-	}
-	if commitWorktree != "/worktree/agent" {
-		t.Errorf("commit worktree = %q, want /worktree/agent", commitWorktree)
 	}
 	if !rebaseCalled {
 		t.Error("git rebase should be called")
@@ -187,8 +195,7 @@ func TestMerge_ZeroCommit_NoOp(t *testing.T) {
 	deps.GitMergeBase = func(repoRoot, a, b string) (string, error) { return "same-sha", nil }
 	deps.GitRevParseHead = func(worktree string) (string, error) { return "same-sha", nil }
 
-	var resetSoftCalled, rebaseCalled, ffMergeCalled, pokeCalled bool
-	deps.GitResetSoft = func(worktree, ref string) error { resetSoftCalled = true; return nil }
+	var rebaseCalled, ffMergeCalled, pokeCalled bool
 	deps.GitRebase = func(worktree, onto string) error { rebaseCalled = true; return nil }
 	deps.GitFFMerge = func(worktree, branch string) error { ffMergeCalled = true; return nil }
 	deps.WritePoke = func(sprawlRoot, agentName, content string) error { pokeCalled = true; return nil }
@@ -203,9 +210,6 @@ func TestMerge_ZeroCommit_NoOp(t *testing.T) {
 	}
 	if !result.WasNoOp {
 		t.Error("result should be a no-op when merge-base == agent HEAD")
-	}
-	if resetSoftCalled {
-		t.Error("reset-soft should NOT be called for no-op")
 	}
 	if rebaseCalled {
 		t.Error("rebase should NOT be called for no-op")
@@ -226,9 +230,8 @@ func TestMerge_DryRun(t *testing.T) {
 	var stderr bytes.Buffer
 	deps.Stderr = &stderr
 
-	var lockAcquired, resetSoftCalled, rebaseCalled, ffMergeCalled, pokeCalled bool
+	var lockAcquired, rebaseCalled, ffMergeCalled, pokeCalled bool
 	deps.LockAcquire = func(lockPath string) (func(), error) { lockAcquired = true; return func() {}, nil }
-	deps.GitResetSoft = func(worktree, ref string) error { resetSoftCalled = true; return nil }
 	deps.GitRebase = func(worktree, onto string) error { rebaseCalled = true; return nil }
 	deps.GitFFMerge = func(worktree, branch string) error { ffMergeCalled = true; return nil }
 	deps.WritePoke = func(sprawlRoot, agentName, content string) error { pokeCalled = true; return nil }
@@ -243,9 +246,6 @@ func TestMerge_DryRun(t *testing.T) {
 	}
 	if lockAcquired {
 		t.Error("lock should NOT be acquired during dry-run")
-	}
-	if resetSoftCalled {
-		t.Error("reset-soft should NOT be called during dry-run")
 	}
 	if rebaseCalled {
 		t.Error("rebase should NOT be called during dry-run")
@@ -274,8 +274,8 @@ func TestMerge_LockAcquireFailure(t *testing.T) {
 		return nil, fmt.Errorf("lock contention timeout")
 	}
 
-	var resetSoftCalled bool
-	deps.GitResetSoft = func(worktree, ref string) error { resetSoftCalled = true; return nil }
+	var rebaseCalled bool
+	deps.GitRebase = func(worktree, onto string) error { rebaseCalled = true; return nil }
 
 	result, err := Merge(context.Background(), cfg, deps)
 	if err == nil {
@@ -287,7 +287,7 @@ func TestMerge_LockAcquireFailure(t *testing.T) {
 	if result != nil {
 		t.Error("result should be nil on error")
 	}
-	if resetSoftCalled {
+	if rebaseCalled {
 		t.Error("git operations should NOT proceed when lock fails")
 	}
 }
@@ -320,9 +320,9 @@ func TestMerge_RebaseConflict_AbortsAndErrors(t *testing.T) {
 	if !rebaseAbortCalled {
 		t.Error("rebase --abort should be called on conflict")
 	}
-	// Error should include the pre-squash SHA for recovery
+	// Error should include the pre-REBASE SHA for recovery
 	if !strings.Contains(err.Error(), "bbb222") {
-		t.Errorf("error should include pre-squash SHA for recovery, got: %v", err)
+		t.Errorf("error should include the pre-rebase SHA for recovery, got: %v", err)
 	}
 	if ffMergeCalled {
 		t.Error("ff-merge should NOT be called after rebase conflict")
@@ -361,7 +361,17 @@ func TestMerge_FFMergeFailure(t *testing.T) {
 	}
 }
 
-func TestMerge_PostMergeValidation_Fail_RollsBack(t *testing.T) {
+// TestMerge_ValidationFail_NoRollbackBecauseNothingWasMerged replaces the old
+// TestMerge_PostMergeValidation_Fail_RollsBack.
+//
+// The rename is the substance, not cosmetics. The old test asserted that a
+// validate failure called `git reset --hard` on the PARENT worktree — i.e. it
+// pinned the rollback as required behaviour, and it was green throughout the
+// period when that rollback was destroying data (S5b: it rewound a
+// pre-existing parent commit whenever the agent's content was already
+// upstream). The rollback is not fixed here; it does not exist, and neither
+// does the primitive that performed it.
+func TestMerge_ValidationFail_NoRollbackBecauseNothingWasMerged(t *testing.T) {
 	deps := newTestDeps()
 	cfg := newTestConfig()
 
@@ -369,11 +379,8 @@ func TestMerge_PostMergeValidation_Fail_RollsBack(t *testing.T) {
 		return "FAIL: TestSomething\nexit status 1", fmt.Errorf("tests failed")
 	}
 
-	var resetHardWorktree string
-	deps.GitResetHard = func(worktree string) error {
-		resetHardWorktree = worktree
-		return nil
-	}
+	var ffCalled bool
+	deps.GitFFMerge = func(worktree, branch string) error { ffCalled = true; return nil }
 
 	var pokeCalled, unlockCalled bool
 	deps.LockAcquire = func(lockPath string) (func(), error) {
@@ -383,10 +390,10 @@ func TestMerge_PostMergeValidation_Fail_RollsBack(t *testing.T) {
 
 	result, err := Merge(context.Background(), cfg, deps)
 	if err == nil {
-		t.Fatal("expected error from post-merge validation failure")
+		t.Fatal("expected error from validation failure")
 	}
-	if resetHardWorktree != "/worktree/parent" {
-		t.Errorf("reset-hard worktree = %q, want /worktree/parent", resetHardWorktree)
+	if ffCalled {
+		t.Error("the ff-merge must NOT run when validation failed: the parent is mutated only after the tree is known good")
 	}
 	if pokeCalled {
 		t.Error("poke should NOT be written after validation failure")
@@ -399,6 +406,18 @@ func TestMerge_PostMergeValidation_Fail_RollsBack(t *testing.T) {
 	}
 	if !strings.Contains(err.Error(), "FAIL: TestSomething") {
 		t.Errorf("error should include test output, got: %v", err)
+	}
+	// The old message said "Merge rolled back. Your branch is back to its
+	// pre-merge state." Both halves were false in the S5b case and the first
+	// is now false in every case. A message claiming a rollback is worse than
+	// no message: it tells the reader the parent was touched and restored.
+	for _, lie := range []string{"rolled back", "roll back", "reset --hard"} {
+		if strings.Contains(strings.ToLower(err.Error()), lie) {
+			t.Errorf("error claims a rollback that never happens (%q): %v", lie, err)
+		}
+	}
+	if !strings.Contains(err.Error(), cfg.ParentBranch) || !strings.Contains(err.Error(), "NOT modified") {
+		t.Errorf("error should state plainly that the parent was not modified, got: %v", err)
 	}
 	if result != nil {
 		t.Error("result should be nil on error")
@@ -474,10 +493,18 @@ func TestMerge_PokeWrittenBeforeLockRelease(t *testing.T) {
 	}
 }
 
+// TestMerge_StepOrdering pins the whole sequence as an ordered slice.
+//
+// This is ONE of three layers and is not sufficient alone: an ordered-slice
+// assertion is satisfied by editing the expected slice, so a reordering
+// regression can be "fixed" by moving a string. The layer that cannot be
+// defeated that way is TestMerge_ValidateStrictlyPrecedesFFMerge's in-seam
+// guards; the third is the checkpoint sequence. Keep all three.
 func TestMerge_StepOrdering(t *testing.T) {
 	deps := newTestDeps()
 	cfg := newTestConfig()
 
+	parentTip := testParentTip
 	var order []string
 	deps.LockAcquire = func(lockPath string) (func(), error) {
 		order = append(order, "lock")
@@ -485,26 +512,29 @@ func TestMerge_StepOrdering(t *testing.T) {
 	}
 	deps.GitMergeBase = func(repoRoot, a, b string) (string, error) {
 		order = append(order, "merge-base")
-		return "aaa111", nil
+		return testMergeBase, nil
 	}
 	deps.GitRevParseHead = func(worktree string) (string, error) {
-		order = append(order, "rev-parse")
-		if worktree == "/worktree/parent" {
-			return "ppp444", nil
+		order = append(order, "rev-parse-head")
+		if worktree == cfg.ParentWorktree {
+			return parentTip, nil
 		}
-		return "bbb222", nil
+		return testAgentTip, nil
+	}
+	deps.GitRevParseRef = func(worktree, rev string) (string, error) {
+		order = append(order, "rev-parse-ref")
+		if rev == cfg.AgentBranch {
+			return testAgentTip, nil
+		}
+		return parentTip, nil
+	}
+	deps.GitIsAncestor = func(worktree, ancestor, descendant string) (bool, error) {
+		order = append(order, "is-ancestor")
+		return true, nil
 	}
 	deps.GitUpdateRef = func(worktree, ref, newSHA string) error {
 		order = append(order, "update-ref")
 		return nil
-	}
-	deps.GitResetSoft = func(worktree, ref string) error {
-		order = append(order, "reset-soft")
-		return nil
-	}
-	deps.GitCommit = func(worktree, message string) (string, error) {
-		order = append(order, "commit")
-		return "ccc333", nil
 	}
 	deps.GitRebase = func(worktree, onto string) error {
 		order = append(order, "rebase")
@@ -512,6 +542,7 @@ func TestMerge_StepOrdering(t *testing.T) {
 	}
 	deps.GitFFMerge = func(worktree, branch string) error {
 		order = append(order, "ff-merge")
+		parentTip = testAgentTip
 		return nil
 	}
 	deps.RunTestsStreaming = func(ctx context.Context, dir, command string, sink func(string)) (string, error) {
@@ -528,12 +559,21 @@ func TestMerge_StepOrdering(t *testing.T) {
 		t.Fatalf("unexpected error: %v", err)
 	}
 
-	// QUM-1090: the second rev-parse reads the PARENT tip and both
-	// update-ref writes land before reset-soft, the first mutation.
+	// Read this slice as the QUM-1087 contract:
+	//   - both update-ref writes precede REBASE, which is now the first mutation
+	//   - the ff precondition (rev-parse-ref + is-ancestor) is checked right
+	//     after the rebase, so a bad rebase is diagnosed before anything
+	//     expensive runs
+	//   - VALIDATE precedes FF-MERGE — the inversion this issue exists for
+	//   - a final rev-parse-head reads the parent back to prove the ref moved
 	expected := []string{
-		"lock", "merge-base", "rev-parse", "rev-parse",
-		"update-ref", "update-ref", "reset-soft", "commit",
-		"rebase", "ff-merge", "validate", "poke", "unlock",
+		"lock", "merge-base", "rev-parse-head", "rev-parse-head",
+		"update-ref", "update-ref",
+		"rebase",
+		"rev-parse-ref", "rev-parse-head", "is-ancestor",
+		"validate",
+		"ff-merge", "rev-parse-head",
+		"poke", "unlock",
 	}
 	if len(order) != len(expected) {
 		t.Fatalf("expected %d operations, got %d: %v", len(expected), len(order), order)
@@ -542,368 +582,5 @@ func TestMerge_StepOrdering(t *testing.T) {
 		if order[i] != op {
 			t.Errorf("step %d: got %q, want %q (full order: %v)", i, order[i], op, order)
 		}
-	}
-}
-
-func TestMerge_CommitMessage_WithOverride(t *testing.T) {
-	deps := newTestDeps()
-	cfg := newTestConfig()
-	cfg.MessageOverride = "Custom merge message"
-
-	var capturedMessage string
-	deps.GitCommit = func(worktree, message string) (string, error) {
-		capturedMessage = message
-		return "abc1234", nil
-	}
-
-	_, err := Merge(context.Background(), cfg, deps)
-	if err != nil {
-		t.Fatalf("unexpected error: %v", err)
-	}
-
-	if !strings.Contains(capturedMessage, "Custom merge message") {
-		t.Errorf("commit message should contain override, got: %q", capturedMessage)
-	}
-	if !strings.Contains(capturedMessage, "Co-Authored-By:") {
-		t.Errorf("commit message should contain co-author, got: %q", capturedMessage)
-	}
-}
-
-// TestMerge_CommitMessage_Default supersedes a test of the same name that
-// asserted the commit message contained AgentState.LastReportMessage — i.e.
-// it ratified the QUM-1105 defect, and would have had to be deleted to fix
-// it. Recorded rather than quietly rewritten: a test asserting the current
-// mechanism instead of the intended outcome is the shape that makes a defect
-// look load-bearing.
-func TestMerge_CommitMessage_Default(t *testing.T) {
-	deps := newTestDeps()
-	cfg := newTestConfig()
-
-	var capturedMessage string
-	deps.GitCommit = func(worktree, message string) (string, error) {
-		capturedMessage = message
-		return "abc1234", nil
-	}
-
-	_, err := Merge(context.Background(), cfg, deps)
-	if err != nil {
-		t.Fatalf("unexpected error: %v", err)
-	}
-
-	if !strings.Contains(capturedMessage, "COMMIT-SUBJ-SENTINEL") {
-		t.Errorf("commit message should carry the agent commit's subject, got: %q", capturedMessage)
-	}
-	if !strings.Contains(capturedMessage, "COMMIT-BODY-SENTINEL") {
-		t.Errorf("commit message should carry the agent commit's body, got: %q", capturedMessage)
-	}
-	if strings.Contains(capturedMessage, blurbSentinel) {
-		t.Errorf("the status blurb reached the commit message, got: %q", capturedMessage)
-	}
-	if !strings.Contains(capturedMessage, "Co-Authored-By:") {
-		t.Errorf("commit message should contain co-author, got: %q", capturedMessage)
-	}
-	// The recovery ref is where the source commits still exist after the
-	// squash, so the message pointing at it is the whole reason the SHA index
-	// is useful. Asserted rather than read off the comment that claims it.
-	if !strings.Contains(capturedMessage, testPremergeBase+"/agent") {
-		t.Errorf("commit message should name the premerge /agent recovery ref, got: %q", capturedMessage)
-	}
-}
-
-// TestMerge_CommitMessage_DerivationErrorAbortsBeforeAnyMutation — a failing
-// GitLogRange must refuse the merge while the branch is still intact, never
-// after `reset --soft` has rewound it. Complements S14, which covers the
-// empty-range half in real git.
-func TestMerge_CommitMessage_DerivationErrorAbortsBeforeAnyMutation(t *testing.T) {
-	deps := newTestDeps()
-	cfg := newTestConfig()
-
-	deps.GitLogRange = func(worktree, base, head string) ([]CommitRecord, error) {
-		return nil, errors.New("LOGRANGE-BOOM")
-	}
-	var mutated []string
-	deps.GitUpdateRef = func(worktree, ref, newSHA string) error {
-		mutated = append(mutated, "GitUpdateRef")
-		return nil
-	}
-	deps.GitResetSoft = func(worktree, ref string) error {
-		mutated = append(mutated, "GitResetSoft")
-		return nil
-	}
-	deps.GitCommit = func(worktree, message string) (string, error) {
-		mutated = append(mutated, "GitCommit")
-		return "abc1234", nil
-	}
-
-	_, err := Merge(context.Background(), cfg, deps)
-
-	if err == nil {
-		t.Fatal("merge should fail when the agent's commits cannot be read")
-	}
-	if !strings.Contains(err.Error(), "LOGRANGE-BOOM") {
-		t.Errorf("error should wrap the cause, got: %v", err)
-	}
-	if !strings.Contains(err.Error(), "--message") {
-		t.Errorf("error should name the explicit-message remedy, got: %v", err)
-	}
-	if len(mutated) > 0 {
-		t.Errorf("the repository was mutated despite an abortable failure: %v", mutated)
-	}
-}
-
-// TestMerge_DryRun_ShowsTheDerivedMessage — the dry run reads the same
-// derivation, so its preview cannot disagree with what the real merge would
-// write. The second leg pins that a derivation failure is reported as the
-// blocker it is: a dry run that prints a plan for a merge that will refuse is
-// worse than one that prints nothing.
-func TestMerge_DryRun_ShowsTheDerivedMessage(t *testing.T) {
-	t.Run("derivable", func(t *testing.T) {
-		deps := newTestDeps()
-		cfg := newTestConfig()
-		cfg.DryRun = true
-		var stderr bytes.Buffer
-		deps.Stderr = &stderr
-
-		if _, err := Merge(context.Background(), cfg, deps); err != nil {
-			t.Fatalf("unexpected error: %v", err)
-		}
-		if !strings.Contains(stderr.String(), "COMMIT-BODY-SENTINEL") {
-			t.Errorf("dry run should preview the derived message, got:\n%s", stderr.String())
-		}
-		if strings.Contains(stderr.String(), blurbSentinel) {
-			t.Errorf("dry run previewed the status blurb, got:\n%s", stderr.String())
-		}
-	})
-
-	// Both revision reads failing yields "(unknown)" for each, and two
-	// unrelated failures then compare EQUAL. Keying the no-op purely on the
-	// values would report "no-op (no new commits)" — a claim about the
-	// branch — for a dry run that could read nothing at all.
-	t.Run("both revision reads fail", func(t *testing.T) {
-		deps := newTestDeps()
-		cfg := newTestConfig()
-		cfg.DryRun = true
-		deps.GitMergeBase = func(repoRoot, a, b string) (string, error) { return "", errors.New("BASE-BOOM") }
-		deps.GitRevParseHead = func(worktree string) (string, error) { return "", errors.New("HEAD-BOOM") }
-		var logged bool
-		deps.GitLogRange = func(worktree, base, head string) ([]CommitRecord, error) {
-			logged = true
-			return nil, nil
-		}
-		var stderr bytes.Buffer
-		deps.Stderr = &stderr
-
-		result, err := Merge(context.Background(), cfg, deps)
-		if err != nil {
-			t.Fatalf("dry run should not itself fail: %v", err)
-		}
-		if result.WasNoOp {
-			t.Error("a dry run that could read neither revision must not claim the merge is a no-op")
-		}
-		if logged {
-			t.Error(`the literal "(unknown)" was handed to git log as a revision`)
-		}
-		for _, want := range []string{"BASE-BOOM", "HEAD-BOOM"} {
-			if !strings.Contains(stderr.String(), want) {
-				t.Errorf("the real cause %q was swallowed, got:\n%s", want, stderr.String())
-			}
-		}
-	})
-
-	t.Run("underivable", func(t *testing.T) {
-		deps := newTestDeps()
-		cfg := newTestConfig()
-		cfg.DryRun = true
-		deps.GitLogRange = func(worktree, base, head string) ([]CommitRecord, error) { return nil, nil }
-		var stderr bytes.Buffer
-		deps.Stderr = &stderr
-
-		if _, err := Merge(context.Background(), cfg, deps); err != nil {
-			t.Fatalf("dry run should not itself fail: %v", err)
-		}
-		if !strings.Contains(stderr.String(), "CANNOT BE DERIVED") {
-			t.Errorf("dry run should report that the real merge would fail, got:\n%s", stderr.String())
-		}
-	})
-}
-
-func TestMerge_EmptyValidateCmd_SkipsWithWarning(t *testing.T) {
-	deps := newTestDeps()
-	cfg := newTestConfig()
-	cfg.ValidateCmd = ""
-	cfg.NoValidate = false
-
-	var testsCalled bool
-	deps.RunTestsStreaming = func(ctx context.Context, dir, command string, sink func(string)) (string, error) {
-		testsCalled = true
-		return "ok", nil
-	}
-
-	var stderr bytes.Buffer
-	deps.Stderr = &stderr
-
-	var pokeCalled bool
-	deps.WritePoke = func(sprawlRoot, agentName, content string) error {
-		pokeCalled = true
-		return nil
-	}
-
-	result, err := Merge(context.Background(), cfg, deps)
-	if err != nil {
-		t.Fatalf("unexpected error: %v", err)
-	}
-	if testsCalled {
-		t.Error("RunTests should NOT be called when ValidateCmd is empty")
-	}
-	if !strings.Contains(stderr.String(), "no validate command configured") {
-		t.Errorf("stderr should warn about missing validate command, got: %q", stderr.String())
-	}
-	if !strings.Contains(stderr.String(), "sprawl config set validate") {
-		t.Errorf("stderr should contain config hint 'sprawl config set validate', got: %q", stderr.String())
-	}
-	if !pokeCalled {
-		t.Error("poke should still be written when ValidateCmd is empty")
-	}
-	if result == nil {
-		t.Fatal("result should not be nil")
-	}
-}
-
-func TestMerge_ValidateCmd_PassedToRunTests(t *testing.T) {
-	deps := newTestDeps()
-	cfg := newTestConfig()
-	cfg.ValidateCmd = "npm test"
-
-	var capturedCommand string
-	deps.RunTestsStreaming = func(ctx context.Context, dir, command string, sink func(string)) (string, error) {
-		capturedCommand = command
-		return "ok", nil
-	}
-
-	_, err := Merge(context.Background(), cfg, deps)
-	if err != nil {
-		t.Fatalf("unexpected error: %v", err)
-	}
-
-	if capturedCommand != "npm test" {
-		t.Errorf("RunTests command = %q, want %q", capturedCommand, "npm test")
-	}
-}
-
-// TestMerge_CommitMessage_NoReport supersedes a test of the same name that
-// asserted the `<agent>: merge branch '<branch>'` placeholder — the SECOND
-// silent fallback QUM-1105 removes. Same note as TestMerge_CommitMessage_
-// Default: it is recorded, not quietly dropped.
-func TestMerge_CommitMessage_NoReport(t *testing.T) {
-	deps := newTestDeps()
-	cfg := newTestConfig()
-	cfg.AgentState.LastReportMessage = ""
-
-	var capturedMessage string
-	deps.GitCommit = func(worktree, message string) (string, error) {
-		capturedMessage = message
-		return "abc1234", nil
-	}
-
-	_, err := Merge(context.Background(), cfg, deps)
-	if err != nil {
-		t.Fatalf("unexpected error: %v", err)
-	}
-
-	if !strings.Contains(capturedMessage, "COMMIT-SUBJ-SENTINEL") {
-		t.Errorf("an absent status report must not change the source of the message, got: %q", capturedMessage)
-	}
-	if strings.Contains(capturedMessage, "merge branch") {
-		t.Errorf("the no-report placeholder subject is still being produced, got: %q", capturedMessage)
-	}
-}
-
-// --- QUM-494: per-call checkpoint observability ---
-
-// recordingCheckpoint returns a Deps.Checkpoint and a pointer to the
-// recorded steps slice.
-func recordingCheckpoint() (func(step string, kv ...any), *[]string) {
-	var steps []string
-	return func(step string, _ ...any) {
-		steps = append(steps, step)
-	}, &steps
-}
-
-func TestMerge_EmitsCheckpointSequence(t *testing.T) {
-	deps := newTestDeps()
-	cfg := newTestConfig()
-
-	cp, steps := recordingCheckpoint()
-	deps.Checkpoint = cp
-
-	if _, err := Merge(context.Background(), cfg, deps); err != nil {
-		t.Fatalf("merge: %v", err)
-	}
-
-	want := []string{
-		"merge.lock-acquired",
-		"merge.premerge-refs-written",
-		"merge.squash-committed",
-		"merge.rebased",
-		"merge.ff-merged",
-		"merge.validate-started",
-		"merge.validate-ended",
-		"merge.poke-written",
-	}
-	if len(*steps) != len(want) {
-		t.Fatalf("steps = %v, want %v", *steps, want)
-	}
-	for i, s := range want {
-		if (*steps)[i] != s {
-			t.Errorf("steps[%d] = %q, want %q (full: %v)", i, (*steps)[i], s, *steps)
-		}
-	}
-}
-
-func TestMerge_CheckpointEmitsValidateEndedOnFailure(t *testing.T) {
-	// QUM-588: validate-ended is emitted on BOTH success and failure with
-	// an `exit` kv so the TUI popup can detect end-of-validate regardless
-	// of outcome and auto-restore on failure. poke-written remains
-	// success-only because the merge is rolled back on failure.
-	deps := newTestDeps()
-	cfg := newTestConfig()
-
-	deps.RunTestsStreaming = func(ctx context.Context, dir, command string, sink func(string)) (string, error) {
-		return "FAIL", fmt.Errorf("tests failed")
-	}
-
-	cp, steps := recordingCheckpoint()
-	deps.Checkpoint = cp
-
-	if _, err := Merge(context.Background(), cfg, deps); err == nil {
-		t.Fatal("expected merge to fail when validate fails")
-	}
-
-	if len(*steps) == 0 {
-		t.Fatal("expected at least one checkpoint")
-	}
-	last := (*steps)[len(*steps)-1]
-	if last != "merge.validate-ended" {
-		t.Errorf("last step = %q, want merge.validate-ended (steps=%v)", last, *steps)
-	}
-	for _, s := range *steps {
-		if s == "merge.poke-written" {
-			t.Error("poke-written should not be emitted on validate failure")
-		}
-	}
-}
-
-func TestMerge_NilCheckpointSafe(t *testing.T) {
-	deps := newTestDeps()
-	cfg := newTestConfig()
-	deps.Checkpoint = nil
-
-	defer func() {
-		if r := recover(); r != nil {
-			t.Errorf("merge with nil Checkpoint panicked: %v", r)
-		}
-	}()
-	if _, err := Merge(context.Background(), cfg, deps); err != nil {
-		t.Errorf("merge: %v", err)
 	}
 }

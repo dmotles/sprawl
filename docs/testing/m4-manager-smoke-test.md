@@ -171,10 +171,14 @@ cd .sprawl/worktrees/<manager-name>
 git log --oneline -5
 ```
 
-You should see a squash merge commit with format:
-```
-<child-name>: <report-message>
-```
+You should see **the child's own commits**, landed by fast-forward — NOT a squash
+commit. QUM-1087 removed the squash: the engine creates no commit of its own, so
+the subjects you see are the ones the child wrote. A single squash commit here
+would mean the engine regressed.
+
+(Before QUM-1087 this step expected one commit subject formatted
+`<child-name>: <report-message>`. If you are following an older copy of this
+document, that expectation now FAILS against a correct system.)
 
 **Verify child cleaned up:**
 - Child state file removed from `.sprawl/agents/`
@@ -208,7 +212,7 @@ sprawl merge <manager-name>
 ```
 
 **Verify:**
-- Manager's integration branch squash-merged into root's branch
+- Manager's integration branch fast-forwarded into root's branch (its commits land as-is)
 - Manager state file removed
 - Manager worktree cleaned up
 - Manager branch deleted
@@ -216,7 +220,7 @@ sprawl merge <manager-name>
 **Final verification:**
 
 ```bash
-git log --oneline -5  # Should show squash merge commit
+git log --oneline -5  # Should show the manager's own commits, fast-forwarded (no squash commit)
 ls .sprawl/agents/    # Manager and children should be gone
 git worktree list     # Manager worktree should be gone
 ```

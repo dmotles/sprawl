@@ -3,12 +3,14 @@ package cmd
 import (
 	"bytes"
 	"context"
+	"errors"
 	"fmt"
 	"io"
 	"os"
 	"strings"
 	"testing"
 
+	"github.com/dmotles/sprawl/internal/agentops"
 	"github.com/dmotles/sprawl/internal/config"
 	"github.com/dmotles/sprawl/internal/merge"
 	"github.com/dmotles/sprawl/internal/state"
@@ -55,7 +57,7 @@ func newTestMergeDeps(t *testing.T) (*mergeDeps, string) {
 			return &config.Config{Validate: "make validate"}, nil
 		},
 		DoMerge: func(_ context.Context, cfg *merge.Config, deps *merge.Deps) (*merge.Result, error) {
-			return &merge.Result{CommitHash: "abc1234"}, nil
+			return &merge.Result{MergedTip: "abc1234"}, nil
 		},
 		NewMergeDeps: func() *merge.Deps { return &merge.Deps{} },
 		Stderr:       io.Discard,
@@ -94,7 +96,7 @@ func TestMerge_HappyPath(t *testing.T) {
 	var mergeCalled bool
 	deps.DoMerge = func(_ context.Context, cfg *merge.Config, d *merge.Deps) (*merge.Result, error) {
 		mergeCalled = true
-		return &merge.Result{CommitHash: "abc1234"}, nil
+		return &merge.Result{MergedTip: "abc1234"}, nil
 	}
 
 	var stderr bytes.Buffer
@@ -281,7 +283,7 @@ func TestMerge_CompleteViaLastReportState(t *testing.T) {
 	var mergeCalled bool
 	deps.DoMerge = func(_ context.Context, cfg *merge.Config, d *merge.Deps) (*merge.Result, error) {
 		mergeCalled = true
-		return &merge.Result{CommitHash: "abc1234"}, nil
+		return &merge.Result{MergedTip: "abc1234"}, nil
 	}
 
 	err := runMerge(context.Background(), deps, "target-agent", "", true, false)
@@ -562,10 +564,12 @@ func TestMerge_ConfigWiring(t *testing.T) {
 	var capturedCfg *merge.Config
 	deps.DoMerge = func(_ context.Context, cfg *merge.Config, d *merge.Deps) (*merge.Result, error) {
 		capturedCfg = cfg
-		return &merge.Result{CommitHash: "abc"}, nil
+		return &merge.Result{MergedTip: "abc"}, nil
 	}
 
-	err := runMerge(context.Background(), deps, "target-agent", "custom msg", false, false)
+	// No message override: it is refused outright now (QUM-1087 — the engine
+	// creates no commit), and TestMerge_MessageOverrideIsRefused covers that.
+	err := runMerge(context.Background(), deps, "target-agent", "", false, false)
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
@@ -590,9 +594,6 @@ func TestMerge_ConfigWiring(t *testing.T) {
 	}
 	if capturedCfg.ParentWorktree != "/worktree/parent" {
 		t.Errorf("ParentWorktree = %q, want /worktree/parent", capturedCfg.ParentWorktree)
-	}
-	if capturedCfg.MessageOverride != "custom msg" {
-		t.Errorf("MessageOverride = %q, want 'custom msg'", capturedCfg.MessageOverride)
 	}
 	if capturedCfg.NoValidate != false {
 		t.Error("NoValidate should be false")
@@ -652,7 +653,7 @@ func TestMerge_SuccessOutput(t *testing.T) {
 	})
 
 	deps.DoMerge = func(_ context.Context, cfg *merge.Config, d *merge.Deps) (*merge.Result, error) {
-		return &merge.Result{CommitHash: "a1b2c3d"}, nil
+		return &merge.Result{MergedTip: "a1b2c3d"}, nil
 	}
 
 	err := runMerge(context.Background(), deps, "finn", "", true, false)
@@ -701,7 +702,7 @@ func TestMerge_ConfigValidateCmd_PassedThrough(t *testing.T) {
 	var capturedCfg *merge.Config
 	deps.DoMerge = func(_ context.Context, cfg *merge.Config, d *merge.Deps) (*merge.Result, error) {
 		capturedCfg = cfg
-		return &merge.Result{CommitHash: "abc1234"}, nil
+		return &merge.Result{MergedTip: "abc1234"}, nil
 	}
 
 	err := runMerge(context.Background(), deps, "target-agent", "", true, false)
@@ -740,7 +741,7 @@ func TestMerge_NoConfig_SkipsValidation(t *testing.T) {
 	var capturedCfg *merge.Config
 	deps.DoMerge = func(_ context.Context, cfg *merge.Config, d *merge.Deps) (*merge.Result, error) {
 		capturedCfg = cfg
-		return &merge.Result{CommitHash: "abc1234"}, nil
+		return &merge.Result{MergedTip: "abc1234"}, nil
 	}
 
 	err := runMerge(context.Background(), deps, "target-agent", "", true, false)
@@ -793,7 +794,7 @@ func TestMerge_UsesAgentWorktreeCurrentBranch(t *testing.T) {
 	var capturedCfg *merge.Config
 	deps.DoMerge = func(_ context.Context, cfg *merge.Config, d *merge.Deps) (*merge.Result, error) {
 		capturedCfg = cfg
-		return &merge.Result{CommitHash: "abc1234"}, nil
+		return &merge.Result{MergedTip: "abc1234"}, nil
 	}
 
 	var stderr bytes.Buffer
@@ -940,5 +941,51 @@ func TestResolveMergeDeps_MergeDepsBindEveryGitSeam(t *testing.T) {
 	// Not a func, so skipped by the walk; Merge writes to it unconditionally.
 	if d.Stderr == nil {
 		t.Error("resolveMergeDeps left merge.Deps.Stderr nil")
+	}
+}
+
+// TestMerge_MessageOverrideIsRefused pins that --message FAILS rather than being
+// silently ignored (QUM-1087).
+//
+// Refusal rather than removal, because the two surfaces fail differently:
+// cobra errors on an unknown flag, but encoding/json silently DROPS an unknown
+// property, so deleting `message:` from the MCP tool would make it a no-op that
+// agents keep passing and nobody is told about. One surface cannot fail loudly
+// by deletion, so both are made to fail loudly by refusal.
+func TestMerge_MessageOverrideIsRefused(t *testing.T) {
+	var doMergeCalled bool
+	deps := &mergeDeps{
+		Getenv: func(k string) string {
+			switch k {
+			case "SPRAWL_ROOT":
+				return t.TempDir()
+			case "SPRAWL_AGENT_IDENTITY":
+				return "weave"
+			}
+			return ""
+		},
+		DoMerge: func(_ context.Context, _ *merge.Config, _ *merge.Deps) (*merge.Result, error) {
+			doMergeCalled = true
+			return &merge.Result{}, nil
+		},
+		Stderr: io.Discard,
+	}
+
+	err := runMerge(context.Background(), deps, "target-agent", "custom msg", false, false)
+	if err == nil {
+		t.Fatal("expected --message to be refused")
+	}
+	if !errors.Is(err, agentops.ErrMessageOverrideRetired) {
+		t.Errorf("want ErrMessageOverrideRetired, got: %v", err)
+	}
+	// Refused BEFORE doing any work: a caller who asked for something the
+	// engine cannot do should not have most of a merge performed first.
+	if doMergeCalled {
+		t.Error("the merge ran despite the message override being invalid")
+	}
+	// The remedy must be actionable (/cli-ux-best-practices: every command
+	// tells the caller what to do next).
+	if !strings.Contains(err.Error(), "squash") {
+		t.Errorf("the error must name the remedy (squash on the agent's branch first), got: %v", err)
 	}
 }

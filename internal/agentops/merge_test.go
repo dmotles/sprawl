@@ -64,7 +64,7 @@ func TestMerge_TerminalChildrenIgnored(t *testing.T) {
 			}
 
 			deps := mergeTestDeps(sprawlRoot)
-			out, err := Merge(context.Background(), deps, parentName, "", true, false)
+			out, err := Merge(context.Background(), deps, parentName, "", true, false, false)
 			if err != nil {
 				t.Fatalf("Merge with terminal child status=%q: %v", s, err)
 			}
@@ -107,7 +107,7 @@ func TestMerge_ActiveChildBlocks(t *testing.T) {
 	}
 
 	deps := mergeTestDeps(sprawlRoot)
-	_, err := Merge(context.Background(), deps, parentName, "", true, false)
+	_, err := Merge(context.Background(), deps, parentName, "", true, false, false)
 	if err == nil {
 		t.Fatalf("Merge of parent with active child must fail")
 	}
@@ -189,7 +189,7 @@ func mergeDirtyEnv(t *testing.T, agentStatus string) (*MergeDeps, string) {
 func TestMerge_AgentWorktree_StagedOnly_NamesThePreviousFailedMerge(t *testing.T) {
 	deps, _ := mergeDirtyEnv(t, "A  k.txt")
 
-	_, err := Merge(context.Background(), deps, "parent", "", true, false)
+	_, err := Merge(context.Background(), deps, "parent", "", true, false, false)
 	if err == nil {
 		t.Fatal("a dirty agent worktree must still block the merge")
 	}
@@ -215,7 +215,7 @@ func TestMerge_AgentWorktree_StagedOnly_NamesThePreviousFailedMerge(t *testing.T
 func TestMerge_AgentWorktree_ModifiedFiles_StillBlamesTheAgent(t *testing.T) {
 	deps, _ := mergeDirtyEnv(t, " M a.go")
 
-	_, err := Merge(context.Background(), deps, "parent", "", true, false)
+	_, err := Merge(context.Background(), deps, "parent", "", true, false, false)
 	if err == nil {
 		t.Fatal("a dirty agent worktree must block the merge")
 	}

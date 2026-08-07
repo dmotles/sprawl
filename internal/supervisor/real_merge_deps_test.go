@@ -27,8 +27,12 @@ func TestNewReal_MergeDepsBindEveryGitSeam(t *testing.T) {
 		name string
 		make func() *merge.Deps
 	}{
+		// retireDeps no longer constructs merge.Deps: QUM-1087/QUM-1088 removed
+		// the retire path's own merge, so there is exactly ONE construction
+		// site left. That is the point of the change, not a gap in this test —
+		// the drift this guards against (a seam bound in one site and forgotten
+		// in the other) cannot happen with one site.
 		{"mergeDeps.NewMergeDeps", sup.mergeDeps.NewMergeDeps},
-		{"retireDeps.NewMergeDeps", sup.retireDeps.NewMergeDeps},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			d := tc.make()
