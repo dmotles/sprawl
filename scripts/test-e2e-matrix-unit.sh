@@ -1758,10 +1758,21 @@ else
 		# The cut must stay cut. CLAUDE.md is the always-loaded surface QUM-1155
 		# shrank; the skip contract living in BOTH places would silently
 		# re-grow it, and nothing else in the pipeline would notice.
-		if grep -q 'Matrix breakdown' "$REPO_ROOT/CLAUDE.md"; then
+		#
+		# FAIL-CLOSED for the same reason as the leg above, and it is worth
+		# saying why the reason recurs: EVERY absence assertion in this file is
+		# one missing file away from being vacuous, because "grep found nothing"
+		# and "grep could not look" are the same branch unless you separate
+		# them. This is an absence assertion, so it separates them. The next
+		# absence assertion added here must do so too.
+		_15p_rc=0
+		grep -q 'Matrix breakdown' "$REPO_ROOT/CLAUDE.md" || _15p_rc=$?
+		if [ "$_15p_rc" -eq 1 ]; then
+			pass "15p: the skip contract is not duplicated back into the always-loaded CLAUDE.md"
+		elif [ "$_15p_rc" -eq 0 ]; then
 			fail "15p: CLAUDE.md carries the skip-contract prose again — it belongs only in $_15p_target"
 		else
-			pass "15p: the skip contract is not duplicated back into the always-loaded CLAUDE.md"
+			fail "15p: cannot establish that the cut stayed cut — grep exited $_15p_rc on '$REPO_ROOT/CLAUDE.md' (missing or unreadable), so this leg checked NOTHING"
 		fi
 		# ...with exactly one deliberate exception. A fresh agent hitting this
 		# error has not loaded the skill yet, so the pointer has to survive in
@@ -1786,8 +1797,8 @@ fi
 # ----------------------------------------------------------------------------
 # 16. This suite's verdict must not depend on the environment that ran it.
 #
-#     Same idea as [11]'s Makefile self-wiring check and [15p]'s CLAUDE.md
-#     check, pointed at this file: a gate whose result the caller can flip is
+#     Same idea as [11]'s Makefile self-wiring check and [15p]'s check that
+#     the skip contract is documented where agents read it, pointed at this file: a gate whose result the caller can flip is
 #     not a gate. A driver debug seam exported in the invoking shell reaches
 #     every driver child that did not scrub it, and the assertions fed by those
 #     children then pass or fail for reasons unrelated to the code under test.

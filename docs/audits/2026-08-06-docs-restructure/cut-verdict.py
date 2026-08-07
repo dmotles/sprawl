@@ -52,8 +52,8 @@ DESTINATIONS = [
 #
 # A block reaches this table only when byte-matching could not account for it.
 # That is not a defect in the destinations: relocation legitimately re-levels a
-# heading, reflows a paragraph, or — twice below — deliberately CORRECTS text
-# that was wrong. But it does mean the verdict rests on someone having read the
+# heading, reflows a paragraph, or deliberately CORRECTS text that was wrong (those
+# carry a `+corrected` verdict; the generated header counts them). But it does mean the verdict rests on someone having read the
 # block and its destination, so each entry states which, and why.
 #
 # Two failure directions are both errors: a block with neither an auto-match nor
@@ -64,7 +64,7 @@ OVERRIDES = {
     (3, 3): ("retained:reworded", "The DESCRIPTION.md pointer. Rewritten so it is a pointer rather than a mandated read: the budget resolver flagged the original as a read-instruction violation, and @-importing DESCRIPTION.md would add 195 lines to the surface being bounded."),
     (707, 707): ("retained:reworded", "'Meta: Developing Sprawl Inside Sprawl' heading; folded into the opening paragraph."),
     (709, 709): ("retained:reworded", "'This repo IS Sprawl' orientation; condensed into the opening paragraph, including the do-not-touch-.sprawl rule."),
-    (715, 715): ("retained:reworded", "'Tests required' — every cmd/ and internal/ file has a _test.go. Kept as a bullet under Tests and assertions."),
+    (715, 715): ("retained:corrected", "'Tests required'. Retained as a bullet under Tests and assertions, but NOT verbatim: the original is a FALSE CENSUS — 34 of 215 non-test .go files under cmd/ + internal/ (generated files excluded, measured 2026-08-07) have no sibling _test.go. Restated as a requirement on NEW files, matching the correction the testing-practices slice made for the same reason. A requirement about future behaviour cannot rot the way a count of current files does. This was very nearly relocated verbatim into the always-loaded surface, which would have promoted a narrow falsehood to the most-read sentence in the repo."),
     (717, 717): ("retained:reworded", "'Every new assertion must demonstrate it CAN fail'. Kept as a one-liner naming all three demonstrations; the long form is in testing-practices."),
     (726, 726): ("retained:reworded", "'No fallback branch may silently succeed'. Kept as a one-liner including the 77-not-0 skip rule and the assertion-count floor."),
     (733, 733): ("retained:reworded", "'Public vs Private Repo Hygiene' heading, kept as '## Public vs private repo hygiene'."),
@@ -118,7 +118,7 @@ OVERRIDES = {
     (234, 235): ("moved:git-recovery", "'the guard makes this recovery a rare exception' — the claim survives as the skill's framing of the guards section; the sentence itself was not carried."),
 
     # --- edited by THIS slice, at the destination ---
-    (832, 832): ("moved:e2e-matrix+repointed", "The 'Not logged in' misdiagnosis paragraph. Breakage R1: it said 'see the run-claude shim and .env **above**', where 'above' meant a CLAUDE.md section ~180 lines earlier that went to a DIFFERENT skill — so the sentence telling a misdiagnosing agent how to fix auth pointed at nothing. Repointed by path at e2e-testing-sandboxing. Recorded in that skill's provenance header."),
+    (832, 832): ("moved:e2e-matrix+repointed", "The 'Not logged in' misdiagnosis paragraph. Breakage R1: it said 'see the run-claude shim and .env **above**', where 'above' meant CLAUDE.md's QUM-518 auth section, which went to a DIFFERENT skill — so the sentence telling a misdiagnosing agent how to fix auth pointed at nothing. Repointed by path at e2e-testing-sandboxing. Recorded in that skill's provenance header."),
     (889, 905): ("moved:e2e-matrix+repointed", "The self-falsifying-count paragraph. Breakage R2: 'these paragraphs live inside the corpus they describe' named the wrong corpus after the move, and the recommended `grep -E '^   \\| ' CLAUDE.md` returns zero rows post-cut while looking like an answer. Both halves repointed at the skill file. Recorded in that skill's provenance header."),
 }
 
@@ -284,9 +284,16 @@ def main() -> int:
     print(f"Verdicts: {len(bl) - len(missing)}/{len(bl)} accounted "
           f"({auto} by byte-match against the destination, {len(bl) - len(missing) - auto} by recorded manual verdict). "
           f"Unaccounted: {len(missing)}. Stale overrides: {len(stale)}.\n")
+    corrected = sum(1 for r in rows if "corrected" in r[3])
     print("Every non-blank line of the original is inside exactly one row, asserted "
           "mechanically above, so a block cannot be dropped from this enumeration "
           "without the generator failing.\n")
+    print(f"**{corrected} blocks carry a `+corrected` verdict** — relocated AND deliberately "
+          "changed at the destination because the original text was wrong. That is a "
+          "different claim from \"moved\", so it is spelled differently. This figure is "
+          "derived from the verdicts below, not typed: a count asserted in prose in front "
+          "of the thing it describes is the exact artifact this restructure exists to "
+          "retire.\n")
     print("| lines | first line | verdict | basis |")
     print("|---|---|---|---|")
     for start, end, first, label, why in rows:

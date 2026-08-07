@@ -18,8 +18,9 @@ both consequences of the move rather than edits to the content — recorded here
 because an unrecorded departure makes the provenance claim above a lie:
 
 1. The `Not logged in` remedy said "see the `scripts/run-claude` shim and `.env`
-   **above**". "Above" meant a CLAUDE.md section ~180 lines earlier that went to
-   `.claude/skills/e2e-testing-sandboxing/SKILL.md`, not here — so the sentence
+   **above**". "Above" meant CLAUDE.md's `## Running claude from agent bash subshells
+   (QUM-518)` section, which went to `.claude/skills/e2e-testing-sandboxing/SKILL.md`,
+   not here — so the sentence
    telling a misdiagnosing agent how to fix auth pointed at nothing. It is now a
    path.
 2. The self-falsifying-count paragraph described "the corpus these paragraphs
@@ -65,7 +66,7 @@ because an unrecorded departure makes the provenance claim above a lie:
    | present, **unauthenticated** | no | **never read; inert** | row runs and fails with `Not logged in` |
    | present + authenticated | no | n/a | real run |
 
-   The middle state is a **misdiagnosis hazard, not a false green**: the row fails with a Session Error whose body is `Not logged in`, which is trivially misread as a product regression. If you see `Not logged in`, fix auth — the `scripts/run-claude` shim and the `.env` it reads are documented in `.claude/skills/e2e-testing-sandboxing/SKILL.md` (this sentence said "above" when it lived in CLAUDE.md, ~180 lines below that setup; QUM-1155 moved the two apart, so it is now a path); the flag is **not** the remedy, because the gate it controls never fires in that state. And **never hide `claude` from PATH to force a skip.** That converts the middle state into the absent state, and all it buys you is a vacuous all-skip run that asserts nothing. QUM-974 tracks the related defect that `e2e_recover_oauth_token` reports success even when it recovers no token.
+   The middle state is a **misdiagnosis hazard, not a false green**: the row fails with a Session Error whose body is `Not logged in`, which is trivially misread as a product regression. If you see `Not logged in`, fix auth — the `scripts/run-claude` shim and the `.env` it reads are documented in `.claude/skills/e2e-testing-sandboxing/SKILL.md` (this sentence said "above" when it lived in CLAUDE.md, referring to its QUM-518 section; QUM-1155 sent the two to different skills, so it is now a path); the flag is **not** the remedy, because the gate it controls never fires in that state. And **never hide `claude` from PATH to force a skip.** That converts the middle state into the absent state, and all it buys you is a vacuous all-skip run that asserts nothing. QUM-974 tracks the related defect that `e2e_recover_oauth_token` reports success even when it recovers no token.
 
    **Skip accounting (QUM-952).** A skipped row is reported as `SKIP <row>`, never `PASS`, and forces a nonzero exit — **exit 3** when rows skipped but none outright failed. Two summary lines are printed:
 

@@ -1,59 +1,14 @@
 # QUM-1155 — section-by-section cut verdict table
 
-**Generated**, not hand-written: `python3 docs/audits/2026-08-06-docs-restructure/cut-verdict.py`.
-Re-run it to re-derive this table; it exits non-zero if any block is unaccounted
-or any recorded verdict has gone stale.
-
-## Why this shape, and not a hash
-
-A per-line hash over the lines we *meant* to preserve cannot detect a line we did
-not notice we were removing — it can only confirm the lines we already thought
-about. So the enumeration runs the other way round. Every blank-line-delimited
-block of the 938-line original is enumerated and must receive a verdict, and the
-generator **asserts that every non-blank line of the original lies inside exactly
-one block**. A block cannot fall out of the enumeration without the generator
-failing.
-
-The same asymmetry is why a byte-identity claim over a *range* is weaker than it
-looks: it is only as strong as the claim that the range is the whole moved unit.
-Wave 1 evidenced `794..938` byte-identical; the section it came from starts at
-**788**, and one of the six uncovered lines — "TUI validation is mandatory for
-all TUI-related changes" — is a standing mandate that would have been deleted
-with no test failing. See the `790-794` row.
-
-## How a verdict is reached
-
-- **byte-match against the destination** — the block's normalized text is a
-  substring of a destination file. Matching is **de-wrapped**: newlines to
-  spaces, then runs of whitespace collapsed. `tr '\n' ' '` alone is not enough,
-  because the continuation line's leading indent survives; the collapse is what
-  closes it. 5 blocks in this run match ONLY de-wrapped, so a line-wise probe
-  would have reported those 5 as lost content.
-- **recorded manual verdict** — byte-matching could not account for the block,
-  so someone read it and its destination and wrote down why. Relocation
-  legitimately re-levels a heading, reflows a paragraph, or (four times here)
-  **deliberately corrects text that was wrong**. Those four are called out with
-  `+corrected`, because "moved" and "moved and fixed" are different claims.
-
-## Probe discipline
-
-The generator refuses to emit a table until its own instrument passes controls
-against subjects whose answer is known: a known-present block must report FOUND,
-a synthetic never-present block must report MISSING, and a block artificially
-re-wrapped at a different column must be **missed** line-wise and **found**
-de-wrapped. A zero from an unvalidated probe is not evidence.
-
-Whole-generator negative control, run and recorded: mutating one phrase
-(`Shift+drag`) inside `.claude/skills/tui-testing/SKILL.md` moved block `626-632`
-to UNACCOUNTED and the generator exited 1. Restored; exit 0.
-
-# QUM-1155 cut verdict table
+**Everything from the `# QUM-1155 cut verdict table
 
 Original: `git show c7093cc:CLAUDE.md`, sha256 `228ffaee340f2322c11c25a1a7310c207f69596b39e38cdf99b82233d1eaffae`, 938 lines, 750 non-blank, 188 blocks.
 
 Verdicts: 188/188 accounted (135 by byte-match against the destination, 53 by recorded manual verdict). Unaccounted: 0. Stale overrides: 0.
 
 Every non-blank line of the original is inside exactly one row, asserted mechanically above, so a block cannot be dropped from this enumeration without the generator failing.
+
+**6 blocks carry a `+corrected` verdict** — relocated AND deliberately changed at the destination because the original text was wrong. That is a different claim from "moved", so it is spelled differently. This figure is derived from the verdicts below, not typed: a count asserted in prose in front of the thing it describes is the exact artifact this restructure exists to retire.
 
 | lines | first line | verdict | basis |
 |---|---|---|---|
@@ -188,7 +143,7 @@ Every non-blank line of the original is inside exactly one row, asserted mechani
 | 709-709 | This repo IS Sprawl. The `.sprawl/` directory at the repo root stores agent state and work | retained:reworded | 'This repo IS Sprawl' orientation; condensed into the opening paragraph, including the do-not-touch-.sprawl rule. |
 | 711-711 | ## Code Patterns | moved:sprawl-internals | byte-match against the destination |
 | 713-713 | **Dependency injection**: Commands use a `deps` struct to inject interfaces for external d | moved:sprawl-internals | byte-match against the destination |
-| 715-715 | **Tests required**: Every file in `cmd/` and `internal/` has a corresponding `_test.go`. K | retained:reworded | 'Tests required' — every cmd/ and internal/ file has a _test.go. Kept as a bullet under Tests and assertions. |
+| 715-715 | **Tests required**: Every file in `cmd/` and `internal/` has a corresponding `_test.go`. K | retained:corrected | 'Tests required'. Retained as a bullet under Tests and assertions, but NOT verbatim: the original is a FALSE CENSUS — 34 of 215 non-test .go files under cmd/ + internal/ (generated files excluded, measured 2026-08-07) have no sibling _test.go. Restated as a requirement on NEW files, matching the correction the testing-practices slice made for the same reason. A requirement about future behaviour cannot rot the way a count of current files does. This was very nearly relocated verbatim into the always-loaded surface, which would have promoted a narrow falsehood to the most-read sentence in the repo. |
 | 717-717 | **Every new assertion must demonstrate it CAN fail** — a negative control, a mutation, or  | retained:reworded | 'Every new assertion must demonstrate it CAN fail'. Kept as a one-liner naming all three demonstrations; the long form is in testing-practices. |
 | 719-719 | **A watched failure proves the instrument works, not that it measures the right thing.** R | moved:testing-practices | byte-match against the destination |
 | 721-722 | * An assertion written against the derived squash message's trailer block was watched fail | moved:testing-practices | byte-match against the destination |
@@ -231,7 +186,7 @@ Every non-blank line of the original is inside exactly one row, asserted mechani
 | 822-822 | All rows require a real, **authenticated** `claude` binary on PATH. `SPRAWL_E2E_SKIP_NO_CL | moved:e2e-matrix | byte-match against the destination |
 | 824-824 | **The gate keys on presence only — it never probes auth.** All 11 `needs_claude` gates rea | moved:e2e-matrix | byte-match against the destination |
 | 826-830 | \| claude state \| gate fires? \| `SPRAWL_E2E_SKIP_NO_CLAUDE` \| outcome \| | moved:e2e-matrix | byte-match against the destination |
-| 832-832 | The middle state is a **misdiagnosis hazard, not a false green**: the row fails with a Ses | moved:e2e-matrix+repointed | The 'Not logged in' misdiagnosis paragraph. Breakage R1: it said 'see the run-claude shim and .env **above**', where 'above' meant a CLAUDE.md section ~180 lines earlier that went to a DIFFERENT skill — so the sentence telling a misdiagnosing agent how to fix auth pointed at nothing. Repointed by path at e2e-testing-sandboxing. Recorded in that skill's provenance header. |
+| 832-832 | The middle state is a **misdiagnosis hazard, not a false green**: the row fails with a Ses | moved:e2e-matrix+repointed | The 'Not logged in' misdiagnosis paragraph. Breakage R1: it said 'see the run-claude shim and .env **above**', where 'above' meant CLAUDE.md's QUM-518 auth section, which went to a DIFFERENT skill — so the sentence telling a misdiagnosing agent how to fix auth pointed at nothing. Repointed by path at e2e-testing-sandboxing. Recorded in that skill's provenance header. |
 | 834-834 | **Skip accounting (QUM-952).** A skipped row is reported as `SKIP <row>`, never `PASS`, an | moved:e2e-matrix | byte-match against the destination |
 | 836-839 | ``` | moved:e2e-matrix | byte-match against the destination |
 | 841-841 | The first line is the QUM-947 contract and is unchanged — `passed` means *actually execute | moved:e2e-matrix | byte-match against the destination |

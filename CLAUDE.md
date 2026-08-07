@@ -37,7 +37,7 @@ If your diff touches a gated file, you owe the corresponding e2e matrix rows. Th
 
 - **Every new assertion must demonstrate it CAN fail** — a negative control, a mutation, or a red-first run — and you must record which one you used and what it printed. An assertion nobody has watched fail is a claim, not a check. A parent-commit control proves a failure is *pre-existing*; it never proves the failure is acceptable.
 - **No fallback branch may silently succeed.** A validation or test script must exit non-zero when something it checks fails, and a skip on an unmet precondition must exit **77**, never 0. Any harness that aggregates its own results needs an **assertion-count floor**, so a run reporting `0 passed / 0 failed` exits non-zero instead of green.
-- Every file in `cmd/` and `internal/` has a corresponding `_test.go`. Keep it that way.
+- Every **new** file under `cmd/` and `internal/` must ship with a sibling `_test.go`. Stated as a requirement on new work, not as a census of the tree: the census form of this claim was false, and a requirement about future behaviour cannot rot the way a count of current files does.
 
 Read /testing-practices § Assertion Rigor before writing or reviewing any assertion.
 
