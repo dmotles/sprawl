@@ -59,7 +59,7 @@ Work is tracked in Linear; see `CLAUDE.local.md` for the team and project IDs. I
 
 ## Skills
 
-Not loaded for you. Read one when its condition applies. A skill holds the *procedure*; the *requirement* stays here — a rule you can only find after loading the skill it lives in is not discoverable at all. That is why the TUI-validation mandate and the auth-shim pointer above are stated in this file rather than delegated to theirs; do not tidy them away.
+Not loaded for you. Read one when its condition applies. A skill holds the *procedure*; the *requirement* stays here — a rule you can only find after loading the skill it lives in is not reliably discoverable. That is why the TUI-validation mandate and the `scripts/run-claude` pointer above are stated in this file rather than delegated. **Do not tidy them away.**
 
 - /sprawl-internals — agent lifecycle, status/`IsTerminal`/wake contracts, repo layout, DI pattern, build targets, project config, install policy.
 - /testing-practices — before writing any test or any new assertion.
