@@ -462,3 +462,188 @@ and has had nothing to correct it since. Check a file's date before acting on it
 
 Ordering is deliberate: current-first, historical-last. The header sentence carries
 the tier distinction that the flattening will eventually make unnecessary.
+
+---
+
+# Part II — follow-up package (2026-08-07)
+
+Second pass, after the first was applied. Four items were commissioned; **two
+survived contact with measurement, one turned out to be a code change rather than a
+file edit, and one premise was wrong — my own.** All store changes here are
+delivered as **hunks against the live base**, never whole files, for the reason in
+§II.0.
+
+## II.0 Why hunks, and the writer we found
+
+The rule dropped during the first apply was **never in the snapshot I edited** — I
+established that by reconstructing my own base and grepping it (four probe phrases,
+all zero, with a firing positive control). Weave then identified the writer: it was
+**`handoff`**, which writes the project's persistent-knowledge file at session end.
+The backup's preserved mtime puts the rule's arrival 70 seconds after the handoff
+completed and 11 minutes after my snapshot.
+
+That makes it structural rather than careless. **There is no window to be careful
+in**: any agent that snapshots the store, works for more than a few minutes, and
+delivers a whole file will silently erase whatever the intervening handoff wrote.
+The remedy is three-way, not more care — a moved base must *conflict*, not lose. Both
+patches in this package are context-bearing unified diffs, dry-run verified against
+the live base, with a negative control confirming a drifted base is **rejected**
+rather than silently accepted.
+
+Worth recording that during this pass the base moved **twice more** while I worked
+(mtimes 00:26, 00:33). The hazard is not hypothetical or rare.
+
+## II.1 Where the `report_status` error came from — a template, not a misreading
+
+**This is the item that matters most, and the answer is: it will come back.**
+
+No agent-facing surface says "HALTS" or "must be LAST" — that wording is nowhere in
+the prompt templates or the tool descriptions. But the *ordering imperative* is
+authored, in three places, and reinforced structurally:
+
+1. A helper that emits the engineer TDD workflow's report step is numbered **last**,
+   and its own Go doc comment describes it as the "**final**" step.
+2. The QA verification protocol ends with `report_status(complete)` as step **8 of
+   8** — and step **7 is `send_message`**. The canonical ordering the template
+   teaches *is* message-then-report, which is exactly the behaviour "must be LAST"
+   prescribes.
+3. The shared child-report template says "**When done**, use:
+   `report_status({state: "complete"})`".
+
+**The decisive finding is an absence, not a sentence.** Nothing in any agent-facing
+surface states what actually happens after a terminal report: that teardown is
+deferred to end-of-turn and a follow-on `send_message` survives by design. The tool
+description covers what `report_status` *is* — ephemeral, not an inbox message — and
+says nothing about lifecycle. Given three "do this last" cues and zero statements of
+the mechanism, "complete HALTS the agent" is the natural compression. An agent will
+re-derive it, and the next handoff will write it back into the store.
+
+*Control for the absence:* lifecycle-consequence prose **does** exist in this exact
+surface for other tools — `retire` is described as shutting an agent down, `kill` as
+an emergency stop leaving the worktree intact. So the probe finds post-tool lifecycle
+prose where it exists; it returns nothing for `report_status` because there is
+nothing to find. This is a property control, not a token control — which matters,
+because my first three probes tonight were token-scoped and one of them could not
+have fired.
+
+**Recommendation, and a caution about the obvious fix.** Do **not** change the
+templates' ordering. Message-then-report is good practice and the QA protocol has it
+right. The fix is one sentence of mechanism in the `report_status` tool description —
+teardown is deferred to end of turn, a follow-on message in the same turn survives,
+`complete` and `failure` are identical on that decision, and neither is permanent.
+Without it the store correction is a patch on the symptom: the source keeps emitting.
+
+**Fourth instance of the wrong-scope failure, and I hit it here.** My first search for
+this used keyword patterns — `must be.*last`, `halt`, `terminat`, `ends the agent` —
+and returned clean negatives. Those patterns would not have matched "When done, use"
+or a numbered final step, which is what the source actually looks like. I was probing
+for the *wording I expected* rather than the *property*. The result only became
+trustworthy after re-scoping to "enumerate every agent-facing mention and read them
+all," with no keyword filter.
+
+## II.2 The A/B merge — my own premise was over-compressed
+
+I reported "14 of 20 bullets duplicated." **That was wrong, and wrong in the
+characteristic direction.** It came from matching bullets on a six-word opening key,
+which measures *how a bullet starts*, not what it contains. A clause-level audit of
+the same pairs, with a positive control, gives a different picture:
+
+| | count |
+|---|---|
+| bullets sharing an opening | 12 |
+| — of those, genuine near-duplicates | 6 |
+| — of those, carrying substantial content the other store lacks | **6** |
+| bullets unique to the satellite store outright | **8** |
+
+So roughly **6 of 20 are true duplicates**, not 14. The other 14 hold content that
+exists in one store only — including, in a bullet that *looked* duplicated, the
+entire `messages_list` pagination guidance that this very audit corrected.
+
+**A deletion patch built on my original claim would have destroyed it** — the same
+defect class as the rule lost in the first apply, and I generated it myself, in the
+finding I filed *about* that defect. I am not delivering the merge as patches.
+
+**And the merge as specified cannot be executed anyway, for a reason nobody had
+visibility into.** The canonical store is machine-maintained, which is exactly why it
+was chosen — but the writer enforces a **hard cap of 20 items with deterministic
+truncation** (`items[:MaxItems]`), and the curator prompt instructs the model to cap
+at 20. Consolidating ~14 unique bullets into a store that is capped at 20 is not a
+merge; it is a forced eviction whose victims an LLM selects. The correct sequence is
+to raise or remove the cap first, then merge. That is a code change and a decision
+for weave, not something to work around at the file level.
+
+## II.3 The truncation is about to re-delete the restored rule
+
+**Flagging this as the most time-sensitive item in the package.** The canonical store
+currently holds **21 bullets against a cap of 20** — it went to 21 when the dropped
+artifact-location rule was restored by appending it.
+
+At the next handoff the curator is told to cap at 20, and the writer hard-truncates
+anything longer. One of those 21 bullets will not survive, chosen by a model that has
+no record of which one was just recovered, and the write is a full overwrite with no
+diff and no warning. **The rule we spent this evening recovering is a plausible
+casualty of the very next session end.**
+
+This is the same boundary as QUM-1149 and, I think, materially strengthens it: the
+issue was filed for `handoff` truncating the root agent's self-knowledge, and this is
+the same mechanism truncating the store. Two distinct properties of one writer are
+implicated, and they compound:
+
+- **it overwrites** (whole-file write of only bullet lines, no merge, no diff) — the
+  first apply's lost rule; and
+- **it truncates** (hard cap, LLM-selected victim, silent) — the risk now live.
+
+Answering forge's question directly: I did not find a *third* thing `handoff`
+overwrites, and my pass was not designed to look for one. What I found instead is a
+second failure mode of the same writer. Whether that is an AC on QUM-1149 or its own
+issue is weave's call — but the overwrite and the truncation want separate acceptance
+criteria, because a fix for either leaves the other live.
+
+## II.4 Store A cannot hold a date field
+
+Commissioned as item 3; **not deliverable as a file edit, and a patch would have
+silently evaporated.**
+
+The writer emits bullet lines only, and its parser discards every line that does not
+begin with `- `. The curator prompt closes the loop from the other side: "Output ONLY
+the bullet lines. No headers, no explanation, no other text." So YAML frontmatter or
+a date header survives exactly until the next handoff and then vanishes without
+comment. *Control:* the file currently contains **zero** non-bullet lines, while the
+satellite store — written by a different mechanism — contains seven, so the check
+distinguishes "this file has no header" from "my check cannot see headers."
+
+The requirement is right and the diagnosis behind it is right: an undated store is
+the property that turned four satellite notes into false present-tense claims, and it
+matters more now that this store is canonical. But it has to be implemented in the
+writer — stamp the generation time when the file is written — not in the file. Noted
+for weave as a code change; I have not made it.
+
+## II.5 Delivered patches
+
+Both are in the hunks directory alongside an `APPLY.md` carrying base hashes and
+verification steps. Both dry-run cleanly against the live base; a drifted base is
+rejected.
+
+- **Hub bullet, de-leaked.** Reduced to the architectural invariant — the local
+  binary is network-only with respect to the hub. Deployment topology, resource
+  identifiers, and region removed, with a short note recording *why* they are absent
+  so a future curator does not helpfully restore them. The original text is not
+  quoted anywhere in this tracked ledger, deliberately: that line is the specific
+  content that must not reach the public tree.
+- **`make install`, scoped.** Now explicitly root-only, naming the CLAUDE.md warning
+  it contradicts for every other agent. It was correct advice in a root agent's
+  private store and becomes dangerous the moment the store is read by all agents,
+  which is precisely what promotion would do.
+
+Both are promotion blockers and both are now cleared.
+
+## II.6 Standing note on my own error rate this pass
+
+Two of my own claims failed under checking in this pass: the "14 of 20 duplicated"
+figure (§II.2) and the first keyword-scoped search for the template source (§II.1).
+Both were the same defect — a probe scoped to a convenient proxy rather than to the
+property being claimed — and both were caught only by building a control that could
+fire. That is four instances tonight across three agents, every one of them found by
+the control rather than by re-reading the work. The practice that keeps working:
+**name the property, then build a probe that must produce a positive on a case you
+know exists, before trusting any negative.**
