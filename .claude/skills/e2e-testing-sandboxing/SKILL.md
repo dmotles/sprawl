@@ -1,6 +1,6 @@
 ---
 name: e2e-testing-sandboxing
-description: Set up and use the sandbox testing system for end-to-end validation of sprawl changes without affecting production state. Read it before running any tmux command in sandbox or harness context — sandbox tmux lives on a dedicated socket and bare `tmux` reaches the wrong server.
+description: Set up and use the sandbox testing system for end-to-end validation of sprawl changes without affecting production state. Read it before running any tmux command in sandbox or harness context — sandbox tmux lives on a dedicated socket and bare `tmux` reaches the wrong server. Also carries the hard `/tmp` hygiene rules (shared `/tmp`, never a broad `rm -rf` glob, never touch `/tmp/coder-script-data`) and the `claude` auth shim — `.env` plus `scripts/run-claude` and `$SPRAWL_CLAUDE` — which is the fix when `claude` fails with `Not logged in` from a Bash subshell.
 user-invocable: true
 argument-hint: "[setup|inspect|cleanup] or omit for full workflow"
 ---
@@ -18,6 +18,34 @@ Use this workflow to validate sprawl changes end-to-end in an isolated environme
 - **Do NOT use bare `tmux` at all in a sandbox or in a harness script — use `_stmux`.** Sandbox tmux state lives on a dedicated socket (see Setup), so a bare `tmux` command talks to the wrong server: it will not find your session, and anything destructive it does lands on someone else's.
 
 Production `sprawl enter` sessions still share the **default** socket. That asymmetry is the whole reason the sandbox socket exists, and it is why a bare `tmux` in sandbox context is not merely wrong but dangerous.
+
+### `/tmp` hygiene — hard rules
+
+Sandbox roots live under `/tmp`, but `/tmp` is **shared** with other agents and
+with host tooling. These rules are not advisory:
+
+- **Never `rm -rf` a broad `/tmp` glob** (`/tmp/*`, `/tmp/sprawl-*`, `$TMPDIR/*`,
+  …). It destroys other agents' in-flight sandboxes and host state.
+- **Only remove a sandbox root you created**, and only after asserting the path
+  is under `/tmp/` and matches the prefix you expect — assert, then delete. See
+  `_e2e_cleanup` in `scripts/lib/e2e-common.sh` and `_unit_reset_markers` in
+  `scripts/test-e2e-matrix-unit.sh` for the pattern (a `case` guard on the
+  literal path, and `find -delete` rather than a `rm` glob).
+- **Never touch `/tmp/coder-script-data`.** It is host tooling state. In this
+  workspace `/tmp/coder-script-data/bin/claude` is a **symlink** into the
+  developer's home dir, where the real binary lives on the persistent volume —
+  so deleting it breaks `claude` PATH resolution rather than the installation,
+  and recovery is a single `ln -s`. The hazard is not the blast radius, it is
+  the silence: nothing in the harness would *tell* you, and every
+  `needs_claude` e2e row would quietly start skipping.
+
+### The socket split is QUM-325
+
+The dedicated `SPRAWL_TMUX_SOCKET` above was introduced by **QUM-325**, so that
+sandbox operations are isolated from the user's default tmux server. That is the
+provenance for every tmux rule in this section; in scripts, always use `_stmux`
+(not bare `tmux`) for sandbox tmux operations, and to clear sandbox state use the
+sanctioned `sprawl_sandbox_destroy` helper from `scripts/sprawl-test-env.sh`.
 
 ## Setup
 
@@ -161,6 +189,40 @@ For an example of automated sandbox assertions, see `scripts/smoke-test-memory.s
 ```bash
 bash scripts/smoke-test-memory.sh
 ```
+
+## Running `claude` from agent bash subshells (QUM-518)
+
+When an agent invokes `claude -p ...` from a Bash tool subshell, Claude Code
+sanitizes the subprocess env and strips `CLAUDE_CODE_OAUTH_TOKEN`. The inner
+`claude` then fails with `Not logged in`. The fix is a thin shell shim that
+re-hydrates auth env vars before exec'ing the real binary.
+
+**Setup (one-time, host side):**
+
+1. Create `.env` at the repo root containing your auth token(s):
+
+   ```
+   CLAUDE_CODE_OAUTH_TOKEN=...
+   ANTHROPIC_API_KEY=...     # optional
+   ```
+
+   Then `chmod 0600 .env`. **`.env` is gitignored — never commit it.**
+
+2. Launch sprawl with the shim as `$SPRAWL_CLAUDE`:
+
+   ```bash
+   SPRAWL_CLAUDE=$(pwd)/scripts/run-claude sprawl enter
+   ```
+
+`scripts/run-claude` sources `$SPRAWL_ROOT/.env` (falling back to the script's
+parent dir if `$SPRAWL_ROOT` is unset) and then `exec`s `claude`. The
+`worktree.setup` hook in `.sprawl/config.yaml` copies `.env` into each new
+agent worktree (preserving `0600` mode via `cp -p`) so the shim works from
+inside worktrees too.
+
+`internal/agent/claude.go` honors `$SPRAWL_CLAUDE`: if set, it is used
+verbatim as the `claude` binary path; otherwise it falls back to a `PATH`
+lookup.
 
 ## Tips
 

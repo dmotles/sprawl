@@ -1,6 +1,6 @@
 ---
 name: tui-testing
-description: Automated and manual TUI testing workflows for the sprawl enter command.
+description: Automated and manual TUI testing workflows for the sprawl enter command, plus the TUI's operator surfaces — selecting and copying text out of a mouse-capturing TUI, the scroll and prompt-history key map, the Ctrl+\ incident-snapshot bundle, and the SIGUSR2 / --pprof runtime profiling toggle.
 user-invocable: true
 argument-hint: "[automated|manual|checklist] or omit for full guide"
 ---
@@ -104,6 +104,69 @@ Every agent touching TUI code MUST complete these steps before reporting done:
 - [ ] Full `bash scripts/test-tui-e2e.sh` run completed (document any known failures)
 - [ ] If the harness doesn't cover your change, perform manual tmux validation and document what you checked (include `tmux capture-pane` output in your done report)
 - [ ] Ctrl+C cleanly shuts down with no orphaned processes
+
+## Text selection in `sprawl enter` (QUM-653 / QUM-731)
+
+The TUI captures the mouse so the scroll wheel scrolls the chat viewport
+(QUM-731). Mouse capture intercepts plain click-drag, so use one of the
+terminal- or tmux-native paths below to select and copy — none require a
+modal toggle (the QUM-617 selection-mode toggle stays retired):
+
+* **Shift+drag** — most terminals (xterm.js / coder web terminal, gnome-
+  terminal, kitty, wezterm, Alacritty, iTerm2) bypass mouse capture while
+  Shift is held; copy with your usual keystroke (Cmd+C / Ctrl+Shift+C).
+* **tmux copy-mode** (`prefix` + `[`) — scroll, search, and yank tmux-style.
+  Works regardless of terminal.
+* **Right-click → Copy** — in most terminals the right-click context menu
+  copies the OS-level selection even with mouse capture on.
+
+Scroll inside the TUI:
+
+* **Mouse wheel** — scrolls the observed chat viewport up/down (suppressed
+  while a modal — `/help`, palette, confirm, question, validate-popup — is
+  open).
+* `PgUp` / `PgDn` — page up/down
+* `Home` / `End` — jump to top/bottom
+* `Up` / `Down` — navigate prompt input history **when the input is empty**
+  (or while a history walk is already in progress); no-op when freshly
+  typing. `PgUp` / `PgDn` / mouse wheel scroll the chat viewport regardless
+  of input state.
+
+### Incident snapshot hotkey (QUM-728)
+
+Press `Ctrl+\` to write a forensic bundle to
+`<repoRoot>/.sprawl/incidents/<ISO8601>-tui-snapshot/`. Includes:
+goroutine dump, fd list, sprawl status, `ps auxf`, `/proc/<pid>/status`
+for weave, last 10k mcp-calls.jsonl lines, per-agent activity rates,
+memory + loadavg. Non-blocking — TUI stays interactive. Status bar shows
+`snapshot saved → <path>` on completion (or `snapshot failed` + an error
+toast on failure).
+
+### Runtime pprof toggle (QUM-678 / QUM-934)
+
+`--pprof <addr>` (or `SPRAWL_PPROF_ADDR`) exposes `net/http/pprof` at launch.
+**`SIGUSR2` toggles the listener on a running session** — no relaunch, which is
+the point: restarting resolves some session-scoped perf bugs and so destroys
+the evidence. (`SIGUSR1` is the separate sigdump goroutine/fd dump.)
+
+Bind-failure policy differs by **provenance**, deliberately — don't merge the
+two branches:
+
+* **Explicitly configured** (`--pprof` / `SPRAWL_PPROF_ADDR` / an explicit arg):
+  bound as-is or fails loudly. Never silently relocated — an operator who named
+  a port will curl that port.
+* **Unconfigured** (our own `127.0.0.1:6060` default, which nobody asked for):
+  tries the default, then falls back to an ephemeral `127.0.0.1:0` on
+  `EADDRINUSE`. Loopback only, and only `EADDRINUSE` relocates.
+
+While the listener is up, its **bound address is written to
+`<SPRAWL_ROOT>/.sprawl/runtime/pprof-addr`** and removed on stop, so
+`curl http://$(cat .sprawl/runtime/pprof-addr)/debug/pprof/` works even when the
+fallback picked an ephemeral port. The toggle's log line only reaches
+`.sprawl/logs/tui-stderr-*.log` (the TUI redirects stderr), so this file is the
+discoverable surface; an in-TUI surface is still deferred. The file is advisory
+— written only after the weave flock is held, and cleared at launch, so a
+SIGKILLed session's stale entry cannot mislead the next one.
 
 ## Known Issues
 

@@ -8,6 +8,11 @@ Run all tests:
 go test ./...
 ```
 
+Note this bare form is a **convenience run, not the enforced gate**: `make
+validate` runs the whole suite under the race detector via `make test-race`.
+See § *What `make validate` guarantees about data races (QUM-972)* below before
+concluding anything from a green `go test ./...`.
+
 Run tests for a specific package:
 
 ```bash
@@ -31,6 +36,78 @@ Use `-v` for verbose output:
 ```bash
 go test -v ./...
 ```
+
+### What `make validate` guarantees about data races (QUM-972)
+
+**It runs the whole unit suite under the race detector.** Until QUM-972 it did
+not — `validate` ran a bare `go test ./...`, so race detection was pure
+convention, and live data races sat behind a permanently green `validate` in
+**two** packages: `internal/backend` and `internal/rootinit`. One of the rootinit
+races was a *production* defect: four concurrent unsynchronised writers to one
+caller-supplied `io.Writer`. `validate` now depends on `test-race` **instead of**
+`test`; there is no uninstrumented run.
+
+**A race count is run-dependent — do not quote a bare total.** The detector
+reports what it witnesses, so repeated runs disagree: pre-fix,
+`internal/rootinit` reported **8** (six writer races plus two from the
+`callOrder` append), while `internal/backend` reported **3** in three of four
+runs and **2** in the fourth. State it as "races in two packages, count varying
+by run" — the variance is itself the point (see the `-shuffle=on` follow-up: the
+gate currently gives order-dependent races exactly one ordering). A commit
+message in history (`4db5057`) quotes "9 races (backend 3, rootinit 6)"; that
+rootinit figure omits the two `callOrder` reports.
+
+State the guarantee accurately, because it is narrower than "no races exist":
+
+* **Covered** — every package under `./...`, on the code paths the unit tests
+  actually drive.
+* **Not covered** — the e2e harnesses (`make test-e2e-matrix*`,
+  `scripts/e2e-tests/*`), anything behind the `hub_e2e` / `sprawl_test` build
+  tags, and any concurrent path no unit test exercises.
+* A green run means **no race was *observed***. The detector reports races it
+  witnesses on executed interleavings; it does not prove absence.
+
+Cost, measured on a 4-core host with warm build caches (`-count=1`): `go test
+./...` 99.0s vs `go test -race ./...` 122.2s — **+23%**, not the 2-10× the flag
+usually costs, because this suite is sleep/timeout-bound rather than CPU-bound
+(`internal/supervisor` alone is 75s of the 122s and barely moves under
+instrumentation). A targeted concurrency-heavy subset was measured at 76.0s: it
+saves 46s while covering 4 of ~40 packages and needs a hand-maintained list that
+silently stops covering newly-concurrent packages, so it was rejected.
+
+`-race` needs cgo and a C toolchain. That fails **loudly** — the build is
+refused — so it cannot degrade into a false green. `make test-race-gate`
+(also in `validate`) closes the two silent-regression paths that string-matching
+alone cannot: it reads the wiring from `make -n validate` and asserts *every*
+`go test` line carries `-race` (an env-var prefix such as `CGO_ENABLED=0 go test`
+was a proven false-green before it keyed on invocation rather than line start),
+and it re-runs validate's own extracted flags against a planted race plus a clean
+control on **every** run, so "the detector is inert here" is caught rather than
+assumed.
+
+**Repo-wide convention for duration test tunables:** a duration knob that
+production reads **from a goroutine** and tests override must be a synchronised
+seam — the `atomicDuration` type, currently duplicated (deliberately, it is eight
+lines and stays unexported) in `internal/backend/session.go`,
+`internal/rootinit/consolidating_lock.go`, and `internal/merge/runtests.go`.
+Never a plain `time.Duration` package var. This is repo-wide, not a
+per-package exception: if you add a new one, use the same shape and the same
+name.
+
+Two of those three were **fixes**; the third was **prevention**, and the
+distinction matters when reading the list. `internal/backend/session.go` and
+`internal/rootinit/consolidating_lock.go` had races the detector actually
+reported. `internal/merge/runtests.go` reported **zero** pre-fix races — no unit
+test overrode its knob concurrently — and was converted because it is the same
+shape one test away from the same defect. So `internal/merge` appearing here is
+not evidence of a third racing package.
+
+Snapshotting the var at goroutine entry does **not** fix it — the snapshot read
+*is* the racing access. Do not write (or trust) a comment claiming otherwise;
+QUM-972 deleted the ones `session.go` carried. Note also that a knob whose
+override *happens* to be safe today because every caller writes it before
+starting the reader is safe only by an **unstated precondition**; convert it
+rather than documenting the precondition.
 
 ## Assertion Rigor
 
@@ -1221,6 +1298,48 @@ The negative control there costs ten seconds — run the predicate with nothing
 running and confirm it reports not-running. It was skipped *because the check
 looked obviously correct*, which is the honest heart of this whole convention.
 
+### Necessary but not sufficient: a watched failure proves the instrument works, not that it measures the right thing
+
+**A watched failure proves the instrument works, not that it measures the right
+thing.** Red-first is necessary and **not sufficient**. An assertion can fail for
+a reason you chose, on behaviour the correct design does not have — and in the
+transcript that is indistinguishable from one that caught something real. Two
+instances from the QUM-1105/QUM-1087 series, both by the same author, days apart:
+
+* An assertion written against the derived squash message's trailer block was
+  watched failing, and what it pinned was **a blank line the correct design does
+  not emit**. The failure was genuine, the instrument worked, and the measurement
+  was of nothing.
+* An argument-order assertion (`merge-base --is-ancestor <parent> <branch>`) was
+  watched failing red-first, and its comment then claimed a swap "leaves every
+  other assertion green" — inferring, from the one red it had seen, that it was
+  the *only* guard. The negative control refuted that: swapping the arguments
+  also failed four real-git scenario tests, because post-rebase the parent is a
+  strict ancestor and the reversed question answers false. The claim in the
+  comment was false while every individual observation behind it was true.
+
+So after watching red, state separately **what the assertion would let through**,
+and prefer a control that mutates the **production** behaviour you care about
+over one that mutates the test. The sharpest form is a mutation that leaves every
+other assertion green: if exactly one test fails, that test is the one carrying
+the claim. **Write the prediction down before running the control** — the second
+instance above was caught only because the prediction was recorded and turned out
+not to match, and a prediction formed after seeing the output cannot fail to
+match. If nothing fails, the claim is unguarded no matter how much red you have
+already seen.
+
+Three near neighbours in this file make adjacent but distinct claims; keep all
+four and do not collapse them. § *A mutation you didn't verify landed is not a
+mutation* is about a mutation that never happened, where this section is about
+one that happened and measured nothing. § *Name the site, not just the string*
+already observes that mutating the other match leaves the test green, but as a
+caution against a false finding; here that same observation is promoted to a
+positive technique. § *Check that the question the command answers is the
+question you are claiming* carries the `--is-ancestor` argument-order hazard as a
+general rule, where the instance above is about the *comment's*
+over-generalisation from a single red. And the section immediately below
+constrains the **fix**, where this one constrains the **measurement**.
+
 ### Necessary but not sufficient: constrain the fix, not just the symptom
 
 Red-first proves a test **isn't vacuous**. It does **not** prove the test
@@ -1857,7 +1976,9 @@ Each command file in `cmd/` has the same shape:
 
 ### Test file conventions
 
-- Each command file `cmd/foo.go` has a corresponding `cmd/foo_test.go`.
+- **Tests required**: every file in `cmd/` **and** `internal/` has a
+  corresponding `_test.go` — e.g. the command file `cmd/foo.go` has
+  `cmd/foo_test.go`. Keep it that way.
 - Helper constructors follow the pattern `newTest<Command>Deps(t *testing.T)`.
 - Tests use `t.TempDir()` for isolated filesystem state.
 - The `state` and `messages` packages are used directly (not mocked) — tests create real state files and Maildir entries in temp dirs.
