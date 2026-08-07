@@ -647,3 +647,25 @@ fire. That is four instances tonight across three agents, every one of them foun
 the control rather than by re-reading the work. The practice that keeps working:
 **name the property, then build a probe that must produce a positive on a case you
 know exists, before trusting any negative.**
+
+---
+
+# Part III — writer-side design doc (2026-08-07)
+
+The writer-side changes this audit surfaced are specced in
+**[`docs/designs/persistent-knowledge-writer.md`](../../../designs/persistent-knowledge-writer.md)**
+— placed there rather than here in accordance with the artifact-location rule this
+audit accidentally deleted and then recovered: designs and durable artifacts go in
+the tracked tree under `docs/designs/`; raw findings stay gitignored.
+
+It covers four defects (the unmerged whole-file write; the item cap's positional
+truncation; `MaxSizeChars` declared-and-never-read; a forensics doc reasoning from
+functions that do not exist) and answers the decomposition question posed against
+this work: **they are not three peer failure modes.** There is one loss generator,
+one policy gap whose harm routes entirely through it, and one epistemic class. The
+practical consequence is recorded there as a scoring rule — of the five proposed
+changes, exactly one closes a failure mode, and the natural fix package closes none
+while appearing to close two.
+
+§5 of that document carries the "14 of 20" near-miss as the standing evidence for
+hunks-only delivery.
