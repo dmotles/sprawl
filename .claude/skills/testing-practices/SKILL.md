@@ -1976,9 +1976,25 @@ Each command file in `cmd/` has the same shape:
 
 ### Test file conventions
 
-- **Tests required**: every file in `cmd/` **and** `internal/` has a
-  corresponding `_test.go` — e.g. the command file `cmd/foo.go` has
-  `cmd/foo_test.go`. Keep it that way.
+- **Tests required**: every **new** file under `cmd/` and `internal/` must ship
+  with a sibling `_test.go` — e.g. a new `cmd/foo.go` ships with
+  `cmd/foo_test.go`.
+
+  Stated as a requirement on new work, deliberately, because the census form of
+  this claim was false: **34 of 215 non-test `.go` files under `cmd/` +
+  `internal/`, generated `*.pb.go`/`*.connect.go` excluded** (measured
+  2026-08-07), have no sibling `_test.go`. Those predate the rule and are not a
+  licence to add more. Quote that figure only with its denominator attached — an
+  unqualified "34 files" is the same defect one generation later, and three
+  different true counts (34/215, 36/217, 42/224) fall out of three different
+  denominators over the same tree.
+
+  A requirement about future behaviour cannot rot the way a count of current
+  files does. And note the proxy is weaker than it looks: `internal/merge/
+  runtests.go` has no sibling test *and* is one of the three `atomicDuration`
+  sites named in § *What `make validate` guarantees about data races* above — so
+  "has a file named `foo_test.go`" is a countable stand-in, not the property
+  anyone actually cares about.
 - Helper constructors follow the pattern `newTest<Command>Deps(t *testing.T)`.
 - Tests use `t.TempDir()` for isolated filesystem state.
 - The `state` and `messages` packages are used directly (not mocked) — tests create real state files and Maildir entries in temp dirs.
