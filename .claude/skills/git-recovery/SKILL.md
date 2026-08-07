@@ -6,12 +6,11 @@ description: Use for anything git, commit, or merge shaped in this repo — reco
 # Git recovery, commit guards, and the merge engine
 
 This file is the repository's canonical home for git procedure: the recovery
-routines, the standing rules about staging and refs, and the mechanism of the
-guards and the merge engine that the recoveries depend on. `CLAUDE.md` cites it
-rather than restating it.
-
-Recovery procedures for the git states this repo actually produces. Every one of
-them cost a real incident, and none of them is derivable from reading the code.
+routines for the git states this repo actually produces, the standing rules
+about staging and refs, and the mechanism of the guards and the merge engine
+that those recoveries depend on. `CLAUDE.md` is being cut down to cite this file
+rather than restate it. Every entry here cost a real incident, and none of them
+is derivable from reading the code.
 
 Read this **before** the recovery command, not after. The common thread across
 every entry is that the fastest-looking fix (`reset --hard`, `clean`, re-run the
@@ -23,12 +22,20 @@ rebase) is the one that destroys the thing you are recovering.
    content you are trying to save reachable from a ref. An unreferenced commit
    is held only by the reflog — which expires, which `gc` can prune, and which
    does not survive the worktree being removed. A ref survives all three.
-2. **`--hard` is never right.** Between the other two, the discriminator is
-   whether the ref you are moving is the checked-out `HEAD` of the worktree you
-   are standing in: `--soft` when it is **not** (the agent-worktree rescue
-   below), `--mixed` when it **is** (the main checkout — see the next section
-   for why `--soft` is actively wrong there). `reset --hard` is how recoveries
-   turn into second incidents.
+2. **`--hard` is never right.** `reset --hard` is how recoveries turn into
+   second incidents. Between the other two, the discriminator is **the index**,
+   because that is the only thing they differ on: `--soft` moves the branch
+   pointer and leaves the working tree *and index* alone, while `--mixed` moves
+   the pointer and resets the index, still leaving the working tree alone. So
+   use `--soft` when staged content must be **preserved** (the agent-worktree
+   rescue below — the staged tree may be the only live copy of the work), and
+   `--mixed` when you are rewinding *away* from a commit and must not leave its
+   tree sitting staged (the main checkout — see § *A commit landed on `main` by
+   mistake* for why `--soft` is actively wrong there).
+
+   The discriminator is **not** "whether the ref is the checked-out `HEAD`".
+   `git reset` can only ever move the checked-out branch, so that is true in
+   every case and separates nothing.
 3. **Never `git reset --hard` on `main`, ever, for any reason.** The root
    agent's uncommitted work lives in the main checkout, and a `--hard` there can
    clobber weave's uncommitted state or destroy work outright. A non-root agent
@@ -134,23 +141,34 @@ Symptom, usually on a **retry** after an earlier merge attempt failed:
 is true and describes the wrong cause: the staged content may be the only live
 copy of the work.
 
-**Two causes, and the message you received is itself the discriminator.**
+**Two causes. The message you received narrows them, but does not separate them
+on its own** — read the next paragraph before concluding which one you have.
 
-* **The agent genuinely has uncommitted edits.** Ordinary ` M` modifications.
-  Nothing is at risk; ask it to commit.
+* **The agent genuinely has uncommitted work.** Ordinary ` M` modifications, or
+  work it staged and never committed. Nothing is at risk; ask it to commit.
 * **A pre-QUM-1087 engine orphaned its squash.** That engine soft-reset the
   agent's branch to the merge base *before* it knew the squash commit would
   succeed. If that commit then failed — a pre-commit hook tripping on an
   unrelated flake is enough — nothing undid the reset. The commits are reachable
   from no ref, surviving only as staged index content and unreferenced objects.
 
-The shipped error text distinguishes them: a staged-only worktree gets a message
-naming a `PREVIOUS FAILED MERGE`, pointing at the premerge recovery refs, and
-saying **do NOT discard**; the bare `Ask the agent to commit first` is the
-ordinary-edits case. And per § *Which merge engine will run?*, the current engine
-creates no commit and therefore cannot produce the second cause at all — so on an
-up-to-date binary the first is the likely one. Either way, diagnose before you
-discard.
+**What the shipped error text actually separates is narrower than the two causes
+above — do not over-read it.** It branches on *staged-only with nothing
+modified* (`StagedOnlyPorcelain`, `internal/agentops/merge.go`), which is the
+fingerprint of the orphaned squash but is **also** exactly what an agent that
+staged without committing looks like. So:
+
+* A message naming a `PREVIOUS FAILED MERGE`, pointing at the premerge recovery
+  refs, and saying **do NOT discard** means *staged-only* — either cause.
+* The bare `Ask the agent to commit first` means there are **unstaged** edits in
+  the mix. That is usually ordinary work, but a pre-QUM-1087 orphaned squash in a
+  worktree that also has unstaged edits lands here too. It is not a
+  cause-free-and-clear signal.
+
+Per § *Which merge engine will run?*, the current engine creates no commit and
+therefore cannot orphan a squash at all — so on an up-to-date binary the
+ordinary-work cause is the likely one, whichever message you got. Either way,
+diagnose before you discard.
 
 **Diagnose first, writing nothing:**
 
@@ -414,9 +432,9 @@ be checking for. Put ad-hoc refs under `refs/sprawl/rescue/` or
 
 Only `premerge/` is swept. `sprawl gc` prunes those after
 `--premerge-retention-days` (default 14), ageing them by the **timestamp in the
-ref name** — never by the commit date, since a commit authored months ago and
-merged today is not an old *ref*. A ref whose name does not parse is never
-pruned. Nothing prunes `rescue/` or `manual/`, which is why a hand-written pin
+ref name** — the one field that survives a rewrite, and never the commit date,
+since a commit authored months ago and merged today is not an old *ref*. A ref
+whose name does not parse is never pruned. Nothing prunes `rescue/` or `manual/`, which is why a hand-written pin
 there is safe to leave behind.
 
 ## Never overwrite the thing that tells you where you were

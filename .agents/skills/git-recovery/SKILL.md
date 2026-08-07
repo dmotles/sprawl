@@ -26,7 +26,8 @@ Codex-specific notes:
     (`git add -u` is the sanctioned shortcut)
   - the `main` commit guard (QUM-808) and the reference-transaction backstop
     (QUM-837)
-- The rules that apply to all of them: `--hard` is never right; `--soft` vs
-  `--mixed` depends on whether the ref you are moving is the current worktree's
-  `HEAD`; never `git reset --hard` on `main`; pin before you move; stage explicit
+- The rules that apply to all of them: `--hard` is never right; between `--soft`
+  and `--mixed` the discriminator is the index — `--soft` to preserve staged
+  content, `--mixed` when rewinding away from a commit whose tree must not stay
+  staged; never `git reset --hard` on `main`; pin before you move; stage explicit
   paths only.
