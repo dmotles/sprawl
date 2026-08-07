@@ -45,20 +45,21 @@ FAIL=0
 # vocabulary has not necessarily found your mechanism*.
 #
 # Measured at de22410: 245; 246 after QUM-1155 repointed [15p] at the e2e-matrix
-# skill and added its existence precondition + the two cut-stays-cut assertions.
+# skill and added its existence precondition + the two cut-stays-cut assertions;
+# 248 once [15p] also pinned the TUI mandate and the discoverability principle.
 # Stable across repeated runs. Environment-independent by
 # construction (the claude/skip paths are driven with PATH=/nonexistent rather than
 # by probing the host). Bump it when assertions are added or removed; a suite-size
 # figure is branch-relative, so re-measure rather than trusting this comment.
-MIN_ASSERTIONS=246
+MIN_ASSERTIONS=248
 # A [16b] nested child deliberately does NOT re-run section [16] (recursing would
 # fork-bomb, and counting there would corrupt the parity comparison), so it asserts
 # strictly fewer things and needs its own floor. Measured at de22410: 237; 238 after
-# QUM-1155 (see the parent floor above). It is
+# QUM-1155, then 240 with [15p]'s two new pins (see the parent floor above). It is
 # the same number [16] emits as `NESTED-FLOOR:`. Keeping it a separate literal rather
 # than reusing the parent's is the point — a child floor derived from the parent's
 # count would be the parity check again, and parity is what `0 == 0` satisfies.
-MIN_ASSERTIONS_NESTED=238
+MIN_ASSERTIONS_NESTED=240
 
 # Pin the temp root. This suite runs inside `make validate` and therefore inside
 # the pre-commit hook, so it must not inherit the committing agent's TMPDIR:
@@ -1676,7 +1677,14 @@ else
 		_unit_assert_breakdown "$_OUT" 2 0 0 2 "15s: nothing-to-survive control breakdown is 2 passed of 2"
 		_unit_assert_ran "$MSK" _unit_fixture_m2 yes "15s: both rows ran when no reason survived"
 
-		# --- 15p: the skip contract must be documented where agents read it ---
+		# --- 15p: the skip contract, and the QUM-1155 retentions in CLAUDE.md,
+		#          must stay documented where agents read them ---
+		# NOTE FOR ANYONE GREPPING "what pins CLAUDE.md?": it is this block, in
+		# the e2e-matrix unit suite. Three of its legs assert nothing about the
+		# matrix at all — they pin the auth pointer, the TUI-validation mandate
+		# and the discoverability principle on the always-loaded surface. They
+		# live here because this is where the skip contract's own CLAUDE.md
+		# assertions already were, not because they are e2e concerns.
 		# Same philosophy as [11]'s self-wiring check: a fix that leaves the
 		# agent-facing instructions lying has not landed. Assert the NEW contract
 		# WORDING, not the issue key — grepping 'QUM-952' would already pass
@@ -1783,7 +1791,113 @@ else
 		else
 			fail "15p: CLAUDE.md dropped the 'Not logged in' pointer — an agent hitting that error has no always-loaded route to the fix"
 		fi
+		# QUM-1155 kept exactly three things on the always-loaded surface that
+		# it could have pushed into a skill: the auth pointer above, the
+		# TUI-validation mandate, and the principle that explains why either is
+		# here. Only the first was pinned. A future cut could delete the other
+		# two and every gate in this pipeline would stay green — which is the
+		# defect QUM-1155 exists to remove, so leaving them unpinned made the
+		# cut an instance of its own defect class. These two legs close that.
+		#
+		# Not keyed on the bare phrase 'TUI validation is mandatory': that ALSO
+		# matches the skills-index entry ("/tui-testing — before changing the
+		# TUI; TUI validation is mandatory there."), so it survives deletion of
+		# the mandate itself and the guard goes on passing while the thing it
+		# guards is gone. Measured, not assumed — with the mandate deleted, a
+		# grep for the short phrase still returns a line.
+		#
+		# But the longer 'mandatory for all TUI-related changes' is NOT immune
+		# on its own either, and the first draft of this leg wrongly claimed it
+		# was. Any single-phrase key is a whole-FILE assertion: reword the index
+		# entry to carry the long phrase and the leg passes with line 30 gone.
+		# So the key is a SINGLE-LINE co-location — the mandate must appear on
+		# the same line as the paragraph opener that owns it, and that line must
+		# also carry the /tui-testing pointer. That is a property of where the
+		# mandate lives, not of what some other line happens to say today, and
+		# it additionally pins the requirement's route to its procedure: a
+		# mandate with no pointer to the harness is half the rule.
+		#
+		# Deliberately a BRE, not -F: the '.*' between the three anchors is the
+		# co-location operator and is the entire point. The three literals were
+		# picked to contain no BRE metacharacters, so nothing else needs
+		# quoting — check that before editing any of them.
+		#
+		# WHAT THIS LEG STILL LETS THROUGH, written after watching it go red:
+		# it is a substring check, so it cannot detect NEGATION. Rewriting the
+		# line to "No longer: TUI validation was once mandatory for all
+		# TUI-related changes … /tui-testing" keeps it green. Detecting that is
+		# unbounded and not attempted. It also does not check that line 30 is
+		# in the Build & validate section, only that the three parts share one
+		# line.
+		#
+		# These are presence assertions rather than absence assertions, but
+		# they are FAIL-CLOSED on rc >= 2 for the same reason the absence legs
+		# above are: "the sentence is gone" and "I could not read the file"
+		# are the same branch unless you separate them, and only the first is
+		# a finding about the document. The rc >= 2 arms of both legs were
+		# exercised with `chmod 000 CLAUDE.md` — note that control is
+		# HOST-DEPENDENT and silently proves nothing as root, who can read a
+		# 000 file; the uid-independent form is to point the path at something
+		# nonexistent. Re-run the robust form if you touch these arms.
+		_15p_tuikey='Validating a change is more than running validate.*mandatory for all TUI-related changes.*/tui-testing'
+		_15p_rc=0
+		grep -q -- "$_15p_tuikey" "$REPO_ROOT/CLAUDE.md" || _15p_rc=$?
+		if [ "$_15p_rc" -eq 0 ]; then
+			pass "15p: CLAUDE.md states the TUI-validation mandate and its /tui-testing pointer on one line with the paragraph opener that owns it"
+		elif [ "$_15p_rc" -eq 1 ]; then
+			fail "15p: CLAUDE.md lost the TUI-validation mandate, its /tui-testing pointer, or their co-location — no line of '$REPO_ROOT/CLAUDE.md' matches '$_15p_tuikey'. The skills-index entry is not a substitute: a skill's trigger line announces that a rule exists but cannot state it with force. If you reworded the mandate on purpose, update the key in this file rather than deleting this leg"
+		else
+			fail "15p: cannot establish that the TUI mandate survives — grep exited $_15p_rc on '$REPO_ROOT/CLAUDE.md' (missing or unreadable), so this leg checked NOTHING"
+		fi
+		# The principle itself, keyed on three literals unique to the skills
+		# preamble: the claim, the sentence naming the two retentions it
+		# licenses, and the rule. Three rather than one because the sentence
+		# is only load-bearing whole — the first draft pinned the opening and
+		# closing clauses only, which left the MIDDLE sentence (the one
+		# carrying the referents) deletable while both keys survived. That
+		# leaves 'Do not tidy them away.' with no antecedent, which is exactly
+		# the state being guarded against. Counted and printed for the same
+		# reason the literal loop above is: a check that says nothing when it
+		# passes forces every caller to build its own probe.
+		#
+		# All three emit ONE assertion between them, not three, so the floors
+		# moved by +1 for this leg regardless of how many literals it holds.
+		#
+		# -F is REQUIRED here, not stylistic. Without it 'the *requirement*
+		# stays here' is a BRE in which ' *' means "zero or more spaces" — it
+		# would still match today's file, so the bug would be latent rather
+		# than loud. Do not "simplify" the -F away.
+		#
+		# WHAT THIS LEG STILL LETS THROUGH: substring presence, so a negated
+		# or hedged rewrite that retains the three phrases passes; and it does
+		# not check that the three remain on ONE line or in the Skills
+		# section, so splitting them across the file would pass.
+		_15p_pcount=0
+		_15p_pmissing=""
+		_15p_perr=""
+		for _15p_plit in \
+			'the *requirement* stays here' \
+			'stated in this file rather than delegated' \
+			'Do not tidy them away'; do
+			_15p_rc=0
+			grep -qF -- "$_15p_plit" "$REPO_ROOT/CLAUDE.md" || _15p_rc=$?
+			if [ "$_15p_rc" -eq 0 ]; then
+				_15p_pcount=$((_15p_pcount + 1))
+			elif [ "$_15p_rc" -eq 1 ]; then
+				_15p_pmissing="$_15p_pmissing '$_15p_plit'"
+			else
+				_15p_perr="$_15p_perr '$_15p_plit' (rc=$_15p_rc)"
+			fi
+		done
+		if [ -n "$_15p_perr" ]; then
+			fail "15p: cannot establish that the discoverability principle survives — matched $_15p_pcount of 3 and then grep could not read '$REPO_ROOT/CLAUDE.md' for$_15p_perr, so this leg's verdict rests on nothing"
+		elif [ "$_15p_pcount" -eq 3 ] && [ -z "$_15p_pmissing" ]; then
+			pass "15p: checked $_15p_pcount/3 discoverability-principle literals in $REPO_ROOT/CLAUDE.md (the requirement stays on the always-loaded surface; only the procedure moves to the skill)"
+		else
+			fail "15p: CLAUDE.md lost the discoverability principle:$_15p_pmissing (matched $_15p_pcount/3) — without it the retentions above read as arbitrary exceptions and the next cut tidies them away"
+		fi
 		unset _15p_target _15p_checked _15p_missing _15p_lit _15p_n _15p_rc
+		unset _15p_pcount _15p_pmissing _15p_perr _15p_plit _15p_tuikey
 
 		for _d in "$FIXSKIP" "$FIXALL"; do
 			case "$_d" in
