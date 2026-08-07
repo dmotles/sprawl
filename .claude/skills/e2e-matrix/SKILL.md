@@ -11,7 +11,21 @@ an ordinal has to be maintained and a moment cannot go stale.
 
 The source's list-item numbering and 3-space indentation are preserved so this
 file stays byte-comparable against that range; reflowing 145 lines would make
-the copy unauditable. Nothing was reworded, condensed, or reordered.
+the copy unauditable. Nothing was condensed or reordered.
+
+**Two deliberate departures from verbatim**, both made by QUM-1155's cut and
+both consequences of the move rather than edits to the content — recorded here
+because an unrecorded departure makes the provenance claim above a lie:
+
+1. The `Not logged in` remedy said "see the `scripts/run-claude` shim and `.env`
+   **above**". "Above" meant a CLAUDE.md section ~180 lines earlier that went to
+   `.claude/skills/e2e-testing-sandboxing/SKILL.md`, not here — so the sentence
+   telling a misdiagnosing agent how to fix auth pointed at nothing. It is now a
+   path.
+2. The self-falsifying-count paragraph described "the corpus these paragraphs
+   live inside" (then CLAUDE.md, now this file) and recommended a `grep` whose
+   argument was `CLAUDE.md`. After the cut that command returns zero rows while
+   looking like an answer. Both halves were repointed at this file.
 
 5. **Mandatory-test e2e harness.** When you touch any file listed in the table below, run `make test-e2e-matrix-<row>` for the corresponding row (or `make test-e2e-matrix` to run all rows).
 
@@ -51,7 +65,7 @@ the copy unauditable. Nothing was reworded, condensed, or reordered.
    | present, **unauthenticated** | no | **never read; inert** | row runs and fails with `Not logged in` |
    | present + authenticated | no | n/a | real run |
 
-   The middle state is a **misdiagnosis hazard, not a false green**: the row fails with a Session Error whose body is `Not logged in`, which is trivially misread as a product regression. If you see `Not logged in`, fix auth — see the `scripts/run-claude` shim and `.env` above; the flag is **not** the remedy, because the gate it controls never fires in that state. And **never hide `claude` from PATH to force a skip.** That converts the middle state into the absent state, and all it buys you is a vacuous all-skip run that asserts nothing. QUM-974 tracks the related defect that `e2e_recover_oauth_token` reports success even when it recovers no token.
+   The middle state is a **misdiagnosis hazard, not a false green**: the row fails with a Session Error whose body is `Not logged in`, which is trivially misread as a product regression. If you see `Not logged in`, fix auth — the `scripts/run-claude` shim and the `.env` it reads are documented in `.claude/skills/e2e-testing-sandboxing/SKILL.md` (this sentence said "above" when it lived in CLAUDE.md, ~180 lines below that setup; QUM-1155 moved the two apart, so it is now a path); the flag is **not** the remedy, because the gate it controls never fires in that state. And **never hide `claude` from PATH to force a skip.** That converts the middle state into the absent state, and all it buys you is a vacuous all-skip run that asserts nothing. QUM-974 tracks the related defect that `e2e_recover_oauth_token` reports success even when it recovers no token.
 
    **Skip accounting (QUM-952).** A skipped row is reported as `SKIP <row>`, never `PASS`, and forces a nonzero exit — **exit 3** when rows skipped but none outright failed. Two summary lines are printed:
 
@@ -109,11 +123,15 @@ the copy unauditable. Nothing was reworded, condensed, or reordered.
    you run the union.
 
    Two cautions when counting rows this way. **A document that cites a count over
-   itself is self-falsifying by construction** — these paragraphs live inside the
-   corpus they describe, so a whole-file grep matches the prose too (including
-   this sentence). Cite the rule; treat any figure as an illustration at a stated
-   commit, and anchor it to table rows rather than `grep -c` output:
-   `grep -E '^   \| ' CLAUDE.md | grep -cE ...`.
+   itself is self-falsifying by construction** — these paragraphs live inside this
+   skill file, which is the corpus they describe, so a whole-file grep matches
+   the prose too (including this sentence). Cite the rule; treat any figure as an
+   illustration at a stated commit, and anchor it to table rows rather than
+   `grep -c` output:
+   `grep -E '^   \| ' .claude/skills/e2e-matrix/SKILL.md | grep -cE ...`.
+   (Both halves named `CLAUDE.md` until QUM-1155 cut the table out of it. The
+   command was the worse half: it kept running, returned 0 rows, and looked
+   like an answer.)
    And globs are not the only entries a literal path grep misses:
    `internal/supervisor/liveness/` and `.claude/agents/` are directory prefixes
    in the files column, matched by neither a path grep nor a glob grep. And

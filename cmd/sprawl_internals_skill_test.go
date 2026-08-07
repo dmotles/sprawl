@@ -10,18 +10,42 @@ import (
 )
 
 // The sprawl-internals skill (QUM-1155) holds content RELOCATED out of
-// CLAUDE.md, not a rewrite of it. These tests use the live CLAUDE.md as the
-// equality oracle, which is sound only because the oracle itself is pinned by
-// claudeMDRelocatedDigest below: without that pin, paraphrasing CLAUDE.md in the
-// same commit would keep every equality test green, which is the cheapest
-// possible fake pass. The later CLAUDE.md-cut slice must re-point these at a
-// frozen fixture under cmd/testdata/ — NOT delete them, or "relocated" silently
-// degrades to "paraphrased" with nothing watching.
+// CLAUDE.md, not a rewrite of it. These tests are byte-equality oracles, and
+// their oracle is itself pinned by claudeMDRelocatedDigest below: without that
+// pin, paraphrasing the source in the same commit would keep every equality test
+// green, which is the cheapest possible fake pass.
+//
+// THIS IS THE CUT SLICE the original comment anticipated. The oracle was the
+// live CLAUDE.md, which was sound only while no slice edited that file; the cut
+// deleted every one of these sections from it, so the tests are now pointed at
+// claudeMDFixture — the pre-cut text, frozen into the tree. They were NOT
+// deleted: deleting them silently degrades "relocated verbatim" to
+// "paraphrased" with nothing watching, and that fake pass would have been
+// available to every slice in this issue.
+//
+// The digest constant below is UNCHANGED by the cut, and that is the check that
+// the freeze was honest: the fixture is byte-identical to the CLAUDE.md that
+// produced it. Never regenerate the fixture from a post-cut CLAUDE.md — that
+// would make every assertion here vacuous rather than red.
 
 const (
 	sprawlInternalsSkill = ".claude/skills/sprawl-internals/SKILL.md"
 	sprawlInternalsStub  = ".agents/skills/sprawl-internals/SKILL.md"
+
+	// claudeMDFixture is CLAUDE.md as of c7093cc, the commit the relocation was
+	// performed against.
+	claudeMDFixture = "cmd/testdata/claude-md-c7093cc.md"
+	// claudeMDOracleName is the display name used in failure messages, so a
+	// diff never implies the live file still contains this text.
+	claudeMDOracleName = "CLAUDE.md@c7093cc"
 )
+
+// readClaudeMDOracle returns the frozen pre-cut CLAUDE.md. See the file comment
+// above for why this is a fixture and not the live file.
+func readClaudeMDOracle(t *testing.T) string {
+	t.Helper()
+	return readRepoFile(t, filepath.FromSlash(claudeMDFixture))
+}
 
 // claudeMDRelocatedDigest pins the CLAUDE.md text this slice relocates. Update
 // it ONLY as a deliberate act, alongside the corresponding skill edit — a
@@ -39,15 +63,15 @@ func readSprawlInternalsSkill(t *testing.T) string {
 func relocatedSourceTexts(t *testing.T) []string {
 	t.Helper()
 
-	claudeMD := readRepoFile(t, "CLAUDE.md")
+	claudeMD := readClaudeMDOracle(t)
 	return []string{
-		mdSection(t, "CLAUDE.md", claudeMD, "Lifecycle model (QUM-786)"),
-		mdSection(t, "CLAUDE.md", claudeMD, "Build & Test"),
-		mdSection(t, "CLAUDE.md", claudeMD, "Install"),
-		mdSection(t, "CLAUDE.md", claudeMD, "Project Configuration"),
-		mdSection(t, "CLAUDE.md", claudeMD, "Repo Layout"),
-		mdSection(t, "CLAUDE.md", claudeMD, "Code Patterns"),
-		mdSection(t, "CLAUDE.md", claudeMD, "Linting & Formatting"),
+		mdSection(t, claudeMDOracleName, claudeMD, "Lifecycle model (QUM-786)"),
+		mdSection(t, claudeMDOracleName, claudeMD, "Build & Test"),
+		mdSection(t, claudeMDOracleName, claudeMD, "Install"),
+		mdSection(t, claudeMDOracleName, claudeMD, "Project Configuration"),
+		mdSection(t, claudeMDOracleName, claudeMD, "Repo Layout"),
+		mdSection(t, claudeMDOracleName, claudeMD, "Code Patterns"),
+		mdSection(t, claudeMDOracleName, claudeMD, "Linting & Formatting"),
 	}
 }
 
@@ -99,11 +123,11 @@ func TestSprawlInternalsSkillRelocatesSectionsVerbatim(t *testing.T) {
 		t.Fatalf("assertion-count floor: expected at least 4 whole-section copies, have %d", len(sections))
 	}
 
-	claudeMD := readRepoFile(t, "CLAUDE.md")
+	claudeMD := readClaudeMDOracle(t)
 	skill := readSprawlInternalsSkill(t)
 
 	for _, heading := range sections {
-		want := mdSection(t, "CLAUDE.md", claudeMD, heading)
+		want := mdSection(t, claudeMDOracleName, claudeMD, heading)
 		got := mdSection(t, sprawlInternalsSkill, skill, heading)
 		if got != want {
 			t.Errorf("%s: section %q is not byte-identical to CLAUDE.md's\n--- CLAUDE.md ---\n%q\n--- skill ---\n%q",
@@ -121,19 +145,19 @@ func TestSprawlInternalsSkillRewritesLifecycleCrossReference(t *testing.T) {
 	const crossRefMarker = "Touched-file matrix-row mapping"
 	const staleWording = "under **Validating Changes**"
 
-	claudeSection := mdSection(t, "CLAUDE.md", readRepoFile(t, "CLAUDE.md"), heading)
+	claudeSection := mdSection(t, claudeMDOracleName, readClaudeMDOracle(t), heading)
 	skillSection := mdSection(t, sprawlInternalsSkill, readSprawlInternalsSkill(t), heading)
 
 	contract, _, ok := strings.Cut(claudeSection, crossRefMarker)
 	if !ok {
-		t.Fatalf("CLAUDE.md %q: cross-reference marker %q not found — the oracle is stale", heading, crossRefMarker)
+		t.Fatalf("%s %q: cross-reference marker %q not found — the oracle is stale", claudeMDOracleName, heading, crossRefMarker)
 	}
 	// Positive control for the negative assertion below: the banned wording must
 	// be findable in the source, or its absence from the skill proves nothing.
 	// (It survives a line wrap in CLAUDE.md at "the table\nunder **Validating".)
 	if !strings.Contains(claudeSection, staleWording) {
-		t.Fatalf("CLAUDE.md %q: control failed — %q is not present in the source, so asserting its absence is vacuous",
-			heading, staleWording)
+		t.Fatalf("%s %q: control failed — %q is not present in the source, so asserting its absence is vacuous",
+			claudeMDOracleName, heading, staleWording)
 	}
 
 	if !strings.HasPrefix(skillSection, contract) {
@@ -166,7 +190,7 @@ func TestSprawlInternalsSkillRewritesLifecycleCrossReference(t *testing.T) {
 // negative half below keeps out. Both halves are scoped to the skill's OWN
 // `## Build & Test` section, so pasting the block under some other heading fails.
 func TestSprawlInternalsSkillCopiesBuildTestCommandBlock(t *testing.T) {
-	claudeSection := mdSection(t, "CLAUDE.md", readRepoFile(t, "CLAUDE.md"), "Build & Test")
+	claudeSection := mdSection(t, claudeMDOracleName, readClaudeMDOracle(t), "Build & Test")
 	skillSection := mdSection(t, sprawlInternalsSkill, readSprawlInternalsSkill(t), "Build & Test")
 
 	_, rest, ok := strings.Cut(claudeSection, "```bash\n")
@@ -214,9 +238,9 @@ func TestSprawlInternalsSkillCopiesBuildTestCommandBlock(t *testing.T) {
 // testing-practices by a sibling slice. The negative half carries the claim — a
 // lazy copy-the-whole-section implementation passes the positive half alone.
 func TestSprawlInternalsSkillCodePatternsIsParagraphSubset(t *testing.T) {
-	const where = "CLAUDE.md ## Code Patterns"
+	const where = claudeMDOracleName + " ## Code Patterns"
 
-	claudeSection := mdSection(t, "CLAUDE.md", readRepoFile(t, "CLAUDE.md"), "Code Patterns")
+	claudeSection := mdSection(t, claudeMDOracleName, readClaudeMDOracle(t), "Code Patterns")
 	skillSection := mdSection(t, sprawlInternalsSkill, readSprawlInternalsSkill(t), "Code Patterns")
 
 	keep := []string{

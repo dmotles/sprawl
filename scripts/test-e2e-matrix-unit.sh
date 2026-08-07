@@ -44,18 +44,21 @@ FAIL=0
 # grep hits for the word "floor" — see /testing-practices § *A grep that matches your
 # vocabulary has not necessarily found your mechanism*.
 #
-# Measured at de22410: 245, stable across repeated runs. Environment-independent by
+# Measured at de22410: 245; 246 after QUM-1155 repointed [15p] at the e2e-matrix
+# skill and added its existence precondition + the two cut-stays-cut assertions.
+# Stable across repeated runs. Environment-independent by
 # construction (the claude/skip paths are driven with PATH=/nonexistent rather than
 # by probing the host). Bump it when assertions are added or removed; a suite-size
 # figure is branch-relative, so re-measure rather than trusting this comment.
-MIN_ASSERTIONS=245
+MIN_ASSERTIONS=246
 # A [16b] nested child deliberately does NOT re-run section [16] (recursing would
 # fork-bomb, and counting there would corrupt the parity comparison), so it asserts
-# strictly fewer things and needs its own floor. Measured at de22410: 237, which is
+# strictly fewer things and needs its own floor. Measured at de22410: 237; 238 after
+# QUM-1155 (see the parent floor above). It is
 # the same number [16] emits as `NESTED-FLOOR:`. Keeping it a separate literal rather
 # than reusing the parent's is the point — a child floor derived from the parent's
 # count would be the parity check again, and parity is what `0 == 0` satisfies.
-MIN_ASSERTIONS_NESTED=237
+MIN_ASSERTIONS_NESTED=238
 
 # Pin the temp root. This suite runs inside `make validate` and therefore inside
 # the pre-commit hook, so it must not inherit the committing agent's TMPDIR:
@@ -1673,38 +1676,103 @@ else
 		_unit_assert_breakdown "$_OUT" 2 0 0 2 "15s: nothing-to-survive control breakdown is 2 passed of 2"
 		_unit_assert_ran "$MSK" _unit_fixture_m2 yes "15s: both rows ran when no reason survived"
 
-		# --- 15p: CLAUDE.md must not still document the old false-green -------
+		# --- 15p: the skip contract must be documented where agents read it ---
 		# Same philosophy as [11]'s self-wiring check: a fix that leaves the
 		# agent-facing instructions lying has not landed. Assert the NEW contract
-		# wording, not the issue key — grepping 'QUM-952' would already pass
-		# against the text that documents the bug.
-		if grep -q 'skipped row is currently reported as' "$REPO_ROOT/CLAUDE.md"; then
-			fail "15p: CLAUDE.md still says a skipped row is reported as PASS"
+		# WORDING, not the issue key — grepping 'QUM-952' would already pass
+		# against the text that documents the bug. That reasoning is why this
+		# gate is not keyed on a filename either: QUM-1155 moved the skip
+		# contract out of CLAUDE.md into the e2e-matrix skill, and the gate
+		# followed the CONTRACT to its new home rather than being deleted with
+		# the old one.
+		#
+		# The forbidden-phrase leg below is trivially true against a MISSING
+		# file, which is a false-green path: rename the target and the old
+		# gate went green having read nothing. So the target's existence is a
+		# hard precondition, every required literal is COUNTED rather than
+		# merely probed, and the count is printed on success — a check that
+		# says nothing when it passes forces every caller to build its own
+		# probe, and home-made probes are what keep failing here.
+		#
+		# grep -c counts LINES, not occurrences. The counts below are therefore
+		# asserted as ">= 1", never pinned to an exact number: 'Not logged in'
+		# appears 3 times on 2 lines in the target, so an exact-count assertion
+		# would pin a number that means something other than it appears to.
+		_15p_target="$REPO_ROOT/.claude/skills/e2e-matrix/SKILL.md"
+		if [ -f "$_15p_target" ]; then
+			pass "15p: skip-contract target exists ($_15p_target)"
 		else
-			pass "15p: CLAUDE.md no longer documents skip-as-PASS"
+			fail "15p: skip-contract target is missing: $_15p_target — every phrase assertion below would be vacuous"
 		fi
-		if grep -q 'Matrix breakdown' "$REPO_ROOT/CLAUDE.md" &&
-			grep -q 'exit 3' "$REPO_ROOT/CLAUDE.md"; then
-			pass "15p: CLAUDE.md documents the breakdown line and the exit-3 skip contract"
+		# Forbidden: the pre-QUM-952 claim that a skipped row is reported as a
+		# pass. This leg is FAIL-CLOSED, and that is not a precaution — it was
+		# demonstrated live: a QA agent deleted CLAUDE.md outright and this leg
+		# printed `pass`. `grep -q` exits 2 on a missing file, and branching on
+		# "non-zero" reads that error as "the phrase is absent", so the gate
+		# reports a clean bill of health having read nothing. Three of the four
+		# original legs failed in that state; this one stayed green.
+		#
+		# So the three exit statuses are distinguished explicitly: 0 present
+		# (fail), 1 genuinely absent (pass), anything else an ERROR (fail). Do
+		# not collapse this back into an if/else on grep's exit status.
+		_15p_rc=0
+		grep -q 'skipped row is currently reported as' "$_15p_target" || _15p_rc=$?
+		if [ "$_15p_rc" -eq 1 ]; then
+			pass "15p: the e2e-matrix skill no longer documents skip-as-PASS"
+		elif [ "$_15p_rc" -eq 0 ]; then
+			fail "15p: the e2e-matrix skill still says a skipped row is reported as PASS"
 		else
-			fail "15p: CLAUDE.md does not document the new skip contract (breakdown line + exit 3)"
+			fail "15p: cannot establish the absence of skip-as-PASS — grep exited $_15p_rc on '$_15p_target' (missing or unreadable), so this leg checked NOTHING"
 		fi
-		# The gate keys on presence, never on auth. That leaves a third state —
-		# installed but unauthenticated — where the flag is inert and the row
-		# fails with "Not logged in", trivially misread as a product regression.
-		# The docs must name that state and forbid the obvious workaround
-		# (hiding claude from PATH), which converts it into the all-skip vacuum.
-		if grep -qi 'unauthenticated' "$REPO_ROOT/CLAUDE.md" &&
-			grep -qi 'Not logged in' "$REPO_ROOT/CLAUDE.md"; then
-			pass "15p: CLAUDE.md names the installed-but-unauthenticated state"
+		# Required, counted. 'unauthenticated' / 'Not logged in' / 'never hide'
+		# are the installed-but-unauthenticated state and its forbidden
+		# workaround: the gate keys on presence and never probes auth, so a row
+		# in that state fails with "Not logged in" and is trivially misread as a
+		# product regression. Hiding claude from PATH converts it into the
+		# all-skip vacuum.
+		_15p_checked=0
+		_15p_missing=""
+		for _15p_lit in \
+			'Matrix breakdown' \
+			'exit 3' \
+			'unauthenticated' \
+			'Not logged in' \
+			'never hide'; do
+			_15p_n=0
+			if [ -f "$_15p_target" ]; then
+				_15p_n=$(grep -ci -- "$_15p_lit" "$_15p_target" || true)
+			fi
+			if [ "${_15p_n:-0}" -ge 1 ]; then
+				_15p_checked=$((_15p_checked + 1))
+			else
+				_15p_missing="$_15p_missing '$_15p_lit'"
+			fi
+		done
+		# Assertion-count floor: a loop that silently iterated zero times would
+		# otherwise report a clean run having checked nothing.
+		if [ "$_15p_checked" -eq 5 ] && [ -z "$_15p_missing" ]; then
+			pass "15p: checked $_15p_checked/5 required literals in .claude/skills/e2e-matrix/SKILL.md (skip contract + unauthenticated state + PATH-hiding ban)"
 		else
-			fail "15p: CLAUDE.md does not document the unauthenticated-claude state"
+			fail "15p: the e2e-matrix skill is missing required skip-contract literals:$_15p_missing (matched $_15p_checked/5) in $_15p_target"
 		fi
-		if grep -qi 'never hide' "$REPO_ROOT/CLAUDE.md"; then
-			pass "15p: CLAUDE.md forbids hiding claude from PATH to force a skip"
+		# The cut must stay cut. CLAUDE.md is the always-loaded surface QUM-1155
+		# shrank; the skip contract living in BOTH places would silently
+		# re-grow it, and nothing else in the pipeline would notice.
+		if grep -q 'Matrix breakdown' "$REPO_ROOT/CLAUDE.md"; then
+			fail "15p: CLAUDE.md carries the skip-contract prose again — it belongs only in $_15p_target"
 		else
-			fail "15p: CLAUDE.md does not forbid hiding claude from PATH to force a skip"
+			pass "15p: the skip contract is not duplicated back into the always-loaded CLAUDE.md"
 		fi
+		# ...with exactly one deliberate exception. A fresh agent hitting this
+		# error has not loaded the skill yet, so the pointer has to survive in
+		# the always-loaded surface. Asserted, not merely tolerated, so that
+		# deleting it in a future tidy-up fails here rather than silently.
+		if grep -qi 'Not logged in' "$REPO_ROOT/CLAUDE.md"; then
+			pass "15p: CLAUDE.md keeps the 'Not logged in' pointer for agents that have loaded no skill yet"
+		else
+			fail "15p: CLAUDE.md dropped the 'Not logged in' pointer — an agent hitting that error has no always-loaded route to the fix"
+		fi
+		unset _15p_target _15p_checked _15p_missing _15p_lit _15p_n _15p_rc
 
 		for _d in "$FIXSKIP" "$FIXALL"; do
 			case "$_d" in

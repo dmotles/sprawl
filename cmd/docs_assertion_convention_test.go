@@ -305,8 +305,14 @@ func readRepoFile(t *testing.T, rel ...string) string {
 }
 
 func TestClaudeMDStatesAssertionConvention(t *testing.T) {
-	const where = "CLAUDE.md ## Code Patterns"
-	section := mdSection(t, "CLAUDE.md", readRepoFile(t, "CLAUDE.md"), "Code Patterns")
+	// QUM-1155 moved the long-form testing prose out of `## Code Patterns` and
+	// into the testing-practices skill, leaving the convention itself in a
+	// section of its own. This gate stays pointed at the LIVE CLAUDE.md — not
+	// at the frozen pre-cut fixture the relocation oracle uses — because its
+	// subject is the text an agent actually receives on every turn. Against a
+	// fixture it would be decorative.
+	const where = "CLAUDE.md ## Tests and assertions"
+	section := mdSection(t, "CLAUDE.md", readRepoFile(t, "CLAUDE.md"), "Tests and assertions")
 
 	required := []phraseReq{
 		mdLit("that assertions must be shown able to fail", "can fail"),

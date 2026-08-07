@@ -13,3 +13,9 @@
 .claude/agents/oracle.md       # named as a touched-file entry in the e2e matrix table, not a read
 .claude/agents/test-critic.md  # same
 docs/todo/punchlist.md         # "see ... for in-flight punchlist" — an on-demand pointer
+# QUM-1155: CLAUDE.md's opening names DESCRIPTION.md as where the project
+# overview lives. It is a POINTER, not a mandated read: the line reads
+# "Project overview: `DESCRIPTION.md`, on demand", and the cut deliberately
+# did NOT @-import it — importing would add 195 lines to the very surface this
+# budget exists to bound, which is 2.7x the whole post-cut CLAUDE.md.
+DESCRIPTION.md                 # project overview — an on-demand pointer, deliberately not imported
