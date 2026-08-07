@@ -1329,14 +1329,14 @@ match. If nothing fails, the claim is unguarded no matter how much red you have
 already seen.
 
 Three near neighbours in this file make adjacent but distinct claims; keep all
-four and do not collapse them. § *A mutation you didn't verify landed is not a
-mutation* is about a mutation that never happened, where this section is about
-one that happened and measured nothing. § *Name the site, not just the string*
-already observes that mutating the other match leaves the test green, but as a
-caution against a false finding; here that same observation is promoted to a
-positive technique. § *Check that the question the command answers is the
-question you are claiming* carries the `--is-ancestor` argument-order hazard as a
-general rule, where the instance above is about the *comment's*
+four and do not collapse them. *"A mutation you didn't verify landed is not a
+mutation"* above is about a mutation that never happened, where this section is
+about one that happened and measured nothing. *"Name the site, not just the
+string"* above already observes that mutating the other match leaves the test
+green, but as a caution against a false finding; here that same observation is
+promoted to a positive technique. § *Check that the question the command answers
+is the question you are claiming* carries the `--is-ancestor` argument-order
+hazard as a general rule, where the instance above is about the *comment's*
 over-generalisation from a single red. And the section immediately below
 constrains the **fix**, where this one constrains the **measurement**.
 

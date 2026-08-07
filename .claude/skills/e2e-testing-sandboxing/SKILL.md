@@ -17,7 +17,7 @@ Use this workflow to validate sprawl changes end-to-end in an isolated environme
 - **Do NOT run bare `tmux kill-server`.** It kills the *developer's* tmux server and every other agent's session on the default socket. The ban is on the **unscoped** form: socket-scoped `tmux -L "$SPRAWL_TMUX_SOCKET" kill-server` is what `sprawl_sandbox_destroy` itself runs and is correct, because `-L` confines it to this sandbox's own daemon.
 - **Do NOT use bare `tmux` at all in a sandbox or in a harness script — use `_stmux`.** Sandbox tmux state lives on a dedicated socket (see Setup), so a bare `tmux` command talks to the wrong server: it will not find your session, and anything destructive it does lands on someone else's.
 
-Production `sprawl enter` sessions still share the **default** socket. That asymmetry is the whole reason the sandbox socket exists, and it is why a bare `tmux` in sandbox context is not merely wrong but dangerous.
+Production `sprawl enter` sessions still share the **default** socket. That asymmetry is the whole reason the sandbox socket exists, and it is why a bare `tmux` in sandbox context is not merely wrong but dangerous. The dedicated sandbox socket was introduced by **QUM-325** — that is the provenance for every tmux rule above.
 
 ### `/tmp` hygiene — hard rules
 
@@ -38,14 +38,6 @@ with host tooling. These rules are not advisory:
   and recovery is a single `ln -s`. The hazard is not the blast radius, it is
   the silence: nothing in the harness would *tell* you, and every
   `needs_claude` e2e row would quietly start skipping.
-
-### The socket split is QUM-325
-
-The dedicated `SPRAWL_TMUX_SOCKET` above was introduced by **QUM-325**, so that
-sandbox operations are isolated from the user's default tmux server. That is the
-provenance for every tmux rule in this section; in scripts, always use `_stmux`
-(not bare `tmux`) for sandbox tmux operations, and to clear sandbox state use the
-sanctioned `sprawl_sandbox_destroy` helper from `scripts/sprawl-test-env.sh`.
 
 ## Setup
 
