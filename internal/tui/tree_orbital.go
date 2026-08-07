@@ -214,7 +214,7 @@ func RenderTreeOrbital(nodes []TreeNode, selected string, width, pulsePhase int)
 	pills := make([]pill, 0, len(nodes))
 	for _, n := range nodes {
 		st := TreeNodeAgentState(n, now)
-		label := n.Name + " " + stateGlyph(st)
+		label := n.Name + " " + stateGlyph(st) + activityAge(n, now)
 		var styled string
 		plainW := lipgloss.Width(label)
 		switch {
@@ -292,4 +292,25 @@ func RenderTreeOrbital(nodes []TreeNode, selected string, width, pulsePhase int)
 		rendered = append(rendered, strings.Repeat(" ", width))
 	}
 	return rendered
+}
+
+// activityAge renders an agent pill's staleness tag, e.g. " ·15h". Empty when
+// the agent has never been observed.
+//
+// Before QUM-1154 LastActivityAt fed only the pill's state glyph, so staleness
+// was a colour with no number behind it and a 15-hour-stale `working` read as
+// live. It belongs HERE, in the orbital renderer, and not in TreeModel.View():
+// app.go discards that render into `_` (the panel slot exists only to keep the
+// cache key invalidating, TODO QUM-655), so an age added there is invisible.
+//
+// The `·N` delimiter is load-bearing, not cosmetic. RenderTreeOrbital appends
+// the unread badge as ` (N)` immediately after this tag specifically so
+// scripts/e2e-tests/notify-tui.sh's `weave[^│]*\([1-9]` matches it — a
+// parenthesised age like `(5s)` matches that same regex and would report a
+// maildir leak that never happened.
+func activityAge(n TreeNode, now time.Time) string {
+	if n.LastActivityAt.IsZero() {
+		return ""
+	}
+	return " ·" + HumanizeSince(now.Sub(n.LastActivityAt))
 }

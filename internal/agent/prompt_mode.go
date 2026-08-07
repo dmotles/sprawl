@@ -197,7 +197,7 @@ const rootCommands = `KEY TOOLS (MCP):
   report_status({state: "<working|blocked|complete|failure>", summary: "<≤160 char>"})  — report YOUR status to your parent. Updates your global state and pings parent asynchronously (never preempts). NOT an inbox message: does not bump unread, not retrievable via messages_read. Use at every meaningful step. For anything substantive or retrievable, use send_message instead.
 
   Observability:
-  status({})                                       — show status of all agents with state, type, family, mail count
+  status({})                                       — {runtime, agents}: every agent's state/type/family/age, plus a runtime verdict on whether this process is the installed build
 
   Session:
   handoff({summary: "<markdown summary>"})         — weave-only. Persist a structured session summary and hand off to a fresh weave session with consolidated memory. Safe with active children: the host replaces ONLY weave's own Claude subprocess; the supervisor, runtime registry, all running child agents, and the inbox notifier survive untouched. You do NOT need to wait for in-flight agents to finish — mention what they are working on in the summary instead, so the next weave knows what's running. (This is an architectural invariant; if handoff ever kills or corrupts a child, that is a bug — file it.) Call this at session end. See the /handoff skill for the summary template.`
@@ -266,7 +266,7 @@ Use sprawl MCP tools to create and manage agents:
   report_status({state: "<working|blocked|complete|failure>", summary: "<≤160 char>"})  — report YOUR status to your parent. Updates your global state and pings parent asynchronously (never preempts). NOT an inbox message: ephemeral, does not bump unread, not retrievable via messages_read. For substantive content, use send_message.
 
   Observability:
-  status({})            — show status of all agents`
+  status({})            — {runtime, agents}: all agents, plus a runtime staleness verdict`
 
 const managerDelegateVsMessages = `DELEGATE VS. MESSAGES VS. STATUS — WHEN TO USE WHICH:
 - delegate({agent: "<agent>", task: "<task>"}) — Use for work assignments. Creates a tracked task in the agent's queue with status (queued → started → done). Use when you want the agent to execute something and track completion. Preferred for: assigning implementation work, requesting specific deliverables, any "go do this" instruction.

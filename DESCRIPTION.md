@@ -165,7 +165,7 @@ Agents report status to their parent (superior) in the network:
 ```
 report_status({state, summary})          state ∈ {working, blocked, complete, failure}
 peek({agent, tail?})                     Inspect another agent's recent activity + last report
-status({})                               List all agents with state, type, family, branch
+status({})                               {runtime, agents}: agents with state/type/family/branch/age, plus a runtime verdict
 ```
 
 `report_status` is ephemeral state — it updates the agent's global state and pings the parent asynchronously, but is NOT a message and is not retrievable via `messages_read`. For anything substantive or retrievable, use `send_message` instead.

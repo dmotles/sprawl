@@ -136,7 +136,7 @@ KEY TOOLS (MCP):
   report_status({state: "<working|blocked|complete|failure>", summary: "<≤160 char>"})  — report YOUR status to your parent. Updates your global state and pings parent asynchronously (never preempts). NOT an inbox message: does not bump unread, not retrievable via messages_read. Use at every meaningful step. For anything substantive or retrievable, use send_message instead.
 
   Observability:
-  status({})                                       — show status of all agents with state, type, family, mail count
+  status({})                                       — {runtime, agents}: every agent's state/type/family/age, plus a runtime verdict on whether this process is the installed build
 
   Session:
   handoff({summary: "<markdown summary>"})         — weave-only. Persist a structured session summary and hand off to a fresh weave session with consolidated memory. Safe with active children: the host replaces ONLY weave's own Claude subprocess; the supervisor, runtime registry, all running child agents, and the inbox notifier survive untouched. You do NOT need to wait for in-flight agents to finish — mention what they are working on in the summary instead, so the next weave knows what's running. (This is an architectural invariant; if handoff ever kills or corrupts a child, that is a bug — file it.) Call this at session end. See the /handoff skill for the summary template.

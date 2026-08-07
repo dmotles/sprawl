@@ -180,6 +180,12 @@ func TestToolStatus_LastActivityAge(t *testing.T) {
 	if _, ok := a1["last_activity_age"]; ok {
 		t.Errorf("agent with no activity got an age: %v\n%s", a1["last_activity_age"], out)
 	}
+	// The absent age must not sit next to a bogus timestamp: omitempty does
+	// NOT elide a zero time.Time, so a never-active agent used to emit
+	// "0001-01-01T00:00:00Z", which reads as data.
+	if ts, ok := a1["last_activity_at"]; ok {
+		t.Errorf("never-active agent emitted last_activity_at = %v, want the field absent\n%s", ts, out)
+	}
 }
 
 func TestToolPeek_LastReportAge(t *testing.T) {

@@ -13,6 +13,7 @@ import (
 	"debug/buildinfo"
 	"fmt"
 	"os"
+	"runtime"
 	"strings"
 	"sync"
 )
@@ -68,7 +69,7 @@ func Date() string {
 // and that misreading is the whole subject of QUM-1154.
 type ImageStatus struct {
 	ExePath       string `json:"exe_path"`
-	ExeCheck      string `json:"exe_check"` // ok | deleted | unavailable
+	ExeCheck      string `json:"exe_check"` // ok | deleted | unavailable | unsupported
 	RunningCommit string `json:"running_commit"`
 	OnDiskCommit  string `json:"on_disk_commit"`
 	CommitCheck   string `json:"commit_check"` // match | differ | unknown
@@ -96,6 +97,20 @@ type ImageStatus struct {
 // again. All three readings are the assertion — an always-loud field is as
 // useless as an always-quiet one.
 func Image() ImageStatus {
+	if runtime.GOOS != "linux" {
+		// Not-applicable, not alarm-shaped. A block that reports a problem on
+		// every call on a whole platform trains operators to skip it, which is
+		// the always-fires failure this issue names as being as useless as
+		// never firing.
+		return ImageStatus{
+			ExeCheck:      "unsupported",
+			RunningCommit: Commit(),
+			CommitCheck:   "unknown",
+			Detail: fmt.Sprintf(
+				"image staleness detection needs /proc/self/exe and is Linux-only; on %s it is not applicable (no divergence is implied)",
+				runtime.GOOS),
+		}
+	}
 	link, err := os.Readlink("/proc/self/exe")
 	return classifyImage(link, err, Commit(), os.Stat, onDiskCommit)
 }

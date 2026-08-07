@@ -474,15 +474,6 @@ func (s *Server) toolSpawn(ctx context.Context, args json.RawMessage) (string, e
 // available via peek) and subprocess_alive is collapsed into the single
 // liveness token. last_report_message is retained but demoted below the blurb.
 // Field order here is the emitted JSON order.
-type statusPayload struct {
-	// Runtime leads the payload: an operator reading status must see that the
-	// process serving these answers is the installed build BEFORE reading the
-	// answers. QUM-1154.
-	Runtime buildinfo.ImageStatus `json:"runtime"`
-	Agents  []statusView          `json:"agents"`
-	Note    string                `json:"note,omitempty"`
-}
-
 type statusView struct {
 	Name           string    `json:"name"`
 	Type           string    `json:"type"`
@@ -494,7 +485,7 @@ type statusView struct {
 	Blurb          string    `json:"blurb,omitempty"`
 	Branch         string    `json:"branch"`
 	InTurn         bool      `json:"in_turn"`
-	LastActivityAt time.Time `json:"last_activity_at,omitempty"`
+	LastActivityAt time.Time `json:"last_activity_at,omitzero"`
 	// LastActivityAge augments the timestamp with an age ("15h ago"). A bare
 	// timestamp reads like live state; a 15-hour-old `working` was misread as
 	// current. QUM-1154.
@@ -505,6 +496,15 @@ type statusView struct {
 	// Demoted secondary fields.
 	LastReportState   string `json:"last_report_state,omitempty"`
 	LastReportMessage string `json:"last_report_message,omitempty"`
+}
+
+type statusPayload struct {
+	// Runtime leads the payload: an operator reading status must see that the
+	// process serving these answers is the installed build BEFORE reading the
+	// answers. QUM-1154.
+	Runtime buildinfo.ImageStatus `json:"runtime"`
+	Agents  []statusView          `json:"agents"`
+	Note    string                `json:"note,omitempty"`
 }
 
 func toStatusView(a supervisor.AgentInfo, now time.Time) statusView {

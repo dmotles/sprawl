@@ -7,6 +7,7 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"runtime"
 	"strings"
 	"testing"
 	"time"
@@ -56,6 +57,33 @@ func commitOf(c string) *commitRecorder { return &commitRecorder{commit: c} }
 func commitFn(c string) func(string) (string, error) { return commitOf(c).read }
 
 func errCommitFn(string) (string, error) { return "", os.ErrNotExist }
+
+// requireLinux skips a test whose subject is /proc/self/exe. An unmet
+// precondition, not a pass — the assertions below are meaningless elsewhere.
+func requireLinux(t *testing.T) {
+	t.Helper()
+	if runtime.GOOS != "linux" {
+		t.Skipf("subject is /proc/self/exe; not applicable on %s", runtime.GOOS)
+	}
+}
+
+// On a non-Linux build the verdict must be not-applicable and quiet, never a
+// standing alarm.
+func TestImage_NonLinuxIsNotApplicableNotAlarming(t *testing.T) {
+	if runtime.GOOS == "linux" {
+		t.Skip("subject is the non-Linux arm")
+	}
+	got := Image()
+	if got.ExeCheck != "unsupported" {
+		t.Errorf("ExeCheck = %q, want unsupported on %s", got.ExeCheck, runtime.GOOS)
+	}
+	if got.Stale {
+		t.Errorf("Stale = true on a platform where the check cannot run: %+v", got)
+	}
+	if !strings.Contains(got.Detail, "not applicable") {
+		t.Errorf("Detail = %q, want it worded as not-applicable", got.Detail)
+	}
+}
 
 func TestClassifyImage_Clean(t *testing.T) {
 	got := classifyImage("/usr/local/bin/sprawl", nil, "abc123",
@@ -287,6 +315,7 @@ func TestClassifyImage_DetailRequiredWhenNotClean(t *testing.T) {
 // Image() reads the real /proc/self/exe of this very test process — no mock, no
 // override. The test binary exists on disk, so the verdict must be "ok".
 func TestImage_RealProcessIsNotStale(t *testing.T) {
+	requireLinux(t)
 	got := Image()
 	if got.ExePath == "" {
 		t.Errorf("ExePath empty, want this test binary's path")
@@ -350,6 +379,7 @@ func TestChildImageProbe(t *testing.T) {
 // it present, and reports a confident false clean — passing every assertion
 // here if the path were left merely absent.
 func TestImage_DeletedRealBinaryIsDetected(t *testing.T) {
+	requireLinux(t)
 	self, err := os.Executable()
 	if err != nil {
 		t.Fatalf("os.Executable: %v", err)

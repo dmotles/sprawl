@@ -237,18 +237,16 @@ func (m TreeModel) View() string {
 			break
 		}
 
-		now := time.Now()
 		indent := strings.Repeat("  ", node.Depth)
 		icon := typeIcon(node.Type)
-		dot := m.theme.ReportDot(DeriveIconState(node, now))
+		dot := m.theme.ReportDot(DeriveIconState(node, time.Now()))
 		var costTag string
 		if node.SessionCostUsd > 0 {
 			costTag = fmt.Sprintf(" [$%.4f]", node.SessionCostUsd)
 		}
-		ageTag := activityAge(node, now)
 		var line string
 		if node.LastReportMessage != "" {
-			line = fmt.Sprintf("%s%s %s %s%s%s — %s", indent, dot, icon, node.Name, costTag, ageTag, node.LastReportMessage)
+			line = fmt.Sprintf("%s%s %s %s%s — %s", indent, dot, icon, node.Name, costTag, node.LastReportMessage)
 		} else {
 			// R4 (QUM-623): unknown/nil liveness renders sanely. Empty
 			// status would otherwise show a bare "()"; substitute the
@@ -257,7 +255,7 @@ func (m TreeModel) View() string {
 			if status == "" {
 				status = "unknown"
 			}
-			line = fmt.Sprintf("%s%s %s %s%s%s (%s)", indent, dot, icon, node.Name, costTag, ageTag, status)
+			line = fmt.Sprintf("%s%s %s %s%s (%s)", indent, dot, icon, node.Name, costTag, status)
 		}
 		if node.Unread > 0 {
 			line += fmt.Sprintf(" (%d)", node.Unread)
@@ -399,18 +397,4 @@ func buildTreeNodes(agents []supervisor.AgentInfo, unread map[string]int) []Tree
 	}
 
 	return result
-}
-
-// activityAge renders the row's trailing staleness tag, e.g. " (15h)". Empty
-// when the agent has never been observed.
-//
-// Before QUM-1154 LastActivityAt fed only DeriveIconState's dot colour, so a
-// row's staleness was a colour with no number behind it and a 15-hour-old
-// "working" read as live. Kept terse — the tree panel is narrow and the row
-// already carries a cost tag and the report message.
-func activityAge(n TreeNode, now time.Time) string {
-	if n.LastActivityAt.IsZero() {
-		return ""
-	}
-	return " (" + HumanizeSince(now.Sub(n.LastActivityAt)) + ")"
 }

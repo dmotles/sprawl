@@ -61,7 +61,7 @@ Use sprawl MCP tools to create and manage agents:
   report_status({state: "<working|blocked|complete|failure>", summary: "<≤160 char>"})  — report YOUR status to your parent. Updates your global state and pings parent asynchronously (never preempts). NOT an inbox message: ephemeral, does not bump unread, not retrievable via messages_read. For substantive content, use send_message.
 
   Observability:
-  status({})            — show status of all agents
+  status({})            — {runtime, agents}: all agents, plus a runtime staleness verdict
 
 DELEGATE VS. MESSAGES VS. STATUS — WHEN TO USE WHICH:
 - delegate({agent: "<agent>", task: "<task>"}) — Use for work assignments. Creates a tracked task in the agent's queue with status (queued → started → done). Use when you want the agent to execute something and track completion. Preferred for: assigning implementation work, requesting specific deliverables, any "go do this" instruction.
