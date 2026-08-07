@@ -1,0 +1,37 @@
+# The in-tree always-loaded injection set, AS OBSERVED — not as modelled.
+#
+# Provenance: recorded 2026-08-06/07 from the injected `# claudeMd` context
+# headers of three live agents, read out of their own contexts:
+#   * weave  — cwd /home/coder/sprawl (the main checkout, no worktree)
+#   * forge  — cwd /home/coder/sprawl/.sprawl/worktrees/forge (manager)
+#   * hex    — cwd /home/coder/sprawl/.sprawl/worktrees/hex   (this agent)
+#
+# What the three headers agree on, and what makes this file necessary:
+#
+#   file             | root copy | worktree copy
+#   -----------------|-----------|--------------
+#   CLAUDE.md        | ABSENT    | present
+#   CLAUDE.local.md  | present   | present
+#
+# Same directory, same ancestry, two files, opposite treatment. weave's header
+# (at the root, with no worktree) DOES list the root CLAUDE.md, which kills the
+# reading that it is skipped for some intrinsic reason: the rule is
+# `CLAUDE.md` resolves to the NEAREST ancestor only, `CLAUDE.local.md`
+# accumulates across ancestors. Both copies of CLAUDE.local.md load and are
+# byte-identical, so the loader is not content-deduplicating either.
+#
+# `DESCRIPTION.md` and `AGENTS.md` are absent from all three headers. That is
+# evidence, not silence: a manifest reports in both directions, so CLAUDE.md's
+# prose "Read `DESCRIPTION.md`" demonstrably does not cause a load.
+#
+# This file is an oracle for the MODEL, not a live probe of the harness. It is
+# what fires when the injected set changes shape — a claim about a harness
+# version we do not control, which is why the tripwire is worth more than the
+# model. If it fires: confirm against a live agent's context header FIRST, then
+# re-record here.
+#
+# Out-of-tree entries are deliberately omitted: they are reported by the script
+# but are not part of the enforced in-tree set.
+<worktree>/CLAUDE.md
+<worktree>/CLAUDE.local.md
+CLAUDE.local.md

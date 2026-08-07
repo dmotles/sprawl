@@ -1,0 +1,15 @@
+# Allowlist for leg (a) of the read-instruction check in
+# scripts/always-loaded-budget.sh: tracked .md files that an always-loaded file
+# may NAME without @-importing, because the mention is a pointer to on-demand
+# material rather than a mandated read.
+#
+# One path per line, reason in a trailing comment. Leg (a) deliberately fires on
+# pointers as well as mandates: over-firing costs one line here, under-firing
+# ships an instruction surface that some agents obey and others do not, with
+# nothing downstream able to tell those states apart.
+#
+# This is NOT a place to silence a real mandated read. If a file must be read,
+# @-import it (and pay for it in the budget) or downgrade it to a pointer.
+.claude/agents/oracle.md       # named as a touched-file entry in the e2e matrix table, not a read
+.claude/agents/test-critic.md  # same
+docs/todo/punchlist.md         # "see ... for in-flight punchlist" — an on-demand pointer
