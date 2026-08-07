@@ -1,3 +1,9 @@
+---
+name: cli-ux-best-practices
+description: Read BEFORE adding or modifying any CLI command's behavior or output in this repo. Use when you design what a command prints, change an error message, or add a new subcommand or flag — the primary consumer of this CLI is an agent, not a human, so every command must tell the calling agent what to do next (the "next action hint" pattern). Also covers output design for agent consumers, error-message design, and idempotency requirements.
+user-invocable: true
+---
+
 # CLI UX Best Practices for Sprawl
 
 **Load this skill before adding or modifying any CLI command's behavior.**

@@ -1,3 +1,9 @@
+---
+name: go-cli-best-practices
+description: Read BEFORE writing or modifying any Go code in this repo. Use when you add or change a cobra command, wire dependencies for a command or agent operation (the `deps` struct / `XxxDeps` nil-defaulting accessor pattern that makes commands testable without real subprocesses), return or wrap an error, decide where a new file or package belongs, or need this repo's conventions for project structure, naming, and error handling.
+user-invocable: true
+---
+
 # Go CLI Best Practices for Sprawl
 
 Reference skill for AI agents working in this Go CLI codebase. Covers project structure, cobra patterns, testing, and error handling as used in this repo.

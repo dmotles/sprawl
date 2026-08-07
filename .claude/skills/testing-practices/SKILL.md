@@ -1,3 +1,9 @@
+---
+name: testing-practices
+description: Read BEFORE writing, changing, or reviewing any test or assertion in this repo — including a throwaway check in a shell script or an ad-hoc probe you will not commit. Use when you add an assertion (every new one must demonstrate it CAN fail, via negative control, mutation, or red-first), when a test or harness passes and you have not watched it fail, when you write or review a validation script that could exit 0 on a failed check (the non-asserting fallback), when a harness aggregates its own pass/fail counts and needs an assertion-count floor, when you hit or reason about a data race or wonder what `make validate` guarantees under `-race`, when you add a duration knob that production reads from a goroutine and a test overrides (the `atomicDuration` convention), and when you need this repo's dependency-injection test pattern, mock conventions, or manual CLI validation workflow.
+user-invocable: true
+---
+
 # Testing Practices
 
 ## Running Tests
