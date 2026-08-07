@@ -211,11 +211,20 @@ done
 # Scratch dir for control fixtures and the awk terms file. 0700 via umask: the
 # terms file holds the REAL forbidden terms.
 umask 077
-SCRATCH="$(mktemp -d "${TMPDIR:-/tmp}/leakguard.XXXXXX")"
-[[ -n "$SCRATCH" && -d "$SCRATCH" ]] ||
-	die_selfcheck "  could not create a scratch dir; the in-run controls could not be planted."
-# shellcheck disable=SC2064 # expand SCRATCH now: it must not be re-resolved later
-trap "rm -rf -- '$SCRATCH'" EXIT
+# `if !` rather than a bare assignment: under `set -e` an assignment whose
+# command substitution fails aborts the script with THAT command's status, so a
+# failed mktemp exited 1 — which every caller reads as EXIT_VIOLATION. A scan
+# that never happened must never wear the mask of a scan that found something.
+if ! SCRATCH="$(mktemp -d "${TMPDIR:-/tmp}/leakguard.XXXXXX" 2>/dev/null)" ||
+	[[ -z "$SCRATCH" || ! -d "$SCRATCH" ]]; then
+	die_selfcheck "  could not create a scratch dir under TMPDIR=${TMPDIR:-/tmp};" \
+		"  the in-run controls could not be planted, so nothing was measured."
+fi
+# SINGLE quotes: a double-quoted trap interpolates $SCRATCH into a string bash
+# re-parses at trap time, which makes TMPDIR a command-injection vector in the
+# repo's own security gate. SCRATCH is never reassigned, so late resolution is
+# not a hazard here.
+trap 'rm -rf -- "$SCRATCH"' EXIT
 
 # --- list resolution --------------------------------------------------------
 list="${SPRAWL_FORBIDDEN_TERMS_FILE:-}"
@@ -327,7 +336,7 @@ add_wrapped() {
 # new file. Joining across a hunk boundary would manufacture a term that exists
 # nowhere in the tree — a false alarm on a gate that blocks every commit.
 scan_diff() {
-	local dl file="" lineno=0 hs m added jfile="" joined=""
+	local dl file="" lineno=0 hs m added jfile="" joined="" in_header=0
 
 	flush_join() {
 		local cat
@@ -344,37 +353,58 @@ scan_diff() {
 		jfile=""
 	}
 
+	# scan_added <content> — the line-wise and de-wrap handling of one ADDED line.
+	scan_added() {
+		local content="$1" cat
+		if [[ -n "$file" ]]; then
+			cat="$(match_line "$content")"
+			if [[ -n "$cat" ]]; then
+				violations+="  $file:$lineno: $cat"$'\n'
+				linewise_hits+="|$file:$cat|"
+			fi
+			# De-wrap: drop the CR (else a CRLF file can never wrap) and the
+			# newline, by plain concatenation.
+			jfile="$file"
+			joined+="${content%$'\r'}"
+		fi
+		lineno=$((lineno + 1))
+	}
+
+	# A header prefix is only a header IN HEADER POSITION. Under --unified=0 an
+	# added line is emitted as "+" + content, so staged content beginning with
+	# "++ " arrives here as "+++ ...". Matching the prefix anywhere lets
+	# "++ /dev/null" clear the current file and silently skip every remaining
+	# added line in the diff — a clean verdict over a tree with staged leaks.
+	# `diff --git ` opens the header region; the first `@@ ` closes it. Neither
+	# can be spoofed by content, because content always arrives prefixed.
 	while IFS= read -r dl; do
 		case "$dl" in
-		"+++ b/"*)
+		"diff --git "*)
 			flush_join
-			file="${dl#+++ b/}"
-			;;
-		"+++ "*)
-			flush_join
-			file="" # e.g. +++ /dev/null (deletion)
+			in_header=1
+			file=""
 			;;
 		"@@ "*)
 			flush_join
+			in_header=0
 			# @@ -a,b +c,d @@ -> new-file start line is c.
 			hs="${dl#*+}"
 			hs="${hs%% *}"
 			lineno="${hs%%,*}"
 			;;
-		"+"*)
-			if [[ -n "$file" ]]; then
-				added="${dl#+}"
-				m="$(match_line "$added")"
-				if [[ -n "$m" ]]; then
-					violations+="  $file:$lineno: $m"$'\n'
-					linewise_hits+="|$file:$m|"
-				fi
-				# De-wrap: drop the CR (else a CRLF file can never wrap) and the
-				# newline, by plain concatenation.
-				jfile="$file"
-				joined+="${added%$'\r'}"
+		"+++ "*)
+			if ((in_header)); then
+				flush_join
+				case "$dl" in
+				"+++ b/"*) file="${dl#+++ b/}" ;;
+				*) file="" ;; # e.g. +++ /dev/null (deletion)
+				esac
+			else
+				scan_added "${dl#+}"
 			fi
-			lineno=$((lineno + 1))
+			;;
+		"+"*)
+			((in_header)) || scan_added "${dl#+}"
 			;;
 		*) ;; # context/removed/header lines don't advance the new-file counter
 		esac
@@ -400,15 +430,28 @@ scan_tree_linewise() {
 	local i rc f n out
 	[[ "$DEBUG_BREAK" == "linewise" ]] && return 0
 	out="$SCRATCH/grep.out"
+	local pat="$SCRATCH/grep.pat" err="$SCRATCH/grep.err"
 	for i in "${!terms[@]}"; do
 		local gopts=(--no-color -I -n -z -F "${GREP_EXTRA[@]+"${GREP_EXTRA[@]}"}")
 		[[ "${types[$i]}" != "exact" ]] && gopts+=(-i)
+		# -f, not -e: argv is world-readable via `ps`, and the term is real. Same
+		# reasoning as the de-wrap pass's terms file; the two passes must not
+		# disagree about whether argv is safe. One term per file keeps the
+		# per-term category attribution.
+		printf '%s\n' "${terms[$i]}" >"$pat"
 		rc=0
-		git grep "${gopts[@]}" -e "${terms[$i]}" >"$out" || rc=$?
+		git grep "${gopts[@]}" -f "$pat" >"$out" 2>"$err" || rc=$?
 		# rc 0 = matched, 1 = no match, >1 = git FAILED. Swallowing >1 as "no
 		# match" is the exact false-green this script exists to prevent.
 		if ((rc > 1)); then
 			die_selfcheck "  git grep exited $rc — the whole-tree line-wise scan did not measure."
+		fi
+		# git grep reports an unreadable tracked file on stderr and STILL exits
+		# 0 or 1, so rc alone cannot see it. A file the scan could not read is a
+		# file it did not scan.
+		if [[ -s "$err" ]]; then
+			die_selfcheck "  git grep could not read part of the tree, so the scan is incomplete:" \
+				"$(sed 's/^/    /' "$err")"
 		fi
 		while IFS= read -r -d '' f && IFS= read -r -d '' n && IFS= read -r _; do
 			violations+="  $f:$n: ${cats[$i]}"$'\n'
@@ -451,9 +494,16 @@ scan_tree_dewrapped() {
 	done
 
 	# awk indexes from 1; the bash arrays from 0.
-	while IFS= read -r -d '' f && IFS= read -r -d '' idx; do
-		add_wrapped "$f" "${cats[$((idx - 1))]}"
-	done < <(xargs -0 -r awk -v TF="$tf" '
+	# Run xargs/awk in THIS shell and capture the status, then read the results.
+	# `... < <(cmd || rc=$?)` puts the assignment inside a subshell, so the outer
+	# rc stayed 0 and the check below was unreachable dead code — a de-wrap pass
+	# that failed over the real tree produced a clean verdict. The class controls
+	# cannot catch that: they scan a handful of tiny files in the scratch dir, so
+	# any failure that is data-dependent on the real tree passes the control and
+	# voids the real pass.
+	local hits="$SCRATCH/dewrap.out"
+	rc=0
+	xargs -0 -r awk -v TF="$tf" '
 	function hit(i) {
 		if (!(FILENAME SUBSEP i in seen)) {
 			seen[FILENAME SUBSEP i] = 1
@@ -483,9 +533,13 @@ scan_tree_dewrapped() {
 		L = length(s)
 		win = (L >= W ? substr(s, L - W + 2) : s)
 	}
-	' || rc=$?)
+	' >"$hits" || rc=$?
 	((rc == 0)) ||
 		die_selfcheck "  the de-wrapped pass exited $rc — it did not measure."
+
+	while IFS= read -r -d '' f && IFS= read -r -d '' idx; do
+		add_wrapped "$f" "${cats[$((idx - 1))]}"
+	done <"$hits"
 }
 
 # --- in-run controls --------------------------------------------------------
@@ -649,14 +703,34 @@ report_not_examined() {
 		echo "$not_examined_staged"
 		return 0
 	fi
-	local all_files=0 text_files=0 untracked=0 rc=0
-	all_files="$(git grep -l -e '' 2>/dev/null | wc -l || true)"
-	text_files="$(git grep -I -l -e '' 2>/dev/null | wc -l || true)"
-	untracked="$(git ls-files --others --exclude-standard 2>/dev/null | wc -l || true)"
-	rc=$((all_files - text_files))
-	((rc >= 0)) || rc=0
-	echo "  not examined: $rc binary file(s) skipped by -I, $untracked untracked file(s), plus all gitignored paths"
+	# This block exists so an absence in the output is not read as an absence in
+	# the tree, which makes a silently-zeroed count worse than no count at all.
+	# Every status is therefore checked rather than discarded.
+	local all_files text_files untracked binary_files rc
+	count_or_die() { # count_or_die <description> <git args...>
+		local what="$1" n st=0
+		shift
+		n="$("$@" 2>/dev/null | wc -l)" || st=$?
+		# rc 1 from git grep means "nothing matched", which is a real zero.
+		((st <= 1)) || die_selfcheck "  could not count $what (exit $st); the 'not examined' report would be a guess."
+		printf '%s' "$n"
+	}
+	all_files="$(count_or_die "tracked files" git grep -l -e '')"
+	text_files="$(count_or_die "tracked text files" git grep -I -l -e '')"
+	untracked="$(count_or_die "untracked files" git ls-files --others --exclude-standard)"
+	binary_files=$((all_files - text_files))
+	((binary_files >= 0)) || binary_files=0
+	echo "  not examined: $binary_files binary file(s) skipped by -I, $untracked untracked file(s), plus all gitignored paths"
 }
+
+# A path that EXISTS but is not a usable regular file is NOT the absent-list
+# case. :68's installability rationale covers "there is nothing here to scan";
+# it does not cover "you named a file and I ignored it".
+if [[ -n "$list" && -e "$list" ]] && [[ ! -f "$list" || ! -r "$list" ]]; then
+	die_selfcheck "  the forbidden-terms list exists but is not a readable regular file:" \
+		"    $list" \
+		"  This is not the documented absent-list no-op; nothing was scanned."
+fi
 
 # --- no list => documented no-op pass, but no longer silent -----------------
 if [[ -z "$list" || ! -f "$list" ]]; then
@@ -674,6 +748,20 @@ fi
 
 load_terms "$list"
 echo "  terms loaded: $LOAD_OK/$LOAD_TOTAL"
+
+# A list that exists, is readable, and parses to ZERO terms is a signal, not an
+# absence — someone wrote a list and it produced nothing. QUM-1156 is explicit
+# that this case belongs with the silent-partial-loss defect, not with the
+# documented missing-list fail-open. A fully malformed list already lands as
+# 0/N below; this catches the genuinely empty one, where 0/0 is not a shortfall.
+if ((LOAD_TOTAL == 0)); then
+	die_selfcheck \
+		"  terms loaded: 0/0 — the forbidden-terms list is present but defines no terms." \
+		"  A present-but-empty list is a signal, not an absence: nothing was scanned" \
+		"  while a list existed. Remove the list for the documented no-op, or fix it." \
+		"" \
+		"  Forbidden-terms list: $list"
+fi
 
 if ((LOAD_OK != LOAD_TOTAL)); then
 	# Fatal, and BEFORE any scanning: a scan run with a partially-loaded list
@@ -701,14 +789,31 @@ if [[ "$mode" == "staged" ]]; then
 	# false-ALARM direction: under a user's `diff.renames=false` a rename is
 	# re-presented as a whole-file add, so every grandfathered line is reported
 	# as newly added and a commit that introduced nothing gets blocked.
-	scan_diff < <(git -c core.quotePath=false -c diff.renames=true \
-		diff --cached --unified=0 --no-color --src-prefix=a/ --dst-prefix=b/)
+	# Materialise the diff and CHECK git's status. Feeding scan_diff straight
+	# from a process substitution discards it, so a failed `git diff` becomes an
+	# empty stream — nothing scanned, verdict clean. Reproduced outside a git
+	# repo: exit 0 with the term sitting in the working tree.
+	diff_out="$SCRATCH/staged.diff"
+	rc=0
+	git -c core.quotePath=false -c diff.renames=true \
+		diff --cached --unified=0 --no-color --src-prefix=a/ --dst-prefix=b/ \
+		>"$diff_out" || rc=$?
+	((rc == 0)) ||
+		die_selfcheck "  git diff --cached exited $rc — the staged scan did not measure."
+	scan_diff <"$diff_out"
 else
 	scan_tree_linewise
 	# `-e ''` matches every line, so this lists exactly the tracked TEXT files —
-	# the same set git grep -I searched. rc 1 just means "no files".
+	# the same set git grep -I searched. rc 1 just means "no files"; anything
+	# above that is a failure, and `|| true` would swallow it exactly as the
+	# per-term loop above is careful not to.
+	text_list="$SCRATCH/textfiles.z"
+	rc=0
+	git grep -I -l -z -e '' >"$text_list" || rc=$?
+	((rc <= 1)) ||
+		die_selfcheck "  listing tracked text files exited $rc — the de-wrapped pass had nothing to measure."
 	# Process substitution, not a pipe — see the note in run_content_controls.
-	scan_tree_dewrapped < <(git grep -I -l -z -e '' || true)
+	scan_tree_dewrapped <"$text_list"
 fi
 
 report_not_examined

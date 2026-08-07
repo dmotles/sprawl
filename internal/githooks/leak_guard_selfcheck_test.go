@@ -1011,3 +1011,203 @@ func TestLeakGuard_ExitCodeContract(t *testing.T) {
 		}
 	})
 }
+
+// -----------------------------------------------------------------------------
+// Review findings (code review of e2aec18). Each of these was REPRODUCED as an
+// exit-0 "clean" verdict over a tree that contained a forbidden term, which is
+// precisely the defect class QUM-1156 exists to make impossible. They are the
+// second red-first round on this change.
+// -----------------------------------------------------------------------------
+
+// TestLeakGuard_AddedLineLookingLikeADiffHeader — under --unified=0 an added
+// line is emitted as "+" + content, so staged content beginning with "++ "
+// arrives at the diff parser as "+++ ...". A naive parser reads that as a file
+// header: "++ /dev/null" sets the current file to none, and EVERY subsequent
+// added line in the whole diff is skipped. Two staged leaks, verdict clean.
+//
+// Header lines are only meaningful in header position, so the parser has to
+// track where it is rather than pattern-match the prefix anywhere.
+func TestLeakGuard_AddedLineLookingLikeADiffHeader(t *testing.T) {
+	for _, tc := range []struct {
+		name    string
+		evasion string
+	}{
+		{"dev null", "++ /dev/null"},
+		{"fake path", "++ b/evil.txt"},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			repo := initRepoOnBranch(t, "feature", true)
+			list := writeList(t, "a:ci:AAAPLACEHOLDER")
+			stageFile(t, repo, "a.txt", "seed\n"+tc.evasion+"\nhas AAAPLACEHOLDER here\n")
+
+			out, code := runGuardCode(t, repo, listEnv(list))
+			if code != exitViolation {
+				t.Fatalf("a staged line that merely LOOKS like a diff header must not blind the scan; want exit %d, got %d; output: %q",
+					exitViolation, code, out)
+			}
+			// And it must be attributed to the real file, not to the path the
+			// content spoofed.
+			if !strings.Contains(out, "a.txt:3: a") {
+				t.Errorf("want the leak reported at %q; output: %q", "a.txt:3: a", out)
+			}
+		})
+	}
+}
+
+// TestLeakGuard_EmptyButPresentListIsFatal — AC1 applies to :90 as well as :84,
+// and the issue is explicit: "Implementers should treat :90 with :84, not with
+// :68." A list that exists, is readable, and parses to zero terms is a SIGNAL
+// (someone wrote a list and it produced nothing), not an absence. The
+// fully-malformed case is already caught as 0/7; the genuinely-empty one was
+// not, because 0/0 is not a shortfall.
+func TestLeakGuard_EmptyButPresentListIsFatal(t *testing.T) {
+	for _, tc := range []struct {
+		name string
+		args []string
+	}{
+		{"staged", nil},
+		{"all", []string{"--all"}},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			repo := initRepoOnBranch(t, "feature", true)
+			list := writeList(t, "# only a comment", "")
+			stageFile(t, repo, "leak.txt", "anything at all\n")
+
+			out, code := runGuardCode(t, repo, listEnv(list), tc.args...)
+			if code != exitSelfCheck {
+				t.Fatalf("a present list that parses to zero terms must not render a clean verdict; want exit %d, got %d; output: %q",
+					exitSelfCheck, code, out)
+			}
+		})
+	}
+}
+
+// TestLeakGuard_NonRegularListIsFatal — :68's installability rationale covers a
+// list that is ABSENT. It does not cover "you named a file and I ignored it":
+// silently demoting an explicitly requested but unusable list to "no list
+// found" is the fail-open wearing the fail-open's clothes.
+func TestLeakGuard_NonRegularListIsFatal(t *testing.T) {
+	repo := initRepoOnBranch(t, "feature", true)
+	// A directory exists but is not a regular file — same shape as /dev/null,
+	// without depending on a device node.
+	env := baseEnv("SPRAWL_FORBIDDEN_TERMS_FILE=" + t.TempDir())
+
+	out, code := runGuardCode(t, repo, env)
+	if code != exitSelfCheck {
+		t.Fatalf("a named-but-unusable list must fail, not be demoted to no-op; want exit %d, got %d; output: %q",
+			exitSelfCheck, code, out)
+	}
+}
+
+// TestLeakGuard_DewrapFailureIsFatal — the de-wrap pass ran `rc=$?` INSIDE a
+// process substitution, which is a subshell, so the outer rc stayed 0 and the
+// die_selfcheck guarding it was unreachable dead code. A de-wrap pass that
+// failed over the real tree therefore produced a clean verdict.
+//
+// The class controls cannot catch this: they scan a handful of tiny files in
+// the scratch dir, so any failure that is DATA-DEPENDENT on the real tree
+// (xargs splitting, ARG_MAX, one unreadable path) passes the control and voids
+// the real pass. Hence the shim below fails only when handed the real tree.
+func TestLeakGuard_DewrapFailureIsFatal(t *testing.T) {
+	repo := initRepoOnBranch(t, "feature", true)
+	list := writeList(t, "a:ci:AAAPLACEHOLDER")
+	stageFile(t, repo, "dewrap-canary.txt", "clean content\n")
+	if out, err := gitRun(t, repo, baseEnv(), "commit", "-m", "seed"); err != nil {
+		t.Fatalf("commit: %s: %v", out, err)
+	}
+
+	realAwk, err := exec.LookPath("awk")
+	if err != nil {
+		t.Fatalf("awk not found: %v", err)
+	}
+	shimDir := t.TempDir()
+	shim := "#!/bin/sh\nfor a in \"$@\"; do\n  case \"$a\" in *dewrap-canary*) exit 9 ;; esac\ndone\nexec " + realAwk + " \"$@\"\n"
+	if err := os.WriteFile(filepath.Join(shimDir, "awk"), []byte(shim), 0o755); err != nil {
+		t.Fatalf("write shim: %v", err)
+	}
+
+	env := listEnv(list, "PATH="+shimDir+string(os.PathListSeparator)+os.Getenv("PATH"))
+	out, code := runGuardCode(t, repo, env, "--all")
+	if code != exitSelfCheck {
+		t.Fatalf("a de-wrap pass that FAILED over the real tree must not render a clean verdict; want exit %d, got %d; output: %q",
+			exitSelfCheck, code, out)
+	}
+}
+
+// TestLeakGuard_UnreadableTrackedFileIsFatal — `git grep` reports an unreadable
+// tracked file on stderr and still exits 0 or 1, so the rc>1 guard does not see
+// it. A file the scanner could not read is a file it did not scan, and saying
+// nothing about that is how a clean verdict over-claims.
+func TestLeakGuard_UnreadableTrackedFileIsFatal(t *testing.T) {
+	if os.Geteuid() == 0 {
+		t.Skip("running as root: chmod 000 does not make a file unreadable, so this fixture cannot hold")
+	}
+	repo := initRepoOnBranch(t, "feature", true)
+	list := writeList(t, "a:ci:AAAPLACEHOLDER")
+	stageFile(t, repo, "locked.txt", "clean content\n")
+	if out, err := gitRun(t, repo, baseEnv(), "commit", "-m", "seed"); err != nil {
+		t.Fatalf("commit: %s: %v", out, err)
+	}
+	locked := filepath.Join(repo, "locked.txt")
+	if err := os.Chmod(locked, 0o000); err != nil {
+		t.Fatalf("chmod: %v", err)
+	}
+	t.Cleanup(func() { _ = os.Chmod(locked, 0o644) })
+
+	out, code := runGuardCode(t, repo, listEnv(list), "--all")
+	if code != exitSelfCheck {
+		t.Fatalf("a tracked file the scan could not read must not be silently skipped; want exit %d, got %d; output: %q",
+			exitSelfCheck, code, out)
+	}
+}
+
+// TestLeakGuard_ScratchFailureIsNotMistakenForAViolation — under `set -e` an
+// assignment whose command substitution fails aborts with THAT command's
+// status. mktemp exits 1, so the scratch-dir failure surfaced as exit 1, which
+// every caller reads as EXIT_VIOLATION — the worst available misreading, since
+// it is a scan that never happened wearing the mask of a scan that found
+// something.
+func TestLeakGuard_ScratchFailureIsNotMistakenForAViolation(t *testing.T) {
+	repo := initRepoOnBranch(t, "feature", true)
+	list := writeList(t, "a:ci:AAAPLACEHOLDER")
+	stageFile(t, repo, "clean.txt", "nothing here\n")
+
+	env := listEnv(list, "TMPDIR=/nonexistent/finn-no-such-dir")
+	out, code := runGuardCode(t, repo, env)
+	if code != exitSelfCheck {
+		t.Fatalf("an unusable TMPDIR is a scan that did not happen, not a violation; want exit %d, got %d; output: %q",
+			exitSelfCheck, code, out)
+	}
+}
+
+// TestLeakGuard_TmpdirIsNotEvaluatedAsShell — the EXIT trap was installed with
+// double quotes, interpolating $SCRATCH into a string bash re-parses at trap
+// time. TMPDIR is attacker-influenced wherever the guard runs under someone
+// else's environment, which makes this command injection in the repo's own
+// security gate.
+func TestLeakGuard_TmpdirIsNotEvaluatedAsShell(t *testing.T) {
+	repo := initRepoOnBranch(t, "feature", true)
+	list := writeList(t, "a:ci:AAAPLACEHOLDER")
+	stageFile(t, repo, "clean.txt", "nothing here\n")
+
+	base := t.TempDir()
+	sentinel := filepath.Join(base, "PWNED")
+	hostile := filepath.Join(base, "q';touch \""+sentinel+"\";'")
+	if err := os.MkdirAll(hostile, 0o755); err != nil {
+		t.Fatalf("mkdir hostile TMPDIR: %v", err)
+	}
+
+	out, stdout, _ := runGuardSplit(t, repo, listEnv(list, "TMPDIR="+hostile))
+	if _, err := os.Stat(sentinel); err == nil {
+		t.Fatalf("TMPDIR was evaluated as shell — command injection via the EXIT trap; output: %q", out)
+	}
+	// The exit code is deliberately NOT asserted: the hostile path is a valid
+	// directory, so once the trap stops re-parsing it the scan legitimately
+	// succeeds. Asserting a failure here would pin the wrong property. What must
+	// be pinned instead is that the run actually RAN — otherwise the injection
+	// check above is satisfied by the guard dying early for some unrelated
+	// reason, which is a negative control with no positive leg.
+	if !strings.Contains(stdout, classFired("diff-linewise-ci")) {
+		t.Errorf("the scan must still have run under a hostile TMPDIR; stdout: %q", stdout)
+	}
+}
