@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
 #
-# guard-employer-leak (QUM-872)
+# guard-employer-leak (QUM-872, self-checking since QUM-1156)
 #
 # Scans for forbidden employer/cloud content and blocks a commit that introduces
 # it. The repo is PUBLIC: the employer name and corporate cloud identifiers
@@ -18,6 +18,71 @@
 #                       validate. (It was gated off while pre-existing
 #                       occurrences were being scrubbed; that scrub landed with
 #                       QUM-873 and the gate is gone.)
+#   --require-list    — opt-in: treat an absent list as a failure (see EXIT
+#                       CODES / the no-list fail-open below).
+#
+# ---------------------------------------------------------------------------
+# EXIT CODES  (QUM-1156 — code 3 must NEVER collapse into code 0)
+#   0  clean:  the scan ran, every required probe class fired, nothing matched.
+#   1  violation: forbidden content found. The scan measured what it claims to.
+#   2  usage:  bad argument, or an unknown probe class / debug mechanism.
+#   3  self-check failed: this run did NOT measure what it claims to measure —
+#      a terms-list shortfall, a probe class whose control did not fire, a
+#      sub-step that errored, or --require-list with no list.
+#
+#   Precedence: 3 BEATS 1. If the self-checks did not fire, the violation list
+#   is incomplete by construction, so reporting 1 would assert a completeness
+#   this run cannot back. Violations found are still printed alongside the 3.
+#   An exit 3 is a FAILED scan, never a clean one.
+# ---------------------------------------------------------------------------
+#
+# WHY THIS SCRIPT CHECKS ITSELF (QUM-1156)
+#
+# The previous version was silent on success and silently skipped individually
+# malformed list entries: a 7-entry list of which 3 were malformed loaded 4
+# terms and produced output byte-identical to a list where all 7 loaded. One
+# working term is perfectly consistent with six sitting unloaded, so "did
+# anything match" cannot detect it. Hence:
+#
+#   * a COUNT, not a boolean — terms loaded must equal the number of non-blank,
+#     non-comment lines in the list, and a shortfall is fatal (naming line
+#     NUMBERS only: a malformed entry may still contain a real term);
+#   * IN-RUN controls — each probe class scans a synthetic, known-positive
+#     subject this invocation and must report it. A control that ran in another
+#     process proves nothing about this one;
+#   * both LEGS — pos=1 proves the probe is aimed at the right subject, neg=0
+#     proves it can still discriminate. A probe that matches everything passes
+#     the positive leg forever;
+#   * an OBSERVABLE report — the tool prints its own denominator on success, so
+#     a clean run is distinguishable from a vacuous one by READING it. Every
+#     other remedy requires the caller to build a probe, and probes are what
+#     keep failing.
+#
+# The controls scan a subject this script supplies, never the real diff or the
+# real tree: deriving them from the scan subject would make them vacuous
+# exactly when the subject is empty, which is when a vacuous scan is most
+# dangerous. Control terms are PLACEHOLDERS, so control output is safe to print.
+#
+# PROBE CLASSES are scan-path × match-type, and the required set is scoped to
+# the mode: a control exercising a code path this invocation did not take is not
+# evidence about this invocation.
+#   always:  list-parse
+#   staged:  diff-linewise-{ci,exact}, diff-dewrapped-{ci,exact}
+#   --all:   tree-linewise-{ci,exact}, tree-dewrapped-{ci,exact}
+#
+# WHAT IT STILL CANNOT SEE (reported on every run, so an absence in the output
+# is not read as an absence in the tree):
+#   * binary files — git grep -I skips them and the de-wrap pass reads the same
+#     text-file set. A terraform plan is a zip archive. Out of scope (QUM-1156);
+#   * untracked and gitignored paths;
+#   * in staged mode: unstaged changes and the pre-existing tree;
+#   * a term wrapped across a line break WITH indentation — the de-wrap joins
+#     lines but does not strip intra-line whitespace, because doing so would
+#     manufacture matches ("foo bar" + "baz" -> "barbaz") on a gate that blocks
+#     every commit;
+#   * in staged mode, a term split across one ADDED line and one pre-existing
+#     line. Catching it would re-flag grandfathered content and break the
+#     new-additions-only phasing. `--all` catches it.
 #
 # The forbidden terms live in a GITIGNORED list — the public repo must never
 # contain the list of things it is hiding. A committed scripts/forbidden-terms.example
@@ -30,27 +95,129 @@
 #      `git rev-parse --git-common-dir` so it resolves to the single canonical
 #      list from ANY worktree, regardless of how this guard was installed.
 # When the list is ABSENT the guard is a no-op (exit 0), so it is safe to install
-# in any repository — a foreign repo simply has nothing to scan.
+# in any repository — a foreign repo simply has nothing to scan. That fail-open
+# is deliberate and it STAYS; what changed in QUM-1156 is that it is no longer
+# silent (`terms loaded: 0/0 — no list found, scanning nothing`). Pass
+# --require-list for the opt-in hard requirement; inverting the default is a
+# repo-wide policy question, not a change to this script.
 #
 # List format, one term per line:  category:matchtype:term
 #   matchtype ci    = case-insensitive substring (use for the employer name)
 #   matchtype exact = case-sensitive substring   (use for GUIDs / IDs / names)
 # Lines that are blank or start with '#' (after optional leading whitespace) are
-# skipped. Violation messages report the category + file:line ONLY — never the
-# term itself, so the guard's own output can never leak a secret.
+# skipped and are not counted. Every other line MUST be a well-formed
+# category:matchtype:term with a non-empty category and a term carrying no
+# leading/trailing whitespace — anything else is fatal (exit 3). A whitespace-
+# padded term is rejected rather than trimmed: trimming would silently change
+# matching semantics for a real secret, and a whitespace-ONLY term would become
+# a substring match on blanks, flagging every line in the tree. An empty or
+# miscased matchtype is NOT malformed — it falls back to the broader
+# case-insensitive match on purpose (see match_line).
+# Violation messages report the category + file:line ONLY — never the term
+# itself, so the guard's own output can never leak a secret.
+#
+# DEBUG SEAMS (test-only, safe by construction — each can only force exit 3 or
+# exit 2; none can suppress a real scan's verdict or turn a violation into a
+# pass, because a failed self-check outranks a violation):
+#   SPRAWL_LEAK_GUARD_DEBUG_SUPPRESS=<class>     drop that class's positive leg
+#   SPRAWL_LEAK_GUARD_DEBUG_NEGLEAK=<class>      plant the control term in that
+#                                                class's NEGATIVE subject
+#   SPRAWL_LEAK_GUARD_DEBUG_BREAK=linewise|dewrap  break the REAL matcher, so
+#                                                the control must notice — the
+#                                                only thing proving a control
+#                                                sits downstream of the code it
+#                                                certifies rather than beside it
 #
 # Invoked by scripts/pre-commit right after guard-main-commit and BEFORE the
 # GIT_* unset, so it runs in the committing worktree's git context.
 set -euo pipefail
 
+# --- exit codes -------------------------------------------------------------
+readonly EXIT_CLEAN=0
+readonly EXIT_VIOLATION=1
+readonly EXIT_USAGE=2
+readonly EXIT_SELFCHECK=3
+
+# --- control placeholders (never real terms; safe to print) -----------------
+readonly CONTROL_CI="SPRAWL-LEAKPROBE-CONTROL-CI"
+readonly CONTROL_EXACT="SPRAWL-LEAKPROBE-CONTROL-EXACT"
+
+readonly KNOWN_CLASSES=(
+	list-parse
+	diff-linewise-ci diff-linewise-exact diff-dewrapped-ci diff-dewrapped-exact
+	tree-linewise-ci tree-linewise-exact tree-dewrapped-ci tree-dewrapped-exact
+)
+readonly KNOWN_BREAKS=(linewise dewrap)
+
+usage() {
+	echo "usage: guard-employer-leak [--all] [--require-list]" >&2
+	exit "$EXIT_USAGE"
+}
+
+# die_selfcheck <message...> — exit 3. Used for every "this run did not measure"
+# condition, so none of them can reach the exit-0 path.
+die_selfcheck() {
+	{
+		echo "ERROR: guard-employer-leak self-check FAILED — this run did not measure what a"
+		echo "clean verdict would claim (QUM-1156). Exit $EXIT_SELFCHECK is NOT a clean scan."
+		echo
+		printf '%s\n' "$@"
+	} >&2
+	exit "$EXIT_SELFCHECK"
+}
+
+in_list() { # in_list <needle> <haystack...>
+	local needle="$1" i
+	shift
+	for i in "$@"; do [[ "$i" == "$needle" ]] && return 0; done
+	return 1
+}
+
+# --- arguments --------------------------------------------------------------
 mode="staged"
-if [[ "${1:-}" == "--all" ]]; then
-	mode="all"
-elif [[ -n "${1:-}" ]]; then
-	echo "usage: guard-employer-leak [--all]" >&2
-	exit 2
+require_list=0
+for arg in "$@"; do
+	case "$arg" in
+	--all) mode="all" ;;
+	--require-list) require_list=1 ;;
+	*) usage ;;
+	esac
+done
+
+DEBUG_SUPPRESS="${SPRAWL_LEAK_GUARD_DEBUG_SUPPRESS:-}"
+DEBUG_NEGLEAK="${SPRAWL_LEAK_GUARD_DEBUG_NEGLEAK:-}"
+DEBUG_BREAK="${SPRAWL_LEAK_GUARD_DEBUG_BREAK:-}"
+# An unknown class/mechanism is a USAGE error, not a self-check failure. Without
+# this the seams would be satisfiable by echoing back whatever they were handed,
+# and the class registry would not have to exist.
+for dbg in "$DEBUG_SUPPRESS" "$DEBUG_NEGLEAK"; do
+	if [[ -n "$dbg" ]] && ! in_list "$dbg" "${KNOWN_CLASSES[@]}"; then
+		echo "guard-employer-leak: unknown probe class '$dbg'" >&2
+		echo "known classes: ${KNOWN_CLASSES[*]}" >&2
+		exit "$EXIT_USAGE"
+	fi
+done
+if [[ -n "$DEBUG_BREAK" ]] && ! in_list "$DEBUG_BREAK" "${KNOWN_BREAKS[@]}"; then
+	echo "guard-employer-leak: unknown debug mechanism '$DEBUG_BREAK'" >&2
+	echo "known mechanisms: ${KNOWN_BREAKS[*]}" >&2
+	exit "$EXIT_USAGE"
 fi
 
+for tool in awk git; do
+	command -v "$tool" >/dev/null 2>&1 ||
+		die_selfcheck "  required tool '$tool' is not installed, so the scan could not run."
+done
+
+# Scratch dir for control fixtures and the awk terms file. 0700 via umask: the
+# terms file holds the REAL forbidden terms.
+umask 077
+SCRATCH="$(mktemp -d "${TMPDIR:-/tmp}/leakguard.XXXXXX")"
+[[ -n "$SCRATCH" && -d "$SCRATCH" ]] ||
+	die_selfcheck "  could not create a scratch dir; the in-run controls could not be planted."
+# shellcheck disable=SC2064 # expand SCRATCH now: it must not be re-resolved later
+trap "rm -rf -- '$SCRATCH'" EXIT
+
+# --- list resolution --------------------------------------------------------
 list="${SPRAWL_FORBIDDEN_TERMS_FILE:-}"
 if [[ -z "$list" ]]; then
 	# `--git-common-dir` (git 2.5+) resolves to the MAIN checkout's .git from any
@@ -64,34 +231,63 @@ if [[ -z "$list" ]]; then
 	fi
 fi
 
-# No list => nothing to hide here => no-op pass (safe to install anywhere).
-[[ -n "$list" && -f "$list" ]] || exit 0
-
+# --- term loading -----------------------------------------------------------
+# Sets cats/types/terms and the AC1 accounting: LOAD_TOTAL (non-blank,
+# non-comment lines = the denominator), LOAD_OK (the numerator) and LOAD_BAD
+# (physical line numbers of the difference — NUMBERS only, never contents).
 cats=()
 types=()
 terms=()
-while IFS= read -r raw || [[ -n "$raw" ]]; do
-	line="${raw%$'\r'}" # tolerate CRLF list files
-	# Skip blank / whitespace-only and comment lines.
-	[[ "$line" =~ ^[[:space:]]*$ ]] && continue
-	[[ "$line" =~ ^[[:space:]]*# ]] && continue
-	cat="${line%%:*}"
-	rest="${line#*:}"
-	mtype="${rest%%:*}"
-	mtype="${mtype,,}" # normalize: EXACT/Ci/… → lowercase (fail-safe below)
-	term="${rest#*:}"
-	# Require a well-formed category:matchtype:term with a non-empty term.
-	[[ "$line" == "$cat" || "$rest" == "$mtype" || -z "$term" ]] && continue
-	cats+=("$cat")
-	types+=("$mtype")
-	terms+=("$term")
-done <"$list"
+LOAD_TOTAL=0
+LOAD_OK=0
+LOAD_BAD=""
 
-[[ ${#terms[@]} -eq 0 ]] && exit 0
+load_terms() {
+	local file="$1" raw line lineno=0 cat rest mtype term
+	cats=()
+	types=()
+	terms=()
+	LOAD_TOTAL=0
+	LOAD_OK=0
+	LOAD_BAD=""
+	while IFS= read -r raw || [[ -n "$raw" ]]; do
+		lineno=$((lineno + 1))
+		line="${raw%$'\r'}" # tolerate CRLF list files
+		# Skip blank / whitespace-only and comment lines. Not counted either way.
+		[[ "$line" =~ ^[[:space:]]*$ ]] && continue
+		[[ "$line" =~ ^[[:space:]]*# ]] && continue
+		LOAD_TOTAL=$((LOAD_TOTAL + 1))
+		cat="${line%%:*}"
+		rest="${line#*:}"
+		mtype="${rest%%:*}"
+		mtype="${mtype,,}" # normalize: EXACT/Ci/… → lowercase (fail-safe below)
+		term="${rest#*:}"
+		# Well-formed = category:matchtype:term, non-empty category, non-empty
+		# term with no surrounding whitespace. An empty/miscased MATCHTYPE is
+		# deliberately allowed through (match_line broadens it).
+		if [[ "$line" == "$cat" ]] ||
+			[[ "$rest" == "$mtype" ]] ||
+			[[ -z "$cat" ]] ||
+			[[ -z "$term" ]] ||
+			[[ "$term" != "${term#[[:space:]]}" ]] ||
+			[[ "$term" != "${term%[[:space:]]}" ]]; then
+			LOAD_BAD="${LOAD_BAD:+$LOAD_BAD, }$lineno"
+			continue
+		fi
+		cats+=("$cat")
+		types+=("$mtype")
+		terms+=("$term")
+		LOAD_OK=$((LOAD_OK + 1))
+	done <"$file"
+}
 
+# --- matchers ---------------------------------------------------------------
 # match_line <content> — echoes the matching category (empty if none matched).
 match_line() {
 	local content="$1" lc i
+	# The BREAK seam severs the real matcher so the linewise controls have to
+	# notice. It can only ever force exit 3 (a class reporting pos=0).
+	[[ "$DEBUG_BREAK" == "linewise" ]] && return 0
 	lc="${content,,}"
 	for i in "${!terms[@]}"; do
 		# Only an explicit "exact" is case-sensitive; anything else (ci, a typo,
@@ -113,19 +309,53 @@ match_line() {
 }
 
 violations=""
+linewise_hits="" # "|file:category|" markers, for de-wrap dedupe
 
-if [[ "$mode" == "staged" ]]; then
-	file=""
-	lineno=0
+# add_wrapped <file> <category> — record a de-wrapped hit unless the line-wise
+# pass already reported that (file, category). A de-wrapped hit carries NO line
+# number: the de-wrapped stream has no lines, and reconstructing one would be a
+# guess presented as a fact.
+add_wrapped() {
+	[[ "$linewise_hits" == *"|$1:$2|"* ]] && return 0
+	violations+="  $1: $2 (wrapped match)"$'\n'
+}
+
+# scan_diff — reads a unified diff (--unified=0) on stdin.
+#
+# The de-wrap buffer is flushed at every hunk header and every file header,
+# because under --unified=0 the added lines of two hunks are NOT adjacent in the
+# new file. Joining across a hunk boundary would manufacture a term that exists
+# nowhere in the tree — a false alarm on a gate that blocks every commit.
+scan_diff() {
+	local dl file="" lineno=0 hs m added jfile="" joined=""
+
+	flush_join() {
+		local cat
+		[[ "$DEBUG_BREAK" == "dewrap" ]] && {
+			joined=""
+			jfile=""
+			return 0
+		}
+		if [[ -n "$joined" && -n "$jfile" ]]; then
+			cat="$(match_line "$joined")"
+			[[ -n "$cat" ]] && add_wrapped "$jfile" "$cat"
+		fi
+		joined=""
+		jfile=""
+	}
+
 	while IFS= read -r dl; do
 		case "$dl" in
 		"+++ b/"*)
+			flush_join
 			file="${dl#+++ b/}"
 			;;
 		"+++ "*)
+			flush_join
 			file="" # e.g. +++ /dev/null (deletion)
 			;;
 		"@@ "*)
+			flush_join
 			# @@ -a,b +c,d @@ -> new-file start line is c.
 			hs="${dl#*+}"
 			hs="${hs%% *}"
@@ -133,48 +363,364 @@ if [[ "$mode" == "staged" ]]; then
 			;;
 		"+"*)
 			if [[ -n "$file" ]]; then
-				m="$(match_line "${dl#+}")"
-				[[ -n "$m" ]] && violations+="  $file:$lineno: $m"$'\n'
+				added="${dl#+}"
+				m="$(match_line "$added")"
+				if [[ -n "$m" ]]; then
+					violations+="  $file:$lineno: $m"$'\n'
+					linewise_hits+="|$file:$m|"
+				fi
+				# De-wrap: drop the CR (else a CRLF file can never wrap) and the
+				# newline, by plain concatenation.
+				jfile="$file"
+				joined+="${added%$'\r'}"
 			fi
 			lineno=$((lineno + 1))
 			;;
 		*) ;; # context/removed/header lines don't advance the new-file counter
 		esac
-		# core.quotePath=false keeps non-ASCII paths literal (an unquoted "b/…"
-		# header), and the explicit a/ b/ prefixes override a user's
-		# diff.mnemonicPrefix / diff.noprefix config — without these a header the
-		# `+++ b/` arm doesn't recognize would silently skip that file's added
-		# lines (a fail-open leak).
-	done < <(git -c core.quotePath=false diff --cached --unified=0 --no-color --src-prefix=a/ --dst-prefix=b/)
-else
-	# Whole-tree scan. Run one `git grep` per term (C-fast) instead of the old
-	# bash loop that read every tracked file line-by-line and forked a subshell
-	# per line (O(files×lines×terms)) — that timed out over the full tree
-	# (QUM-873). `git grep` searches the same set (tracked files), and:
-	#   -F  fixed string (term is literal, may contain regex metachars or ':')
-	#   -I  skip binary files (their NULs would break the field split anyway)
-	#   -n  line numbers
-	#   -z  NUL-delimit the filename and line-number fields, so a path or a
-	#       matching line containing ':' can't be misparsed — and we read only
-	#       the filename + line number, never the content (the term is never
-	#       printed). Record layout per match: filename\0lineno\0content\n
-	# Only an explicit "exact" is case-sensitive; anything else falls back to the
-	# broader case-insensitive (-i) match, mirroring match_line's fail-safe.
+	done
+	flush_join
+}
+
+# scan_tree_linewise — one `git grep` per term (C-fast) instead of the old bash
+# loop that read every tracked file line-by-line and forked a subshell per line
+# (O(files×lines×terms)) — that timed out over the full tree (QUM-873).
+#   -F fixed string (the term may contain regex metachars or ':')
+#   -I skip binary files (their NULs would break the field split anyway)
+#   -n line numbers
+#   -z NUL-delimit the filename and line-number fields, so a path or a matching
+#      line containing ':' can't be misparsed — and we read only the filename +
+#      line number, never the content (the term is never printed).
+# Record layout per match: filename\0lineno\0content\n
+#
+# GREP_EXTRA lets the control run the SAME code path with --no-index against its
+# scratch fixture, so the control certifies this function rather than a copy.
+GREP_EXTRA=()
+scan_tree_linewise() {
+	local i rc f n out
+	[[ "$DEBUG_BREAK" == "linewise" ]] && return 0
+	out="$SCRATCH/grep.out"
 	for i in "${!terms[@]}"; do
-		gopts=(--no-color -I -n -z -F)
+		local gopts=(--no-color -I -n -z -F "${GREP_EXTRA[@]+"${GREP_EXTRA[@]}"}")
 		[[ "${types[$i]}" != "exact" ]] && gopts+=(-i)
+		rc=0
+		git grep "${gopts[@]}" -e "${terms[$i]}" >"$out" || rc=$?
+		# rc 0 = matched, 1 = no match, >1 = git FAILED. Swallowing >1 as "no
+		# match" is the exact false-green this script exists to prevent.
+		if ((rc > 1)); then
+			die_selfcheck "  git grep exited $rc — the whole-tree line-wise scan did not measure."
+		fi
 		while IFS= read -r -d '' f && IFS= read -r -d '' n && IFS= read -r _; do
 			violations+="  $f:$n: ${cats[$i]}"$'\n'
-		done < <(git grep "${gopts[@]}" -e "${terms[$i]}" || true)
+			linewise_hits+="|$f:${cats[$i]}|"
+		done <"$out"
 	done
+}
+
+# scan_tree_dewrapped — reads a NUL-delimited file list on stdin and searches a
+# newline-stripped rendering of each file.
+#
+# `git grep` structurally cannot do this (it is line-oriented), and a pure-bash
+# reader is the O(files×lines×terms) shape QUM-873 already killed: measured over
+# this tree it did not finish in 2 minutes. One awk process does it in ~0.5s.
+#
+# The terms go to awk in a FILE, not argv, because argv is world-readable via
+# `ps`. awk emits filename + term INDEX, never the term, so the mapping back to
+# a category happens here and the term is never printed.
+#
+# Memory is O(longest term), not O(file): a match ending inside the current line
+# can start at most len(longest term)-1 characters earlier, so carrying that
+# many characters forward is provably sufficient.
+scan_tree_dewrapped() {
+	local tf f idx rc=0
+	if [[ "$DEBUG_BREAK" == "dewrap" ]]; then
+		cat >/dev/null
+		return 0
+	fi
+	((${#terms[@]} > 0)) || {
+		cat >/dev/null
+		return 0
+	}
+
+	tf="$SCRATCH/awk-terms"
+	: >"$tf"
+	for idx in "${!terms[@]}"; do
+		# Paired lines: matchtype, then term. Terms cannot contain a newline by
+		# construction (the list is one term per line), so this is unambiguous.
+		printf '%s\n%s\n' "${types[$idx]}" "${terms[$idx]}" >>"$tf"
+	done
+
+	# awk indexes from 1; the bash arrays from 0.
+	while IFS= read -r -d '' f && IFS= read -r -d '' idx; do
+		add_wrapped "$f" "${cats[$((idx - 1))]}"
+	done < <(xargs -0 -r awk -v TF="$tf" '
+	function hit(i) {
+		if (!(FILENAME SUBSEP i in seen)) {
+			seen[FILENAME SUBSEP i] = 1
+			printf "%s%c%d%c", FILENAME, 0, i, 0
+		}
+	}
+	BEGIN {
+		while ((getline l < TF) > 0) {
+			n++
+			if (n % 2 == 1) { mt[(n + 1) / 2] = l }
+			else {
+				k = n / 2
+				tm[k] = l; lctm[k] = tolower(l)
+				if (length(l) > W) W = length(l)
+			}
+		}
+		NT = int(n / 2)
+	}
+	FNR == 1 { win = "" }
+	{
+		line = $0; sub(/\r$/, "", line)
+		s = win line; slc = tolower(s)
+		for (i = 1; i <= NT; i++) {
+			if (mt[i] == "exact") { if (index(s, tm[i]) > 0) hit(i) }
+			else { if (index(slc, lctm[i]) > 0) hit(i) }
+		}
+		L = length(s)
+		win = (L >= W ? substr(s, L - W + 2) : s)
+	}
+	' || rc=$?)
+	((rc == 0)) ||
+		die_selfcheck "  the de-wrapped pass exited $rc — it did not measure."
+}
+
+# --- in-run controls --------------------------------------------------------
+# Each control plants a known-positive subject and a known-negative one, runs
+# the REAL scan function over them, and reports "class pos neg". Run in a
+# subshell with its own cats/types/terms so a control term can never reach the
+# real scan's verdict.
+
+plant_control_fixture() { # $1 = dir, $2 = "diff" | "tree"
+	local d="$1" kind="$2" cls negfile
+	mkdir -p "$d"
+
+	# Positive subjects. The line-wise and de-wrapped positives are SEPARATE
+	# files: if the term were present unwrapped in the de-wrap subject, dedupe
+	# would suppress the de-wrapped hit and its control could never fire.
+	printf 'alpha %s omega\nbeta %s omega\n' "$CONTROL_CI" "$CONTROL_EXACT" >"$d/pos-linewise.txt"
+	printf 'alpha %s\n%s omega\n' "${CONTROL_CI:0:20}" "${CONTROL_CI:20}" >"$d/pos-dewrapped-ci.txt"
+	printf 'alpha %s\n%s omega\n' "${CONTROL_EXACT:0:20}" "${CONTROL_EXACT:20}" >"$d/pos-dewrapped-exact.txt"
+
+	# Negative subjects, one per class, so a leak planted in one cannot be
+	# credited to another.
+	for cls in "diff-linewise-ci" "diff-linewise-exact" "diff-dewrapped-ci" "diff-dewrapped-exact" \
+		"tree-linewise-ci" "tree-linewise-exact" "tree-dewrapped-ci" "tree-dewrapped-exact"; do
+		negfile="$d/neg-$cls.txt"
+		printf 'nothing forbidden on this line at all\n' >"$negfile"
+		if [[ "$DEBUG_NEGLEAK" == "$cls" ]]; then
+			case "$cls" in
+			*-dewrapped-ci) printf '%s\n%s\n' "${CONTROL_CI:0:20}" "${CONTROL_CI:20}" >>"$negfile" ;;
+			*-dewrapped-exact) printf '%s\n%s\n' "${CONTROL_EXACT:0:20}" "${CONTROL_EXACT:20}" >>"$negfile" ;;
+			*-linewise-ci) printf '%s\n' "$CONTROL_CI" >>"$negfile" ;;
+			*-linewise-exact) printf '%s\n' "$CONTROL_EXACT" >>"$negfile" ;;
+			esac
+		fi
+	done
+
+	[[ "$kind" == "diff" ]] || return 0
+	# Render the same fixture as a --unified=0 diff, so the diff-header and
+	# hunk-arithmetic parsing is exercised too — including a rename hunk, which
+	# must contribute no added lines.
+	{
+		printf 'diff --git a/renamed-away.txt b/renamed-here.txt\n'
+		printf 'similarity index 100%%\nrename from renamed-away.txt\nrename to renamed-here.txt\n'
+		for f in pos-linewise.txt pos-dewrapped-ci.txt pos-dewrapped-exact.txt \
+			neg-diff-linewise-ci.txt neg-diff-linewise-exact.txt \
+			neg-diff-dewrapped-ci.txt neg-diff-dewrapped-exact.txt; do
+			printf 'diff --git a/%s b/%s\n--- /dev/null\n+++ b/%s\n' "$f" "$f" "$f"
+			printf '@@ -0,0 +1,%d @@\n' "$(wc -l <"$d/$f")"
+			sed 's/^/+/' "$d/$f"
+		done
+	} >"$d/control.diff"
+}
+
+# ctl_leg <needle> — 1 if the needle appears in this control run's violations.
+ctl_leg() {
+	if [[ "$violations" == *"$1"* ]]; then echo 1; else echo 0; fi
+}
+
+# emit_class <class> <positive-needle> <negative-needle>
+emit_class() {
+	local cls="$1" pos neg
+	pos="$(ctl_leg "$2")"
+	neg="$(ctl_leg "$3")"
+	[[ "$DEBUG_SUPPRESS" == "$cls" ]] && pos=0
+	printf '%s %s %s\n' "$cls" "$pos" "$neg"
+}
+
+run_content_controls() { # $1 = "diff" | "tree"; echoes "class pos neg" lines
+	local kind="$1" dir="$SCRATCH/ctl-$1" prefix
+	(
+		plant_control_fixture "$dir" "$kind"
+		cats=(leakprobe-ci leakprobe-exact)
+		types=(ci exact)
+		terms=("$CONTROL_CI" "$CONTROL_EXACT")
+		violations=""
+		linewise_hits=""
+		if [[ "$kind" == "diff" ]]; then
+			prefix="diff"
+			scan_diff <"$dir/control.diff"
+		else
+			prefix="tree"
+			cd "$dir"
+			GREP_EXTRA=(--no-index)
+			scan_tree_linewise
+			# Process substitution, NOT a pipe: the right-hand side of a pipe runs
+			# in a subshell, so every de-wrapped hit it accumulates would be
+			# discarded — the scan would run and its findings evaporate.
+			scan_tree_dewrapped < <(printf '%s\0' ./*.txt)
+		fi
+		emit_class "$prefix-linewise-ci" "pos-linewise.txt:1: leakprobe-ci" "neg-$prefix-linewise-ci.txt"
+		emit_class "$prefix-linewise-exact" "pos-linewise.txt:2: leakprobe-exact" "neg-$prefix-linewise-exact.txt"
+		emit_class "$prefix-dewrapped-ci" "pos-dewrapped-ci.txt: leakprobe-ci (wrapped match)" "neg-$prefix-dewrapped-ci.txt"
+		emit_class "$prefix-dewrapped-exact" "pos-dewrapped-exact.txt: leakprobe-exact (wrapped match)" "neg-$prefix-dewrapped-exact.txt"
+	)
+}
+
+# The list-parse control: a known list whose shortfall accounting is known, so
+# the AC1 arithmetic itself is covered by a control rather than only by tests.
+run_list_control() {
+	local f="$SCRATCH/ctl-list" pos=0 neg=0
+	printf '%s\n' "# comment" "" "x:ci:CONTROLONE" "MALFORMEDCONTROL" "y:exact:CONTROLTWO" >"$f"
+	(
+		load_terms "$f"
+		# Expected: 3 counted lines, 2 loaded, the malformed one on line 4.
+		if [[ "$LOAD_TOTAL" == 3 && "$LOAD_OK" == 2 && "$LOAD_BAD" == "4" ]]; then pos=1; fi
+		# Negative leg: a list with NO malformed entry must produce no offenders.
+		printf '%s\n' "x:ci:CONTROLONE" >"$f.clean"
+		load_terms "$f.clean"
+		if [[ -n "$LOAD_BAD" || "$LOAD_OK" != 1 ]]; then neg=1; fi
+		[[ "$DEBUG_SUPPRESS" == "list-parse" ]] && pos=0
+		printf 'list-parse %s %s\n' "$pos" "$neg"
+	)
+}
+
+# --- run the controls, then the real scan -----------------------------------
+ledger=""
+ledger+="$(run_list_control)"$'\n'
+if [[ "$mode" == "staged" ]]; then
+	ledger+="$(run_content_controls diff)"$'\n'
+	required=(list-parse diff-linewise-ci diff-linewise-exact diff-dewrapped-ci diff-dewrapped-exact)
+else
+	ledger+="$(run_content_controls tree)"$'\n'
+	required=(list-parse tree-linewise-ci tree-linewise-exact tree-dewrapped-ci tree-dewrapped-exact)
 fi
+
+# Evaluate the floor. Per-class, never a sum: a total cannot tell four-fired-once
+# from one-fired-four-times, and it is the zero that matters.
+floor_failures=""
+report_ledger=""
+for cls in "${required[@]}"; do
+	line="$(printf '%s\n' "$ledger" | awk -v c="$cls" '$1 == c {print; exit}')"
+	# A control subshell that died early contributes nothing, and `[ "" -lt 1 ]`
+	# both errors AND evaluates false — a floor that cannot fire. Validate the
+	# shape before comparing.
+	if [[ -z "$line" ]]; then
+		floor_failures+="  $cls: MISSING — its control produced no result at all"$'\n'
+		continue
+	fi
+	pos="$(printf '%s' "$line" | awk '{print $2}')"
+	neg="$(printf '%s' "$line" | awk '{print $3}')"
+	if [[ ! "$pos" =~ ^[0-9]+$ || ! "$neg" =~ ^[0-9]+$ ]]; then
+		floor_failures+="  $cls: non-numeric control result — the floor could not be evaluated"$'\n'
+		continue
+	fi
+	report_ledger+="  $cls: pos=$pos neg=$neg"$'\n'
+	if ((pos < 1)); then
+		floor_failures+="  $cls: pos=$pos neg=$neg (want pos>=1 — its positive control did NOT fire)"$'\n'
+	elif ((neg != 0)); then
+		floor_failures+="  $cls: pos=$pos neg=$neg (want neg=0 — it fired on a clean subject, so it cannot discriminate)"$'\n'
+	fi
+done
+
+# --- the success report (stdout; violations go to stderr) -------------------
+echo "guard-employer-leak: $mode scan (QUM-1156 self-checking; exit 3 = did not measure)"
+printf '%s' "$report_ledger"
+echo "  control terms (placeholders, never real): $CONTROL_CI $CONTROL_EXACT"
+
+not_examined_staged="  not examined: unstaged changes, untracked files, gitignored paths, binary blobs (-I), and the pre-existing tree (this scan reports NEW additions only)"
+
+report_not_examined() {
+	if [[ "$mode" == "staged" ]]; then
+		echo "$not_examined_staged"
+		return 0
+	fi
+	local all_files=0 text_files=0 untracked=0 rc=0
+	all_files="$(git grep -l -e '' 2>/dev/null | wc -l || true)"
+	text_files="$(git grep -I -l -e '' 2>/dev/null | wc -l || true)"
+	untracked="$(git ls-files --others --exclude-standard 2>/dev/null | wc -l || true)"
+	rc=$((all_files - text_files))
+	((rc >= 0)) || rc=0
+	echo "  not examined: $rc binary file(s) skipped by -I, $untracked untracked file(s), plus all gitignored paths"
+}
+
+# --- no list => documented no-op pass, but no longer silent -----------------
+if [[ -z "$list" || ! -f "$list" ]]; then
+	echo "  terms loaded: 0/0 — no list found, scanning nothing"
+	report_not_examined
+	if ((require_list)); then
+		die_selfcheck "  --require-list was passed and no forbidden-terms list was found." \
+			"  Looked for: ${list:-<unresolved>}"
+	fi
+	if [[ -n "$floor_failures" ]]; then
+		die_selfcheck "  probe classes that did not measure:" "$floor_failures"
+	fi
+	exit "$EXIT_CLEAN"
+fi
+
+load_terms "$list"
+echo "  terms loaded: $LOAD_OK/$LOAD_TOTAL"
+
+if ((LOAD_OK != LOAD_TOTAL)); then
+	# Fatal, and BEFORE any scanning: a scan run with a partially-loaded list
+	# would produce a verdict indistinguishable from a fully-loaded one, which is
+	# the dishonest pass this whole change exists to remove.
+	die_selfcheck \
+		"  terms loaded: $LOAD_OK/$LOAD_TOTAL — the forbidden-terms list did not fully load." \
+		"  Malformed entries at lines: $LOAD_BAD" \
+		"  (contents withheld on purpose: a malformed entry may still contain a real term)" \
+		"" \
+		"  Every non-blank, non-comment line must be category:matchtype:term with a" \
+		"  non-empty category and a term carrying no leading/trailing whitespace." \
+		"" \
+		"  Forbidden-terms list: $list"
+fi
+
+if [[ "$mode" == "staged" ]]; then
+	# core.quotePath=false keeps non-ASCII paths literal (an unquoted "b/…"
+	# header), and the explicit a/ b/ prefixes override a user's
+	# diff.mnemonicPrefix / diff.noprefix config — without these a header the
+	# `+++ b/` arm doesn't recognize would silently skip that file's added
+	# lines (a fail-open leak).
+	#
+	# diff.renames is PINNED rather than assumed (QUM-1156 AC7). This is the
+	# false-ALARM direction: under a user's `diff.renames=false` a rename is
+	# re-presented as a whole-file add, so every grandfathered line is reported
+	# as newly added and a commit that introduced nothing gets blocked.
+	scan_diff < <(git -c core.quotePath=false -c diff.renames=true \
+		diff --cached --unified=0 --no-color --src-prefix=a/ --dst-prefix=b/)
+else
+	scan_tree_linewise
+	# `-e ''` matches every line, so this lists exactly the tracked TEXT files —
+	# the same set git grep -I searched. rc 1 just means "no files".
+	# Process substitution, not a pipe — see the note in run_content_controls.
+	scan_tree_dewrapped < <(git grep -I -l -z -e '' || true)
+fi
+
+report_not_examined
 
 if [[ -n "$violations" ]]; then
 	cat >&2 <<EOF
 ERROR: forbidden employer/cloud content detected ($mode scan) — QUM-872 guard.
 
 The locations below match a category in the gitignored forbidden-terms list
-(the matching term is withheld from this message on purpose):
+(the matching term is withheld from this message on purpose). A "(wrapped
+match)" entry means the term spans a line break, so it has a file but no
+meaningful line number:
 
 $violations
 Public-repo hygiene: employer names and corporate cloud identifiers must never
@@ -184,7 +730,14 @@ be committed. Move real values to a gitignored path (e.g.
 
 Forbidden-terms list: $list
 EOF
-	exit 1
 fi
 
-exit 0
+# Precedence: a failed self-check outranks a violation. The violations above are
+# still printed — the operator needs to see them — but the run may not claim the
+# list is complete.
+if [[ -n "$floor_failures" ]]; then
+	die_selfcheck "  probe classes that did not measure:" "$floor_failures"
+fi
+
+[[ -n "$violations" ]] && exit "$EXIT_VIOLATION"
+exit "$EXIT_CLEAN"

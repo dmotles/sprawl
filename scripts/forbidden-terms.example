@@ -19,8 +19,20 @@
 #   term      = the literal string to forbid (may itself contain ':').
 #
 # Blank lines and lines beginning with '#' (after optional leading whitespace)
-# are ignored. A Linear-style issue prefix such as QUM-123 does NOT match the
-# full employer name and is therefore always allowed.
+# are ignored and are not counted. A Linear-style issue prefix such as QUM-123
+# does NOT match the full employer name and is therefore always allowed.
+#
+# EVERY other line must be well-formed, and a malformed one is FATAL (QUM-1156:
+# the guard exits 3 and names the offending LINE NUMBERS — never the contents,
+# since a malformed entry may still hold a real term). Well-formed means all of:
+#   * three colon-separated fields, category:matchtype:term
+#   * a non-empty category and a non-empty term
+#   * no leading or trailing whitespace on the term
+# A padded term is rejected rather than trimmed, because trimming would change
+# matching semantics for a real secret without saying so — and a whitespace-only
+# term would become a substring match on blanks, flagging most of the tree.
+# An empty or miscased matchtype is NOT an error: it falls back to the broader
+# case-insensitive match on purpose, so a typo cannot narrow a scan.
 #
 # Example entries (REPLACE the placeholders; do not commit real values):
 #
