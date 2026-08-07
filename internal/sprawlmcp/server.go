@@ -13,6 +13,7 @@ import (
 
 	agentpkg "github.com/dmotles/sprawl/internal/agent"
 	backendpkg "github.com/dmotles/sprawl/internal/backend"
+	"github.com/dmotles/sprawl/internal/buildinfo"
 	"github.com/dmotles/sprawl/internal/config"
 	"github.com/dmotles/sprawl/internal/rootinit"
 	"github.com/dmotles/sprawl/internal/sprawlmcp/calllog"
@@ -65,6 +66,25 @@ type Server struct {
 	callLog   *calllog.Logger
 	msgSender atomic.Pointer[MsgSender] // QUM-497: TUI in-flight indicator hook
 	cfg       *config.Config            // QUM-722: project config for pause defaults; may be nil
+	// QUM-1154 test seams. Nil-defaulting per the repo DI pattern: production
+	// always reads the real process image and the real clock.
+	imageFn func() buildinfo.ImageStatus
+	nowFn   func() time.Time
+}
+
+// image returns this process's running-vs-on-disk verdict (QUM-1154).
+func (s *Server) image() buildinfo.ImageStatus {
+	if s.imageFn != nil {
+		return s.imageFn()
+	}
+	return buildinfo.Image()
+}
+
+func (s *Server) now() time.Time {
+	if s.nowFn != nil {
+		return s.nowFn()
+	}
+	return time.Now()
 }
 
 // New creates a new MCP server backed by the given supervisor.
@@ -454,27 +474,40 @@ func (s *Server) toolSpawn(ctx context.Context, args json.RawMessage) (string, e
 // available via peek) and subprocess_alive is collapsed into the single
 // liveness token. last_report_message is retained but demoted below the blurb.
 // Field order here is the emitted JSON order.
+type statusPayload struct {
+	// Runtime leads the payload: an operator reading status must see that the
+	// process serving these answers is the installed build BEFORE reading the
+	// answers. QUM-1154.
+	Runtime buildinfo.ImageStatus `json:"runtime"`
+	Agents  []statusView          `json:"agents"`
+	Note    string                `json:"note,omitempty"`
+}
+
 type statusView struct {
-	Name               string    `json:"name"`
-	Type               string    `json:"type"`
-	Family             string    `json:"family"`
-	Parent             string    `json:"parent"`
-	TreePath           string    `json:"tree_path,omitempty"`
-	Status             string    `json:"status"`
-	Liveness           string    `json:"liveness"`
-	Blurb              string    `json:"blurb,omitempty"`
-	Branch             string    `json:"branch"`
-	InTurn             bool      `json:"in_turn"`
-	LastActivityAt     time.Time `json:"last_activity_at,omitempty"`
-	SessionCostUsd     float64   `json:"session_cost_usd,omitempty"`
-	Subagent           bool      `json:"subagent,omitempty"`
-	SharedWorktreeWith string    `json:"shared_worktree_with,omitempty"`
+	Name           string    `json:"name"`
+	Type           string    `json:"type"`
+	Family         string    `json:"family"`
+	Parent         string    `json:"parent"`
+	TreePath       string    `json:"tree_path,omitempty"`
+	Status         string    `json:"status"`
+	Liveness       string    `json:"liveness"`
+	Blurb          string    `json:"blurb,omitempty"`
+	Branch         string    `json:"branch"`
+	InTurn         bool      `json:"in_turn"`
+	LastActivityAt time.Time `json:"last_activity_at,omitempty"`
+	// LastActivityAge augments the timestamp with an age ("15h ago"). A bare
+	// timestamp reads like live state; a 15-hour-old `working` was misread as
+	// current. QUM-1154.
+	LastActivityAge    string  `json:"last_activity_age,omitempty"`
+	SessionCostUsd     float64 `json:"session_cost_usd,omitempty"`
+	Subagent           bool    `json:"subagent,omitempty"`
+	SharedWorktreeWith string  `json:"shared_worktree_with,omitempty"`
 	// Demoted secondary fields.
 	LastReportState   string `json:"last_report_state,omitempty"`
 	LastReportMessage string `json:"last_report_message,omitempty"`
 }
 
-func toStatusView(a supervisor.AgentInfo) statusView {
+func toStatusView(a supervisor.AgentInfo, now time.Time) statusView {
 	return statusView{
 		Name:               a.Name,
 		Type:               a.Type,
@@ -487,6 +520,7 @@ func toStatusView(a supervisor.AgentInfo) statusView {
 		Branch:             a.Branch,
 		InTurn:             a.InTurn,
 		LastActivityAt:     a.LastActivityAt,
+		LastActivityAge:    tui.Ago(a.LastActivityAt, now),
 		SessionCostUsd:     a.SessionCostUsd,
 		Subagent:           a.Subagent,
 		SharedWorktreeWith: a.SharedWorktreeWith,
@@ -500,14 +534,16 @@ func (s *Server) toolStatus(ctx context.Context) (string, error) {
 	if err != nil {
 		return "", err
 	}
-	if len(agents) == 0 {
-		return "No agents currently registered.", nil
-	}
+	now := s.now()
 	views := make([]statusView, 0, len(agents))
 	for _, a := range agents {
-		views = append(views, toStatusView(a))
+		views = append(views, toStatusView(a, now))
 	}
-	data, _ := json.MarshalIndent(views, "", "  ")
+	payload := statusPayload{Runtime: s.image(), Agents: views}
+	if len(views) == 0 {
+		payload.Note = "No agents currently registered."
+	}
+	data, _ := json.MarshalIndent(payload, "", "  ")
 	return string(data), nil
 }
 
@@ -593,6 +629,7 @@ func (s *Server) toolPeek(ctx context.Context, args json.RawMessage) (string, er
 	if v, ok := m["in_turn"]; ok {
 		m["in_autonomous_turn"] = v
 	}
+	annotatePeekAges(m, result, s.now())
 	data, err := json.MarshalIndent(m, "", "  ")
 	if err != nil {
 		return "", fmt.Errorf("marshaling result: %w", err)
@@ -1071,4 +1108,41 @@ func toolErrorResult(id json.RawMessage, errMsg string) (json.RawMessage, error)
 			{"type": "text", "text": errMsg},
 		},
 	})
+}
+
+// annotatePeekAges adds relative ages to the peek payload. `last_report.at` is
+// an RFC3339 string and `activity[].ts` is a time.Time — two provenances, two
+// conversions, deliberately not unified.
+//
+// An unparseable timestamp renders "unknown" rather than an age derived from
+// the zero time, which would print "489000h ago" and read as data. QUM-1154.
+func annotatePeekAges(m map[string]any, result *supervisor.PeekResult, now time.Time) {
+	if lr, ok := m["last_report"].(map[string]any); ok && result.LastReport.At != "" {
+		if at, err := time.Parse(time.RFC3339, result.LastReport.At); err == nil {
+			lr["age"] = tui.Ago(at, now)
+		} else {
+			lr["age"] = "unknown"
+		}
+	}
+	var newest time.Time
+	for _, e := range result.Activity {
+		if e.TS.After(newest) {
+			newest = e.TS
+		}
+	}
+	if age := tui.Ago(newest, now); age != "" {
+		m["last_activity_age"] = age
+	}
+}
+
+// withImageFn / withNowFn install test seams. Unexported: production wiring
+// must never be able to point the image check at anything but this process.
+func (s *Server) withImageFn(fn func() buildinfo.ImageStatus) *Server {
+	s.imageFn = fn
+	return s
+}
+
+func (s *Server) withNowFn(fn func() time.Time) *Server {
+	s.nowFn = fn
+	return s
 }

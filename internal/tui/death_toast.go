@@ -33,7 +33,7 @@ func BuildDeathToast(msg AgentDiedMsg, now time.Time) Toast {
 	if msg.LastSeen.IsZero() {
 		ago = "just now"
 	} else {
-		ago = humanizeSince(now.Sub(msg.LastSeen)) + " ago"
+		ago = HumanizeSince(now.Sub(msg.LastSeen)) + " ago"
 	}
 	text := fmt.Sprintf("%s (%s) died — last seen %s. Parent %s notified.",
 		msg.Name, msg.Type, ago, msg.Parent)
@@ -41,28 +41,5 @@ func BuildDeathToast(msg AgentDiedMsg, now time.Time) Toast {
 		Text:      text,
 		Style:     ToastError,
 		DismissOn: UserOnlyDismiss(),
-	}
-}
-
-// humanizeSince renders a non-negative duration as a short, agent-readable
-// "Xs"/"Xm"/"Xh"/"Xd" string. Negative durations are clamped to 0s (clock
-// skew should not produce nonsense).
-func humanizeSince(d time.Duration) string {
-	if d < 0 {
-		d = 0
-	}
-	switch {
-	case d < time.Minute:
-		s := int(d.Round(time.Second).Seconds())
-		return fmt.Sprintf("%ds", s)
-	case d < time.Hour:
-		m := int(d.Round(time.Minute).Minutes())
-		return fmt.Sprintf("%dm", m)
-	case d < 24*time.Hour:
-		h := int(d.Round(time.Hour).Hours())
-		return fmt.Sprintf("%dh", h)
-	default:
-		days := int(d / (24 * time.Hour))
-		return fmt.Sprintf("%dd", days)
 	}
 }

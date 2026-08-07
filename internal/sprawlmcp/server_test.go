@@ -515,14 +515,17 @@ func TestToolStatus_ShapeDropsInternalFieldsKeepsBlurb(t *testing.T) {
 		t.Fatalf("toolStatus: %v", err)
 	}
 
-	var views []map[string]any
-	if err := json.Unmarshal([]byte(out), &views); err != nil {
+	// QUM-1154: status is an object — a `runtime` block plus `agents`.
+	var payload struct {
+		Agents []map[string]any `json:"agents"`
+	}
+	if err := json.Unmarshal([]byte(out), &payload); err != nil {
 		t.Fatalf("unmarshal status: %v\n%s", err, out)
 	}
-	if len(views) != 1 {
-		t.Fatalf("views = %d, want 1", len(views))
+	if len(payload.Agents) != 1 {
+		t.Fatalf("agents = %d, want 1", len(payload.Agents))
 	}
-	v := views[0]
+	v := payload.Agents[0]
 
 	// Dropped internal fields.
 	for _, k := range []string{"process_alive", "subprocess_alive", "eventbus_subscribed", "eventbus_sub_count"} {

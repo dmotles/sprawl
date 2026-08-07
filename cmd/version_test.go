@@ -4,6 +4,8 @@ import (
 	"bytes"
 	"strings"
 	"testing"
+
+	"github.com/dmotles/sprawl/internal/buildinfo"
 )
 
 func TestVersion_DefaultValues(t *testing.T) {
@@ -45,5 +47,23 @@ func TestVersion_CustomValues(t *testing.T) {
 	}
 	if !strings.Contains(out, "2026-04-06T00:00:00Z") {
 		t.Errorf("expected output to contain '2026-04-06T00:00:00Z', got: %s", out)
+	}
+}
+
+// The linker stamp reaches the runtime divergence check only if
+// SetVersionInfo — the single call main() makes — forwards into buildinfo.
+// Without this, RunningCommit is permanently "none" and status silently never
+// compares anything (QUM-1154).
+func TestSetVersionInfo_ForwardsToBuildinfo(t *testing.T) {
+	t.Cleanup(func() { SetVersionInfo("dev", "none", "unknown") })
+	SetVersionInfo("v9.9.9", "deadbeef", "2026-01-01T00:00:00Z")
+	if got := buildinfo.Commit(); got != "deadbeef" {
+		t.Errorf("buildinfo.Commit() = %q, want deadbeef", got)
+	}
+	if got := buildinfo.Version(); got != "v9.9.9" {
+		t.Errorf("buildinfo.Version() = %q, want v9.9.9", got)
+	}
+	if got := buildinfo.Date(); got != "2026-01-01T00:00:00Z" {
+		t.Errorf("buildinfo.Date() = %q, want the stamped date", got)
 	}
 }

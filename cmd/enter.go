@@ -33,6 +33,7 @@ import (
 	"github.com/dmotles/sprawl/internal/agentloop"
 	backend "github.com/dmotles/sprawl/internal/backend"
 	backendclaude "github.com/dmotles/sprawl/internal/backend/claude"
+	"github.com/dmotles/sprawl/internal/buildinfo"
 	"github.com/dmotles/sprawl/internal/config"
 	"github.com/dmotles/sprawl/internal/host"
 	"github.com/dmotles/sprawl/internal/inputcoalesce"
@@ -807,7 +808,7 @@ func runEnter(deps *enterDeps) error {
 	if deps.newSession != nil {
 		restartFunc = makeRestartFunc(deps.newSession, sup, deps.finalizeHandoff, sprawlRoot, consolidationCh, state, &bridge, os.Stderr)
 	}
-	model := tui.NewAppModel(accentColor, repoName, buildVersion, bridge, sup, sprawlRoot, restartFunc)
+	model := tui.NewAppModel(accentColor, repoName, buildinfo.Version(), bridge, sup, sprawlRoot, restartFunc)
 	// QUM-588: read .sprawl/config.yaml's validate_popup_after_seconds and
 	// install on the AppModel. QUM-1086: cfg is runEnter's authoritative config,
 	// non-nil by construction here; the accessor applies the default.
