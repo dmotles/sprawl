@@ -64,9 +64,10 @@ $SPRAWL_BIN messages send weave "Test message" "Hello"
 ## Inspecting State
 
 ```bash
-# tmux sessions for this sandbox — _stmux, never bare tmux:
-# the sandbox lives on $SPRAWL_TMUX_SOCKET, so bare `tmux list-sessions`
-# queries the default server and finds nothing.
+# tmux sessions for this sandbox — _stmux, never bare tmux. Two reasons this
+# is not `tmux list-sessions | grep "$SPRAWL_NAMESPACE"`: bare tmux queries the
+# DEFAULT server, not $SPRAWL_TMUX_SOCKET; and the namespace names the socket,
+# not the session, so the grep would filter out the sessions you want.
 _stmux list-sessions
 
 # Agent state, messages, memory
@@ -90,11 +91,22 @@ Manual teardown from the same shell:
 sprawl_sandbox_destroy
 ```
 
-To clear only the tmux session and keep `$SPRAWL_ROOT` for inspection, use the
-narrower sanctioned form — still socket-scoped:
+To clear only the tmux state and keep `$SPRAWL_ROOT` for inspection, stay
+socket-scoped. `kill-server` is safe *here* because `-L` confines it to this
+sandbox's own daemon — it is the same call `sprawl_sandbox_destroy` makes:
 
 ```bash
-_stmux kill-session -t "$SPRAWL_NAMESPACE"
+_stmux kill-server
+```
+
+To kill one session and leave the rest, look the name up first — **do not guess it
+from `$SPRAWL_NAMESPACE`.** The namespace names the *socket*, not the session; each
+script mints its own session name, so `-t "$SPRAWL_NAMESPACE"` errors with
+`session not found`:
+
+```bash
+_stmux list-sessions                 # find the real name
+_stmux kill-session -t <that-name>
 ```
 
 Do **not** hand-roll `rm -rf "$SPRAWL_ROOT"`, and do **not** reach for
@@ -199,8 +211,9 @@ what the layers above exist for — and it is why the answer is `sprawl sandbox-
 never a bare `kill-server`.
 
 Longer analysis in `docs/research/qum-458-e2e-leak-analysis.md`. A docs
-restructure is in flight that moves this file into `docs/archive/`; if the path
-above no longer resolves, look there and expect an `(archived)` label.
+restructure in flight relocates that file under an archive directory; if the path
+above stops resolving, search the tree for the leak analysis by name rather than
+assuming it was deleted.
 
 ## Why this matters
 

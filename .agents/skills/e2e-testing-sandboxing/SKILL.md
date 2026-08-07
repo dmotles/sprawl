@@ -1,6 +1,6 @@
 ---
 name: e2e-testing-sandboxing
-description: Use when validating Sprawl changes end to end in an isolated sandbox without touching real repo state, tmux state, or production-like `.sprawl` data.
+description: Use when validating Sprawl changes end to end in an isolated sandbox without touching real repo state, tmux state, or production-like `.sprawl` data. Also read it before running any tmux command in sandbox or harness context — sandbox tmux lives on a dedicated socket and bare `tmux` reaches the wrong server.
 ---
 
 The canonical workflow for this repository lives in `../../../.claude/skills/e2e-testing-sandboxing/SKILL.md`.

@@ -1604,10 +1604,11 @@ before the control was run.** That cost, not tidiness, is the argument.
 
 ### Name the property before you name the probe
 
-The previous two sections are about an instrument that could not see. This one is
-about an instrument aimed at the wrong thing, which is the failure the previous
-two cannot catch: the probe fires, returns a true answer, and the answer is about
-a different proposition than the one you publish.
+§ *A null result is a statement about your search* and § *Mutate along the axis
+your assertion constrains* are both about an instrument that could not see. This
+one is about an instrument aimed at the wrong thing, which is the failure those
+cannot catch: the probe fires, returns a true answer, and the answer is about a
+different proposition than the one you publish.
 
 > **Write the sentence you intend to publish, in behavioural terms, before you
 > choose the search.** Then check that the sentence's subject and the search's
@@ -1616,10 +1617,12 @@ a different proposition than the one you publish.
 
 **Prefer the property over the countable proxy.** "Is this behaviour tested" and
 "does a file with this name exist" are different questions, and the second is the
-one that is easy to run. Substituting the proxy for the property is the single
-highest-yield source of false findings this repo has retracted: a companion-test
-convention read as `foo.go → foo_test.go` reports gaps that do not exist, because
-tests routinely live in a differently-named file in the same package.
+one that is easy to run. Substituting the proxy for the property has produced
+several of the findings this repo has had to retract — the recurring one being a
+companion-test convention read as `foo.go → foo_test.go`, which reports gaps that
+do not exist, because tests routinely live in a differently-named file in the same
+package. The proxy is not merely weaker evidence than the property; it can be
+false while the property holds.
 
 And keep the control discipline pointed the right way: **before trusting a
 negative result, prove the probe can produce a positive one.** A negative control

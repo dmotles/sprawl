@@ -26,13 +26,24 @@ Carries, in this order:
   squash will succeed, and nothing undoes the reset if the squash commit fails),
   the do-not-clean warning, the read-only diagnose sequence, the
   `refs/sprawl/rescue/<agent>/<ISO8601>/<slug>` pin, the `--soft` move, and the
-  two namespace rules (ISO timestamp in the name because `sprawl gc` ages refs by
-  the name; never hand-write under `refs/sprawl/premerge/`, which is reserved so
-  that anything under it is tool output by construction). Includes the
-  binary-level predicate for whether the hazard is live, and states honestly that
-  the rescue namespace is **not documented in any landed tree**.
+  two namespace rules (ISO timestamp in the name; never hand-write under
+  `refs/sprawl/premerge/`, whose entire value is the by-construction inference
+  that a non-empty listing means the tool ran). Includes the binary-level
+  predicate for whether the hazard is live.
+
+  **A claim corrected during review, worth recording as an instance of the
+  class.** My first draft carried over, in the present tense, that *"`sprawl gc`
+  ages refs by the timestamp in the name, never by commit date, so a name it
+  cannot parse is never pruned."* Nothing in the tree does that: no landed Go
+  code references `refs/sprawl` at all, and `sprawl gc` reaps orphan agent
+  directories and stale session logs by mtime. The sentence described a
+  *proposed* design as current behaviour — a claim of presence, which is the
+  class the draft's own "Documentation you write" rule bans. The skill now states
+  the namespace is unimplemented, and marks the timestamp convention as
+  forward-looking rather than mechanical.
 - **The wrong-tree-commit-on-`main` procedure** — cherry-pick to re-home, then
-  soft-reset or `update-ref` on `main`, root agent only.
+  `reset --mixed` on `main`, root agent only. See the correction below: neither
+  `--soft` nor `update-ref` is right here.
 - **The squash-merge downstream recovery (QUM-1083)** — the precondition, *both
   natural checks lie in opposite directions* (`git branch --contains`
   under-reports; a rebase that succeeds proves nothing, with git's two
@@ -41,7 +52,38 @@ Carries, in this order:
   check.
 - **A pointer** to `/testing-practices` for the generalised epistemic rule.
 
-Two edits made while moving, deliberately:
+**One correction, not a move — and it took two attempts, which is the more useful
+record.** `CLAUDE.md`'s wrong-tree-commit procedure offers
+`git reset --soft <prior-good-sha>`, with `git update-ref` as an equivalent
+alternative, then tells you to confirm `git status` is clean. **Those instructions
+contradict each other**, and the skill now says so.
+
+My first fix was also wrong, in a way worth writing down. I claimed `update-ref`
+"moves the ref alone and leaves `status` clean" — reasoning that it does not touch
+the index, which is true, and concluding status would be clean, which does not
+follow. `status` compares the index to `HEAD`, and in the main checkout `HEAD` *is*
+`main`, so moving the ref moves one side of that comparison. Both `--soft` and
+`update-ref` therefore leave the stray commit's whole tree reported as **staged**,
+byte-identically, and the next `commit` in that checkout silently re-lands it.
+Verified in a throwaway repo, in both directions.
+
+The corrected procedure uses **`reset --mixed`**: it moves the ref *and* resets the
+index, leaving the working tree untouched, so the stray content reappears as
+ordinary uncommitted work — which is the right resting state, since that is what it
+was before someone committed it by mistake. The skill states plainly that no
+command makes `status` clean here (the only route to clean is discarding content,
+i.e. `--hard`, which is forbidden), notes that `--mixed` also unstages any
+legitimate staged work, and confirms the outcome with a containment check rather
+than a status check. Anyone diffing the skill against `CLAUDE.md` will see the
+divergence; it is deliberate.
+
+The class: I had a true premise about the command and drew a conclusion about a
+*different* relation than the one the command participates in — the same shape as
+the rule this branch moves into `/testing-practices`, committed while writing the
+document that carries it. Caught by a reviewer who ran the command instead of
+reasoning about it.
+
+Two further edits made while moving, deliberately:
 
 - `CLAUDE.md`'s step-3 aside *"never sweep a stray in with `git add -A` — see
   below"* resolved to a `CLAUDE.md` section that is **not** moving. Rewritten as
@@ -106,9 +148,19 @@ this is a compression of the skill, and a compressed copy is not a safer copy.
   found a sandbox session.
 - **The narrower sanctioned teardown** `_stmux kill-session -t "$SPRAWL_NAMESPACE"`
   added under Cleanup, for clearing the session while keeping `$SPRAWL_ROOT`.
-- **Skill description extended** with the tmux trigger condition, so the content
-  is reachable by someone whose question is "is this tmux command safe" rather
-  than "how do I set up a sandbox".
+- **The `kill-session` example corrected too.** `CLAUDE.md` offers
+  `_stmux kill-session -t $SPRAWL_NAMESPACE` as the sanctioned narrow teardown.
+  The namespace names the **socket**, not the session — each script mints its own
+  session name — so that command errors with `session not found`. The skill now
+  gives socket-scoped `_stmux kill-server` as the narrow form, and tells you to
+  look the session name up rather than guess it. This is also the *second* defect
+  in the Inspecting-State query: the grep on `$SPRAWL_NAMESPACE` could not have
+  matched even on the right socket.
+- **Both skill descriptions extended** — the `.claude` copy and the `.agents`
+  pointer stub — with the tmux trigger condition, so the content is reachable by
+  someone whose question is "is this tmux command safe" rather than "how do I set
+  up a sandbox". Only the `name` field is test-enforced, so the stub's description
+  is easy to leave stale.
 
 ---
 
@@ -125,12 +177,27 @@ every entry below; a move that leaves both copies is how the current state arose
 | The closing paragraph of the QUM-1083 section, *"Check that the question the command answers is the question you are claiming"* | `/testing-practices` (generalised) **and** `/git-recovery` (as the recovery's own step-4 rationale) | no separate action — it is inside the QUM-1083 section already listed above |
 | Within `## Code Patterns`: the clause *"Do not rebuild it; the defence is manual review against that checklist"* | `/testing-practices` | this clause only. **The rest of that paragraph must stay** — see objections §1 |
 
-Three things that look like duplication and are not, recorded so nobody
-"completes the move" by deleting a sole copy:
+Two clauses restated in a skill whose `CLAUDE.md` home is **not** being cut. No
+action for the cut; listed so a later reader does not "finish the move" by deleting
+the surviving original:
 
-- **`/tmp` hygiene, the `git add -A` rule, and the `rm -rf $SPRAWL_ROOT` incident**
-  were already in the e2e skill and `CLAUDE.md` before this branch. Untouched
-  here; not part of this duplication window.
+- **`git add -A`.** `/git-recovery`'s squash-merge step 3 carries *"never sweep a
+  stray in with `git add -A` — staging is explicit paths only, always."* That
+  restates `CLAUDE.md` `### Never git add -A (QUM-989)`, which stays. It is one
+  clause replacing a "see below" cross-reference that would have dangled once the
+  surrounding section moved, so the restatement is the point.
+- **Commit-guard prose.** `/git-recovery`'s closing note that guards block non-root
+  agents from landing on `main`, and that sprawl refuses to resume or wake a
+  non-root agent whose worktree HEAD is on `main`, paraphrases `## Commit guard`
+  and the reference-transaction backstop. Fine as a pointer while those sections
+  stand. **If the cut trims them, this skill silently becomes a second home for
+  that claim** — decide then whether it should be the only one.
+
+Two things that look like duplication and are not:
+
+- **`/tmp` hygiene and the `rm -rf $SPRAWL_ROOT` incident** were already in both
+  the e2e skill and `CLAUDE.md` before this branch. Untouched here; not part of
+  this duplication window.
 - **"Name the property before you name the probe" and "prefer the property over
   the countable proxy" are not in today's `CLAUDE.md`.** They are new in the
   draft. Putting the long form in `/testing-practices` gives the draft's
@@ -266,11 +333,17 @@ merge-order problem rather than a staleness one.
 
 ---
 
-## 5. Verification, and its honest limit
+## 5. Verification
 
-`make validate` and `go build` were out of scope for this branch by instruction,
-so the commit's pre-commit hook is the first and only execution of the test suite
-against these files. What I checked statically, against the tests' own source:
+I was instructed not to invoke builds myself, so the commit's pre-commit hook was
+the single execution of the suite against these files. **It ran the full
+`make validate` and passed**, including the `cmd` package, which is where every
+skill and documentation test lives — so `TestClaudeSkillsHaveCodexCounterparts`
+and all of `docs_assertion_convention_test.go` are green against this commit.
+The race gate, the gitignore-class harness, and the leak scan also passed.
+
+What I additionally checked statically against the tests' own source, before
+committing, so the green run was expected rather than lucky:
 
 - `.agents/skills/git-recovery/SKILL.md` exists with frontmatter whose `name`
   equals the directory name — the condition `TestClaudeSkillsHaveCodexCounterparts`
@@ -287,8 +360,39 @@ against these files. What I checked statically, against the tests' own source:
   same-breath rule, whose placement before the red-demonstration heading is
   asserted.
 
-**Not verified by execution.** The red-first control that *would* have been free
-here — create `.claude/skills/git-recovery/` before its `.agents/` counterpart and
-watch the sync test name the missing file — was not run, because running it means
-building. Treat the static checks above as reasoning against the test source, not
-as a passing run.
+**The honest limit on that green.** Every test above is a **presence** check on
+prose — the assertion-convention tests say so themselves. A pass means the
+required phrases are in the required sections and no banned pattern appears; it
+says nothing about whether the moved content is *correct*, or whether the
+duplication window in §2 is complete. Those two are the load-bearing claims in
+this branch and **neither has a mechanical check.** §2 was derived by hand and
+should be reviewed by hand.
+
+**Two traps left for the next editor of `/testing-practices`**, neither of which
+any test reports usefully:
+
+- The bare-tally ban is **whole-file and fence-blind**. Anyone who later writes a
+  digit-plus-`instances` phrase *anywhere* in that file — including inside a code
+  fence — fails the build with a message that points at the document's own rule
+  rather than at their edit.
+- The new sections open by naming two sibling sections. Cross-references by *name*
+  survive insertion; the positional form ("the previous two sections") does not,
+  and nothing catches it if it silently becomes false. It was written positionally
+  first and changed on review.
+
+**Not demonstrated red.** The control that was free here — create
+`.claude/skills/git-recovery/` before its `.agents/` counterpart and watch the
+sync test name the missing file — was not run, because running it means building.
+So the sync test's green is consistent with the stub mattering and also with it
+being unreachable; I have read the test and it is the former, but I did not watch
+it fail.
+
+**Reviewed.** A code-review sub-agent sharing this worktree checked every git
+command in `/git-recovery` empirically in throwaway repositories, and every script
+claim against the tree. It confirmed the merge-engine ordering claim exactly (the
+engine really does soft-reset before committing, and an ordering test pins it),
+both cherry-pick paths, the `--is-ancestor` direction, and all of the `_stmux` /
+socket / `sprawl_sandbox_destroy` mechanics. It also found the `update-ref` error
+above, the two unsupported commands now corrected, and the probe with no
+constructible positive control. Every finding it raised is addressed in this
+branch; none was declined.

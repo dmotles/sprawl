@@ -16,7 +16,8 @@ rebase) is the one that destroys the thing you are recovering.
 
 1. **Pin before you move.** The first action in any recovery is to make the
    content you are trying to save reachable from a ref. An unreferenced commit
-   is one `gc` away from gone, and one mistake away from unfindable.
+   is held only by the reflog — which expires, which `gc` can prune, and which
+   does not survive the worktree being removed. A ref survives all three.
 2. **`--soft`, never `--hard`.** `reset --soft` moves a branch pointer and
    leaves the working tree and index alone. `reset --hard` is how recoveries
    turn into second incidents. If a procedure here says `--soft`, there is no
@@ -66,30 +67,44 @@ git -C <agent-worktree> log --oneline -5
 git -C <agent-worktree> status --short
 ```
 
-**The `refs/sprawl/rescue/` namespace is not documented in any landed tree.** A
-merge-safety series in flight (QUM-1090 / QUM-1100) proposes it, together with a
-decision to keep such refs permanently rather than sweep them. Use it anyway; an
-orphaned ref is a trivial price against a lost commit. Two rules travel with it:
+**The `refs/sprawl/` namespace is not implemented in any landed tree.** No shipped
+code reads or writes it: `sprawl gc` reaps orphan agent directories and stale
+session logs by mtime and does not touch git refs at all. A merge-safety series in
+flight (QUM-1090 / QUM-1100) proposes the namespace, together with a decision to
+keep rescue refs permanently rather than sweep them. Use it anyway — an orphaned
+ref is a trivial price against a lost commit, and nothing will prune it. Two rules
+travel with it:
 
-* **Embed an ISO timestamp in the ref name.** `sprawl gc` ages refs by the
-  timestamp *in the name*, never by commit date, so a name it cannot parse is
-  never pruned. Nothing sweeps `rescue/` today; the naming keeps the option open
-  and costs nothing.
-* **Never hand-write a ref under `refs/sprawl/premerge/`.** That prefix is
-  reserved for the merge engine's own output, so that anything under it is tool
-  output *by construction*. A hand-made ref there once made a check for the
-  engine's presence return non-empty on a tree where the engine had never run —
-  a false positive in the verification of the very mechanism you would be
-  checking for.
+* **Embed an ISO timestamp in the ref name**, and name the *attempt* rather than
+  the branch. This is forward-looking, not load-bearing today: nothing sweeps
+  these refs, so the timestamp buys nothing right now and costs nothing either.
+  It exists so a future sweep can age refs by the name — the one field that
+  survives a rewrite — instead of by commit date, which a rescue ref's commit
+  does not reliably carry.
+* **Never hand-write a ref under `refs/sprawl/premerge/`.** The in-flight engine
+  claims that prefix for its own output, and the value of that is *only* the
+  by-construction guarantee: if nothing but the tool writes there, then a
+  non-empty `git for-each-ref refs/sprawl/premerge` means the tool ran. A
+  hand-made ref there has already broken exactly that inference once, returning
+  non-empty on a tree where the feature had never run — a false positive in the
+  verification of the mechanism you would be checking for. Keep rescues under
+  `rescue/`.
 
 **Whether the hazard is live depends on the binary that will run**, not on
 branch state and not on a report that the fix merged. Check the binary:
 
 ```bash
-strings $(command -v sprawl) | grep -c 'refs/sprawl/premerge'
+strings <the-sprawl-binary-that-will-run> | grep -c 'refs/sprawl/premerge'
 # 0 = the old engine: it rewrites the branch before it knows the squash succeeds,
 #     and this section applies.
 ```
+
+**Until that series lands this returns 0 for every binary, so a 0 today is not
+evidence** — it cannot discriminate "old engine" from a typo'd pattern or a
+renamed marker, and no positive control for it is constructible yet. It is a
+forward-looking check: useful once a binary exists that *can* return non-zero,
+and until then you should simply assume the hazard is live. Probe the binary the
+merge will actually run, not whatever `sprawl` resolves to on your `PATH`.
 
 ## A commit landed on `main` by mistake
 
@@ -105,13 +120,37 @@ git -C <agent-worktree> cherry-pick <stray-sha>
 #    Verify it now exists on the agent branch before continuing.
 
 # 3. Rewind main's ref — ROOT AGENT ONLY, from the main checkout.
-git -C <main-checkout> reset --soft <prior-good-sha>
-#    or: git update-ref refs/heads/main <prior-good-sha>
+git -C <main-checkout> reset --mixed <prior-good-sha>
 ```
 
-`--soft` keeps the working tree and index intact and only moves the pointer.
-Confirm afterwards that `git -C <main-checkout> status` is clean and that the
-stray commit is no longer an ancestor of `main`.
+**Do not expect `status` to be clean afterwards, and do not use `--soft` or a bare
+`update-ref` here.** In the main checkout `HEAD` *is* `main`, so any command that
+moves the ref without also moving the index leaves the stray commit's whole tree
+sitting in the index — reported as **staged**, and silently re-landed by the next
+`git commit` anyone runs in that checkout. Both `reset --soft` and
+`update-ref refs/heads/main` produce that outcome; they are not different here.
+
+`reset --mixed` moves the ref *and* resets the index, while leaving the working
+tree alone. The stray content therefore reappears as ordinary **uncommitted** work
+in the main checkout, which is the correct resting state — it is the root agent's
+uncommitted work again, exactly as it was before someone committed it by mistake.
+The root agent decides what happens to it from there. Nothing is lost, because
+`--mixed` never writes the working tree. Its one cost: it also unstages anything
+the root agent had legitimately staged, which is noisy but recoverable — re-stage
+by explicit path.
+
+There is no command that makes `status` clean here, and you should not look for
+one: the only way to a clean status is discarding the content, which is
+`reset --hard` and is forbidden.
+
+Confirm the *ref* moved rather than the status:
+
+```bash
+git -C <main-checkout> merge-base --is-ancestor <stray-sha> main   # must exit NON-zero
+```
+
+Read that argument order carefully — it asks *is the stray commit contained in
+`main`*, which is the question you want answered **no**. See the closing section.
 
 This should be a rare exception rather than a routine: commit guards block
 non-root agents from landing on `main` in the first place, and sprawl
