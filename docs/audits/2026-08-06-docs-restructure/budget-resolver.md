@@ -555,10 +555,20 @@ Per-block minima, not one grand total: a single sum lets one block die at its
 first line while the others carry the run over the floor.
 
 **The `validate` wiring was confirmed by expansion, not by reading the
-Makefile** — the lesson `scripts/test-race-gate.sh` exists to teach. `make -n
-validate` line 33 is exactly `bash scripts/test-always-loaded-budget.sh`, with
-no env-var prefix, and the live `always-loaded-budget` target is correctly
-absent.
+Makefile** — the lesson `scripts/test-race-gate.sh` exists to teach. Re-derived
+at QUM-1155, `make -n validate` now expands to both, adjacent and in this order,
+with no env-var prefix on either:
+
+```
+33:bash scripts/test-always-loaded-budget.sh
+34:bash scripts/always-loaded-budget.sh --check-manifest scripts/testdata/always-loaded-manifest.observed
+```
+
+Line 34 is the promotion. Until 2026-08-07 this paragraph read "the live
+`always-loaded-budget` target is correctly absent" — true when written, and false
+the moment the target was promoted. Anyone checking the wiring by the method this
+paragraph recommends would have got the opposite answer from its prose, which is
+the same class of defect as the figures the resolver replaces.
 
 ## Running it
 

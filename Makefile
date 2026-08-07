@@ -128,7 +128,10 @@ test-wirelog-helpers-unit:
 # is an allowlisted on-demand pointer, and the tree now measures 74 against 250.
 #
 # TRACKED-ONLY, AND THAT IS THE POLICY — NOT A LIMITATION TO LIFT. The enforced
-# set is the injected files that are git-tracked in the SPRAWL ROOT's index.
+# set is the injected files that are git-tracked in the checkout they were
+# injected from (a worktree's own branch, or the sprawl root — asking only the
+# root index would leave a file an agent added on its branch unenforced in the
+# worktree that added it).
 # CLAUDE.local.md is gitignored and per-user: it loads on the machine that has it
 # and does not exist in a fresh clone. Enforcing it would make `make validate`
 # pass or fail as a function of whose checkout ran it, and would make the

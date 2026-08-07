@@ -46,6 +46,14 @@
 # still REPORTED, with their sizes, and counted in the verdict line's untracked=
 # field. Folding them back into the enforced total is a REGRESSION.
 #
+# "Tracked" is asked of the CHECKOUT THE FILE WAS INJECTED FROM, not globally of
+# the sprawl root. An agent's worktree is on a branch; the sprawl root is on
+# main. Asking only the root index would leave a file the agent added ON ITS
+# BRANCH unenforced in the very worktree that added it, so the gate would fire
+# only after the merge, from a checkout nobody runs validate in — a check that
+# silently stopped checking. Determinism is unaffected: a gitignored file is
+# untracked in both indexes.
+#
 # WHAT IT DELIBERATELY DOES NOT RESOLVE
 #
 # Prose read-instructions are not detected by understanding them. Detecting
@@ -121,7 +129,9 @@ while [ $# -gt 0 ]; do
 		shift
 		;;
 	-h | --help)
-		sed -n '2,63p' "${BASH_SOURCE[0]}"
+		# Range asserted in scripts/test-always-loaded-budget.sh (block `usage`):
+		# it silently truncated the header twice while nothing watched it.
+		sed -n '2,71p' "${BASH_SOURCE[0]}"
 		exit 0
 		;;
 	*) die_usage "unknown argument '$1'" ;;
@@ -208,32 +218,52 @@ ALLOWED="$WORK/allowed"
 awk '{sub(/#.*/, "")} NF {print $1}' "$ALLOW" >"$ALLOWED"
 is_allowlisted() { grep -qxF -- "$1" "$ALLOWED"; }
 
-# repo_rel PATH — PATH as git names it INSIDE THE CHECKOUT IT WAS INJECTED FROM,
-# for is_enforced() below. Structurally identical to norm(), minus the <worktree>
-# token: keep the two in step, because a drift means the report prints one
-# identity while the filter tests another.
+# The --root checkout's own index, for is_enforced() below. This is a SECOND
+# index and it has to be: $TRACKED is the sprawl root's, which for an agent is
+# `main`, and a file the agent added ON ITS BRANCH is absent from it. Asking only
+# the root index makes a branch-added always-loaded file unenforced in the very
+# worktree that added it — the gate would fire only after the merge, from the
+# checkout nobody runs it in. Refused rather than defaulted-empty, same argument
+# as $TRACKED above.
+TRACKED_ROOT_CHECKOUT="$WORK/tracked-root-checkout"
+if [ "$ROOT" != "$SPRAWL_ROOT" ]; then
+	if ! git -C "$ROOT" ls-files >"$TRACKED_ROOT_CHECKOUT" 2>"$WORK/ls-files-wt.err"; then
+		echo "error: 'git ls-files' failed in '$ROOT' — the enforced set would silently collapse to the files this checkout shares with the sprawl root, so this run is refused rather than reported green:" >&2
+		sed 's/^/  /' "$WORK/ls-files-wt.err" >&2
+		exit 1
+	fi
+else
+	cp "$TRACKED" "$TRACKED_ROOT_CHECKOUT"
+fi
+
+# is_enforced PATH — is this injection in the ENFORCED set?
 #
-# $ROOT is stripped BEFORE $SPRAWL_ROOT and that ORDER is the whole point. An
-# agent worktree lives UNDER the sprawl root at .sprawl/worktrees/<name>, a path
-# the root index never contains, so stripping $SPRAWL_ROOT first would map
-# <worktree>/CLAUDE.md to '.sprawl/worktrees/<name>/CLAUDE.md' — untracked —
-# emptying the enforced set for every agent and tripping the discovery floor.
-repo_rel() {
+# Tracked-ness is asked of the CHECKOUT THE FILE WAS INJECTED FROM, not globally
+# of the sprawl root. `git -C <dir> ls-files` lists that checkout's index with
+# paths relative to <dir>, so the strip below and the lookup agree by
+# construction — including when --root is a subdirectory rather than a checkout
+# root.
+#
+# $ROOT is tried BEFORE $SPRAWL_ROOT and that ORDER matters: an agent worktree
+# lives UNDER the sprawl root at .sprawl/worktrees/<name>, a path the root index
+# never contains, so matching $SPRAWL_ROOT first would test
+# '.sprawl/worktrees/<name>/CLAUDE.md' against the root index, find nothing, and
+# empty the enforced set for every agent.
+#
+# Determinism survives this: CLAUDE.local.md is gitignored, so it is untracked in
+# the worktree index too and stays excluded. What comes back is exactly the class
+# that SHOULD be enforced — files this branch tracks. See the header's "WHAT IT
+# ENFORCES VS WHAT IT MERELY REPORTS".
+is_enforced() {
 	local p=$1
 	if [ "$ROOT" != "$SPRAWL_ROOT" ] && [ "${p#"$ROOT"/}" != "$p" ]; then
-		echo "${p#"$ROOT"/}"
+		grep -qxF -- "${p#"$ROOT"/}" "$TRACKED_ROOT_CHECKOUT"
 	elif [ "${p#"$SPRAWL_ROOT"/}" != "$p" ]; then
-		echo "${p#"$SPRAWL_ROOT"/}"
+		is_tracked "${p#"$SPRAWL_ROOT"/}"
 	else
-		echo "$p" # outside both — never tracked
+		return 1 # outside both checkouts — never enforced
 	fi
 }
-
-# is_enforced PATH — is this injection in the ENFORCED set? Tracked-ness is a
-# property of the NAME in the sprawl root's index, not of the worktree copy's
-# bytes or history, which is what makes the verdict identical from every agent's
-# worktree. See the header's "WHAT IT ENFORCES VS WHAT IT MERELY REPORTS".
-is_enforced() { is_tracked "$(repo_rel "$1")"; }
 
 # norm PATH — display/manifest form: relative to the sprawl root, with the
 # worktree under test rendered as the literal token <worktree> so a manifest
@@ -281,13 +311,22 @@ record() {
 	printf '%s\t%s\t%s\t%s\t%s\t%s\n' "$l" "$w" "$c" "$(norm "$f")" "$f" "$kind" >>"$INJ"
 }
 
-# walk_imports FILE CHAIN — record FILE's transitive @-imports. CHAIN is the
-# newline-separated stack of files already open on THIS path; a file already in
-# the chain is a cycle and is skipped without being counted. A file reachable by
-# two distinct paths (a diamond) is counted for each, because each is a separate
-# injection.
+# walk_imports FILE CHAIN [MODE] — record FILE's transitive @-imports. CHAIN is
+# the newline-separated stack of files already open on THIS path; a file already
+# in the chain is a cycle and is skipped without being counted. A file reachable
+# by two distinct paths (a diamond) is counted for each, because each is a
+# separate injection.
+#
+# MODE is `enforce` (default) or `report` — the latter for the subtree under an
+# EXCLUDED file. In report mode nothing reaches $INJ and an unresolvable import
+# is NOT an error: that subtree hangs off a file which is per-machine by
+# definition, so failing on it would re-create the per-checkout verdict this
+# tracked-only design exists to remove. It is still WALKED, because "excluded,
+# never hidden" has to hold for the whole subtree — a tracked 400-line file
+# reached only through an untracked parent genuinely loads, and dropping it from
+# every table would be the report lying about what it saw.
 walk_imports() {
-	local file=$1 chain=$2 dir tok target
+	local file=$1 chain=$2 mode=${3:-enforce} dir tok target
 	dir=$(dirname "$file")
 	while IFS= read -r tok; do
 		[ -n "$tok" ] || continue
@@ -297,6 +336,7 @@ walk_imports() {
 		*) target="$dir/$tok" ;;
 		esac
 		if [ ! -f "$target" ]; then
+			[ "$mode" = report ] && continue
 			RESOLVE_ERR="$RESOLVE_ERR
   $(norm "$file") @-imports '$tok', which does not resolve to a file (looked at $target)"
 			continue
@@ -318,16 +358,17 @@ $target
 			continue
 		fi
 		# Tracked-only, by whatever route the file was reached. The out-of-tree
-		# branch above must stay FIRST: repo_rel of an out-of-tree path is
-		# meaningless. Not walking an excluded import's own imports keeps the
-		# enforced set a set no context header could contradict.
-		if ! is_enforced "$target"; then
+		# branch above must stay FIRST: an out-of-tree path belongs to neither
+		# checkout's index, so asking is_enforced about it is meaningless.
+		if [ "$mode" = report ] || ! is_enforced "$target"; then
 			record_untracked "$target" "@-imported by $(norm "$file")"
+			walk_imports "$target" "$chain
+$target" report
 			continue
 		fi
 		record "$target" import
 		walk_imports "$target" "$chain
-$target"
+$target" "$mode"
 		# The import token grammar is WHITESPACE-DELIMITED by design: `@a b.md`
 		# is one token `a` and hard-fails as unresolvable. Failing loud on a
 		# space beats guessing where the path ends, and guessing is how a
@@ -344,11 +385,13 @@ add_injection() {
 	# harness demonstrably does not load would be counted in its place. Shadowing
 	# is a fact about the harness; tracking is a policy about enforcement.
 	if ! is_enforced "$f"; then
-		record_untracked "$f" "always-loaded, but not tracked in the sprawl root's index"
+		record_untracked "$f" "always-loaded, but not tracked in this checkout"
+		# Walked in report mode, not skipped: see walk_imports' MODE comment.
+		walk_imports "$f" "$f" report
 		return
 	fi
 	record "$f" base
-	walk_imports "$f" "$f"
+	walk_imports "$f" "$f" enforce
 }
 
 # Ancestor chain: --root first, then up to and including the sprawl root.
@@ -393,7 +436,10 @@ echo "in-tree injections (ENFORCED — GIT-TRACKED ONLY) — LINES WORDS CHARS I
 if [ "$INJECTIONS" -gt 0 ]; then
 	awk -F'\t' '{printf "  %6d %7d %8d  %s%s\n", $1, $2, $3, $4, ($6=="import" ? " (@-import)" : "")}' "$INJ"
 fi
-echo "  @-imports resolved: $IMPORTS_RESOLVED"
+# Counts resolution, not enforcement, so it includes imports listed in the
+# excluded section below — a resolvable-but-unenforced import is still evidence
+# the walker worked, which is what this counter is for.
+echo "  @-imports resolved: $IMPORTS_RESOLVED (enforced and excluded)"
 echo "  in-tree total: $IN_TREE lines across $INJECTIONS injections"
 
 # Printed on EVERY run, "(none)" arm included: the policy has to be legible on a

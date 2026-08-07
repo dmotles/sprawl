@@ -69,17 +69,17 @@ fi
 # (so counters cannot roll up in variables) and tags its ledger lines with
 # $BLOCK. Bump the number when you add or remove an assertion in that block.
 EXPECT_BLOCKS="
-multiplicity:11
-antidedup:3
+multiplicity:12
+antidedup:4
 discovery:8
 imports:24
-readcheck:12
+readcheck:13
 mention:6
 ceiling:11
-usage:7
+usage:10
 report:10
-manifest:14
-tracked:42
+manifest:15
+tracked:66
 "
 
 BLOCK=unset
@@ -169,10 +169,12 @@ prepend() {
 	printf '%s\n' "$1" | cat - "$2" >"$2.tmp" && mv "$2.tmp" "$2"
 }
 
-# track REPO PATH... — commit into the SPRAWL ROOT's index. "git-tracked" in the
-# resolver's contract means tracked in the sprawl root repo, not in whichever
-# worktree happens to be under test: the paths named in an always-loaded file
-# are repo-relative, and a worktree's index is an accident of when it branched.
+# track REPO PATH... — commit into the SPRAWL ROOT's index. This is the oracle
+# for files that live at or above the sprawl root, and for the paths NAMED inside
+# an always-loaded file by the read-instruction check (those are repo-relative
+# references, for which the root index is the right authority).
+#
+# It is NOT the oracle for a file injected from a worktree — see track_wt_ok.
 track() {
 	local r=$1
 	shift
@@ -200,6 +202,24 @@ track_ok() {
 		pass "setup: tracked all $want of: $*"
 	else
 		fail "setup FAILED: did not track all of '$*' — enforced totals in this block would be wrong, and would read as a resolver defect"
+	fi
+}
+
+# track_wt_ok WORKTREE PATH... — track on the WORKTREE's own branch, and assert
+# it took. Enforcement asks the checkout a file was INJECTED FROM, so tracking a
+# name at the sprawl root does not make the worktree copy enforced. That
+# asymmetry is the point: it is what lets the gate fail on a file an agent added
+# on its branch, which the root index (main) knows nothing about.
+track_wt_ok() {
+	local w=$1
+	shift
+	local want=$#
+	git -C "$w" add -- "$@" >/dev/null 2>&1
+	git -C "$w" commit -q -m fixture >/dev/null 2>&1
+	if [ "$(git -C "$w" ls-files -- "$@" | wc -l | tr -d ' ')" = "$want" ]; then
+		pass "setup: tracked all $want on the worktree branch: $*"
+	else
+		fail "setup FAILED: did not track all of '$*' on the worktree branch — the worktree injections would all be excluded"
 	fi
 }
 
@@ -270,9 +290,16 @@ echo "--- injection multiplicity ---"
 	nlines "$repo/.sprawl/CLAUDE.md" 500
 	nlines "$repo/docs/CLAUDE.md" 500
 	track_ok "$repo" CLAUDE.md CLAUDE.local.md .sprawl/CLAUDE.md .sprawl/CLAUDE.local.md docs/CLAUDE.md
+	track_wt_ok "$wt" CLAUDE.md CLAUDE.local.md
 	c="$TMPPARENT/c1.conf"
 	conf "$c" 1000
 
+	# The ancestor CLAUDE.md copies are DELETED for the first run and restored for
+	# the second, so the pair below is a real before/after and not the same
+	# command twice. Tracked-ness survives deleting the working-tree file (it is a
+	# property of the index), which is what lets the names stay tracked across
+	# both runs.
+	rm "$repo/CLAUDE.md" "$repo/.sprawl/CLAUDE.md" "$repo/docs/CLAUDE.md"
 	run_budget "$wt" --conf "$c"
 	assert_eq "CLAUDE.local.md accumulates at EVERY level: 7 + 3 + 5, plus a 30-line CLAUDE.md" "45" "$(verdict_field in_tree)"
 	assert_eq "four in-tree injection sites resolved" "4" "$(verdict_field injections)"
@@ -281,7 +308,11 @@ echo "--- injection multiplicity ---"
 	# CLAUDE.md resolves to the NEAREST ancestor only while CLAUDE.local.md
 	# accumulates. Same directory, same walk, opposite treatment — measured from
 	# three live agent context headers (weave at the repo root, two managers in
-	# worktrees), not inferred.
+	# worktrees), not inferred. Restoring 999 + 500 lines of ancestor CLAUDE.md
+	# must not move the total by one line.
+	nlines "$repo/CLAUDE.md" 999
+	nlines "$repo/.sprawl/CLAUDE.md" 500
+	nlines "$repo/docs/CLAUDE.md" 500
 	run_budget "$wt" --conf "$c"
 	assert_eq "ancestor CLAUDE.md files are NOT counted when a nearer one exists" "45" "$(verdict_field in_tree)"
 
@@ -308,6 +339,7 @@ echo "--- injection multiplicity ---"
 	nlines "$wt/CLAUDE.md" 10
 	nlines "$repo/CLAUDE.md" 77 # shadowed; exists to put the NAME in the root index
 	track_ok "$repo" CLAUDE.md CLAUDE.local.md
+	track_wt_ok "$wt" CLAUDE.md CLAUDE.local.md
 	c="$TMPPARENT/c2.conf"
 	conf "$c" 1000
 	run_budget "$wt" --conf "$c"
@@ -467,6 +499,10 @@ echo "--- read-instruction ban ---"
 	# counted — the totals elsewhere in this suite would catch it if it were.
 	nlines "$repo/CLAUDE.md" 3
 	track_ok "$repo" CLAUDE.md docs/x.md scripts/helper.sh
+	# The worktree CLAUDE.md is rewritten by each case below; tracking it once
+	# here is enough, since tracked-ness is a property of the index, not content.
+	nlines "$wt/CLAUDE.md" 1
+	track_wt_ok "$wt" CLAUDE.md
 	# `track` cannot fail silently here: three negative controls below assert
 	# violations=0, and an empty index would satisfy all of them for the wrong
 	# reason.
@@ -635,6 +671,13 @@ echo "--- usage and skip ---"
 	run_budget "$repo" --conf "$c" --allow "$TMPPARENT/no-such-allowlist"
 	assert_eq "a missing --allow file exits 2 (symmetric with --conf)" "2" "$RC"
 
+	# --help is a hardcoded line RANGE over this file's own header, so it
+	# truncates silently every time the header grows. Pin both ends: a section
+	# from the middle, and the header's last line.
+	helpout=$(CLAUDE_CONFIG_DIR="$EMPTY_CFG" "$BUDGET" --help 2>&1)
+	assert_contains "--help reaches the tracked-only policy section" "$helpout" "WHAT IT ENFORCES VS WHAT IT MERELY REPORTS"
+	assert_contains "--help runs to the END of the header, not a stale line number" "$helpout" "skip asserts NOTHING"
+
 	# The environment skip: 77 when git specifically is absent. A blanket
 	# PATH=/nonexistent would also remove bash (the `#!/usr/bin/env bash`
 	# shebang resolves it via PATH, exit 127) and every coreutil, so a 77 would
@@ -718,6 +761,7 @@ echo "--- manifest tripwire ---"
 	# 4 lines: this is also the [root] perspective's CLAUDE.md further down.
 	nlines "$repo/CLAUDE.md" 4
 	track_ok "$repo" CLAUDE.md CLAUDE.local.md
+	track_wt_ok "$wt" CLAUDE.md CLAUDE.local.md
 	c="$TMPPARENT/c15.conf"
 	conf "$c" 1000
 	man="$TMPPARENT/manifest15"
@@ -788,7 +832,9 @@ echo "--- tracked-only enforcement ---"
 	c="$TMPPARENT/c16.conf"
 	conf "$c" 1000
 	track_ok "$repo" CLAUDE.md
-	assert_setup "CLAUDE.local.md is deliberately NOT tracked" -z "$(git -C "$repo" ls-files CLAUDE.local.md)"
+	track_wt_ok "$wt" CLAUDE.md
+	assert_setup "CLAUDE.local.md is deliberately NOT tracked at the root" -z "$(git -C "$repo" ls-files CLAUDE.local.md)"
+	assert_setup "nor on the worktree branch — untracked in BOTH indexes" -z "$(git -C "$wt" ls-files CLAUDE.local.md)"
 
 	run_budget "$wt" --conf "$c"
 	# 30/1/2 do NOT discriminate on their own: a basename blocklist ("skip
@@ -919,6 +965,81 @@ echo "--- tracked-only enforcement ---"
 	run_budget "$repo" --conf "$c"
 	assert_eq "tracking the import folds it back into the enforced total" "62" "$(verdict_field in_tree)"
 	assert_eq "a fully-tracked tree reports untracked=0, it does not omit the field" "0" "$(verdict_field untracked)"
+)
+(
+	BLOCK=tracked
+	# Tracked-ness is asked of the checkout the file was INJECTED FROM, not
+	# globally of the sprawl root's index. This is the case the promotion into
+	# `validate` exists for: an agent adds an always-loaded file ON ITS BRANCH and
+	# runs validate IN ITS WORKTREE. The root index is main's, so a root-index-only
+	# oracle answers "untracked" and the gate cannot fail on the budget bust the
+	# agent just created — it would only fire after the merge, from the root
+	# checkout, which is the one place nobody is looking.
+	repo=$(new_repo)
+	assert_setup "repo fixture exists" -d "$repo/.git"
+	nlines "$repo/CLAUDE.md" 11
+	track_ok "$repo" CLAUDE.md
+	wt=$(add_worktree "$repo" a)
+	assert_setup "worktree fixture exists" -d "$wt"
+	c="$TMPPARENT/c20.conf"
+	conf "$c" 250
+
+	nlines "$wt/big.md" 500
+	printf '@big.md\n' >"$wt/CLAUDE.md"
+	git -C "$wt" add -- big.md CLAUDE.md >/dev/null 2>&1
+	git -C "$wt" commit -q -m 'branch adds a large always-loaded import' >/dev/null 2>&1
+	assert_setup "big.md IS tracked on the branch" -n "$(git -C "$wt" ls-files big.md)"
+	assert_setup "big.md is NOT in the root index (this is the whole point)" -z "$(git -C "$repo" ls-files big.md)"
+
+	run_budget "$wt" --conf "$c"
+	assert_eq "a branch-added always-loaded file is ENFORCED from its own worktree" "501" "$(verdict_field in_tree)"
+	assert_eq "and it is an enforced injection site, not an excluded one" "2" "$(verdict_field injections)"
+	assert_eq "nothing was diverted into the untracked bucket" "0" "$(verdict_field untracked)"
+	assert_eq "so the gate FAILS on the budget bust the branch just created" "1" "$RC"
+	assert_line_both "and names the branch-added file as the largest contributor" "$OUT$ERROUT" "largest contributor" "big.md"
+
+	# The determinism property must SURVIVE this: a gitignored per-user file is
+	# untracked in the worktree index too, so it stays excluded. If asking the
+	# worktree re-enforced CLAUDE.local.md, we would be back to the fresh-clone
+	# rc=1 this whole change removed.
+	nlines "$wt/CLAUDE.local.md" 7
+	printf 'CLAUDE.local.md\n' >"$repo/.gitignore"
+	track_ok "$repo" .gitignore
+	run_budget "$wt" --conf "$c"
+	assert_eq "a gitignored per-user file is STILL excluded when asking the worktree" "501" "$(verdict_field in_tree)"
+	assert_eq "and is still reported as excluded" "1" "$(verdict_field untracked)"
+)
+(
+	BLOCK=tracked
+	# "Excluded, never hidden" has to be true for the whole subtree. A TRACKED file
+	# reached only through an untracked parent genuinely loads; excluding it from
+	# the enforced total is right (its presence is per-machine, because its parent
+	# is), but dropping it from every table and every counter is the report lying
+	# about what it saw.
+	repo=$(new_repo)
+	assert_setup "repo fixture exists" -d "$repo/.git"
+	nlines "$repo/CLAUDE.md" 10
+	nlines "$repo/shared.md" 400
+	track_ok "$repo" CLAUDE.md shared.md
+	c="$TMPPARENT/c21.conf"
+	conf "$c" 1000
+
+	printf '@shared.md\n' >"$repo/CLAUDE.local.md" # untracked parent
+	assert_setup "the parent is untracked" -z "$(git -C "$repo" ls-files CLAUDE.local.md)"
+	assert_setup "but its import target IS tracked" -n "$(git -C "$repo" ls-files shared.md)"
+
+	run_budget "$repo" --conf "$c"
+	assert_eq "the tracked file under an untracked parent stays OUT of the total" "10" "$(verdict_field in_tree)"
+	assert_line_both "but it is REPORTED with its size, not hidden" "$OUT" "shared.md" "400"
+	assert_eq "and both it and its parent are counted as excluded" "2" "$(verdict_field untracked)"
+	assert_contains "the walker still reports having resolved the import" "$OUT" "@-imports resolved: 1"
+
+	# A dangling @-import inside an untracked file must NOT fail the run: that file
+	# is per-machine, so failing on it re-creates the per-checkout verdict this
+	# change exists to remove.
+	printf '@nope-not-here.md\n' >"$repo/CLAUDE.local.md"
+	run_budget "$repo" --conf "$c"
+	assert_eq "a dangling import inside an untracked file does not fail the run" "0" "$RC"
 )
 
 # ---------------------------------------------------------------------------

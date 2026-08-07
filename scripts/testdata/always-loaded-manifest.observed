@@ -47,11 +47,16 @@
 # NOT add an [untracked] section: either one re-creates that failure, on every
 # machine except the one that happens to hold the file.
 #
-# Consequence to accept rather than fix: the CLAUDE.local.md doubling is no
-# longer pinned by this tripwire, because the doubled file is the untracked one.
-# It is still pinned by the resolver's untracked report (which prints both copies
-# with distinct paths) and by the multiplicity assertions in
-# scripts/test-always-loaded-budget.sh.
+# Consequence to accept rather than fix, stated plainly because the tempting
+# version of this sentence is false: the CLAUDE.local.md doubling is now pinned
+# by NO automated check. The doubled file is the untracked one, so it is out of
+# this tripwire; the resolver's untracked report prints both copies but nothing
+# compares that output to a recording; and the multiplicity assertions in
+# scripts/test-always-loaded-budget.sh are fixture-only, so they pin the
+# RESOLVER's ancestor walk, not the HARNESS's observed behaviour — which is the
+# distinction this whole file exists on. If the harness stopped double-injecting
+# CLAUDE.local.md tomorrow, `make validate` would stay green and say nothing.
+# That is the accepted cost of a deterministic gate, not an oversight.
 #
 # TWO perspectives, both observed, selected by where --root points. Recording
 # only one makes the other false-fail, and "re-record" would then break the
