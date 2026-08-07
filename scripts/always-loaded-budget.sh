@@ -86,6 +86,7 @@ while [ $# -gt 0 ]; do
 	case "$1" in
 	--root)
 		ROOT=${2:-}
+		[ -n "$ROOT" ] || die_usage "--root needs a non-empty value"
 		shift 2 || die_usage "--root needs a value"
 		;;
 	--conf)
@@ -109,7 +110,7 @@ while [ $# -gt 0 ]; do
 		shift
 		;;
 	-h | --help)
-		sed -n '2,60p' "${BASH_SOURCE[0]}"
+		sed -n '2,53p' "${BASH_SOURCE[0]}"
 		exit 0
 		;;
 	*) die_usage "unknown argument '$1'" ;;
@@ -134,8 +135,12 @@ SPRAWL_ROOT=$(dirname "$GIT_COMMON")
 # recorded against — never when pointed at some other tree, whose injection set
 # it says nothing about.
 OWN_COMMON=$(cd "$SCRIPT_DIR" && cd "$(git rev-parse --git-common-dir 2>/dev/null || echo .)" && pwd)
-if [ -z "$MANIFEST" ] && [ "$NO_MANIFEST" -eq 0 ] &&
-	[ "$SPRAWL_ROOT" = "$(dirname "$OWN_COMMON")" ] && [ -f "$DEFAULT_MANIFEST" ]; then
+if [ -z "$MANIFEST" ] && [ "$NO_MANIFEST" -eq 0 ] && [ "$SPRAWL_ROOT" = "$(dirname "$OWN_COMMON")" ]; then
+	# Deleting the recorded manifest must not silently disable the tripwire —
+	# that is the same absence-is-trivially-true failure one level up, and it
+	# would look exactly like a clean run. Opting out is explicit or not at all.
+	[ -f "$DEFAULT_MANIFEST" ] ||
+		die_usage "the recorded manifest '$DEFAULT_MANIFEST' is missing; re-record it from a live agent's context header, or pass --no-manifest to measure without the tripwire"
 	MANIFEST="$DEFAULT_MANIFEST"
 fi
 
@@ -168,12 +173,29 @@ esac
 trap 'rm -rf "$WORK"' EXIT
 
 TRACKED="$WORK/tracked"
-git -C "$SPRAWL_ROOT" ls-files >"$TRACKED" 2>/dev/null || : >"$TRACKED"
+# NOT `|| : >"$TRACKED"`. Swallowing this error leaves the tracked list empty,
+# which makes is_tracked() always false, which makes BOTH read-check legs
+# structurally unable to fire — and the run still reports green. Same argument
+# as the discovery floor below: an instrument blind to its target must refuse to
+# report rather than report nothing found.
+if ! git -C "$SPRAWL_ROOT" ls-files >"$TRACKED" 2>"$WORK/ls-files.err"; then
+	echo "error: 'git ls-files' failed in '$SPRAWL_ROOT' — the read-instruction check would be structurally unable to fire, so this run is refused rather than reported green:" >&2
+	sed 's/^/  /' "$WORK/ls-files.err" >&2
+	exit 1
+fi
 
 # is_tracked PATH — tracked in the SPRAWL ROOT's index. Not the worktree's: the
 # paths named inside an always-loaded file are repo-relative, and a worktree's
 # index is an accident of when it branched.
 is_tracked() { grep -qxF -- "$1" "$TRACKED"; }
+
+# is_allowlisted PATH — literal comparison against the first whitespace-
+# delimited field of each non-comment allowlist line. Deliberately NOT a regex
+# built from the path: a metacharacter in a filename would silently widen the
+# match, and a too-wide allowlist entry is a check that stops checking.
+ALLOWED="$WORK/allowed"
+awk '{sub(/#.*/, "")} NF {print $1}' "$ALLOW" >"$ALLOWED"
+is_allowlisted() { grep -qxF -- "$1" "$ALLOWED"; }
 
 # norm PATH — display/manifest form: relative to the sprawl root, with the
 # worktree under test rendered as the literal token <worktree> so a manifest
@@ -200,6 +222,8 @@ INJ="$WORK/injections" # lines \t words \t chars \t normpath \t realpath \t kind
 : >"$INJ"
 IMPORTS_RESOLVED=0
 RESOLVE_ERR=""
+OOT_IMPORTS="$WORK/oot-imports"
+: >"$OOT_IMPORTS"
 
 record() {
 	# $1 realpath, $2 kind (base|import)
@@ -239,9 +263,20 @@ $target
 "*) continue ;; # cycle on this path
 		esac
 		IMPORTS_RESOLVED=$((IMPORTS_RESOLVED + 1))
+		# An import that resolves OUTSIDE the sprawl root (`@~/...`, `@/abs/...`)
+		# loads, but is not ours to edit and has no portable manifest form — same
+		# class as the user-global CLAUDE.md. Reported, never enforced.
+		if [ "${target#"$SPRAWL_ROOT"/}" = "$target" ]; then
+			printf '%s\t%s\t%s\n' "$(count_lines "$target")" "$target" "@-imported by $(norm "$file")" >>"$OOT_IMPORTS"
+			continue
+		fi
 		record "$target" import
 		walk_imports "$target" "$chain
 $target"
+		# The import token grammar is WHITESPACE-DELIMITED by design: `@a b.md`
+		# is one token `a` and hard-fails as unresolvable. Failing loud on a
+		# space beats guessing where the path ends, and guessing is how a
+		# lexical check turns into a parser.
 	done < <(grep -oE '(^|[[:space:]])@[^[:space:]]+' "$file" 2>/dev/null | sed 's/^[[:space:]]*@//')
 }
 
@@ -323,10 +358,23 @@ if [ -f "$CFGDIR/CLAUDE.md" ]; then
 fi
 while IFS= read -r m; do
 	[ -n "$m" ] || continue
-	echo "  $(count_lines "$m")  $m  [auto-memory INDEX; its linked satellites are NOT injected. A QA pass measured 29% of this index's standing claims false — 23% across both stores counting wrong-scope claims as failures, ~8% counting only outright-false ones. Small, but it is an index, so its errors select what gets read next.]"
+	# No prose statistic here. A measured-elsewhere figure printed on every run
+	# is unfalsifiable by this tool and is the artifact type it exists to
+	# replace; the accuracy finding lives in the doc, which can carry its
+	# derivation rule.
+	echo "  $(count_lines "$m")  $m  [auto-memory index; its linked satellites are NOT injected]"
 	OOT_FOUND=1
 done < <(find "$CFGDIR/projects" -maxdepth 3 -name MEMORY.md -type f 2>/dev/null | sort)
+if [ -s "$OOT_IMPORTS" ]; then
+	awk -F'\t' '{printf "  %s  %s  [%s]\n", $1, $2, $3}' "$OOT_IMPORTS"
+	OOT_FOUND=1
+fi
 [ "$OOT_FOUND" -eq 1 ] || echo "  (none found under $CFGDIR)"
+if [ ! -s "$TRACKED" ]; then
+	# Legitimate for a fresh repo, so not a failure — but never silent, because
+	# it is the state in which the read-instruction check cannot fire.
+	echo "  note: 0 tracked files in $SPRAWL_ROOT — the read-instruction check cannot fire against this tree"
+fi
 if [ -f "$SPRAWL_ROOT/.claude/settings.json" ] && grep -q claudeMdExcludes "$SPRAWL_ROOT/.claude/settings.json" 2>/dev/null; then
 	echo "  note: .claude/settings.json configures claudeMdExcludes; three independent context-header observations show the user-global CLAUDE.md loading anyway. Recorded, not chased."
 fi
@@ -372,7 +420,7 @@ check_reads() {
 			case "$tok" in *.md) ;; *) continue ;; esac
 			is_tracked "$tok" || continue
 			grep -qxF -- "$tok" "$imported" && continue
-			grep -qE "^[[:space:]]*${tok//./\\.}([[:space:]]|#|$)" "$ALLOW" && continue
+			is_allowlisted "$tok" && continue
 			echo "$norm_file:$lineno	$tok	names a tracked .md it does not @-import" >>"$VIOLATIONS"
 		done < <(printf '%s\n' "$line" | grep -oE '`[^`]+`' | tr -d '`')
 
@@ -401,7 +449,6 @@ done <"$INJ"
 
 # Dedup per (file:line, target): both legs can match the same mandate, and that
 # is one problem to fix, not two.
-sort -u "$VIOLATIONS" -o "$VIOLATIONS"
 sort -u -t$'\t' -k1,2 "$VIOLATIONS" -o "$VIOLATIONS"
 NVIOL=$(wc -l <"$VIOLATIONS" | tr -d ' ')
 
@@ -425,12 +472,41 @@ fi
 # does not.
 # ---------------------------------------------------------------------------
 MANIFEST_FAIL=0
-if [ -n "$MANIFEST" ]; then
-	[ -f "$MANIFEST" ] || die_usage "--check-manifest file '$MANIFEST' not found"
-	awk -F'\t' '{print $4}' "$INJ" | sort >"$WORK/derived"
-	grep -vE '^[[:space:]]*(#|$)' "$MANIFEST" | sed 's/[[:space:]]*$//' | sort >"$WORK/recorded"
+if [ -z "$MANIFEST" ]; then
+	# Never silent. A disengaged tripwire that prints nothing is indistinguishable
+	# from a tripwire that passed.
 	echo
-	echo "manifest check against $MANIFEST:"
+	if [ "$NO_MANIFEST" -eq 1 ]; then
+		echo "manifest check: SKIPPED (--no-manifest) — the injected set was not compared against any recording"
+	else
+		echo "manifest check: SKIPPED — --root '$ROOT' is not this script's own repo, and a manifest recorded elsewhere says nothing about this tree"
+	fi
+else
+	[ -f "$MANIFEST" ] || die_usage "--check-manifest file '$MANIFEST' not found"
+	# Two legitimate perspectives exist and both are observed: an agent in a
+	# worktree loads <worktree>/CLAUDE.md plus BOTH CLAUDE.local.md copies, while
+	# weave at the main checkout loads the root pair. Recording only one makes the
+	# other false-fail, and the printed "re-record" remedy would then break the
+	# first — a ping-pong between two correct readings, after which the next
+	# operator concludes the tripwire is noise. So the manifest carries a
+	# [worktree] and a [root] section and we select on where --root points. A
+	# section-less manifest is taken whole, which is what the fixtures use.
+	if [ "$ROOT" = "$SPRAWL_ROOT" ]; then MSECTION=root; else MSECTION=worktree; fi
+	awk -F'\t' '{print $4}' "$INJ" | sort >"$WORK/derived"
+	if grep -qE '^\[[a-z]+\]$' "$MANIFEST"; then
+		awk -v want="[$MSECTION]" '
+			/^\[[a-z]+\]$/ { on = ($0 == want); next }
+			on' "$MANIFEST" | grep -vE '^[[:space:]]*(#|$)' | sed 's/[[:space:]]*$//' | sort >"$WORK/recorded"
+		if [ ! -s "$WORK/recorded" ]; then
+			echo
+			echo "error: manifest '$MANIFEST' has no [$MSECTION] section — the perspective being measured has never been recorded, so this run cannot be checked" >&2
+			exit 1
+		fi
+	else
+		grep -vE '^[[:space:]]*(#|$)' "$MANIFEST" | sed 's/[[:space:]]*$//' | sort >"$WORK/recorded"
+	fi
+	echo
+	echo "manifest check against $MANIFEST [$MSECTION perspective]:"
 	if diff -u "$WORK/recorded" "$WORK/derived" >"$WORK/mdiff"; then
 		echo "  derived injection set matches the recorded manifest"
 	else

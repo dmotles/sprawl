@@ -32,6 +32,20 @@
 #
 # Out-of-tree entries are deliberately omitted: they are reported by the script
 # but are not part of the enforced in-tree set.
+# TWO perspectives, both observed, selected by where --root points. Recording
+# only one makes the other false-fail, and "re-record" would then break the
+# first — a ping-pong between two correct readings.
+
+# An agent in a worktree (forge, hex): the worktree CLAUDE.md, and BOTH copies
+# of CLAUDE.local.md.
+[worktree]
 <worktree>/CLAUDE.md
 <worktree>/CLAUDE.local.md
+CLAUDE.local.md
+
+# weave, at the main checkout with no worktree: the root pair. This is the
+# observation that proves root CLAUDE.md is not skipped for an intrinsic
+# reason — it loads here, and is shadowed by the nearer copy in a worktree.
+[root]
+CLAUDE.md
 CLAUDE.local.md

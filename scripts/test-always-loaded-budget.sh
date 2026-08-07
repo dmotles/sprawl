@@ -71,14 +71,14 @@ fi
 EXPECT_BLOCKS="
 multiplicity:10
 antidedup:2
-discovery:5
-imports:15
+discovery:7
+imports:18
 readcheck:11
-mention:4
+mention:6
 ceiling:10
 usage:7
 report:9
-manifest:8
+manifest:13
 "
 
 BLOCK=unset
@@ -188,6 +188,14 @@ conf() { echo "CEILING=$2" >"$1"; }
 EMPTY_CFG="$TMPPARENT/empty-claude-config"
 mkdir -p "$EMPTY_CFG"
 
+# EMPTY_ALLOW — every run gets an empty fixture allowlist unless the case passes
+# its own. Without this the suite silently used the REAL
+# scripts/always-loaded-budget.allow, so adding a path to it in the tree could
+# quietly stop a fixture violation from firing and the suite would still be
+# green. It is the file header's HARD BOUNDARY claim, made true.
+EMPTY_ALLOW="$TMPPARENT/empty-allow"
+: >"$EMPTY_ALLOW"
+
 RC=0
 OUT=""
 ERROUT=""
@@ -198,8 +206,9 @@ run_budget() {
 	# part of the contract (make/CI scrape it) and a 2>&1 capture cannot
 	# constrain it.
 	local errfile="$TMPPARENT/stderr.$$"
+	# --allow first so a case's own --allow (parsed later) still wins.
 	OUT=$(CLAUDE_CONFIG_DIR="${FIXTURE_CLAUDE_CONFIG_DIR:-$EMPTY_CFG}" \
-		"$BUDGET" --root "$root" "$@" 2>"$errfile")
+		"$BUDGET" --root "$root" --allow "$EMPTY_ALLOW" "$@" 2>"$errfile")
 	RC=$?
 	ERROUT=$(cat "$errfile")
 	rm -f "$errfile"
@@ -293,6 +302,17 @@ echo "--- discovery floor / positive control ---"
 	run_budget "$repo" --conf "$c"
 	assert_eq "the resolver finds a file it is pointed at (main checkout, 40 lines)" "40" "$(verdict_field in_tree)"
 
+	# F1: if `git ls-files` fails, the tracked list is empty, is_tracked() is
+	# always false, and BOTH read-check legs become structurally unable to fire
+	# while the run reports green. Corrupt the index and demand a refusal.
+	nlines "$repo/CLAUDE.md" 40
+	cp "$repo/.git/index" "$TMPPARENT/index.bak" 2>/dev/null
+	printf 'not an index' >"$repo/.git/index"
+	run_budget "$repo" --conf "$c"
+	assert_eq "a git ls-files failure refuses the run instead of voiding the read check" "1" "$RC"
+	assert_contains "the refusal says why" "$OUT$ERROUT" "structurally unable to fire"
+	cp "$TMPPARENT/index.bak" "$repo/.git/index" 2>/dev/null || rm -f "$repo/.git/index"
+
 	# wc -l undercounts a file with no trailing newline.
 	nlines "$repo/CLAUDE.md" 39
 	printf 'line 40 with no trailing newline' >>"$repo/CLAUDE.md"
@@ -365,6 +385,23 @@ echo "--- @-import resolution ---"
 	run_budget "$repo" --conf "$c"
 	assert_eq "a dangling @-import fails rather than skipping" "1" "$RC"
 	assert_contains "the dangling import names the unresolved path" "$OUT$ERROUT" "nope.md"
+)
+(
+	BLOCK=imports
+	# An import resolving OUTSIDE the sprawl root loads, but is not ours to edit
+	# and has no portable manifest form — same class as the user-global
+	# CLAUDE.md. Reported, never folded into the enforced total.
+	repo=$(new_repo)
+	assert_setup "repo fixture exists" -d "$repo/.git"
+	outside=$(mktemp -d "$TMPPARENT/outside.XXXXXX")
+	nlines "$outside/global.md" 50
+	nlines "$repo/CLAUDE.md" 9
+	prepend "@$outside/global.md" "$repo/CLAUDE.md"
+	c="$TMPPARENT/c9b.conf"
+	conf "$c" 1000
+	run_budget "$repo" --conf "$c"
+	assert_eq "an @-import outside the sprawl root is NOT in the enforced total" "10" "$(verdict_field in_tree)"
+	assert_line_both "it is reported as out-of-tree with its size" "$OUT" "$outside/global.md" "50"
 )
 
 # ---------------------------------------------------------------------------
@@ -453,6 +490,25 @@ echo "--- read-instruction ban ---"
 
 	run_budget "$repo" --conf "$c"
 	assert_eq "a bare mention of a tracked .md fires (fail-toward-red)" "1" "$(verdict_field violations)"
+
+	# Coupling control: docs/todo/punchlist.md is a REAL entry in the tree's
+	# scripts/always-loaded-budget.allow. A fixture mentioning it must still fire,
+	# or the suite is reading the real allowlist and its verdicts depend on an
+	# unrelated file.
+	# The ONE deliberate real-tree read in this suite, and the header's single
+	# exception: the control below is only a control while this path really is
+	# allowlisted in the tree. Without this assertion it keeps passing (it runs
+	# under EMPTY_ALLOW) while controlling nothing.
+	assert_setup "docs/todo/punchlist.md is still a real allowlist entry" \
+		-n "$(awk '{sub(/#.*/, "")} NF {print $1}' "$SCRIPT_DIR/always-loaded-budget.allow" | grep -Fx docs/todo/punchlist.md)"
+	mkdir -p "$repo/docs/todo"
+	nlines "$repo/docs/todo/punchlist.md" 4
+	printf 'See `docs/todo/punchlist.md` for the punchlist.\n' >"$repo/CLAUDE.md"
+	track "$repo" docs/todo/punchlist.md CLAUDE.md
+	run_budget "$repo" --conf "$c"
+	assert_eq "a path allowlisted in the REAL tree still fires against a fixture" "1" "$(verdict_field violations)"
+	printf 'See `docs/pointer.md` for the punchlist.\n' >"$repo/CLAUDE.md"
+	track "$repo" CLAUDE.md
 
 	allow="$TMPPARENT/allow11"
 	echo "docs/pointer.md  # on-demand pointer, not a mandated read" >"$allow"
@@ -633,7 +689,23 @@ echo "--- manifest tripwire ---"
 	# otherwise every assertion in this suite is coupled to the real tree and the
 	# file header's HARD BOUNDARY claim is false.
 	run_budget "$wt" --conf "$c"
-	assert_not_contains "no manifest is checked against a foreign tree" "$OUT$ERROUT" "manifest check"
+	assert_contains "a foreign tree is not checked against this repo's manifest" "$OUT$ERROUT" "manifest check: SKIPPED"
+	assert_not_contains "and the skip is not dressed up as a pass" "$OUT$ERROUT" "matches the recorded manifest"
+
+	# Two perspectives, selected by where --root points. Recording only one
+	# false-fails the other, and the "re-record" remedy would then break the
+	# first.
+	sman="$TMPPARENT/manifest15s"
+	printf '[worktree]\n<worktree>/CLAUDE.md\n<worktree>/CLAUDE.local.md\nCLAUDE.local.md\n[root]\nCLAUDE.md\nCLAUDE.local.md\n' >"$sman"
+	nlines "$repo/CLAUDE.md" 4
+	run_budget "$wt" --conf "$c" --check-manifest "$sman"
+	assert_eq "a sectioned manifest selects the [worktree] perspective from a worktree" "0" "$RC"
+	run_budget "$repo" --conf "$c" --check-manifest "$sman"
+	assert_eq "the same manifest selects the [root] perspective from the main checkout" "0" "$RC"
+	printf '[worktree]\n<worktree>/CLAUDE.md\n<worktree>/CLAUDE.local.md\nCLAUDE.local.md\n' >"$sman"
+	run_budget "$repo" --conf "$c" --check-manifest "$sman"
+	assert_eq "an unrecorded perspective fails rather than passing unchecked" "1" "$RC"
+	assert_contains "the unrecorded perspective is named" "$OUT$ERROUT" "no [root] section"
 
 	printf 'CLAUDE.local.md\n<worktree>/CLAUDE.md\n' >"$man"
 	run_budget "$wt" --conf "$c" --check-manifest "$man"
