@@ -267,14 +267,8 @@ _e2e_cleanup() {
     if [ -n "${PHANTOM_PID:-}" ]; then
         kill "$PHANTOM_PID" 2>/dev/null || true
     fi
-    # QUM-957: the capture-fault ledger and its per-subshell stderr spool live
-    # beside each other under TMPDIR. Path-guarded rather than globbed loosely:
-    # the variable is the harness's own, but /tmp is shared with other agents.
-    case "${E2E_CAPTURE_FAULT_FILE:-}" in
-        /tmp/* | "${TMPDIR:-/nonexistent}"/*)
-            rm -f -- "$E2E_CAPTURE_FAULT_FILE" "$E2E_CAPTURE_FAULT_FILE".err.* 2>/dev/null || true
-            ;;
-    esac
+    # QUM-957: the capture-fault ledger and its per-subshell stderr spools.
+    capture_pane_cleanup
     if [ -n "${SPRAWL_TMUX_SOCKET:-}" ]; then
         tmux -L "$SPRAWL_TMUX_SOCKET" kill-server 2>/dev/null || true
         rm -f -- "/tmp/tmux-$(id -u)/$SPRAWL_TMUX_SOCKET" 2>/dev/null || true

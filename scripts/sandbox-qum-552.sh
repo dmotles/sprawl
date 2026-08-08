@@ -70,6 +70,10 @@ echo "  PROBE=$PROBE"
 echo ""
 
 cleanup() {
+    # QUM-957: the capture-fault ledger is created at source time (that is how
+    # its writability is probed), so a run that never faults still leaves a
+    # zero-byte file in a /tmp that CLAUDE.md says is shared.
+    capture_pane_cleanup
     local rc=$?
     _stmux kill-server 2>/dev/null || true
     rm -f -- "/tmp/tmux-$(id -u)/$SPRAWL_TMUX_SOCKET" 2>/dev/null || true

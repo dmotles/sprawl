@@ -377,6 +377,32 @@ capture_pane_assert_no_faults() {
     return 1
 }
 
+# capture_pane_cleanup — remove this process's ledger and stderr spools.
+#
+# Call it from a driver's EXIT trap. The ledger is CREATED at source time (that
+# is how writability is probed and how a pid-recycled leftover is neutralised),
+# so a driver that never faults still leaves a zero-byte file behind — and this
+# lib is sourced by hundreds of short-lived processes in the unit suite, which
+# turned into 877 of them in a /tmp that CLAUDE.md says is shared with other
+# agents and with host tooling.
+#
+# Path-guarded before deleting, per the repo's /tmp rules: assert, then delete,
+# and never a bare glob on an unvalidated variable. `rm` is external, so this is
+# best-effort by nature — which is fine, because losing the cleanup only costs a
+# zero-byte file, whereas losing the LEDGER would cost a verdict. That asymmetry
+# is why the ledger is not created lazily to avoid the litter.
+capture_pane_cleanup() {
+    local ledger=${E2E_CAPTURE_FAULT_FILE:-}
+    [ -n "$ledger" ] || return 0
+    case "$ledger" in
+        /tmp/* | "${TMPDIR:-/nonexistent}"/*) : ;;
+        *) return 0 ;;
+    esac
+    command -v rm >/dev/null 2>&1 || return 0
+    rm -f -- "$ledger" "$ledger".err.* 2>/dev/null
+    return 0
+}
+
 # e2e_capture_fault_reset — clear the recorded faults.
 #
 # For the ONE row that faults on purpose (scripts/e2e-tests/capture-pane-liveness.sh

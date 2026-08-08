@@ -2614,6 +2614,7 @@ _unit_cap_probe() {
 		"UNIT_FAKETMUX_MODE=$mode" \
 		${ledger:+"E2E_CAPTURE_FAULT_FILE=$ledger"} \
 		"UNIT_MARKER_DIR=$UNIT_CAP_FIX/markers" \
+		"TMPDIR=$UNIT_CAP_FIX" \
 		"SPRAWL_TMUX_SOCKET=unit-fake-socket" \
 		"$UNIT_CAP_BASH" "$sf" >"$of" 2>"$ef"
 	_RC=$?
@@ -2647,6 +2648,7 @@ _unit_cap_probe_owned() {
 		"E2E_CAPTURE_FAULT_FILE=$ledger" \
 		"E2E_CAPTURE_LEDGER_OWNER=$owner" \
 		"UNIT_MARKER_DIR=$UNIT_CAP_FIX/markers" \
+		"TMPDIR=$UNIT_CAP_FIX" \
 		"SPRAWL_TMUX_SOCKET=unit-fake-socket" \
 		"$UNIT_CAP_BASH" "$sf" >"$of" 2>"$ef"
 	_RC=$?
@@ -2680,8 +2682,8 @@ _unit_cap_probe_nowrite() {
 	env "PATH=$UNIT_CAP_FIX/bin:$PATH" \
 		"UNIT_FAKETMUX_MODE=dead" \
 		"E2E_CAPTURE_FAULT_FILE=$nowrite/ledger" \
-		"TMPDIR=$nowrite" \
 		"UNIT_MARKER_DIR=$UNIT_CAP_FIX/markers" \
+		"TMPDIR=$nowrite" \
 		"SPRAWL_TMUX_SOCKET=unit-fake-socket" \
 		"$UNIT_CAP_BASH" "$sf" >"$of" 2>"$ef"
 	_RC=$?

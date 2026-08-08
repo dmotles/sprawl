@@ -140,6 +140,10 @@ LEAK_SESSION=""
 LEAK_ROOT=""
 
 cleanup() {
+    # QUM-957: the capture-fault ledger is created at source time (that is how
+    # its writability is probed), so a run that never faults still leaves a
+    # zero-byte file in a /tmp that CLAUDE.md says is shared.
+    capture_pane_cleanup
     # QUM-458: kill the entire dedicated tmux server (catches phantom clients).
     if [ -n "${SPRAWL_TMUX_SOCKET:-}" ]; then
         tmux -L "$SPRAWL_TMUX_SOCKET" kill-server 2>/dev/null || true

@@ -225,6 +225,10 @@ claude_session_id_for_pid() {
 }
 
 cleanup() {
+    # QUM-957: the capture-fault ledger is created at source time (that is how
+    # its writability is probed), so a run that never faults still leaves a
+    # zero-byte file in a /tmp that CLAUDE.md says is shared.
+    capture_pane_cleanup
     local rc=$?
     if [ -n "${PHANTOM_PID:-}" ]; then
         kill "$PHANTOM_PID" 2>/dev/null || true
