@@ -52,11 +52,13 @@ FAIL=0
 # by probing the host). Bump it when assertions are added or removed; a suite-size
 # figure is branch-relative, so re-measure rather than trusting this comment.
 #
-# 283 once QUM-1029 added section [17] (35 assertions: the per-row assertion floor).
+# 283 once QUM-1029 added section [17] (35 assertions: the per-row assertion floor),
+# then 287 with the two cases review added: the past-int64 declaration (F1) and
+# 17k, which pins that a genuine failure is not re-summarised as a floor breach (F2).
 # Measured on the RED-first run — [17]'s totals are pass/fail-invariant, every one of
 # its assertions fires exactly once in either direction, so the figure does not move
 # when the implementation lands.
-MIN_ASSERTIONS=283
+MIN_ASSERTIONS=287
 # A [16b] nested child deliberately does NOT re-run section [16] (recursing would
 # fork-bomb, and counting there would corrupt the parity comparison), so it asserts
 # strictly fewer things and needs its own floor. Measured at de22410: 237; 238 after
@@ -64,8 +66,8 @@ MIN_ASSERTIONS=283
 # the same number [16] emits as `NESTED-FLOOR:`. Keeping it a separate literal rather
 # than reusing the parent's is the point — a child floor derived from the parent's
 # count would be the parity check again, and parity is what `0 == 0` satisfies.
-# 275 once QUM-1029 added section [17], which the child DOES run.
-MIN_ASSERTIONS_NESTED=275
+# 275 once QUM-1029 added section [17], which the child DOES run; 279 with F1 and 17k.
+MIN_ASSERTIONS_NESTED=279
 
 # Pin the temp root. This suite runs inside `make validate` and therefore inside
 # the pre-commit hook, so it must not inherit the committing agent's TMPDIR:
@@ -2199,12 +2201,18 @@ else
 		_unit_mk_assert_row "$FRD" _unit_floor_undecl  ""                   3 0 || floor_setup_ok=0
 		_unit_mk_assert_row "$FRD" _unit_floor_zerodecl "MIN_ASSERTIONS=0"  0 0 || floor_setup_ok=0
 		_unit_mk_assert_row "$FRD" _unit_floor_metfail "MIN_ASSERTIONS=2"   1 1 || floor_setup_ok=0
+		# Genuine failure, far short of a high floor — the shortfall must stay
+		# quiet so the real defect is the last thing on stderr.
+		_unit_mk_assert_row "$FRD" _unit_floor_shortfail "MIN_ASSERTIONS=25" 0 1 || floor_setup_ok=0
 		# Bad declarations, each with FIVE real assertions: the count can never
 		# be the reason these fail, so only validation of the declaration can be.
 		_unit_mk_assert_row "$FRD" _unit_floor_junk    "MIN_ASSERTIONS=abc" 5 0 || floor_setup_ok=0
 		_unit_mk_assert_row "$FRD" _unit_floor_empty   "MIN_ASSERTIONS="    5 0 || floor_setup_ok=0
 		_unit_mk_assert_row "$FRD" _unit_floor_neg     "MIN_ASSERTIONS=-1"  5 0 || floor_setup_ok=0
 		_unit_mk_assert_row "$FRD" _unit_floor_inject  "$_floor_inject"     5 0 || floor_setup_ok=0
+		# Past int64: `[ -lt ]` errors on it, and an error inside an `if` is just
+		# "false", so an unguarded implementation records no breach and PASSES.
+		_unit_mk_assert_row "$FRD" _unit_floor_huge    "MIN_ASSERTIONS=99999999999999999999" 5 0 || floor_setup_ok=0
 
 		# 17h baseline: the PRE-FIX aggregator, re-defined by the row itself so
 		# nothing in the copied lib has to be mutated (rows are sourced AFTER
@@ -2318,7 +2326,7 @@ e2e_print_results() {
 			# `-1` and the empty string matter because `[ 5 -lt -1 ]` is merely
 			# false and `[ 5 -lt "" ]` errors-and-is-false, so both sail through an
 			# implementation that validates "is an integer" or "is set".
-			for _bad in _unit_floor_junk _unit_floor_empty _unit_floor_neg _unit_floor_inject; do
+			for _bad in _unit_floor_junk _unit_floor_empty _unit_floor_neg _unit_floor_inject _unit_floor_huge; do
 				_unit_reset_markers "$MFLOOR"
 				_unit_run "$FIXFLOOR" "$MFLOOR" "$_bad"
 				if [ "$_RC" -eq 1 ]; then
@@ -2355,7 +2363,27 @@ e2e_print_results() {
 				pass "17i: a met floor emits no floor diagnostic; the fail() alone is the reason"
 			fi
 
-			# --- 17h: attributability baseline ----------------------------------
+			# --- 17k: a genuine failure is not re-summarised as a floor breach ---
+		# A row that fails at step 2 of 25 has already failed. Emitting
+		# "only 1 assertion(s) ran but MIN_ASSERTIONS=25" as the LAST stderr
+		# line would restate a real defect as a coverage complaint — on the
+		# big rows that is what EVERY early failure would look like. So the
+		# shortfall arm is gated on FAIL_COUNT; the declaration-validation
+		# arms are not, because a malformed declaration is its own defect.
+		_unit_reset_markers "$MFLOOR"
+		_unit_run "$FIXFLOOR" "$MFLOOR" _unit_floor_shortfail
+		if [ "$_RC" -eq 1 ]; then
+			pass "17k: a row that fails far short of its floor still fails"
+		else
+			fail "17k: a failing short row gave rc=$_RC (want 1) out=$_OUT"
+		fi
+		if printf '%s\n' "$_ERR" | grep -qF 'MIN_ASSERTIONS'; then
+			fail "17k: the real failure was re-summarised as a floor breach err=$_ERR"
+		else
+			pass "17k: no floor diagnostic competes with the row's own failure"
+		fi
+
+		# --- 17h: attributability baseline ----------------------------------
 			# NOT a positive or negative control in the QUM-1154 sense (its subject
 			# has the defect and the probe must stay QUIET, which is neither
 			# direction). It is a baseline: the row re-defines the PRE-FIX
@@ -2403,7 +2431,10 @@ _floor_rows_unreachable=""
 for _r in "$REPO_ROOT"/scripts/e2e-tests/*.sh; do
 	[ -e "$_r" ] || continue
 	_floor_rows_seen=$((_floor_rows_seen + 1))
-	if ! grep -qE '^MIN_ASSERTIONS=[1-9][0-9]*$' "$_r"; then
+	# Counted, not just matched: a SECOND declaration later in the file would
+	# win at source time and go unnoticed, so "declares a floor" has to mean
+	# exactly one.
+	if [ "$(grep -cE '^MIN_ASSERTIONS=[1-9][0-9]*$' "$_r")" -ne 1 ]; then
 		_floor_rows_missing="$_floor_rows_missing ${_r##*/}"
 	fi
 	# `^[^#]*` requires the token to be reached without crossing a `#`, so a
@@ -2420,9 +2451,9 @@ else
 	fail "17j: no rows found under scripts/e2e-tests/ — the checks below would be vacuous"
 fi
 if [ -z "$_floor_rows_missing" ]; then
-	pass "17j: every row declares a top-level MIN_ASSERTIONS=<positive integer>"
+	pass "17j: every row declares exactly one top-level MIN_ASSERTIONS=<positive integer>"
 else
-	fail "17j: row(s) declare no MIN_ASSERTIONS floor:$_floor_rows_missing"
+	fail "17j: row(s) declare no MIN_ASSERTIONS floor, or more than one:$_floor_rows_missing"
 fi
 if [ -z "$_floor_rows_unreachable" ]; then
 	pass "17j: every row calls e2e_print_results, so the declared floor can actually reach it"

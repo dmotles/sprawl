@@ -189,6 +189,12 @@ run_row() {
     (
         # shellcheck disable=SC1090
         . "$LIB"
+        # QUM-1029: the assertion floor is whatever the ROW declares, never
+        # what the caller's environment happens to hold. An exported
+        # MIN_ASSERTIONS would otherwise hand a row that declares none a floor
+        # it never wrote, turning the undeclared case green. Unset before the
+        # row is sourced so its own declaration still wins.
+        unset MIN_ASSERTIONS
         # shellcheck disable=SC1090
         . "$row_file"
         local meta

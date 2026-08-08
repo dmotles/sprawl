@@ -82,11 +82,26 @@ e2e_print_results() {
             ;;
         # Compared as a STRING, never evaluated: `$(( ))` on a caller-supplied
         # value executes any command substitution inside it.
-        *[!0-9]* | 0*)
-            breach="MIN_ASSERTIONS='$declared' is not a positive whole number, so it is not a floor — a floor of 0 is satisfied by a row that asserts nothing (QUM-1029)"
+        #
+        # The 10-digit cap is not cosmetic. `[ x -lt y ]` parses with strtoimax
+        # and ERRORS on a value past int64; inside an `if` that error status is
+        # merely "false", so the shortfall arm below would record no breach and
+        # the row would PASS — a declaration that reads as a floor and enforces
+        # nothing, which is the exact class this function exists to close. No
+        # row will ever make a billion assertions, so anything that long is a
+        # typo, not a floor.
+        *[!0-9]* | 0* | ??????????*)
+            breach="MIN_ASSERTIONS='$declared' is not a plausible floor — it must be a positive whole number below 10 digits (0 is satisfied by a row that asserts nothing; a value past int64 makes the comparison itself error out and silently pass) (QUM-1029)"
             ;;
         *)
-            if [ "$observed" -lt "$declared" ]; then
+            # Gated on FAIL_COUNT: a row that already recorded a failure has
+            # already failed, and reporting a shortfall as its LAST stderr line
+            # would summarise a genuine defect as a floor breach — on a row with
+            # a floor of 25 that is what every early failure would look like.
+            # The declaration-validation arms above stay unconditional: a
+            # malformed declaration is a defect in its own right regardless of
+            # how the run went.
+            if [ "$FAIL_COUNT" -eq 0 ] && [ "$observed" -lt "$declared" ]; then
                 breach="only $observed assertion(s) ran but MIN_ASSERTIONS=$declared — the row measured less than it claims (QUM-1029)"
             fi
             ;;
