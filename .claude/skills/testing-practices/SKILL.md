@@ -1,6 +1,6 @@
 ---
 name: testing-practices
-description: Read BEFORE writing, changing, or reviewing any test or assertion in this repo — including a throwaway check in a shell script or an ad-hoc probe you will not commit. Use when you add an assertion (every new one must demonstrate it CAN fail, via negative control, mutation, or red-first), when a test or harness passes and you have not watched it fail, when you write or review a validation script that could exit 0 on a failed check (the non-asserting fallback), when a harness aggregates its own pass/fail counts and needs an assertion-count floor, when you hit or reason about a data race or wonder what `make validate` guarantees under `-race`, when you add a duration knob that production reads from a goroutine and a test overrides (the `atomicDuration` convention), and when you need this repo's dependency-injection test pattern, mock conventions, or manual CLI validation workflow.
+description: Read BEFORE writing, changing, or reviewing any test or assertion in this repo — including a throwaway check in a shell script or an ad-hoc probe you will not commit. Use when you add an assertion (every new one must demonstrate it CAN fail, via positive control — a subject where the defect IS present, so the probe must fire — mutation, or red-first), when a test or harness passes and you have not watched it fail, when you write or review a validation script that could exit 0 on a failed check (the non-asserting fallback), when a harness aggregates its own pass/fail counts and needs an assertion-count floor, when you hit or reason about a data race or wonder what `make validate` guarantees under `-race`, when you add a duration knob that production reads from a goroutine and a test overrides (the `atomicDuration` convention), and when you need this repo's dependency-injection test pattern, mock conventions, or manual CLI validation workflow.
 user-invocable: true
 ---
 
@@ -123,7 +123,8 @@ requirement rather than a convention, and `CLAUDE.md` states its binding form.
 ### The rule
 
 > **Every new assertion must demonstrate that it CAN fail**, by one of:
-> a **negative control**, a **mutation**, or a **red-first** run.
+> a **positive control** (run it against a subject where the defect IS present
+> — it MUST fire), a **mutation**, or a **red-first** run.
 >
 > **Every harness that aggregates its own results must have an
 > assertion-count floor.** A run reporting `0 passed` / `0 failed` must exit
@@ -1162,9 +1163,10 @@ fabricated, one of them naming a heading plainly present in the file; the mechan
 a broken `while read` over process substitution plus title truncation, so every
 reference to § *Provenance of the observed string* (heading: *"…: who mints the
 artifact? (QUM-925)"*) read as dangling. Re-run with whitespace normalisation and
-prefix matching: **0 dangling, and the negative control fired** — an injected reference
-to a deliberately nonexistent heading was reported, exactly once. The class is not a
-slip: a second, hastily written checker independently reproduced both mistakes (11
+prefix matching: **0 dangling, and the positive control fired** — a planted defect the
+checker MUST report, an injected reference to a deliberately nonexistent heading, was
+reported, exactly once. The class is not a slip: a second, hastily written checker
+independently reproduced both mistakes (11
 fabricated reports) before the same two fixes, so this is the default behaviour of a
 naive title matcher.
 
@@ -1182,8 +1184,10 @@ references named in this subsection are written in prose rather than in `§`-ref
 form on purpose, so a future run of such a checker does not flag the paragraph
 describing the defect. Two halves, and this section had only ever exercised one of them:
 
-> **A negative control proves the instrument *can* fire; a positive control proves it
-> can *stay quiet*.** A false-green instrument fails the first; a false-alarm
+> **A positive control — run against a subject where the defect IS present, so the
+> probe MUST fire — proves the instrument *can* fire; a negative control — run
+> against a subject known clean, where the probe MUST stay quiet — proves it can
+> *stay quiet*.** A false-green instrument fails the first; a false-alarm
 > instrument fails the second — and everything else in this section is about the
 > first.
 
@@ -1750,10 +1754,12 @@ package. The proxy is not merely weaker evidence than the property; it can be
 false while the property holds.
 
 And keep the control discipline pointed the right way: **before trusting a
-negative result, prove the probe can produce a positive one.** A negative control
-that shares the probe's defect is not a control — if the probe is blind, it is
-blind on the control too, and both come back consistent. Only a positive one
-discriminates.
+negative result, prove the probe can produce a positive one** — a **positive
+control**, run against a subject where the thing you are looking for IS present,
+so the probe MUST fire. A **negative control** (a subject known clean, where the
+probe MUST stay quiet) that shares the probe's defect is not a control — if the
+probe is blind, it is blind on the control too, and both come back consistent.
+Only a positive one discriminates.
 
 ### Check that the question the command answers is the question you are claiming
 
