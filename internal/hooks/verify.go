@@ -5,8 +5,11 @@ import (
 	"io"
 	"io/fs"
 	"path/filepath"
+	"regexp"
+	"slices"
 	"sort"
 	"strings"
+	"sync"
 )
 
 // Verify answers one question: is the guard chain armed for THIS working tree,
@@ -61,18 +64,33 @@ const (
 type HooksDirState string
 
 const (
-	HooksDirOK        HooksDirState = "OK"
-	HooksDirMissing   HooksDirState = "MISSING"
-	HooksDirNotADir   HooksDirState = "NOT-A-DIRECTORY"
-	hooksPathUnsetOut               = "(unset)"
+	HooksDirOK      HooksDirState = "OK"
+	HooksDirMissing HooksDirState = "MISSING"
+	HooksDirNotADir HooksDirState = "NOT-A-DIRECTORY"
 )
 
-// guardHelpers lists, per hook point, the helper basenames a hook may dispatch
-// to. Both install arrangements invoke a helper sitting beside the hook's real
-// path: `sprawl hooks install` writes sprawl-guard-main-* into the hooks dir,
-// and `make hooks` symlinks to scripts/pre-commit, which runs
-// "$here/guard-main-commit". The sprawl-prefixed name is checked first because
-// it *contains* the bare name as a substring.
+// hooksPathUnsetOut is how an unset core.hooksPath renders. Not a HooksDirState.
+const hooksPathUnsetOut = "(unset)"
+
+// guardHelpers lists, per hook point, the guard basenames that count. A hook is
+// armed by one of exactly two structures, and BOTH are checked structurally
+// rather than by looking for prose:
+//
+//   - it DISPATCHES to a helper beside its own real path — `sprawl hooks
+//     install` writes sprawl-guard-main-* into the hooks dir; `make hooks`
+//     symlinks to scripts/pre-commit, which runs "$here/guard-main-commit"; or
+//   - it IS the guard — `make hooks` symlinks reference-transaction straight to
+//     scripts/guard-main-ref, so there is no dispatch to find.
+//
+// The second case is why armament must not key on the guard's name appearing in
+// the file: that script's only self-mention is a header comment, and keying on
+// it made rewording that comment hard-fail `make validate` for every worktree at
+// once, with a remedy that could not fix it.
+//
+// Only the main-branch guard is checked. The QUM-872 leak guard chained into the
+// same pre-commit block is deliberately out of scope: this command answers "can
+// a non-root agent land on the protected branch", not "is every chained hook
+// healthy".
 var guardHelpers = map[string][]string{
 	"pre-commit":            {HelperCommitGuard, "guard-main-commit"},
 	"reference-transaction": {HelperRefGuard, "guard-main-ref"},
@@ -106,7 +124,10 @@ type Report struct {
 	CommonDir      string
 	GitDir         string
 	LinkedWorktree bool
-	GitEnv         map[string]string
+	// WorktreeKnown records whether LinkedWorktree was actually determined, so
+	// an undetermined value is never printed as a confident "no".
+	WorktreeKnown bool
+	GitEnv        map[string]string
 
 	HooksPath       string
 	HooksPathOrigin []ConfigOrigin
@@ -165,6 +186,9 @@ func Verify(deps *VerifyDeps) (Report, error) {
 		}
 	}
 
+	// These are best-effort context; a failure is rendered as "(unknown)" rather
+	// than as a plausible default, so a reader can tell "determined" from "not
+	// determined". LinkedWorktree is only meaningful when both resolved.
 	r.TopLevel, _ = deps.TopLevel()
 
 	origins, err := deps.HooksPathOrigins()
@@ -188,7 +212,8 @@ func Verify(deps *VerifyDeps) (Report, error) {
 
 	r.CommonDir, _ = deps.CommonDir()
 	r.GitDir, _ = deps.GitDir()
-	r.LinkedWorktree = r.CommonDir != "" && r.GitDir != "" && r.CommonDir != r.GitDir
+	r.WorktreeKnown = r.CommonDir != "" && r.GitDir != ""
+	r.LinkedWorktree = r.WorktreeKnown && r.CommonDir != r.GitDir
 
 	switch fi, serr := deps.Stat(hooksDir); {
 	case serr != nil:
@@ -255,6 +280,15 @@ func inspectHook(deps *VerifyDeps, r Report, point string) HookLink {
 
 	resolved, err := deps.EvalSymlinks(h.Path)
 	if err != nil {
+		// Lstat already succeeded, so the path exists. An unresolvable SYMLINK
+		// is dangling; anything else (e.g. EACCES on a path component) is not,
+		// and calling it dangling would send the operator hunting the wrong
+		// thing. Both are disarmed either way.
+		if h.SymlinkTo == "" {
+			h.Status = StatusUnreadable
+			h.Detail = err.Error()
+			return h
+		}
 		h.Status = StatusDangling
 		h.Detail = h.SymlinkTo
 		return h
@@ -284,9 +318,21 @@ func inspectHook(deps *VerifyDeps, r Report, point string) HookLink {
 		return h
 	}
 
-	// A hook can name a guard that has since been deleted or chmod-ed and still
-	// look perfectly healthy in `ls`, so "reachable" means the helper is really
-	// there, beside the hook's real path, and really executable.
+	// Case 1: the hook IS the guard (`make hooks` symlinks reference-transaction
+	// straight to scripts/guard-main-ref). Structural, so it cannot be broken by
+	// editing prose in the script — and it is already known to be a regular,
+	// executable file by this point.
+	if base := filepath.Base(h.RealPath); slices.Contains(guardHelpers[point], base) {
+		h.HelperName = base
+		h.Helper = h.RealPath
+		h.Status = StatusOK
+		return h
+	}
+
+	// Case 2: the hook dispatches to a helper. It can name a guard that has
+	// since been deleted or chmod-ed and still look perfectly healthy in `ls`,
+	// so "reachable" means the helper is really there, beside the hook's real
+	// path, and really executable.
 	h.HelperName = matchedHelper(point, string(body))
 	if h.HelperName == "" {
 		h.Status = StatusNoGuard
@@ -307,15 +353,62 @@ func inspectHook(deps *VerifyDeps, r Report, point string) HookLink {
 	return h
 }
 
-// matchedHelper returns the guard helper basename the hook body references, or
-// "" when it references none.
+// matchedHelper returns the guard helper the hook body actually DISPATCHES to,
+// or "" when it dispatches to none.
+//
+// A mention is not a dispatch. Matching a bare name reported a hook gutted to
+// `# disabled: guard-main-commit` + `exit 0` as armed — a hook that runs nothing
+// while `make validate` goes green. So comment lines are stripped, and the name
+// must be preceded by `/`, which is what makes it a path being executed rather
+// than a word being written about.
+//
+// Anchoring on `/` also makes the ordering of guardHelpers non-load-bearing:
+// "/guard-main-commit" is not a substring of "/sprawl-guard-main-commit",
+// because the character before "guard" there is "-", not "/". The order is kept
+// only so the result is deterministic if both ever appear.
 func matchedHelper(point, body string) string {
+	code := stripShellComments(body)
 	for _, name := range guardHelpers[point] {
-		if strings.Contains(body, name) {
+		if dispatchRE(name).MatchString(code) {
 			return name
 		}
 	}
 	return ""
+}
+
+// dispatchRE matches `/<name>` not followed by another name character, so
+// `/guard-main-commit-disabled` does not count as a dispatch to
+// `guard-main-commit`.
+func dispatchRE(name string) *regexp.Regexp {
+	dispatchREMu.Lock()
+	defer dispatchREMu.Unlock()
+	if re, ok := dispatchRECache[name]; ok {
+		return re
+	}
+	re := regexp.MustCompile(`/` + regexp.QuoteMeta(name) + `([^A-Za-z0-9_.-]|$)`)
+	dispatchRECache[name] = re
+	return re
+}
+
+var (
+	dispatchREMu    sync.Mutex
+	dispatchRECache = map[string]*regexp.Regexp{}
+)
+
+// stripShellComments removes whole-line `#` comments. It deliberately does not
+// try to strip trailing comments: `#` is legal inside strings and parameter
+// expansions, and dropping a real dispatch would report an armed tree as broken
+// — the costlier direction for a gate wired into validate.
+func stripShellComments(body string) string {
+	lines := strings.Split(body, "\n")
+	kept := lines[:0]
+	for _, ln := range lines {
+		if strings.HasPrefix(strings.TrimSpace(ln), "#") {
+			continue
+		}
+		kept = append(kept, ln)
+	}
+	return strings.Join(kept, "\n")
 }
 
 // classify is the pure core: a populated Report in, verdict + reasons + fixes
@@ -357,10 +450,13 @@ func classify(r *Report) {
 // can audit what the probe actually looked at before reading what it concluded.
 func PrintReport(w io.Writer, r Report) {
 	fmt.Fprintf(w, "sprawl hooks verify — resolving the guard chain for this working tree\n\n")
-	fmt.Fprintf(w, "cwd: %s\n", r.Cwd)
-	fmt.Fprintf(w, "git top-level: %s\n", r.TopLevel)
-	fmt.Fprintf(w, "git common dir: %s\n", r.CommonDir)
-	fmt.Fprintf(w, "linked worktree: %s\n", yesNo(r.LinkedWorktree))
+	fmt.Fprintf(w, "cwd: %s\n", orUnknown(r.Cwd))
+	fmt.Fprintf(w, "git top-level: %s\n", orUnknown(r.TopLevel))
+	fmt.Fprintf(w, "git common dir: %s\n", orUnknown(r.CommonDir))
+	// Printed so a reader can audit how `linked worktree` was derived rather
+	// than taking it on trust.
+	fmt.Fprintf(w, "git dir: %s\n", orUnknown(r.GitDir))
+	fmt.Fprintf(w, "linked worktree: %s\n", worktreeKind(r))
 	fmt.Fprintf(w, "git env overrides: %s\n", formatGitEnv(r.GitEnv))
 
 	if len(r.HooksPathOrigin) == 0 {
@@ -420,11 +516,21 @@ func formatHook(h HookLink) string {
 	}
 }
 
-func yesNo(b bool) string {
-	if b {
+func worktreeKind(r Report) string {
+	if !r.WorktreeKnown {
+		return "(unknown)"
+	}
+	if r.LinkedWorktree {
 		return "yes"
 	}
 	return "no"
+}
+
+func orUnknown(s string) string {
+	if s == "" {
+		return "(unknown)"
+	}
+	return s
 }
 
 func formatGitEnv(env map[string]string) string {

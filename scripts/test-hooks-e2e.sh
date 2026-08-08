@@ -29,8 +29,8 @@ set -euo pipefail
 # MIN_CASE5_ASSERTIONS exists because a whole-suite total is a SUM: deleting ten
 # Case-1 assertions while adding ten to Case 5 still satisfies it. The guard
 # coverage this issue is about is per-case, so the floor is too.
-MIN_ASSERTIONS=155
-MIN_CASE5_ASSERTIONS=125
+MIN_ASSERTIONS=163
+MIN_CASE5_ASSERTIONS=133
 
 REPO_ROOT="$(cd "$(dirname "$0")/.." && pwd)"
 SPRAWL_BIN="${SPRAWL_BIN:-$REPO_ROOT/sprawl}"
@@ -693,6 +693,46 @@ assert_reason "E14c reason code is reference-transaction GUARD-UNREACHABLE" "ref
 chmod +x "$HD5/sprawl-guard-main-ref"
 verify_in "$R5"
 assert "E14d negative control (helper bit restored): verify exits 0 again" "[[ \$VRC -eq 0 ]]"
+
+# E15 POSITIVE CONTROL: the hook exists, is executable, and MENTIONS its guard —
+# in a comment. A mention is not a dispatch. Matching the bare name reported a
+# hook gutted to `# disabled: <guard>` + `exit 0` as ARMED: a hook that runs
+# nothing while validate went green.
+mv "$HD5/pre-commit" "$WORKDIR/saved-mention-pre-commit"
+printf '#!/bin/sh\n# disabled: sprawl-guard-main-commit\nexit 0\n' >"$HD5/pre-commit"
+chmod +x "$HD5/pre-commit"
+verify_in "$R5"
+assert "E15 positive control (guard named only in a comment): verify exits 1" "[[ \$VRC -eq 1 ]]"
+assert_reason "E15 reason code is pre-commit NO-GUARD" "pre-commit:NO-GUARD"
+rmtmp "$HD5/pre-commit"
+mv "$WORKDIR/saved-mention-pre-commit" "$HD5/pre-commit"
+verify_in "$R5"
+assert "E15b negative control (real dispatch restored): verify exits 0 again" "[[ \$VRC -eq 0 ]]"
+
+# E16: the `make hooks` arrangement, where the hook IS the guard — the hooks
+# entry symlinks straight to the guard script, so there is no dispatch to find
+# and the guard's only self-mention is a header comment. Armament must be
+# structural: rewording that comment is a zero-behaviour change and must not
+# flip the verdict. Keying on the comment hard-failed validate for every
+# worktree at once, with a FIX that could not fix it.
+mkdir -p "$WORKDIR/mh/scripts"
+printf '#!/bin/sh\n# guard-main-ref (QUM-837)\nexit 0\n' >"$WORKDIR/mh/scripts/guard-main-ref"
+chmod +x "$WORKDIR/mh/scripts/guard-main-ref"
+mv "$HD5/reference-transaction" "$WORKDIR/saved-selfhook-ref"
+ln -s "$WORKDIR/mh/scripts/guard-main-ref" "$HD5/reference-transaction"
+verify_in "$R5"
+assert "E16 negative control (hook IS the guard, make hooks style): verify exits 0" "[[ \$VRC -eq 0 ]]"
+assert_out "E16 report resolves the hook to the guard script itself" "  reference-transaction: OK -> $WORKDIR/mh/scripts/guard-main-ref"
+# Reword the ONLY self-mention in the file.
+printf '#!/bin/sh\n# main-ref guard (QUM-837)\nexit 0\n' >"$WORKDIR/mh/scripts/guard-main-ref"
+chmod +x "$WORKDIR/mh/scripts/guard-main-ref"
+verify_in "$R5"
+assert "E16b negative control (comment reworded): verdict is UNCHANGED, still 0" "[[ \$VRC -eq 0 ]]"
+assert "E16b prose edit did not manufacture a reason code" "[[ -z \"\$(reasons_of \"\$VOUT\")\" ]]"
+rmtmp "$HD5/reference-transaction"
+mv "$WORKDIR/saved-selfhook-ref" "$HD5/reference-transaction"
+verify_in "$R5"
+assert "E16c negative control (original ref hook restored): verify exits 0 again" "[[ \$VRC -eq 0 ]]"
 
 # E13 POSITIVE CONTROL: outside a git repo the check CANNOT run. It must say so
 # and exit 2 (UNKNOWN) — never 0, and never 1, because "I could not determine"

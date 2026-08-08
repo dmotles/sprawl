@@ -530,6 +530,113 @@ func TestPrintReport_EachStatusRendersItsOwnPathAndCode(t *testing.T) {
 	}
 }
 
+// A guard MENTIONED is not a guard DISPATCHED. Reported by review of 9c20e47:
+// a hook gutted down to `# disabled: guard-main-commit` + `exit 0` was reported
+// ARMED, which is the exact false-clean this whole check exists to prevent.
+func TestVerify_GuardNamedOnlyInAComment_IsNotArmed(t *testing.T) {
+	for _, point := range []string{"pre-commit", "reference-transaction"} {
+		t.Run(point, func(t *testing.T) {
+			f := newVerifyFixture(t)
+			// The helper is still present and executable — only the DISPATCH is
+			// gone, so nothing but the body check can catch this.
+			writeExec(t, filepath.Join(f.hooksDir, point),
+				"#!/bin/sh\n# disabled: "+guardHelpers[point][0]+"\nexit 0\n")
+
+			r := mustVerify(t, f)
+			if r.Verdict != VerdictDisarmed {
+				t.Errorf("positive control (guard only mentioned in a comment at %s): Verdict = %q, want DISARMED — a hook that runs nothing must never report armed", point, r.Verdict)
+			}
+			if got := hookByPoint(t, r, point); got.Status != StatusNoGuard {
+				t.Errorf("status = %q, want %q", got.Status, StatusNoGuard)
+			}
+		})
+	}
+}
+
+// Under `make hooks` the reference-transaction hook IS the guard script, so
+// there is no dispatch to find and the only occurrence of the guard name in the
+// file is a header comment. Keying on that comment made `make validate` fail
+// fleet-wide when the comment was reworded, with a FIX that could not fix it.
+// Armament here is structural: the hook resolves TO the guard.
+func TestVerify_HookIsItselfTheGuard_IsArmedWithoutMatchingProse(t *testing.T) {
+	f := newVerifyFixture(t)
+	helper := guardHelpers["reference-transaction"][1] // the bare `make hooks` name
+	scripts := filepath.Join(f.topLevel, "scripts")
+	if err := os.MkdirAll(scripts, 0o755); err != nil {
+		t.Fatalf("mkdir: %v", err)
+	}
+	guard := filepath.Join(scripts, helper)
+	// Deliberately NO mention of its own name anywhere in the body.
+	writeExec(t, guard, "#!/bin/sh\nexit 0\n")
+
+	hook := filepath.Join(f.hooksDir, "reference-transaction")
+	if err := os.Remove(hook); err != nil {
+		t.Fatalf("remove: %v", err)
+	}
+	if err := os.Symlink(guard, hook); err != nil {
+		t.Fatalf("symlink: %v", err)
+	}
+
+	r := mustVerify(t, f)
+	if r.Verdict != VerdictArmed {
+		t.Errorf("negative control (hook symlinked directly to the guard): Verdict = %q, want ARMED (reasons %v) — this is the shipped `make hooks` arrangement", r.Verdict, r.Reasons)
+	}
+	if got := hookByPoint(t, r, "reference-transaction"); got.Status != StatusOK {
+		t.Errorf("status = %q, want OK", got.Status)
+	}
+}
+
+// The verdict must not depend on prose in a tracked script: rewording a comment
+// is a zero-behaviour change and must not disarm anything.
+func TestVerify_RewordingAComment_DoesNotChangeTheVerdict(t *testing.T) {
+	f := newVerifyFixture(t)
+	helper := guardHelpers["reference-transaction"][1]
+	scripts := filepath.Join(f.topLevel, "scripts")
+	if err := os.MkdirAll(scripts, 0o755); err != nil {
+		t.Fatalf("mkdir: %v", err)
+	}
+	guard := filepath.Join(scripts, helper)
+	writeExec(t, guard, "#!/bin/sh\n# "+helper+" (QUM-837)\nexit 0\n")
+	hook := filepath.Join(f.hooksDir, "reference-transaction")
+	if err := os.Remove(hook); err != nil {
+		t.Fatalf("remove: %v", err)
+	}
+	if err := os.Symlink(guard, hook); err != nil {
+		t.Fatalf("symlink: %v", err)
+	}
+	before := mustVerify(t, f).Verdict
+
+	writeExec(t, guard, "#!/bin/sh\n# main-ref guard (QUM-837)\nexit 0\n")
+	after := mustVerify(t, f).Verdict
+
+	if before != after {
+		t.Errorf("rewording a comment flipped the verdict %q -> %q; validate must not be coupled to prose in a tracked script", before, after)
+	}
+	if after != VerdictArmed {
+		t.Errorf("Verdict = %q, want ARMED", after)
+	}
+}
+
+func TestMatchedHelper_RequiresADispatchNotAMention(t *testing.T) {
+	cases := []struct {
+		name string
+		body string
+		want string
+	}{
+		{"sprawl install dispatch", `"$SPRAWL_HOOKS_DIR"/sprawl-guard-main-commit "$branch"`, HelperCommitGuard},
+		{"make hooks dispatch", `"$here/guard-main-commit"`, "guard-main-commit"},
+		{"bare mention in a comment", "# disabled: guard-main-commit", ""},
+		{"commented-out dispatch", `# "$here/guard-main-commit"`, ""},
+		{"prose mention with a path", "# see scripts/guard-main-commit for details", ""},
+		{"no guard at all", "#!/bin/sh\nexit 0\n", ""},
+	}
+	for _, tc := range cases {
+		if got := matchedHelper("pre-commit", tc.body); got != tc.want {
+			t.Errorf("%s: matchedHelper(%q) = %q, want %q", tc.name, tc.body, got, tc.want)
+		}
+	}
+}
+
 func TestMatchedHelper_PrefersTheSprawlPrefixedName(t *testing.T) {
 	// "sprawl-guard-main-commit" CONTAINS "guard-main-commit", so a naive
 	// ordering resolves the helper to a filename that does not exist.

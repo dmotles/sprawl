@@ -91,9 +91,9 @@ var hooksVerifyCmd = &cobra.Command{
 	Short: "Report whether the guard hooks are actually armed for this working tree",
 	Long: "Resolve the whole guard chain for the current working tree and report what git " +
 		"will actually run: every config scope that sets core.hooksPath (and which file set " +
-		"it), the hooks directory git resolves, each hook point's symlink target followed to " +
-		"its real path, its mode and executable bit, and whether a guard is reachable from it " +
-		"at all.\n\n" +
+		"it), the hooks directory git resolves, each hook point followed through any symlink to " +
+		"its real path, its mode and executable bit, and whether a guard is genuinely reachable " +
+		"from it.\n\n" +
 		"This exists because git runs NO hooks and exits 0 when core.hooksPath names a path " +
 		"that is not a populated directory — silently voiding the pre-commit main-commit " +
 		"guard, the reference-transaction backstop, and the pre-commit validate gate at once. " +
@@ -111,8 +111,10 @@ var hooksVerifyCmd = &cobra.Command{
 		hooks.PrintReport(os.Stdout, report)
 		if err != nil {
 			// UNKNOWN needs exit 2, which cobra cannot express: Execute maps
-			// every RunE error to 1. The report is already flushed above.
-			fmt.Fprintln(os.Stderr, err)
+			// every RunE error to 1. The report (already flushed above) carries
+			// the reason; stderr gets a short distinct line so a caller who
+			// redirected stdout still learns the check did not run.
+			fmt.Fprintln(os.Stderr, "hooks verify: could not determine whether the guard is armed — see the report; this is NOT a clean result")
 			os.Exit(2)
 		}
 		if report.Verdict != hooks.VerdictArmed {

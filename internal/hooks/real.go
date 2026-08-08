@@ -54,7 +54,14 @@ func RealHooksPathOrigins() ([]ConfigOrigin, error) {
 	out, err := exec.Command("git", "config", "--show-origin", "--show-scope", "--get-all", "core.hooksPath").Output()
 	if err != nil {
 		var ee *exec.ExitError
-		// Exit 1 with empty stderr is git's "key not set".
+		// git uses exit 1 with empty stderr for BOTH "key not found" and
+		// "the section or key is invalid" — it does not distinguish them.
+		// Only the former is reachable here, because the key is a compile-time
+		// literal that is known-valid. Every other failure, including a corrupt
+		// config file (exit 128, `fatal: bad config line ...`), is returned as
+		// an error and surfaces as VERDICT: UNKNOWN rather than as "unset" —
+		// verified, because reporting an unreadable config as "no hooksPath
+		// set" would be exactly the false-clean this check exists to prevent.
 		if errors.As(err, &ee) && ee.ExitCode() == 1 && len(ee.Stderr) == 0 {
 			return nil, nil
 		}
