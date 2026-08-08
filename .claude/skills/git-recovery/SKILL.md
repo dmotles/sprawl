@@ -599,6 +599,45 @@ aborts the whole transaction (`fatal: ref updates aborted by hook`).
   from every worktree and the main checkout regardless of cwd. `make hooks`
   installs it alongside the pre-commit hook.
 
+### Is the guard actually armed? (QUM-951)
+
+Both guards above can be **silently disabled without any error**, and the
+disabled state is indistinguishable from a working one from inside a session.
+`sprawl hooks verify` resolves the whole chain and says which. `make validate`
+runs it first, so you pay this check without choosing to.
+
+Four ways the stack goes quiet, none of which git reports:
+
+- **`core.hooksPath` naming anything that is not a populated directory.** git
+  then runs **no hooks at all and exits 0** — no warning, no error, and it does
+  not distinguish "empty" from "does not exist". This voids the pre-commit
+  guard, the `reference-transaction` backstop, *and* the pre-commit `make
+  validate` gate simultaneously. **Never pass `-c core.hooksPath`**; the default
+  is already right. The trap that produces it: in a linked worktree `.git` is a
+  *file*, so `ls .git/hooks` returns `Not a directory`, which reads as "hooks are
+  missing" and invites a helpful-looking override that is functionally
+  `--no-verify`.
+- **A dangling symlink.** This is the fleet-wide vector, and it needs no config
+  change at all. Every linked worktree shares one common `.git/hooks`, and
+  `make hooks` symlinks that into the main checkout's *working tree*
+  (`.git/hooks/pre-commit -> scripts/pre-commit`). One file is therefore the
+  guard for the entire fleet: delete or move its target and every worktree is
+  disarmed at once, with no per-agent signal.
+- **A lost executable bit.** git treats a present-but-non-executable hook
+  exactly like an absent one, and `ls` looks healthy.
+- **A stranded guard helper.** Both hooks dispatch to a helper beside their own
+  *real* path (`sprawl hooks install` writes `sprawl-guard-main-*`; `make hooks`
+  symlinks to `scripts/pre-commit`, which runs `$here/guard-main-commit`).
+  Deleting the helper leaves a hook that still names its guard and still runs,
+  but guards nothing.
+
+`sprawl hooks verify` prints its subject before its verdict — every scope that
+sets `core.hooksPath` and which file set it, the resolved hooks dir, each hook's
+symlink target followed to its real path, its mode, and whether a guard is
+genuinely reachable — then `REASON:` codes and `VERDICT: ARMED | DISARMED |
+UNKNOWN`. Exit codes are distinct on purpose: **0 armed, 1 disarmed, 2 the check
+could not run.** An undetermined guard is never reported as a working one.
+
 Sprawl also enforces a **hook-independent** defense in depth: a non-root agent
 whose worktree HEAD is on `main` is refused at resume/wake
 (`agentops.AssertNotOnMain`, wired into `Real.RecoverAgents` and `Real.Wake`),

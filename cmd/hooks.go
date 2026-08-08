@@ -1,7 +1,9 @@
 package cmd
 
 import (
+	"fmt"
 	"os"
+	"path/filepath"
 	"time"
 
 	"github.com/dmotles/sprawl/internal/hooks"
@@ -67,10 +69,64 @@ var hooksUninstallCmd = &cobra.Command{
 	},
 }
 
+func resolveVerifyDeps() *hooks.VerifyDeps {
+	return &hooks.VerifyDeps{
+		HooksPathOrigins: hooks.RealHooksPathOrigins,
+		ResolvedHooksDir: hooks.RealResolvedHooksDir,
+		CommonDir:        hooks.RealCommonDir,
+		GitDir:           hooks.RealGitDir,
+		TopLevel:         hooks.RealTopLevel,
+		Getwd:            os.Getwd,
+		Getenv:           os.Getenv,
+		Lstat:            os.Lstat,
+		Stat:             os.Stat,
+		Readlink:         os.Readlink,
+		EvalSymlinks:     filepath.EvalSymlinks,
+		ReadFile:         os.ReadFile,
+	}
+}
+
+var hooksVerifyCmd = &cobra.Command{
+	Use:   "verify",
+	Short: "Report whether the guard hooks are actually armed for this working tree",
+	Long: "Resolve the whole guard chain for the current working tree and report what git " +
+		"will actually run: every config scope that sets core.hooksPath (and which file set " +
+		"it), the hooks directory git resolves, each hook point's symlink target followed to " +
+		"its real path, its mode and executable bit, and whether a guard is reachable from it " +
+		"at all.\n\n" +
+		"This exists because git runs NO hooks and exits 0 when core.hooksPath names a path " +
+		"that is not a populated directory — silently voiding the pre-commit main-commit " +
+		"guard, the reference-transaction backstop, and the pre-commit validate gate at once. " +
+		"A dangling symlink or a lost executable bit disarm the same way, and none of those " +
+		"states is distinguishable from a healthy one without looking.\n\n" +
+		"Exit codes are distinct on purpose: 0 armed, 1 disarmed, 2 the check itself could " +
+		"not run. Collapsing 2 into 1 would make a crash indistinguishable from a detection, " +
+		"and collapsing it into 0 would report an undetermined guard as a working one.",
+	Args:         cobra.NoArgs,
+	SilenceUsage: true,
+	RunE: func(_ *cobra.Command, _ []string) error {
+		report, err := hooks.Verify(resolveVerifyDeps())
+		// The report is this command's data product, so it goes to stdout —
+		// unlike install/uninstall, whose output is progress commentary.
+		hooks.PrintReport(os.Stdout, report)
+		if err != nil {
+			// UNKNOWN needs exit 2, which cobra cannot express: Execute maps
+			// every RunE error to 1. The report is already flushed above.
+			fmt.Fprintln(os.Stderr, err)
+			os.Exit(2)
+		}
+		if report.Verdict != hooks.VerdictArmed {
+			return fmt.Errorf("guard hooks are not armed for this working tree; see the report above")
+		}
+		return nil
+	},
+}
+
 func init() {
 	hooksInstallCmd.Flags().StringVar(&hooksInstallBranch, "branch", "",
 		"Protected branch (default: the repo's detected default branch)")
 	hooksCmd.AddCommand(hooksInstallCmd)
+	hooksCmd.AddCommand(hooksVerifyCmd)
 	hooksCmd.AddCommand(hooksUninstallCmd)
 	rootCmd.AddCommand(hooksCmd)
 }

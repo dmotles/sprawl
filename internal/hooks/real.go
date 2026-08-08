@@ -1,6 +1,7 @@
 package hooks
 
 import (
+	"errors"
 	"fmt"
 	"io/fs"
 	"os"
@@ -44,6 +45,68 @@ func RealHooksDir() (string, error) {
 		}
 	}
 	return filepath.Join(common, "hooks"), nil
+}
+
+// RealHooksPathOrigins reports every config scope that sets core.hooksPath, in
+// git's own precedence order (git obeys the last). An unset key is not an
+// error — git exits 1 with no output, which is reported as an empty list.
+func RealHooksPathOrigins() ([]ConfigOrigin, error) {
+	out, err := exec.Command("git", "config", "--show-origin", "--show-scope", "--get-all", "core.hooksPath").Output()
+	if err != nil {
+		var ee *exec.ExitError
+		// Exit 1 with empty stderr is git's "key not set".
+		if errors.As(err, &ee) && ee.ExitCode() == 1 && len(ee.Stderr) == 0 {
+			return nil, nil
+		}
+		return nil, err
+	}
+	var origins []ConfigOrigin
+	for _, line := range strings.Split(strings.TrimRight(string(out), "\n"), "\n") {
+		if line == "" {
+			continue
+		}
+		// Format: <scope>\t<origin>\t<value>
+		parts := strings.SplitN(line, "\t", 3)
+		if len(parts) != 3 {
+			return nil, fmt.Errorf("unparseable `git config --show-scope --show-origin` line: %q", line)
+		}
+		origins = append(origins, ConfigOrigin{Scope: parts[0], Origin: parts[1], Value: parts[2]})
+	}
+	return origins, nil
+}
+
+// RealResolvedHooksDir asks git itself where hooks live. `rev-parse --git-path
+// hooks` honours core.hooksPath (including a relative value, resolved against
+// the working-tree top-level) and returns the shared common dir from a linked
+// worktree, so it is the authoritative answer rather than a reimplementation of
+// git's precedence rules.
+func RealResolvedHooksDir() (string, error) {
+	p, err := gitOutput("rev-parse", "--git-path", "hooks")
+	if err != nil {
+		return "", err
+	}
+	return filepath.Abs(p)
+}
+
+// RealCommonDir returns the absolute shared git dir (the same path from every
+// linked worktree).
+func RealCommonDir() (string, error) {
+	p, err := gitOutput("rev-parse", "--git-common-dir")
+	if err != nil {
+		return "", err
+	}
+	return filepath.Abs(p)
+}
+
+// RealGitDir returns this worktree's own git dir. It differs from the common
+// dir exactly when the caller is in a linked worktree.
+func RealGitDir() (string, error) {
+	return gitOutput("rev-parse", "--absolute-git-dir")
+}
+
+// RealTopLevel returns the working-tree top-level.
+func RealTopLevel() (string, error) {
+	return gitOutput("rev-parse", "--show-toplevel")
 }
 
 // RealDetectBranch resolves the repo's default branch: origin/HEAD →

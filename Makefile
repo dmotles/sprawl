@@ -1,7 +1,7 @@
-.PHONY: validate build proto-check proto-gen proto-gen-web hub-web fmt-check lint test clean install fmt hooks leak-scan test-notify-tui-e2e test-handoff-e2e test-bridge-lifecycle-e2e test-exit-code-preservation test-parallel-agent-viewport-e2e test-tui-e2e test-leak-resistance-e2e test-merge-reuse-e2e test-ask-user-question-e2e test-drain-row-inject-e2e test-wake-live-e2e test-paste-coalesce-e2e test-e2e-matrix test-e2e-matrix-unit test-hooks-e2e test-hub-bootstrap test-hub-e2e test-wirelog-helpers-unit test-e2e-lockwait-unit test-gitignore-classes test-race test-race-gate always-loaded-budget test-always-loaded-budget-unit
+.PHONY: validate build hooks-armed proto-check proto-gen proto-gen-web hub-web fmt-check lint test clean install fmt hooks leak-scan test-notify-tui-e2e test-handoff-e2e test-bridge-lifecycle-e2e test-exit-code-preservation test-parallel-agent-viewport-e2e test-tui-e2e test-leak-resistance-e2e test-merge-reuse-e2e test-ask-user-question-e2e test-drain-row-inject-e2e test-wake-live-e2e test-paste-coalesce-e2e test-e2e-matrix test-e2e-matrix-unit test-hooks-e2e test-hub-bootstrap test-hub-e2e test-wirelog-helpers-unit test-e2e-lockwait-unit test-gitignore-classes test-race test-race-gate always-loaded-budget test-always-loaded-budget-unit
 
 # Default target — full quality gauntlet
-validate: build proto-check fmt-check lint test-race-gate test-race test-wirelog-helpers-unit test-e2e-lockwait-unit test-e2e-matrix-unit test-always-loaded-budget-unit always-loaded-budget test-gitignore-classes leak-scan
+validate: build hooks-armed proto-check fmt-check lint test-race-gate test-race test-wirelog-helpers-unit test-e2e-lockwait-unit test-e2e-matrix-unit test-always-loaded-budget-unit always-loaded-budget test-gitignore-classes leak-scan
 
 BUF ?= buf
 
@@ -186,6 +186,26 @@ leak-scan:
 # nothing fails until an infra artifact is staged into this PUBLIC repo.
 test-gitignore-classes:
 	bash scripts/test-gitignore-classes.sh
+
+# QUM-951: assert the guard stack is actually ARMED for this working tree before
+# anything else in validate has a chance to look green. `git -c
+# core.hooksPath=<nonexistent> commit` runs NO hooks and exits 0 — silently
+# voiding the QUM-808 pre-commit guard, the QUM-837 reference-transaction
+# backstop, and this very validate gate at once — and a dangling symlink, a lost
+# executable bit or a deleted guard helper disarm the same way, with no warning
+# from git in any case.
+#
+# This CANNOT live in a hook: hooks are exactly what is being bypassed. It fails
+# hard, deliberately. Cf. the always-loaded-budget gate below, which is
+# tracked-only precisely so it cannot fail as a function of whose checkout ran
+# it — the distinction is that a clone with no hooks is not a valid state to be
+# committing from, and the remedy is one tracked, documented command that the
+# failure message names.
+#
+# Declared `: build` explicitly rather than relying on validate's prerequisite
+# order, so `make -j` cannot race it ahead of the binary it runs.
+hooks-armed: build
+	@./sprawl hooks verify
 
 hooks:
 	ln -sf ../../scripts/pre-commit .git/hooks/pre-commit

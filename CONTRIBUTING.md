@@ -15,10 +15,12 @@ Open an issue on [GitHub Issues](https://github.com/dmotles/sprawl/issues) with:
 
 1. Install [Go 1.25+](https://go.dev/dl/)
 2. Clone the repo and cd into it
-3. Install the pre-commit hook: `make hooks`
+3. Install the guard hooks: `make hooks` — **required before step 4**
 4. Run the full validation suite: `make validate`
 
 `make validate` runs build, format checking, linting, and tests in sequence. Get this passing before submitting any changes.
+
+Step 3 is not optional and must come first: `make validate` starts by asserting the guard hooks are actually armed for your checkout (QUM-951), so on a fresh clone it fails until `make hooks` has run. The failure names `make hooks` as the remedy. Run it from the main checkout — a linked worktree's `.git` is a file, and worktrees share one hooks directory anyway.
 
 ## Pull Requests
 
