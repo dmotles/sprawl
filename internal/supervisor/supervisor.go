@@ -27,9 +27,15 @@ type AgentInfo struct {
 	TreePath string `json:"tree_path,omitempty"`
 	// Blurb is the short auto-generated capability summary (QUM-899). Shown as
 	// the headline line per agent in the status tool.
-	Blurb             string `json:"blurb,omitempty"`
-	LastReportType    string `json:"last_report_type,omitempty"`
-	LastReportState   string `json:"last_report_state,omitempty"`
+	Blurb           string `json:"blurb,omitempty"`
+	LastReportType  string `json:"last_report_type,omitempty"`
+	LastReportState string `json:"last_report_state,omitempty"`
+	// LastReportAt is when the last report was made, RFC3339, empty when the
+	// agent has never reported. Carried as the stored string rather than a
+	// time.Time so "never reported" stays distinguishable from a stored value
+	// that will not parse, and so a zero time can never render as an age.
+	// QUM-1154.
+	LastReportAt      string `json:"last_report_at,omitempty"`
 	LastReportMessage string `json:"last_report_message,omitempty"`
 	LastReportDetail  string `json:"last_report_detail,omitempty"`
 	// SessionCostUsd is the cost of the agent's CURRENT session only, not its

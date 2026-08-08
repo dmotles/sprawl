@@ -534,6 +534,7 @@ func (r *Real) Status(_ context.Context) ([]AgentInfo, error) {
 			TreePath:           a.TreePath,
 			LastReportType:     a.LastReportType,
 			LastReportState:    a.LastReportState,
+			LastReportAt:       a.LastReportAt,
 			LastReportMessage:  a.LastReportMessage,
 			LastReportDetail:   a.LastReportDetail,
 			Blurb:              a.Blurb,

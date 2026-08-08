@@ -494,8 +494,43 @@ type statusView struct {
 	Subagent           bool    `json:"subagent,omitempty"`
 	SharedWorktreeWith string  `json:"shared_worktree_with,omitempty"`
 	// Demoted secondary fields.
-	LastReportState   string `json:"last_report_state,omitempty"`
+	LastReportState string `json:"last_report_state,omitempty"`
+	// LastReportAt / LastReportAge do for the report what the pair above does
+	// for activity. A bare `working` with no timestamp at all was the whole
+	// defect: a report 15 hours stale read as live state on the surface agents
+	// actually use. QUM-1154.
+	LastReportAt      string `json:"last_report_at,omitempty"`
+	LastReportAge     string `json:"last_report_age,omitempty"`
 	LastReportMessage string `json:"last_report_message,omitempty"`
+}
+
+// reportStamp renders a stored RFC3339 report timestamp for the wire, as the
+// (timestamp, age) pair to emit. Three cases, deliberately distinct:
+//
+//   - never reported ("") — emit neither. An absent report has no age.
+//   - unparseable — emit the raw value with age "unknown". The value is the
+//     only evidence of the bad write, and "unknown" is the same token peek
+//     already uses for the same input.
+//   - the zero time — emit neither. "0001-01-01T00:00:00Z" parses cleanly, so
+//     it reaches here as a real time and omitempty will not elide the
+//     non-empty string; left alone it renders as data, and its age is the
+//     "106751d ago" shape tui.Ago exists to suppress. A zero stamp is a
+//     botched write, not an observation.
+//
+// Shared by the status and peek surfaces so the age string cannot drift
+// between them. QUM-1154.
+func reportStamp(at string, now time.Time) (string, string) {
+	if at == "" {
+		return "", ""
+	}
+	t, err := time.Parse(time.RFC3339, at)
+	if err != nil {
+		return at, "unknown"
+	}
+	if t.IsZero() {
+		return "", ""
+	}
+	return at, tui.Ago(t, now)
 }
 
 type statusPayload struct {
@@ -508,6 +543,7 @@ type statusPayload struct {
 }
 
 func toStatusView(a supervisor.AgentInfo, now time.Time) statusView {
+	reportAt, reportAge := reportStamp(a.LastReportAt, now)
 	return statusView{
 		Name:               a.Name,
 		Type:               a.Type,
@@ -525,6 +561,8 @@ func toStatusView(a supervisor.AgentInfo, now time.Time) statusView {
 		Subagent:           a.Subagent,
 		SharedWorktreeWith: a.SharedWorktreeWith,
 		LastReportState:    a.LastReportState,
+		LastReportAt:       reportAt,
+		LastReportAge:      reportAge,
 		LastReportMessage:  a.LastReportMessage,
 	}
 }
@@ -1114,14 +1152,13 @@ func toolErrorResult(id json.RawMessage, errMsg string) (json.RawMessage, error)
 // an RFC3339 string and `activity[].ts` is a time.Time — two provenances, two
 // conversions, deliberately not unified.
 //
-// An unparseable timestamp renders "unknown" rather than an age derived from
-// the zero time, which would print "489000h ago" and read as data. QUM-1154.
+// The report age comes from reportStamp, shared with the status surface, so
+// an unparseable timestamp renders "unknown" on both rather than an age
+// derived from the zero time, which would read as data. QUM-1154.
 func annotatePeekAges(m map[string]any, result *supervisor.PeekResult, now time.Time) {
-	if lr, ok := m["last_report"].(map[string]any); ok && result.LastReport.At != "" {
-		if at, err := time.Parse(time.RFC3339, result.LastReport.At); err == nil {
-			lr["age"] = tui.Ago(at, now)
-		} else {
-			lr["age"] = "unknown"
+	if lr, ok := m["last_report"].(map[string]any); ok {
+		if _, age := reportStamp(result.LastReport.At, now); age != "" {
+			lr["age"] = age
 		}
 	}
 	var newest time.Time
