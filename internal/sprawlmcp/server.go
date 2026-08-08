@@ -505,21 +505,28 @@ type statusView struct {
 }
 
 // reportStamp renders a stored RFC3339 report timestamp for the wire, as the
-// (timestamp, age) pair to emit. Three cases, deliberately distinct:
+// (timestamp, age) pair to emit. Never reported is silent; every BAD write is
+// labelled "unknown" rather than disguised, because a report whose age we
+// cannot vouch for must not read as one we can:
 //
-//   - never reported ("") — emit neither. An absent report has no age.
-//   - unparseable — emit the raw value with age "unknown". The value is the
-//     only evidence of the bad write, and "unknown" is the same token peek
-//     already uses for the same input.
-//   - the zero time — emit neither. "0001-01-01T00:00:00Z" parses cleanly, so
-//     it reaches here as a real time and omitempty will not elide the
-//     non-empty string; left alone it renders as data, and its age is the
-//     "106751d ago" shape tui.Ago exists to suppress. A zero stamp is a
-//     botched write, not an observation.
+//   - never reported ("") — emit neither. An absent report has no age, and
+//     labelling it would invent a report that does not exist.
+//   - unparseable — keep the raw value, age "unknown". The value is the only
+//     evidence of the bad write.
+//   - the zero time — drop the value, age "unknown". "0001-01-01T00:00:00Z"
+//     parses cleanly, so it arrives here as a real time and omitempty will
+//     not elide the non-empty string; left alone it renders as data, and its
+//     age is the "106751d ago" shape tui.Ago exists to suppress. Dropping it
+//     silently is not enough either: that would leave last_report_state
+//     standing bare, which is the pre-fix shape this issue exists to remove.
+//   - the future — keep the raw value, age "unknown". HumanizeSince clamps a
+//     negative duration to 0, so an unguarded future stamp reads "0s ago":
+//     the inverse of the founding defect, and worse, because a stale report
+//     eventually looks stale while a skewed one never ages out.
 //
-// Shared by the status and peek surfaces so the age string cannot drift
-// between them. QUM-1154.
-func reportStamp(at string, now time.Time) (string, string) {
+// Shared by the status and peek surfaces so the two cannot diverge on any of
+// these cases. QUM-1154.
+func reportStamp(at string, now time.Time) (stamp, age string) {
 	if at == "" {
 		return "", ""
 	}
@@ -528,7 +535,10 @@ func reportStamp(at string, now time.Time) (string, string) {
 		return at, "unknown"
 	}
 	if t.IsZero() {
-		return "", ""
+		return "", "unknown"
+	}
+	if t.After(now) {
+		return at, "unknown"
 	}
 	return at, tui.Ago(t, now)
 }
@@ -1152,13 +1162,19 @@ func toolErrorResult(id json.RawMessage, errMsg string) (json.RawMessage, error)
 // an RFC3339 string and `activity[].ts` is a time.Time — two provenances, two
 // conversions, deliberately not unified.
 //
-// The report age comes from reportStamp, shared with the status surface, so
-// an unparseable timestamp renders "unknown" on both rather than an age
-// derived from the zero time, which would read as data. QUM-1154.
+// Both halves of the report stamp come from reportStamp, shared with the
+// status surface. Taking only the age would leave the two disagreeing on the
+// zero timestamp — status suppressing it while peek still printed
+// "0001-01-01T00:00:00Z", the "reads as data" shape surviving on the other
+// surface — so the suppressed timestamp is deleted here too. QUM-1154.
 func annotatePeekAges(m map[string]any, result *supervisor.PeekResult, now time.Time) {
 	if lr, ok := m["last_report"].(map[string]any); ok {
-		if _, age := reportStamp(result.LastReport.At, now); age != "" {
+		stamp, age := reportStamp(result.LastReport.At, now)
+		if age != "" {
 			lr["age"] = age
+		}
+		if stamp == "" {
+			delete(lr, "at")
 		}
 	}
 	var newest time.Time

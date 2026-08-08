@@ -249,6 +249,36 @@ func TestToolPeek_UnparseableReportAtDegradesLoudly(t *testing.T) {
 	}
 }
 
+// peek must reach the same verdict as status on a zero timestamp. Sharing
+// only the AGE left the two surfaces disagreeing on exactly the case the
+// guard was added for: status suppressed the bogus stamp while peek still
+// printed "0001-01-01T00:00:00Z" — the "reads as data" shape, surviving on
+// the other surface. QUM-1154.
+func TestToolPeek_ZeroReportAtDropsTheBogusTimestamp(t *testing.T) {
+	mock := &mockSupervisor{peekResult: &supervisor.PeekResult{
+		Status:     "active",
+		LastReport: supervisor.LastReport{State: "working", At: time.Time{}.UTC().Format(time.RFC3339)},
+	}}
+	srv := New(mock).withNowFn(fixedNow)
+	out, err := srv.toolPeek(context.Background(), json.RawMessage(`{"agent":"ratz"}`))
+	if err != nil {
+		t.Fatalf("toolPeek: %v", err)
+	}
+	lr, ok := statusPayloadOf(t, out)["last_report"].(map[string]any)
+	if !ok {
+		t.Fatalf("no last_report block\n%s", out)
+	}
+	if ts, ok := lr["at"]; ok {
+		t.Errorf("peek emitted last_report.at = %v for a zero timestamp, want the key dropped\n%s", ts, out)
+	}
+	if lr["age"] != "unknown" {
+		t.Errorf("last_report.age = %v, want %q — same verdict status reaches\n%s", lr["age"], "unknown", out)
+	}
+	if lr["state"] != "working" {
+		t.Errorf("last_report.state = %v, want it retained\n%s", lr["state"], out)
+	}
+}
+
 // Never-reported is a real empty, not a parse failure — do not label it.
 func TestToolPeek_NoReportHasNoAge(t *testing.T) {
 	mock := &mockSupervisor{peekResult: &supervisor.PeekResult{Status: "active"}}
@@ -268,11 +298,17 @@ func TestToolPeek_NoReportHasNoAge(t *testing.T) {
 	}
 }
 
-// statusAgentsByName runs toolStatus over the given agents and returns the
-// emitted views keyed by name. Keyed, not indexed: an index-addressed
-// assertion that survives a reordering still labels the wrong agent in its
-// failure message, which costs the next reader more than it saves.
-func statusAgentsByName(t *testing.T, agents []supervisor.AgentInfo) (map[string]map[string]any, string) {
+// statusAgentsByName runs toolStatus over the given agents and returns a
+// lookup for the emitted views, plus the raw payload for failure messages.
+//
+// Keyed, not indexed: an index-addressed assertion that survives a reordering
+// still labels the wrong agent in its failure message. The lookup t.Fatalf's
+// on a missing name rather than returning the zero value, because these tests
+// assert that keys are ABSENT — and every such assertion is trivially true of
+// the nil map a plain map index hands back, so a `status` that emitted no
+// agents at all would pass them. Absence of a key is only evidence once the
+// subject is known to exist.
+func statusAgentsByName(t *testing.T, agents []supervisor.AgentInfo) (func(string) map[string]any, string) {
 	t.Helper()
 	srv := New(&mockSupervisor{statusResult: agents}).withImageFn(cleanImage).withNowFn(fixedNow)
 	out, err := srv.toolStatus(context.Background())
@@ -284,7 +320,14 @@ func statusAgentsByName(t *testing.T, agents []supervisor.AgentInfo) (map[string
 		v := a.(map[string]any)
 		byName[v["name"].(string)] = v
 	}
-	return byName, out
+	return func(name string) map[string]any {
+		t.Helper()
+		v, ok := byName[name]
+		if !ok {
+			t.Fatalf("agent %q absent from the status payload; an absence assertion against a missing agent proves nothing\n%s", name, out)
+		}
+		return v
+	}, out
 }
 
 // AC5: `status` — not just `peek` — must render an age on the last report.
@@ -298,7 +341,7 @@ func statusAgentsByName(t *testing.T, agents []supervisor.AgentInfo) (map[string
 // branch of HumanizeSince. The negative control lives in
 // TestToolStatus_NoReportHasNoAge. QUM-1154.
 func TestToolStatus_LastReportAge(t *testing.T) {
-	byName, out := statusAgentsByName(t, []supervisor.AgentInfo{
+	view, out := statusAgentsByName(t, []supervisor.AgentInfo{
 		{
 			Name:              "stale",
 			Type:              "engineer",
@@ -314,7 +357,7 @@ func TestToolStatus_LastReportAge(t *testing.T) {
 		},
 	})
 
-	stale := byName["stale"]
+	stale := view("stale")
 	if stale["last_report_age"] != "15h ago" {
 		t.Errorf("stale: last_report_age = %v, want %q\n%s", stale["last_report_age"], "15h ago", out)
 	}
@@ -327,7 +370,7 @@ func TestToolStatus_LastReportAge(t *testing.T) {
 		t.Errorf("stale: last_report_state = %v, want %q\n%s", stale["last_report_state"], "working", out)
 	}
 
-	if fresh := byName["fresh"]; fresh["last_report_age"] != "30s ago" {
+	if fresh := view("fresh"); fresh["last_report_age"] != "30s ago" {
 		t.Errorf("fresh: last_report_age = %v, want %q\n%s", fresh["last_report_age"], "30s ago", out)
 	}
 }
@@ -337,10 +380,10 @@ func TestToolStatus_LastReportAge(t *testing.T) {
 // an equality check against "" is satisfied by the wrong thing. Mirrors the
 // peek sibling TestToolPeek_NoReportHasNoAge. QUM-1154.
 func TestToolStatus_NoReportHasNoAge(t *testing.T) {
-	byName, out := statusAgentsByName(t, []supervisor.AgentInfo{
+	view, out := statusAgentsByName(t, []supervisor.AgentInfo{
 		{Name: "quiet", Type: "engineer"},
 	})
-	quiet := byName["quiet"]
+	quiet := view("quiet")
 	if age, ok := quiet["last_report_age"]; ok {
 		t.Errorf("never-reported agent got an age: %v\n%s", age, out)
 	}
@@ -354,10 +397,16 @@ func TestToolStatus_NoReportHasNoAge(t *testing.T) {
 // as a real time and `omitempty` will not elide the non-empty string. That is
 // the same shape that made a never-active agent emit "0001-01-01T00:00:00Z"
 // on last_activity_at, and that tui.Ago guards against printing as
-// "106751d ago". A zero stamp is a botched write, not an observation: emit
-// neither the age nor the timestamp. QUM-1154.
-func TestToolStatus_ZeroReportAtRendersNothing(t *testing.T) {
-	byName, out := statusAgentsByName(t, []supervisor.AgentInfo{
+// "106751d ago".
+//
+// The bogus timestamp is dropped, but the report is LABELLED rather than
+// silently disguised: suppressing both fields would leave `last_report_state:
+// "working"` standing with no timestamp and no age, which is byte-for-byte
+// the pre-fix output shape this whole issue exists to eliminate. A botched
+// write and an unparseable write are both bad writes and both say "unknown".
+// QUM-1154.
+func TestToolStatus_ZeroReportAtIsLabelledNotDisguised(t *testing.T) {
+	view, out := statusAgentsByName(t, []supervisor.AgentInfo{
 		{
 			Name:            "zeroed",
 			Type:            "engineer",
@@ -365,12 +414,44 @@ func TestToolStatus_ZeroReportAtRendersNothing(t *testing.T) {
 			LastReportAt:    time.Time{}.UTC().Format(time.RFC3339),
 		},
 	})
-	zeroed := byName["zeroed"]
-	if age, ok := zeroed["last_report_age"]; ok {
-		t.Errorf("zero timestamp rendered an age: %v, want the field absent\n%s", age, out)
-	}
+	zeroed := view("zeroed")
 	if ts, ok := zeroed["last_report_at"]; ok {
 		t.Errorf("zero timestamp emitted last_report_at = %v, want the field absent; it reads as data\n%s", ts, out)
+	}
+	if zeroed["last_report_age"] != "unknown" {
+		t.Errorf("last_report_age = %v, want %q — a dropped timestamp must not leave a bare state unqualified\n%s", zeroed["last_report_age"], "unknown", out)
+	}
+	// The regression this guards: the state must survive, or the test would
+	// be satisfied by dropping the whole report.
+	if zeroed["last_report_state"] != "working" {
+		t.Errorf("last_report_state = %v, want it retained\n%s", zeroed["last_report_state"], out)
+	}
+}
+
+// A timestamp in the future must not read as maximally fresh. HumanizeSince
+// clamps a negative duration to 0, so an unguarded future stamp renders
+// "0s ago" — the exact inverse of the founding defect and strictly worse: a
+// stale report eventually looks stale, whereas a skewed future one reads as
+// brand new forever and never ages out. QUM-1154.
+func TestToolStatus_FutureReportAtDoesNotReadAsFresh(t *testing.T) {
+	view, out := statusAgentsByName(t, []supervisor.AgentInfo{
+		{
+			Name:            "skewed",
+			Type:            "engineer",
+			LastReportState: "working",
+			LastReportAt:    fixedNow().Add(3 * time.Hour).Format(time.RFC3339),
+		},
+	})
+	skewed := view("skewed")
+	if skewed["last_report_age"] != "unknown" {
+		t.Errorf("last_report_age = %v, want %q for a future timestamp\n%s", skewed["last_report_age"], "unknown", out)
+	}
+	if age, _ := skewed["last_report_age"].(string); strings.HasSuffix(age, " ago") {
+		t.Errorf("future timestamp rendered as an age: %q — it reads as freshness\n%s", age, out)
+	}
+	// Keep the raw value: it is the evidence that the clock is wrong.
+	if skewed["last_report_at"] == nil {
+		t.Errorf("future timestamp dropped; the raw value is the evidence of the skew\n%s", out)
 	}
 }
 
@@ -379,10 +460,10 @@ func TestToolStatus_ZeroReportAtRendersNothing(t *testing.T) {
 // the zero time. The raw value must survive: it is the only evidence an
 // operator has for diagnosing the bad write. QUM-1154.
 func TestToolStatus_UnparseableReportAtDegradesLoudly(t *testing.T) {
-	byName, out := statusAgentsByName(t, []supervisor.AgentInfo{
+	view, out := statusAgentsByName(t, []supervisor.AgentInfo{
 		{Name: "ratz", Type: "engineer", LastReportState: "working", LastReportAt: "garbage"},
 	})
-	a0 := byName["ratz"]
+	a0 := view("ratz")
 	if a0["last_report_age"] != "unknown" {
 		t.Errorf("last_report_age = %v, want %q for an unparseable timestamp\n%s", a0["last_report_age"], "unknown", out)
 	}
