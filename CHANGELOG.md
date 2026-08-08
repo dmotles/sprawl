@@ -6,7 +6,7 @@ not strictly semver while we are pre-1.0.
 
 ## [Unreleased]
 
-## [v0.5.5] - 2026-08-07
+## [v0.5.5] - 2026-08-08
 
 ### Changed
 
