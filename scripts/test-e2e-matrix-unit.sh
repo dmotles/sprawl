@@ -3347,8 +3347,12 @@ if sed -e ':a' -e '/\\$/{N;s/\\\n//;ba}' "$_cap_join_fixture" \
 else
 	fail "18r POSITIVE CONTROL: the scan CANNOT see a continuation-spelled swallow — its green above is not attributable"
 fi
-# ...and it must not report the harmless spelling, or the arm becomes noise that
-# gets exempted wholesale.
+# ...and it must NOT report the harmless spelling. This control is load-bearing,
+# not tidiness: about 45 lines in the tree are `capture_pane X | grep -q y
+# 2>/dev/null`, where the redirect binds to grep and discards nothing. An arm that
+# flagged all 45 would be read as noisy, and the next person to look would exempt
+# it wholesale — which is how an anti-regression arm dies quietly while still
+# printing PASS. Keep this control whenever the pattern above is touched.
 printf '%s\n' 'if capture_pane "$s" | grep -q x 2>/dev/null; then :; fi' >"$_cap_join_fixture"
 if sed -e ':a' -e '/\\$/{N;s/\\\n//;ba}' "$_cap_join_fixture" \
 	| grep -qE '(capture-pane|capture_pane[a-z_]*)([^|]*2>/dev/null|.*\|\| *true)'; then
