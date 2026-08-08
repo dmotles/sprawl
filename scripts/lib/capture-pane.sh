@@ -118,10 +118,48 @@ _e2e_capture_ledger_init() {
     _E2E_CAPTURE_LEDGER_OK=no
     return 1
 }
+# Reap ledgers left by processes that are gone.
+#
+# A driver with an EXIT trap calls capture_pane_cleanup and leaves nothing, but
+# this lib is also sourced by short-lived processes with no trap at all — the unit
+# suite's fixture drivers and nested children among them — so without this the
+# zero-byte files accumulate in a /tmp that CLAUDE.md says is shared with other
+# agents and with host tooling. Reaping at init makes the litter bounded by the
+# number of LIVE harness processes instead of unbounded in time.
+#
+# Deliberately conservative, in the order the /tmp rules demand:
+#   - only the exact `e2e-capture-fault.<digits>` prefix, in the one directory
+#     this lib itself chose;
+#   - the glob is checked for a literal non-match, so an empty directory can
+#     never turn into a delete of the pattern itself;
+#   - the owning pid must be absent from /proc, which is authoritative for local
+#     pids — a live owner's ledger is never touched, because deleting it would
+#     erase a verdict rather than a temp file;
+#   - `rm` is external and this lib is sourced on PATH-scrubbed runs, so the
+#     whole thing is skipped rather than half-done when it is unavailable.
+_e2e_capture_reap_stale() {
+    local dir=${1:-}
+    [ -n "$dir" ] && [ -d "$dir" ] || return 0
+    command -v rm >/dev/null 2>&1 || return 0
+    local f pid
+    for f in "$dir"/e2e-capture-fault.*; do
+        [ -e "$f" ] || continue
+        pid=${f##*/e2e-capture-fault.}
+        case "$pid" in
+            '' | *[!0-9]*) continue ;;
+        esac
+        [ "$pid" = "$$" ] && continue
+        [ -d "/proc/$pid" ] && continue
+        rm -f -- "$f" "$f".err.* 2>/dev/null
+    done
+    return 0
+}
+
 # Assigned in the PARENT shell, so the aggregator — which also runs in the
 # parent — can read it. That is the one thing a subshell could not do, and the
 # reason the fault records themselves need a file.
 _e2e_capture_ledger_init || true
+_e2e_capture_reap_stale "${E2E_CAPTURE_FAULT_FILE%/*}"
 
 # Record a capture failure and explain it once per session.
 #

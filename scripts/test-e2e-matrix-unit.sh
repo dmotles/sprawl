@@ -58,7 +58,7 @@ FAIL=0
 # Measured on the RED-first run — [17]'s totals are pass/fail-invariant, every one of
 # its assertions fires exactly once in either direction, so the figure does not move
 # when the implementation lands.
-# 396 once QUM-957 added section [18] (109 assertions: capture_pane must not
+# 401 once QUM-957 added section [18] (114 assertions: capture_pane must not
 # swallow a tmux failure). Re-measured on a full green run, not derived by
 # arithmetic on the red one. Section [18] is pass/fail-invariant in the same way
 # [17] is — every arm is a symmetric if/else or a helper that records exactly one
@@ -67,7 +67,7 @@ FAIL=0
 # deliberate: [18]'s outer fixture guard (unreadable lib, failed mktemp, failed
 # fake-tmux build) records a single fail in place of ~90 assertions, and the floor
 # is exactly what turns that into a red instead of a suspiciously small green.
-MIN_ASSERTIONS=396
+MIN_ASSERTIONS=401
 # A [16b] nested child deliberately does NOT re-run section [16] (recursing would
 # fork-bomb, and counting there would corrupt the parity comparison), so it asserts
 # strictly fewer things and needs its own floor. Measured at de22410: 237; 238 after
@@ -76,12 +76,12 @@ MIN_ASSERTIONS=396
 # than reusing the parent's is the point — a child floor derived from the parent's
 # count would be the parity check again, and parity is what `0 == 0` satisfies.
 # 275 once QUM-1029 added section [17], which the child DOES run; 279 with F1 and 17k.
-# 388 once QUM-957 added section [18], which the child DOES run. Measured, not
+# 393 once QUM-957 added section [18], which the child DOES run. Measured, not
 # derived by subtracting [16]'s size from the parent. To re-measure: run this file
 # with UNIT_NESTED_SEAM_CHECK set to any value and SUBTRACT ONE from the total —
 # without a live nonce 16c's deliberate fail fires, so a hand-driven child reads
-# exactly one higher than a real [16b] child ("388 passed / 1 failed" here).
-MIN_ASSERTIONS_NESTED=388
+# exactly one higher than a real [16b] child ("393 passed / 1 failed" here).
+MIN_ASSERTIONS_NESTED=393
 
 # Pin the temp root. This suite runs inside `make validate` and therefore inside
 # the pre-commit hook, so it must not inherit the committing agent's TMPDIR:
@@ -3190,6 +3190,48 @@ pass "18p fixture: assertion made"
 e2e_print_results
 echo "AGG_RC=$?"'
 	_unit_cap_rc "$_OUT" AGG_RC nonzero "18p POSITIVE CONTROL: a fault AFTER a reset still fails the row (reset clears history, it does not disarm the gate)"
+
+	# --- 18q2 the ledger must not litter a shared /tmp without bound -------
+	# The ledger is created at SOURCE time — that is how its writability is
+	# probed, and how a leftover from a recycled pid is neutralised — so a process
+	# with no EXIT trap leaves a zero-byte file behind even when nothing faults.
+	# One full run of this suite left 877 of them before the reaper existed, in a
+	# /tmp CLAUDE.md says is shared with other agents and with host tooling.
+	#
+	# Lazy creation is deliberately NOT the fix: losing the cleanup costs a
+	# zero-byte file, losing the ledger costs a verdict. So the litter is made
+	# bounded by the live process set instead.
+	#
+	# Both directions matter equally here. Reaping a LIVE owner's ledger would
+	# erase faults it has not yet reported — the defect this whole section exists
+	# to stop, wearing housekeeping as a disguise.
+	mkdir -p "$UNIT_CAP_FIX/reap"
+	: >"$UNIT_CAP_FIX/reap/e2e-capture-fault.999999"
+	: >"$UNIT_CAP_FIX/reap/e2e-capture-fault.999999.err.1"
+	printf 'session=live-parent tmux_exit=1 form=x\n' >"$UNIT_CAP_FIX/reap/e2e-capture-fault.$$"
+	: >"$UNIT_CAP_FIX/reap/unrelated-file"
+	_unit_cap_probe empty "$UNIT_CAP_FIX/reap/e2e-capture-fault.self" 'echo "REAP_DONE=0"'
+	_unit_cap_rc "$_OUT" REAP_DONE 0 "18q2: the reap probe ran (so the assertions below are not vacuous)"
+	if [ -e "$UNIT_CAP_FIX/reap/e2e-capture-fault.999999" ]; then
+		fail "18q2 POSITIVE CONTROL: a ledger whose owning pid is gone was NOT reaped — the litter grows without bound in a shared /tmp"
+	else
+		pass "18q2 POSITIVE CONTROL: a ledger whose owning pid is gone is reaped"
+	fi
+	if [ -e "$UNIT_CAP_FIX/reap/e2e-capture-fault.999999.err.1" ]; then
+		fail "18q2 POSITIVE CONTROL: the dead owner's stderr spool was left behind"
+	else
+		pass "18q2 POSITIVE CONTROL: the dead owner's stderr spool is reaped with it"
+	fi
+	if [ -s "$UNIT_CAP_FIX/reap/e2e-capture-fault.$$" ]; then
+		pass "18q2 NEGATIVE CONTROL: a LIVE owner's ledger and its recorded fault are untouched"
+	else
+		fail "18q2 NEGATIVE CONTROL: a live owner's ledger was reaped or emptied — that erases a verdict, not a temp file"
+	fi
+	if [ -e "$UNIT_CAP_FIX/reap/unrelated-file" ]; then
+		pass "18q2 NEGATIVE CONTROL: a file not matching the ledger prefix is left alone"
+	else
+		fail "18q2 NEGATIVE CONTROL: the reaper deleted a file outside its own prefix"
+	fi
 
 	# --- 18u POSITIVE CONTROL: `set -e` must not swallow the verdict ------
 	# Measured, because it is counter-intuitive and it bit this very fix:
