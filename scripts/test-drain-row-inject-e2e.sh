@@ -268,7 +268,7 @@ if wait_for_pattern "$SESSION" "weave ●" 45; then
 else
     fail "TUI did not render 'weave ●' within 45s"
     echo "  pane tail:" >&2
-    capture_pane "$SESSION" | tail -30 >&2
+    capture_pane_dump "$SESSION" 30
     echo "  stderr log tail:" >&2
     [ -f "$STDERR_LOG" ] && tail -20 "$STDERR_LOG" >&2
     echo "==============================="
@@ -337,7 +337,7 @@ else
     echo "  agents dir:" >&2
     ls -la "$SPRAWL_ROOT/.sprawl/agents/" >&2 2>/dev/null || true
     echo "  pane tail:" >&2
-    capture_pane "$SESSION" | tail -40 >&2
+    capture_pane_dump "$SESSION" 40
     echo "==============================="
     echo "  Results: $PASS_COUNT passed, $FAIL_COUNT failed"
     exit 1
@@ -361,7 +361,7 @@ if wait_for_pattern_fast "$SESSION" "inbox: [0-9]+ new message" 60; then
 else
     fail "inbox banner never appeared within 60s — child may not have called messages_send"
     echo "  pane tail:" >&2
-    capture_pane "$SESSION" | tail -40 >&2
+    capture_pane_dump "$SESSION" 40
     echo "  child state:" >&2
     cat "$CHILD_STATE" 2>/dev/null | sed 's/^/    /' >&2 || echo "    <missing>" >&2
     echo "==============================="
@@ -398,7 +398,7 @@ else
     fail "drain-row citation '$DRAIN_NEEDLE...' did NOT appear in weave's pane within 90s"
     echo "  Send → defaultNotifier → WakeForDelivery → claude prompt-inject path is broken" >&2
     echo "  pane tail (80 lines):" >&2
-    capture_pane "$SESSION" | tail -80 >&2
+    capture_pane_dump "$SESSION" 80
     echo "  child state:" >&2
     cat "$CHILD_STATE" 2>/dev/null | sed 's/^/    /' >&2 || echo "    <missing>" >&2
     echo "  weave state:" >&2

@@ -259,7 +259,7 @@ if wait_for_pattern "$SESSION" "weave \\(idle\\)" 45; then
 else
     fail "TUI did not render within 45s"
     echo "  pane tail:" >&2
-    capture_pane "$SESSION" | tail -30 >&2
+    capture_pane_dump "$SESSION" 30
     echo "  stderr log tail:" >&2
     [ -f "$STDERR_LOG" ] && tail -20 "$STDERR_LOG" >&2
     echo "==============================="
@@ -364,7 +364,7 @@ if [ "$SIGNAL_APPEARED" -eq 1 ]; then
 else
     fail "handoff never fired within 90s (claude didn't call handoff; see pane tail)"
     echo "  pane tail:" >&2
-    capture_pane "$SESSION" | tail -40 >&2
+    capture_pane_dump "$SESSION" 40
 fi
 
 # 2. Wait for the TUI to react: capture-pane should show the restart
@@ -401,7 +401,7 @@ if [ -n "$restart_evidence_seen" ]; then
 else
     fail "TUI never triggered handoff restart within 60s (QUM-329 regression)"
     echo "  pane tail:" >&2
-    capture_pane "$SESSION" | tail -40 >&2
+    capture_pane_dump "$SESSION" 40
     echo "  tui-stderr log tail:" >&2
     # shellcheck disable=SC2086
     ls $TUI_LOG_GLOB 2>/dev/null | head -1 | xargs -r tail -30 >&2 || true
@@ -492,7 +492,7 @@ else
         echo "    pid=$p sid=$(claude_session_id_for_pid "$p") live=$(pid_is_live "$p" && echo yes || echo no)" >&2
     done
     echo "  pane tail:" >&2
-    capture_pane "$SESSION" | tail -20 >&2
+    capture_pane_dump "$SESSION" 20
 fi
 
 # 5. handoff-signal should have been consumed (removed) by FinalizeHandoff.

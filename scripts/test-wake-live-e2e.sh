@@ -218,7 +218,7 @@ if wait_for_pattern "$SESSION" "weave ●" 45; then
     pass "TUI rendered ('weave ●' root pill visible — QUM-656/733 orbital tree)"
 else
     fail "TUI did not render within 45s"
-    capture_pane "$SESSION" | tail -30 >&2
+    capture_pane_dump "$SESSION" 30
     [ -f "$STDERR_LOG" ] && tail -20 "$STDERR_LOG" >&2
     exit 1
 fi
@@ -262,7 +262,7 @@ while [ "$ELAPSED" -lt 180 ]; do
 done
 if [ "$SPAWN_LANDED" -ne 1 ]; then
     fail "no child state appeared within 180s"
-    capture_pane "$SESSION" | tail -40 >&2
+    capture_pane_dump "$SESSION" 40
     exit 1
 fi
 pass "child spawned (name=$CHILD_NAME)"
@@ -312,7 +312,7 @@ if wait_for_pattern_fast "$SESSION" "Induced subscriber_wedged|SubscriberWedge|f
     pass "fault induction tool returned"
 else
     fail "fault induction tool did not surface within 60s"
-    capture_pane "$SESSION" | tail -40 >&2
+    capture_pane_dump "$SESSION" 40
     exit 1
 fi
 
@@ -333,7 +333,7 @@ if wait_for_pattern_fast "$SESSION" "Woke agent $CHILD_NAME|session_restored|\"m
     pass "mcp__sprawl__wake returned success ack (fresh-session recovery)"
 else
     fail "recover success ack did not appear within 60s"
-    capture_pane "$SESSION" | tail -60 >&2
+    capture_pane_dump "$SESSION" 60
     exit 1
 fi
 
@@ -357,7 +357,7 @@ if [ -z "$NEW_PID" ]; then
     fail "PRIMARY: no live claude --resume subprocess found for sid=$ORIG_SID 2s after recover (QUM-606 zombie regression)"
     echo "  pgrep claude tail:" >&2
     pgrep -af claude | head -20 >&2 || true
-    capture_pane "$SESSION" | tail -60 >&2
+    capture_pane_dump "$SESSION" 60
     exit 1
 fi
 if [ "$NEW_PID" = "$ORIG_PID" ]; then
@@ -396,7 +396,7 @@ else
     fail "post-recover turn did NOT surface sentinel '$PROBE' in activity within 60s"
     echo "  activity tail:" >&2
     [ -f "$ACTIVITY" ] && tail -20 "$ACTIVITY" >&2 || echo "    <activity file missing>" >&2
-    capture_pane "$SESSION" | tail -60 >&2
+    capture_pane_dump "$SESSION" 60
 fi
 
 # --- Summary ---

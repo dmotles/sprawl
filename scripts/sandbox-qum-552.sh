@@ -107,7 +107,7 @@ _stmux resize-window -t "$SESSION" -x 200 -y 50 >/dev/null
 
 if ! wait_for_pattern "$SESSION" "weave (idle)" 60; then
     echo "FAIL: TUI never rendered" >&2
-    capture_pane "$SESSION" | tail -30 >&2
+    capture_pane_dump "$SESSION" 30
     exit 1
 fi
 echo "PASS: TUI rendered"
@@ -128,7 +128,7 @@ echo "T+0s    prompt sent (epoch=$T_START)"
 # Wait for the call to be visible in the call-log activity.
 sleep 4
 echo "T+~4s   activity pane after prompt:"
-capture_pane "$SESSION" | tail -8 | sed 's/^/    /'
+capture_pane_dump \"$SESSION\" 8 2>&1 | sed 's/^/    /'
 
 # Fire the interrupt from outside the session via a second sprawl process
 # acting as weave. Actually — we don't have an interrupt CLI; the
@@ -151,12 +151,12 @@ if wait_for_pattern "$SESSION" "${PROBE}:sleep-returned" 25; then
 else
     echo "FAIL: sleep did not complete within 25s"
     echo "    pane tail:"
-    capture_pane "$SESSION" | tail -20 | sed 's/^/      /'
+    capture_pane_dump \"$SESSION\" 20 2>&1 | sed 's/^/      /'
 fi
 
 echo ""
 echo "=== Final activity pane ==="
-capture_pane "$SESSION" | tail -25
+capture_pane_dump "$SESSION" 25
 
 # QUM-957: report any capture fault BEFORE the operator interprets the panes
 # dumped above. A blank pane and an unreadable pane look identical in a dump.

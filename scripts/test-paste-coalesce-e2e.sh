@@ -187,7 +187,7 @@ if wait_for_pattern "$SESSION" "weave \\(idle\\)" 45; then
     pass "TUI rendered ('weave (idle)' visible)"
 else
     fail "TUI did not render within 45s"
-    capture_pane "$SESSION" | tail -30 >&2
+    capture_pane_dump "$SESSION" 30
     [ -f "$STDERR_LOG" ] && tail -20 "$STDERR_LOG" >&2
     exit 1
 fi
@@ -272,7 +272,7 @@ if [ "$PASTE_OK" -eq 1 ]; then
     pass "200-char paste body visible in pane within ${PASTE_ELAPSED}s (head+tail both present)"
 else
     fail "paste body did not appear within 10s — coalescer regression (typewriter behavior returned?)"
-    capture_pane "$SESSION" | tail -40 >&2
+    capture_pane_dump "$SESSION" 40
     exit 1
 fi
 

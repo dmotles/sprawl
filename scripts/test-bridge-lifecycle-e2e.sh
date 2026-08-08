@@ -241,7 +241,7 @@ if wait_for_pattern "$SESSION" "weave \\(idle\\)" 45; then
     pass "TUI rendered"
 else
     fail "TUI did not render within 45s"
-    capture_pane "$SESSION" | tail -30 >&2
+    capture_pane_dump "$SESSION" 30
     [ -f "$STDERR_LOG" ] && tail -20 "$STDERR_LOG" >&2
     echo "  Results: $PASS_COUNT passed, $FAIL_COUNT failed"
     exit 1
@@ -292,7 +292,7 @@ if wait_for_token_in_weave_maildir "$TOKEN_A" 240; then
 else
     fail "marker A never landed within 240s — child failed to spawn or first send_async failed"
     echo "  pane tail:" >&2
-    capture_pane "$SESSION" | tail -40 >&2
+    capture_pane_dump "$SESSION" 40
     echo "  Results: $PASS_COUNT passed, $FAIL_COUNT failed"
     exit 1
 fi
@@ -347,7 +347,7 @@ if [ "$HANDOFF_FIRED" -eq 1 ]; then
     pass "handoff fired (signal/sessions-md/new-pid evidence observed)"
 else
     fail "handoff never fired within 300s — claude didn't call mcp__sprawl__handoff"
-    capture_pane "$SESSION" | tail -40 >&2
+    capture_pane_dump "$SESSION" 40
     echo "  Results: $PASS_COUNT passed, $FAIL_COUNT failed"
     exit 1
 fi
@@ -392,7 +392,7 @@ else
         grep -rE "stream closed|broken pipe|connection refused" "$SPRAWL_ROOT/.sprawl/logs" 2>/dev/null | head -10 >&2 || true
     fi
     echo "  pane tail:" >&2
-    capture_pane "$SESSION" | tail -30 >&2
+    capture_pane_dump "$SESSION" 30
 fi
 
 # Independent severance-signal check: even if marker B happens to land

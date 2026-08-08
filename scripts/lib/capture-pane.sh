@@ -58,40 +58,69 @@ fi
 # Choose and truncate the fault ledger, once, in the PARENT shell — the only
 # place the choice can be recorded for the subshells that will write to it.
 #
-# Truncation is not housekeeping: the default path is keyed on $$, PIDs are
-# recycled, and a stale ledger left by a dead process with the same PID would
-# fail an innocent row for a fault it never had.
+# Truncation is what actually keeps one row's fault from failing the next. Rows
+# run as `( . "$LIB"; ... )` SUBSHELLS of scripts/e2e-matrix.sh, where `$$` is
+# the driver's PID, so every row derives the SAME default path — and the driver
+# has no parallelism, so sequential truncation is sufficient and correct. It also
+# covers PID recycling: a stale ledger from a dead process with the same PID
+# would otherwise fail an innocent row for a fault it never had.
 #
-# Writability is PROBED rather than assumed, and a failure falls back to the
-# default path with a loud warning. An unrecordable fault is the sneakiest route
-# back to the defect: it needs no `|| true` anywhere, it just forgets.
+# But truncation must not erase a LIVE parent's faults, which is possible the
+# moment a capture-using script invokes another one. Ownership is stamped
+# alongside the path and the truncation is skipped when the inherited owner is
+# still this process tree's, so a nested script appends to its parent's ledger
+# instead of clearing it.
+#
+# Writability is PROBED rather than assumed. An unrecordable fault is the
+# sneakiest route back to the defect: it needs no `|| true` anywhere, it just
+# forgets. So a refused path falls back, and if BOTH refuse the run is marked
+# unprovable and capture_pane_assert_no_faults fails unconditionally — "I cannot
+# show this run was clean" must never read as "this run was clean".
 #
 # Only builtins: e2e-common.sh (which sources this) is itself sourced with PATH
 # scrubbed by the matrix driver's own unit suite, so mktemp/touch/rm are not
 # available at this point.
+_E2E_CAPTURE_LEDGER_OK=yes
 _e2e_capture_ledger_init() {
     local want=${E2E_CAPTURE_FAULT_FILE:-}
     local fallback="${TMPDIR:-/tmp}/e2e-capture-fault.$$"
+    local inherited_owner=${E2E_CAPTURE_LEDGER_OWNER:-}
     [ -n "$want" ] || want=$fallback
-    if { : >"$want"; } 2>/dev/null; then
-        E2E_CAPTURE_FAULT_FILE=$want
-        export E2E_CAPTURE_FAULT_FILE
-        return 0
-    fi
-    if [ "$want" != "$fallback" ] && { : >"$fallback"; } 2>/dev/null; then
-        echo "  WARN: capture-fault ledger '$want' is not writable; using '$fallback'." >&2
-        echo "        A fault that cannot be recorded silently restores the QUM-957 vacuous green," >&2
-        echo "        so this falls back rather than continuing without a ledger." >&2
-        E2E_CAPTURE_FAULT_FILE=$fallback
-        export E2E_CAPTURE_FAULT_FILE
-        return 0
-    fi
+    local p
+    for p in "$want" "$fallback"; do
+        # An inherited ledger from a still-live owner is APPENDED to, not
+        # truncated: clearing it would delete the parent's faults and hand the
+        # parent a clean bill of health it did not earn.
+        if [ -n "$inherited_owner" ] && [ "$p" = "$want" ] && [ -d "/proc/$inherited_owner" ]; then
+            if { : >>"$p"; } 2>/dev/null; then
+                E2E_CAPTURE_FAULT_FILE=$p
+                export E2E_CAPTURE_FAULT_FILE E2E_CAPTURE_LEDGER_OWNER
+                return 0
+            fi
+        elif { : >"$p"; } 2>/dev/null; then
+            if [ "$p" != "$want" ]; then
+                echo "  WARN: capture-fault ledger '$want' is not writable; using '$p'." >&2
+                echo "        A fault that cannot be recorded silently restores the QUM-957 vacuous green," >&2
+                echo "        so this falls back rather than continuing without a ledger." >&2
+            fi
+            E2E_CAPTURE_FAULT_FILE=$p
+            E2E_CAPTURE_LEDGER_OWNER=$$
+            export E2E_CAPTURE_FAULT_FILE E2E_CAPTURE_LEDGER_OWNER
+            return 0
+        fi
+    done
     echo "  WARN: no writable capture-fault ledger ('$want' and '$fallback' both refused)." >&2
-    echo "        Capture faults will be reported on stderr only and will NOT fail the row." >&2
+    echo "        This run cannot PROVE its pane captures succeeded, so every negative pane" >&2
+    echo "        result in it is unattributable. The run is failed rather than trusted." >&2
     E2E_CAPTURE_FAULT_FILE=$want
-    export E2E_CAPTURE_FAULT_FILE
+    E2E_CAPTURE_LEDGER_OWNER=$$
+    export E2E_CAPTURE_FAULT_FILE E2E_CAPTURE_LEDGER_OWNER
+    _E2E_CAPTURE_LEDGER_OK=no
     return 1
 }
+# Assigned in the PARENT shell, so the aggregator — which also runs in the
+# parent — can read it. That is the one thing a subshell could not do, and the
+# reason the fault records themselves need a file.
 _e2e_capture_ledger_init || true
 
 # Record a capture failure and explain it once per session.
@@ -172,7 +201,14 @@ _e2e_capture_run() {
     if [ "$rc" -ne 0 ]; then
         _e2e_capture_fault "$session" "$rc" "$errfile" "$form"
     fi
-    [ -n "$errfile" ] && rm -f -- "$errfile" 2>/dev/null
+    # Truncate with a builtin FIRST: `rm` is external and this library is
+    # sourced on PATH-scrubbed runs, so the unlink is best-effort while the
+    # truncation is not. Without it a spool would keep one row's tmux stderr
+    # visible to the next capture that reused the path.
+    if [ -n "$errfile" ]; then
+        { : >"$errfile"; } 2>/dev/null
+        rm -f -- "$errfile" 2>/dev/null
+    fi
     return "$rc"
 }
 
@@ -221,6 +257,42 @@ capture_pane_ansi_best_effort() {
     return 0
 }
 
+# capture_pane_dump SESSION [LINES] [--ansi] — forensic pane dump to stderr, for
+# a path that has ALREADY decided a verdict. Never fails, never faults the row.
+#
+# This replaces `capture_pane "$S" | tail -N >&2`, which is a trap in every
+# driver that runs `set -euo pipefail`: `pipefail` promotes the capture's new
+# nonzero status to the pipeline's, and `set -e` then kills the script AT THE
+# DUMP — skipping the summary and, worse, skipping the capture-fault gate that
+# would have explained the abort. Nine drivers plus scripts/test-tui-e2e.sh are
+# `set -euo pipefail`; matrix rows are immune only because e2e-matrix.sh runs
+# them as an `if` condition.
+#
+# It is also the honest answer to a dump against a pane that is legitimately
+# gone: it SAYS the pane could not be read, where `| tail -N >&2` printed
+# nothing and left the reader to assume an empty pane.
+#
+# Do not use it where the content decides a verdict — that is what capture_pane
+# and e2e_pane_lacks are for.
+capture_pane_dump() {
+    local session=$1 lines=${2:-30} mode=${3:-}
+    local out
+    if [ "$mode" = "--ansi" ]; then
+        out=$(capture_pane_ansi_best_effort "$session")
+    else
+        out=$(capture_pane_best_effort "$session")
+    fi
+    case "$lines" in
+        '' | *[!0-9]*) lines=30 ;;
+    esac
+    if [ -z "$out" ]; then
+        echo "  (pane dump: nothing captured for session '$session' — it is empty or gone)" >&2
+        return 0
+    fi
+    printf '%s\n' "$out" | tail -n "$lines" >&2
+    return 0
+}
+
 # e2e_require_session_alive SESSION [CONTEXT] — liveness precondition for
 # absence assertions. Records a pass()/fail() and returns 0/1.
 #
@@ -250,12 +322,12 @@ e2e_require_session_alive() {
 # worded so a reader cannot mistake it for proof of absence.
 e2e_pane_lacks() {
     local session=$1 pattern=$2 desc=$3
-    local pane rc
+    local pane rc=0
     # capture_pane's own fault diagnostic is deliberately NOT suppressed here:
     # the verdict below says the pane was unreadable, and the diagnostic is what
     # says WHY. Only the pane text is captured; stderr goes to the operator.
-    pane=$(capture_pane "$session")
-    rc=$?
+    rc=0
+    pane=$(capture_pane "$session") || rc=$?
     echo "  absence probe: session='$session' capture exit=$rc bytes=${#pane} pattern='$pattern'"
     if [ "$rc" -ne 0 ]; then
         fail "$desc — CANNOT JUDGE: the pane could not be read (tmux exit=$rc), so the pattern's absence is UNPROVEN, not proven"
@@ -277,6 +349,19 @@ e2e_pane_lacks() {
 # e2e-common.sh and call it from their own summary block.
 capture_pane_assert_no_faults() {
     local ledger=${E2E_CAPTURE_FAULT_FILE:-}
+    # No ledger at all means no evidence either way, and "no evidence" must not
+    # read as "clean" — that is this whole issue in one line. Unconditional, and
+    # deliberately checked BEFORE the emptiness test: an absent ledger is also an
+    # empty one.
+    if [ "${_E2E_CAPTURE_LEDGER_OK:-yes}" != yes ]; then
+        {
+            echo "  FAIL: no writable capture-fault ledger for this run (QUM-957)."
+            echo "        A pane capture that failed could not have been recorded, so this run"
+            echo "        cannot demonstrate that its \"must NOT appear on the pane\" results were"
+            echo "        measured rather than merely unobserved. Failing rather than trusting."
+        } >&2
+        return 1
+    fi
     if [ -z "$ledger" ] || [ ! -s "$ledger" ]; then
         return 0
     fi

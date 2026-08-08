@@ -296,7 +296,7 @@ if wait_for_pattern_re "$SESSION" "weave \\(idle\\)" 45; then
 else
     fail "TUI did not render 'weave (idle)' within 45s"
     echo "  pane tail:" >&2
-    capture_pane "$SESSION" | tail -30 >&2
+    capture_pane_dump "$SESSION" 30
     echo "  stderr log tail:" >&2
     [ -f "$STDERR_LOG" ] && tail -20 "$STDERR_LOG" >&2
     echo "==============================="
@@ -348,7 +348,7 @@ else
     echo "  weave state on disk:" >&2
     cat "$WEAVE_STATE" 2>/dev/null | sed 's/^/    /' >&2 || echo "    <missing>" >&2
     echo "  pane tail:" >&2
-    capture_pane "$SESSION" | tail -40 >&2
+    capture_pane_dump "$SESSION" 40
     echo "==============================="
     echo "  Results: $PASS_COUNT passed, $FAIL_COUNT failed"
     exit 1
@@ -371,7 +371,7 @@ else
     echo "  current last_report_message:" >&2
     jq -r '.last_report_message // "<unset>"' "$WEAVE_STATE" 2>/dev/null >&2 || true
     echo "  pane tail:" >&2
-    capture_pane "$SESSION" | tail -40 >&2
+    capture_pane_dump "$SESSION" 40
 fi
 
 echo ""
@@ -444,7 +444,7 @@ else
     echo "  agents dir:" >&2
     ls -la "$SPRAWL_ROOT/.sprawl/agents/" >&2 2>/dev/null || true
     echo "  pane tail:" >&2
-    capture_pane "$SESSION" | tail -40 >&2
+    capture_pane_dump "$SESSION" 40
     echo "==============================="
     echo "  Results: $PASS_COUNT passed, $FAIL_COUNT failed"
     exit 1
@@ -464,7 +464,7 @@ if wait_for_pattern "$SESSION" "is asking" 240; then
 else
     fail "modal indicator never appeared within 240s — manager did not call ask_user_question OR TUI consumer not wired"
     echo "  pane tail:" >&2
-    capture_pane "$SESSION" | tail -40 >&2
+    capture_pane_dump "$SESSION" 40
     echo "  manager state:" >&2
     cat "$MANAGER_STATE" 2>/dev/null | sed 's/^/    /' >&2
     echo "==============================="
@@ -505,7 +505,7 @@ else
     echo "  current last_report_message:" >&2
     jq -r '.last_report_message // "<unset>"' "$MANAGER_STATE" 2>/dev/null >&2 || true
     echo "  pane tail:" >&2
-    capture_pane "$SESSION" | tail -40 >&2
+    capture_pane_dump "$SESSION" 40
 fi
 
 # --- Sanity check: modal indicator should clear after Resolve. ---
@@ -520,7 +520,7 @@ sleep 3
 if capture_pane "$SESSION" | grep -qE "is asking"; then
     fail "statusbar still shows 'is asking' after Resolve — queue not draining"
     echo "  pane tail:" >&2
-    capture_pane "$SESSION" | tail -20 >&2
+    capture_pane_dump "$SESSION" 20
 else
     pass "statusbar 'is asking' segment cleared after Resolve"
 fi
@@ -621,7 +621,7 @@ if wait_for_pattern "$SESSION" "is asking" 180; then
 else
     fail "phase 2 modal never appeared within 180s"
     echo "  pane tail:" >&2
-    capture_pane "$SESSION" | tail -40 >&2
+    capture_pane_dump "$SESSION" 40
     echo "==============================="
     echo "  Results: $PASS_COUNT passed, $FAIL_COUNT failed"
     exit 1
@@ -676,7 +676,7 @@ else
     echo "  current last_report_message:" >&2
     jq -r '.last_report_message // "<unset>"' "$MANAGER2_STATE" 2>/dev/null >&2 || true
     echo "  pane tail:" >&2
-    capture_pane "$SESSION" | tail -40 >&2
+    capture_pane_dump "$SESSION" 40
 fi
 
 # --- Summary ---

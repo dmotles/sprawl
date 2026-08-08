@@ -26,9 +26,18 @@ test_metadata() {
 # QUM-465: a single send_async to weave must produce exactly one of these.
 count_inbox_banners() {
     local session="$1"
-    capture_pane "$session" \
-        | grep -cE "inbox: [0-9]+ new message" \
-        || true
+    # QUM-957: the capture's status is CHECKED, and a fault yields -1 rather than
+    # 0. This used to be `capture_pane | grep -cE ... || true`: against a dead
+    # session grep read an empty stream, `grep -c` printed 0, and `|| true` pinned
+    # rc 0 — so "expect exactly 0 banners" (Test A is ALL of that shape) passed
+    # with no pane to look at. -1 can satisfy no expectation, and capture_pane has
+    # already recorded the fault, so the row fails either way.
+    local pane
+    if ! pane=$(capture_pane "$session"); then
+        echo "-1"
+        return 1
+    fi
+    printf '%s\n' "$pane" | grep -cE "inbox: [0-9]+ new message" || true
 }
 
 # QUM-555/QUM-556/QUM-557/QUM-562: count message-class drain rows surfaced in
@@ -38,9 +47,18 @@ count_inbox_banners() {
 count_drain_notifications() {
     local session="$1"
     local sender="$2"
-    capture_pane "$session" \
-        | grep -cE "(✉|⚡) (\\[interrupt\\] )?From $sender — mcp__sprawl__messages_read\\(id=[^)]+\\)" \
-        || true
+    # QUM-957: the capture's status is CHECKED, and a fault yields -1 rather than
+    # 0. This used to be `capture_pane | grep -cE ... || true`: against a dead
+    # session grep read an empty stream, `grep -c` printed 0, and `|| true` pinned
+    # rc 0 — so "expect exactly 0 banners" (Test A is ALL of that shape) passed
+    # with no pane to look at. -1 can satisfy no expectation, and capture_pane has
+    # already recorded the fault, so the row fails either way.
+    local pane
+    if ! pane=$(capture_pane "$session"); then
+        echo "-1"
+        return 1
+    fi
+    printf '%s\n' "$pane" | grep -cE "(✉|⚡) (\\[interrupt\\] )?From $sender — mcp__sprawl__messages_read\\(id=[^)]+\\)" || true
 }
 
 # QUM-559: poll for `timeout` seconds and fail (return 1) if a weave

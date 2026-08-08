@@ -888,7 +888,7 @@ test_run() {
         pass "P7: TUI session exited in ${SHUTDOWN_ELAPSED}s after Ctrl-C + 'y' (within ${SHUTDOWN_BUDGET}s ceiling)"
     else
         fail "P7: TUI did not exit within ${SHUTDOWN_BUDGET}s after Ctrl-C + 'y'"
-        capture_pane "$SESSION2" | tail -40 >&2 || true
+        capture_pane_dump "$SESSION2" 40
         [ -f "$STDERR_LOG2" ] && tail -40 "$STDERR_LOG2" >&2
         _stmux kill-session -t "$SESSION2" 2>/dev/null || true
         rm -rf -- "$SHUTDOWN_ROOT" 2>/dev/null || true

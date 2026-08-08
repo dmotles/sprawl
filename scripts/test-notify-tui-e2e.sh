@@ -161,9 +161,18 @@ fail() { FAIL_COUNT=$((FAIL_COUNT + 1)); echo "  FAIL: $1" >&2; }
 # not both. Either flavor counts as a banner; total must be 1 per send.
 count_inbox_banners() {
     local session="$1"
-    capture_pane "$session" \
-        | grep -cE "inbox: [0-9]+ new message" \
-        || true
+    # QUM-957: the capture's status is CHECKED, and a fault yields -1 rather than
+    # 0. This used to be `capture_pane | grep -cE ... || true`: against a dead
+    # session grep read an empty stream, `grep -c` printed 0, and `|| true` pinned
+    # rc 0 — so "expect exactly 0 banners" (Test A is ALL of that shape) passed
+    # with no pane to look at. -1 can satisfy no expectation, and capture_pane has
+    # already recorded the fault, so the row fails either way.
+    local pane
+    if ! pane=$(capture_pane "$session"); then
+        echo "-1"
+        return 1
+    fi
+    printf '%s\n' "$pane" | grep -cE "inbox: [0-9]+ new message" || true
 }
 
 # QUM-555/QUM-556/QUM-557/QUM-562: count drain notification rows surfaced in
@@ -180,9 +189,18 @@ count_inbox_banners() {
 count_drain_notifications() {
     local session="$1"
     local sender="$2"
-    capture_pane "$session" \
-        | grep -cE "(✉|⚡) (\\[interrupt\\] )?From $sender — mcp__sprawl__messages_read\\(id=[^)]+\\)" \
-        || true
+    # QUM-957: the capture's status is CHECKED, and a fault yields -1 rather than
+    # 0. This used to be `capture_pane | grep -cE ... || true`: against a dead
+    # session grep read an empty stream, `grep -c` printed 0, and `|| true` pinned
+    # rc 0 — so "expect exactly 0 banners" (Test A is ALL of that shape) passed
+    # with no pane to look at. -1 can satisfy no expectation, and capture_pane has
+    # already recorded the fault, so the row fails either way.
+    local pane
+    if ! pane=$(capture_pane "$session"); then
+        echo "-1"
+        return 1
+    fi
+    printf '%s\n' "$pane" | grep -cE "(✉|⚡) (\\[interrupt\\] )?From $sender — mcp__sprawl__messages_read\\(id=[^)]+\\)" || true
 }
 
 # wait_for_pattern <session> <pattern> <timeout_secs>
@@ -299,7 +317,7 @@ if wait_for_pattern "$SESSION" "weave ●" 30; then
 else
     fail "TUI did not render 'weave ●' within 30s"
     echo "  pane tail:" >&2
-    capture_pane "$SESSION" | tail -30 >&2
+    capture_pane_dump "$SESSION" 30
     echo "  stderr log tail:" >&2
     [ -f "$STDERR_LOG" ] && tail -20 "$STDERR_LOG" >&2
     echo "==============================="
@@ -422,7 +440,7 @@ if wait_for_no_badge_rise "$SESSION" 5; then
 else
     fail "QUM-559: weave row showed an unread badge after simulated report_status (maildir leak)"
     echo "  pane tail:" >&2
-    capture_pane "$SESSION" | tail -30 >&2
+    capture_pane_dump "$SESSION" 30
 fi
 
 # QUM-559: banner delta must be 0 (no `inbox: N new message` for state-only writes).
@@ -434,7 +452,7 @@ if [ "$DELTA_A" -eq 0 ]; then
 else
     fail "QUM-559: banner-count delta = $DELTA_A (before=$BANNERS_BEFORE_A, after=$BANNERS_AFTER_A); expected 0"
     echo "  pane tail:" >&2
-    capture_pane "$SESSION" | tail -40 >&2
+    capture_pane_dump "$SESSION" 40
 fi
 
 # QUM-559: no maildir-style drain notification from $CHILD_NAME must appear.
@@ -444,7 +462,7 @@ if [ "$DRAINS_AFTER_A" -eq "$DRAINS_BEFORE_A" ]; then
 else
     fail "QUM-559: maildir-drain notification from '$CHILD_NAME' appeared after simulated report_status (delta=$((DRAINS_AFTER_A - DRAINS_BEFORE_A)))"
     echo "  pane tail:" >&2
-    capture_pane "$SESSION" | tail -40 >&2
+    capture_pane_dump "$SESSION" 40
 fi
 
 # --- Test B: simulated MCP `messages_send` (direct maildir envelope write) ---
@@ -497,7 +515,7 @@ if wait_for_pattern_fast "$SESSION" "weave[^│]*\\(1\\)" 15; then
 else
     fail "weave row did NOT rise to '(1)' after simulated messages_send"
     echo "  pane tail:" >&2
-    capture_pane "$SESSION" | tail -30 >&2
+    capture_pane_dump "$SESSION" 30
 fi
 
 # QUM-565: drain-row inject assertion intentionally NOT made here.
@@ -541,7 +559,7 @@ if [ "$DELTA_B" -eq 1 ]; then
 else
     fail "QUM-465: Test B produced $DELTA_B banners (before=$BANNERS_BEFORE_B, max=$BANNERS_MAX_B); expected exactly 1"
     echo "  pane tail:" >&2
-    capture_pane "$SESSION" | tail -40 >&2
+    capture_pane_dump "$SESSION" 40
 fi
 
 # --- Summary ---

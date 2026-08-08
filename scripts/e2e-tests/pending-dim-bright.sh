@@ -122,7 +122,7 @@ test_run() {
         pass "follow-up rendered immediately as a DIM (faint) pending bubble"
     else
         fail "follow-up '$PENDING' did not render dim/faint within 25s"
-        capture_pane_ansi "$SESSION" | grep -aF "$PENDING" | cat -v >&2 || true
+        capture_pane_dump "$SESSION" 60 --ansi
         capture_pane "$SESSION" | tail -20 >&2
         e2e_print_results
         return 1
@@ -134,7 +134,7 @@ test_run() {
         pass "pending bubble BRIGHTENED to normal (bold) styling on settle"
     else
         fail "follow-up '$PENDING' never brightened (bold) within 120s"
-        capture_pane_ansi "$SESSION" | grep -aF "$PENDING" | cat -v >&2 || true
+        capture_pane_dump "$SESSION" 60 --ansi
         e2e_print_results
         return 1
     fi
@@ -159,7 +159,7 @@ test_run() {
     else
         fail "follow-up '$PENDING' rendered $count times as a user bubble, want exactly 1"
         echo "  (pane lines containing the sentinel, for triage:)" >&2
-        capture_pane "$SESSION" | grep -n -F "$PENDING" >&2 || true
+        capture_pane_dump "$SESSION" 60
         capture_pane "$SESSION" | tail -30 >&2
         e2e_print_results
         return 1
@@ -184,7 +184,7 @@ test_run() {
         pass "recall follow-up rendered as a dim pending bubble (pre-recall)"
     else
         fail "recall follow-up '$RECALL' did not render dim within 25s"
-        capture_pane_ansi "$SESSION" | grep -aF "$RECALL" | cat -v >&2 || true
+        capture_pane_dump "$SESSION" 60 --ansi
         e2e_print_results
         return 1
     fi
@@ -205,7 +205,7 @@ test_run() {
         pass "Ctrl+U removed the dim pending bubble"
     else
         fail "dim pending bubble for '$RECALL' survived Ctrl+U recall"
-        capture_pane_ansi "$SESSION" | grep -aF "$RECALL" | cat -v >&2 || true
+        capture_pane_dump "$SESSION" 60 --ansi
         e2e_print_results
         return 1
     fi

@@ -118,10 +118,8 @@ e2e_print_results() {
     # with different remedies, and conflating them sends the reader to the wrong
     # one. Placed after the floor arms so a malformed declaration still reports
     # first, and before the FAIL_COUNT arm so the faults are always printed.
-    if declare -F capture_pane_assert_no_faults >/dev/null 2>&1; then
-        if ! capture_pane_assert_no_faults; then
-            return 1
-        fi
+    if ! capture_pane_assert_no_faults; then
+        return 1
     fi
     if [ "$FAIL_COUNT" -gt 0 ]; then
         return 1
@@ -309,25 +307,50 @@ e2e_install_cleanup_traps() {
 }
 
 # QUM-957: capture_pane / capture_pane_ansi / capture_pane_scrollback /
-# capture_pane_best_effort / e2e_require_session_alive / e2e_pane_lacks /
-# capture_pane_assert_no_faults / e2e_capture_fault_reset all live here. Their
-# contract, and why a return code alone cannot enforce it in this harness, is
-# documented at the top of that file. Sourced with a path derived the same way
-# as sandbox-traps.sh above so a scrubbed PATH cannot break it.
+# capture_pane_{,ansi_}best_effort / capture_pane_dump / e2e_require_session_alive
+# / e2e_pane_lacks / capture_pane_assert_no_faults / e2e_capture_fault_reset all
+# live here. Their contract, and why a return code alone cannot enforce it in this
+# harness, is documented at the top of that file.
+#
+# Resolved as a SIBLING of this file, not through $E2E_COMMON_REPO_ROOT: the
+# matrix driver's unit suite copies this lib into a fixture tree at
+# `<fixture>/lib/e2e-common.sh`, where the derived "repo root" is /tmp and
+# `$root/scripts/lib/` does not exist. `${BASH_SOURCE[0]%/*}` is the only path
+# that is right in both layouts, and a scrubbed PATH cannot break it.
 # shellcheck source=capture-pane.sh
-. "$E2E_COMMON_REPO_ROOT/scripts/lib/capture-pane.sh"
+. "${BASH_SOURCE[0]%/*}/capture-pane.sh"
 
 # The three wait_for_* helpers below ABORT with rc 2 on a capture fault rather
 # than polling to their deadline. A dead session can never match, so the poll is
 # pure waste — and its eventual "timed out" message would be the last thing on
 # stderr, burying the fault that actually explains it. Every caller uses these in
 # an `if`, where 2 reads as falsy exactly like the 1 they returned before.
+#
+# Two consequences of matching through a variable rather than `capture_pane |
+# grep`, neither of which affects any pattern in the tree today, both of which
+# the next author should know:
+#
+#   1. An EMPTY pane now feeds grep one empty line where the old form fed zero
+#      bytes, so a pattern that can match the empty string (`^`, `.*`, `^ *$`)
+#      would now match on a blank pane.
+#   2. `$( )` strips trailing newlines, so a pattern anchored on the pane's
+#      trailing blank rows would no longer match.
+#
+# Every literal pattern passed to these three across scripts/e2e-tests/ was
+# enumerated and none is of either shape.
+#
+# `pane=$(capture_pane ...) || rc=$?`, not a bare assignment: under `set -e` a
+# bare assignment from a FAILING command substitution kills the caller AT THE
+# ASSIGNMENT, so the `rc` check below would never run and the fault would surface
+# as a bare nonzero exit with no classification. The `||` makes it a list, which
+# `set -e` does not act on. Every current call site is `if`-guarded (where `set
+# -e` is suppressed anyway), so this is defence against the next plain call.
 wait_for_pattern() {
     local session="$1" pattern="$2" timeout="$3"
-    local elapsed=0 pane crc
+    local elapsed=0 pane crc=0
     while [ "$elapsed" -lt "$timeout" ]; do
-        pane=$(capture_pane "$session")
-        crc=$?
+        crc=0
+        pane=$(capture_pane "$session") || crc=$?
         [ "$crc" -eq 0 ] || return 2
         if printf '%s\n' "$pane" | grep -qE "$pattern"; then
             # QUM-671: emit a parseable elapsed-time record so consumers
@@ -350,10 +373,10 @@ wait_for_pattern_fast() {
     local session="$1" pattern="$2" timeout="$3"
     local start="$SECONDS"
     local end=$((SECONDS + timeout))
-    local pane crc
+    local pane crc=0
     while [ "$SECONDS" -lt "$end" ]; do
-        pane=$(capture_pane "$session")
-        crc=$?
+        crc=0
+        pane=$(capture_pane "$session") || crc=$?
         [ "$crc" -eq 0 ] || return 2
         if printf '%s\n' "$pane" | grep -qE "$pattern"; then
             # QUM-671: see wait_for_pattern above. Mirrored here so any
@@ -370,10 +393,10 @@ wait_for_pattern_fast() {
 wait_for_substring_fast() {
     local session="$1" needle="$2" timeout="$3"
     local end=$((SECONDS + timeout))
-    local pane crc
+    local pane crc=0
     while [ "$SECONDS" -lt "$end" ]; do
-        pane=$(capture_pane "$session")
-        crc=$?
+        crc=0
+        pane=$(capture_pane "$session") || crc=$?
         [ "$crc" -eq 0 ] || return 2
         if printf '%s\n' "$pane" | grep -qF "$needle"; then
             return 0

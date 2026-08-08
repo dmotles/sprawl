@@ -198,7 +198,7 @@ if wait_for_pattern "$SESSION" "weave" 15; then
 else
     fail "TUI did not render within 15s"
     echo "  pane:" >&2
-    capture_pane "$SESSION" | tail -30 >&2
+    capture_pane_dump "$SESSION" 30
     echo "  stderr:" >&2
     [ -f "$STDERR_LOG" ] && tail -20 "$STDERR_LOG" >&2
     echo "==============================="
@@ -225,7 +225,7 @@ if wait_for_pattern "$SESSION" "Agent" 15; then
 else
     fail "Agent tool call never appeared"
     echo "  pane:" >&2
-    capture_pane "$SESSION" | tail -30 >&2
+    capture_pane_dump "$SESSION" 30
     echo "  stderr:" >&2
     [ -f "$STDERR_LOG" ] && tail -20 "$STDERR_LOG" >&2
 fi
@@ -233,7 +233,14 @@ fi
 # Check for two ┌ markers (one per Agent container).
 # Give it a moment for the second one to render.
 sleep 2
-PANE_CONTENT=$(capture_pane "$SESSION")
+# QUM-957: `|| fail` rather than a bare assignment. Under this script's
+# `set -euo pipefail`, a bare assignment from a FAILING command substitution
+# kills the driver AT THE ASSIGNMENT — before the summary and before the
+# capture-fault gate that would have explained it. The `||` makes it a list,
+# which `set -e` does not act on, so the fault is recorded, reported and
+# counted instead of aborting silently.
+PANE_CONTENT=$(capture_pane "$SESSION") \
+    || fail "capture_pane failed reading the pane for the Test B assertions — the assertions below are not evidence"
 OPEN_MARKERS=$(echo "$PANE_CONTENT" | grep -c "┌" || true)
 
 if [ "$OPEN_MARKERS" -ge 2 ]; then
@@ -268,7 +275,14 @@ echo "=== Test B2: Sidechain Reads attribute to correct parent Agent ==="
 # Allow extra time for sidechain assistant messages + inner Reads to render
 # inside their respective containers before tool_results collapse them.
 sleep 2
-PANE_B2=$(capture_pane "$SESSION")
+# QUM-957: `|| fail` rather than a bare assignment. Under this script's
+# `set -euo pipefail`, a bare assignment from a FAILING command substitution
+# kills the driver AT THE ASSIGNMENT — before the summary and before the
+# capture-fault gate that would have explained it. The `||` makes it a list,
+# which `set -e` does not act on, so the fault is recorded, reported and
+# counted instead of aborting silently.
+PANE_B2=$(capture_pane "$SESSION") \
+    || fail "capture_pane failed reading the pane for the Test B2 assertions — the assertions below are not evidence"
 
 # Locate the line numbers of each outer Agent container by their unique task
 # descriptions. Container 1 = alpha, Container 2 = beta.
@@ -319,7 +333,7 @@ if wait_for_pattern "$SESSION" "Alpha research complete" 20; then
 else
     fail "Agent result 'Alpha research complete' not found"
     echo "  pane:" >&2
-    capture_pane "$SESSION" | tail -30 >&2
+    capture_pane_dump "$SESSION" 30
 fi
 
 if wait_for_pattern "$SESSION" "Beta research complete" 20; then
@@ -327,7 +341,7 @@ if wait_for_pattern "$SESSION" "Beta research complete" 20; then
 else
     fail "Agent result 'Beta research complete' not found"
     echo "  pane:" >&2
-    capture_pane "$SESSION" | tail -30 >&2
+    capture_pane_dump "$SESSION" 30
 fi
 
 # --- Summary ---

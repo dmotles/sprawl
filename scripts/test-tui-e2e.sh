@@ -180,7 +180,14 @@ else
 fi
 
 # Capture pane for assertions
-PANE_CONTENT=$(capture_pane "$SESSION_NAME")
+# QUM-957: `|| fail` rather than a bare assignment. Under this script's
+# `set -euo pipefail`, a bare assignment from a FAILING command substitution
+# kills the driver AT THE ASSIGNMENT — before the summary and before the
+# capture-fault gate that would have explained it. The `||` makes it a list,
+# which `set -e` does not act on, so the fault is recorded, reported and
+# counted instead of aborting silently.
+PANE_CONTENT=$(capture_pane "$SESSION_NAME") \
+    || fail "capture_pane failed reading the pane for the Test 1 render assertions — the assertions below are not evidence"
 
 # Check for tree panel content
 if echo "$PANE_CONTENT" | grep -q "weave (idle)"; then
@@ -213,6 +220,12 @@ fi
 if [ "$QUICK_MODE" = true ]; then
     echo ""
     echo "=== Quick mode — skipping remaining tests ==="
+    # QUM-957: --quick has its own summary and exit, so it needs its own gate.
+    # Without this, the one invocation people actually run by hand is the one
+    # path where a capture fault would still report green.
+    if ! capture_pane_assert_no_faults; then
+        FAIL_COUNT=$((FAIL_COUNT + 1))
+    fi
     echo ""
     echo "==============================="
     echo "  Results: $PASS_COUNT passed, $FAIL_COUNT failed, $SKIP_COUNT skipped"
@@ -262,7 +275,7 @@ if session_alive "$SESSION_NAME"; then
     else
         fail "user input not rendered in viewport"
         echo "  Pane content:" >&2
-        capture_pane "$SESSION_NAME" | head -20 >&2
+        capture_pane_dump "$SESSION_NAME" 20
     fi
 else
     skip "TUI not running — cannot test user input"
@@ -333,7 +346,14 @@ if session_alive "$SESSION_NAME"; then
     sleep 0.5
 
     # Capture before PgUp
-    BEFORE_SCROLL=$(capture_pane "$SESSION_NAME")
+    # QUM-957: `|| fail` rather than a bare assignment. Under this script's
+    # `set -euo pipefail`, a bare assignment from a FAILING command substitution
+    # kills the driver AT THE ASSIGNMENT — before the summary and before the
+    # capture-fault gate that would have explained it. The `||` makes it a list,
+    # which `set -e` does not act on, so the fault is recorded, reported and
+    # counted instead of aborting silently.
+    BEFORE_SCROLL=$(capture_pane "$SESSION_NAME") \
+        || fail "capture_pane failed reading the pane before the scroll keystroke — the assertions below are not evidence"
 
     # Send PgUp
     _stmux send-keys -t "$SESSION_NAME" PgUp
@@ -341,7 +361,14 @@ if session_alive "$SESSION_NAME"; then
     sleep 1
 
     # Capture after PgUp
-    AFTER_SCROLL=$(capture_pane "$SESSION_NAME")
+    # QUM-957: `|| fail` rather than a bare assignment. Under this script's
+    # `set -euo pipefail`, a bare assignment from a FAILING command substitution
+    # kills the driver AT THE ASSIGNMENT — before the summary and before the
+    # capture-fault gate that would have explained it. The `||` makes it a list,
+    # which `set -e` does not act on, so the fault is recorded, reported and
+    # counted instead of aborting silently.
+    AFTER_SCROLL=$(capture_pane "$SESSION_NAME") \
+        || fail "capture_pane failed reading the pane after the scroll keystroke — the assertions below are not evidence"
 
     # If content changed, scrollback works
     if [ "$BEFORE_SCROLL" != "$AFTER_SCROLL" ]; then
@@ -364,7 +391,14 @@ echo "=== Test 7: Tab navigation ==="
 
 if session_alive "$SESSION_NAME"; then
     # Capture before Tab
-    BEFORE_TAB=$(capture_pane "$SESSION_NAME")
+    # QUM-957: `|| fail` rather than a bare assignment. Under this script's
+    # `set -euo pipefail`, a bare assignment from a FAILING command substitution
+    # kills the driver AT THE ASSIGNMENT — before the summary and before the
+    # capture-fault gate that would have explained it. The `||` makes it a list,
+    # which `set -e` does not act on, so the fault is recorded, reported and
+    # counted instead of aborting silently.
+    BEFORE_TAB=$(capture_pane "$SESSION_NAME") \
+        || fail "capture_pane failed reading the pane before the Tab keystroke — the assertions below are not evidence"
 
     # Send Tab to switch panels
     _stmux send-keys -t "$SESSION_NAME" Tab
@@ -372,7 +406,14 @@ if session_alive "$SESSION_NAME"; then
     sleep 1
 
     # Capture after Tab
-    AFTER_TAB=$(capture_pane "$SESSION_NAME")
+    # QUM-957: `|| fail` rather than a bare assignment. Under this script's
+    # `set -euo pipefail`, a bare assignment from a FAILING command substitution
+    # kills the driver AT THE ASSIGNMENT — before the summary and before the
+    # capture-fault gate that would have explained it. The `||` makes it a list,
+    # which `set -e` does not act on, so the fault is recorded, reported and
+    # counted instead of aborting silently.
+    AFTER_TAB=$(capture_pane "$SESSION_NAME") \
+        || fail "capture_pane failed reading the pane after the Tab keystroke — the assertions below are not evidence"
 
     # Tab should change panel focus (border style changes).
     # Note: with the known no-color bug, this may not be detectable.
@@ -480,8 +521,13 @@ sleep 3
 # TUI that had panicked on launch, which is exactly the state a stderr-leak
 # regression is most likely to produce.
 if ! e2e_pane_lacks "$LEAK_SESSION" "$SENTINEL" "sentinel did not leak onto TUI pane"; then
+    # QUM-957: this branch is now also reached when the CAPTURE FAULTED, where
+    # grep finds nothing and returns 1 — under `set -euo pipefail` that killed the
+    # driver right here, skipping the summary AND the capture-fault gate that
+    # would have explained the abort. The dump is best-effort and self-describing
+    # instead, and it says so when there was no pane to read.
     echo "  Pane snippet:" >&2
-    capture_pane "$LEAK_SESSION" | grep "$SENTINEL" | head -3 >&2
+    capture_pane_dump "$LEAK_SESSION" 60
 fi
 
 # Assert the sentinel IS present in the newest tui-stderr log file.
