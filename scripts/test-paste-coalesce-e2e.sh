@@ -123,7 +123,14 @@ FAIL_COUNT=0
 pass() { PASS_COUNT=$((PASS_COUNT + 1)); echo "  PASS: $1"; }
 fail() { FAIL_COUNT=$((FAIL_COUNT + 1)); echo "  FAIL: $1" >&2; }
 
-capture_pane() { _stmux capture-pane -t "$1" -p 2>/dev/null || true; }
+# QUM-957: capture_pane and friends come from the shared lib, which returns
+# tmux's status and records a capture fault the summary below gates on. The
+# one-liner that used to live here — `capture-pane ... 2>/dev/null || true` —
+# returned empty-stdout-with-exit-0 for a dead session, so every "must NOT
+# appear on the pane" check in this driver passed vacuously. An EMPTY pane on a
+# LIVE session is still a success and still silent; only a tmux failure is not.
+# shellcheck source=lib/capture-pane.sh
+. "$(dirname "$0")/lib/capture-pane.sh"
 
 wait_for_pattern() {
     local session="$1" pattern="$2" timeout="$3" elapsed=0
@@ -252,7 +259,7 @@ while [ "$SECONDS" -lt "$PASTE_END" ]; do
     # any wrapped overflow). Some renders push the paste below the
     # visible viewport (long single-line content), so the default
     # capture-pane -p which only sees the visible area can miss it.
-    pane_snapshot=$(_stmux capture-pane -t "$SESSION" -p -S -200 2>/dev/null || true)
+    pane_snapshot=$(capture_pane_scrollback "$SESSION" 200)
     if echo "$pane_snapshot" | grep -qF "$PASTE_HEAD" \
         && echo "$pane_snapshot" | grep -qF "$PASTE_TAIL"; then
         PASTE_OK=1
@@ -298,6 +305,15 @@ else
 fi
 
 # --- Summary ---
+
+# QUM-957: a tmux capture that FAILED means this run's "must NOT appear on the
+# pane" results are not evidence — the pane was unreadable, not clean. Counted as
+# an ordinary failure so it lands in the totals below and in the exit status,
+# rather than being a separate channel a reader has to know to look at.
+if ! capture_pane_assert_no_faults; then
+    FAIL_COUNT=$((FAIL_COUNT + 1))
+fi
+
 
 echo ""
 echo "==============================="

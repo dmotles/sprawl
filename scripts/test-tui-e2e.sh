@@ -65,10 +65,15 @@ skip() {
     echo "  SKIP: $1"
 }
 
-# capture_pane captures the current tmux pane content as text.
-capture_pane() {
-    _stmux capture-pane -t "$1" -p 2>/dev/null || true
-}
+# QUM-957: capture_pane and friends come from the shared lib, which returns
+# tmux's status and records a capture fault the summary below gates on. The
+# definition that used to live here — `capture-pane ... 2>/dev/null || true` —
+# returned empty-stdout-with-exit-0 for a dead session, so Test 9's QUM-304 leak
+# sentinel assertion ("the sentinel must NOT appear on the pane") passed whether
+# or not there was a pane. An EMPTY pane on a LIVE session is still a success and
+# still silent; only a tmux failure is not.
+# shellcheck source=lib/capture-pane.sh
+. "$(dirname "$0")/lib/capture-pane.sh"
 
 # wait_for_content polls tmux pane content for a pattern with timeout.
 # Usage: wait_for_content <session> <pattern> <timeout_secs>
@@ -468,12 +473,15 @@ sleep 3
 
 # Assert the sentinel is NOT visible in the pane — if it is, stderr bled
 # through the alt-screen, which is the QUM-304 bug.
-if capture_pane "$LEAK_SESSION" | grep -q "$SENTINEL"; then
-    fail "QUM-304 regression: sentinel '$SENTINEL' leaked onto TUI pane"
+#
+# QUM-957: routed through e2e_pane_lacks rather than the `if capture_pane | grep`
+# idiom. That idiom cannot tell "the sentinel is absent" from "there is no pane
+# to read", and reported the second as the first — so this guard passed against a
+# TUI that had panicked on launch, which is exactly the state a stderr-leak
+# regression is most likely to produce.
+if ! e2e_pane_lacks "$LEAK_SESSION" "$SENTINEL" "sentinel did not leak onto TUI pane"; then
     echo "  Pane snippet:" >&2
     capture_pane "$LEAK_SESSION" | grep "$SENTINEL" | head -3 >&2
-else
-    pass "sentinel did not leak onto TUI pane"
 fi
 
 # Assert the sentinel IS present in the newest tui-stderr log file.
@@ -508,6 +516,14 @@ if _stmux has-session -t "$LEAK_SESSION" 2>/dev/null; then
 fi
 
 # --- Summary ---
+
+# QUM-957: a tmux capture that FAILED means this run's "must NOT appear on the
+# pane" results are not evidence — the pane was unreadable, not clean. Counted as
+# an ordinary failure so it lands in the totals below and in the exit status,
+# rather than being a separate channel a reader has to know to look at.
+if ! capture_pane_assert_no_faults; then
+    FAIL_COUNT=$((FAIL_COUNT + 1))
+fi
 
 echo ""
 echo "==============================="

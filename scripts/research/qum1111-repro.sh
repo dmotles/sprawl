@@ -55,7 +55,12 @@ MIN_ASSERTIONS=2
 
 ITERS="${1:-4}"
 
-capture_ansi() { _stmux capture-pane -t "$1" -e -p 2>/dev/null || true; }
+# QUM-957: the local `capture_ansi() { capture-pane -e -p 2>/dev/null || true; }`
+# that used to live here returned empty-stdout-with-exit-0 for a dead session,
+# which this script's attribute evaluators read as "no attribute" rather than "no
+# pane". capture_pane_ansi from scripts/lib/capture-pane.sh (via e2e-common.sh)
+# is used directly instead — a local alias would shadow the shared helper the
+# next time someone edited it.
 
 # ---------------------------------------------------------------------------
 # Pure evaluators. These take PANE TEXT on stdin rather than a session, so the
@@ -123,7 +128,7 @@ self_test() {
 }
 
 # bubble_attr SESSION SENTINEL -> faint | bold | none
-bubble_attr() { capture_ansi "$1" | attr_of "$2"; }
+bubble_attr() { capture_pane_ansi "$1" | attr_of "$2"; }
 
 # wait_attr SESSION SENTINEL WANT TIMEOUT
 wait_attr() {
@@ -316,8 +321,12 @@ main() {
     if [ -n "${QUM1111_ARTIFACT_DIR:-}" ]; then
         mkdir -p "$QUM1111_ARTIFACT_DIR"
         cp -a "$TRACE" "$QUM1111_ARTIFACT_DIR/trace.log" 2>/dev/null || true
-        capture_ansi "$SESSION" >"$QUM1111_ARTIFACT_DIR/pane-ansi.txt" 2>/dev/null || true
-        capture_pane "$SESSION" >"$QUM1111_ARTIFACT_DIR/pane-plain.txt" 2>/dev/null || true
+        # Best-effort by design: this runs during teardown, when the session
+        # may legitimately already be gone, and no verdict depends on it. The
+        # named helper is the sanctioned way to say that (QUM-957) — `|| true`
+        # here is what made the swallow look normal everywhere else.
+        capture_pane_ansi_best_effort "$SESSION" >"$QUM1111_ARTIFACT_DIR/pane-ansi.txt"
+        capture_pane_best_effort "$SESSION" >"$QUM1111_ARTIFACT_DIR/pane-plain.txt"
         cp -a "$SPRAWL_ROOT/.sprawl/logs" "$QUM1111_ARTIFACT_DIR/logs" 2>/dev/null || true
         echo "  artifacts -> $QUM1111_ARTIFACT_DIR"
     fi

@@ -69,10 +69,12 @@ test_metadata() {
     echo "needs_claude=1 needs_tmux=1 needs_jq=1"
 }
 
-# capture_pane_ansi SESSION — capture preserving SGR escapes.
-capture_pane_ansi() {
-    _stmux capture-pane -t "$1" -e -p 2>/dev/null || true
-}
+# QUM-957: capture_pane_ansi comes from scripts/lib/capture-pane.sh (sourced by
+# e2e-common.sh). The copy that used to live here — `capture-pane -e -p
+# 2>/dev/null || true` — returned empty-stdout-with-exit-0 for a dead session, so
+# the attribute checks below reported "the attribute is absent" when the truth was
+# "there was no pane to read". An EMPTY pane on a LIVE session is still a success
+# and still silent; only a tmux failure is not.
 
 # A user bubble is the ONLY line that carries both the `›` prompt-block prefix and
 # the submitted text, so every assertion below keys on that pair. Anchoring matters:

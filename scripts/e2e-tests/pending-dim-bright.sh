@@ -28,10 +28,12 @@ test_metadata() {
     echo "needs_claude=1 needs_tmux=1"
 }
 
-# capture_pane_ansi SESSION — capture preserving SGR escapes.
-capture_pane_ansi() {
-    _stmux capture-pane -t "$1" -e -p 2>/dev/null || true
-}
+# QUM-957: capture_pane_ansi comes from scripts/lib/capture-pane.sh (sourced by
+# e2e-common.sh). The copy that used to live here — `capture-pane -e -p
+# 2>/dev/null || true` — returned empty-stdout-with-exit-0 for a dead session, so
+# the attribute checks below reported "the attribute is absent" when the truth was
+# "there was no pane to read". An EMPTY pane on a LIVE session is still a success
+# and still silent; only a tmux failure is not.
 
 # sentinel_has_attr SESSION SENTINEL ATTR — true if the line carrying SENTINEL
 # carries the SGR attribute escape \x1b[ATTRm (1=bold/bright, 2=faint/dim).

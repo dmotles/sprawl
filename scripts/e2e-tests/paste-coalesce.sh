@@ -128,7 +128,7 @@ test_run() {
     local PASTE_END=$((SECONDS + 10))
     local PASTE_OK=0 pane_snapshot
     while [ "$SECONDS" -lt "$PASTE_END" ]; do
-        pane_snapshot=$(_stmux capture-pane -t "$SESSION" -p -S -200 2>/dev/null || true)
+        pane_snapshot=$(capture_pane_scrollback "$SESSION" 200)
         if echo "$pane_snapshot" | grep -qF "$PASTE_HEAD" \
             && echo "$pane_snapshot" | grep -qF "$PASTE_TAIL"; then
             PASTE_OK=1

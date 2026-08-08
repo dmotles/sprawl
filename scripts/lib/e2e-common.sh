@@ -110,6 +110,19 @@ e2e_print_results() {
         echo "  FAIL: $breach" >&2
         return 1
     fi
+    # QUM-957. Deliberately NOT gated on FAIL_COUNT, unlike the shortfall arm
+    # above: FAIL_COUNT==0 with PASS_COUNT>0 IS the vacuous green this catches —
+    # a row whose negative assertions were all satisfied by an unreadable pane.
+    # Its message is distinct from the floor breach on purpose; "the row measured
+    # less than it claims" and "tmux was unreachable" are different diagnoses
+    # with different remedies, and conflating them sends the reader to the wrong
+    # one. Placed after the floor arms so a malformed declaration still reports
+    # first, and before the FAIL_COUNT arm so the faults are always printed.
+    if declare -F capture_pane_assert_no_faults >/dev/null 2>&1; then
+        if ! capture_pane_assert_no_faults; then
+            return 1
+        fi
+    fi
     if [ "$FAIL_COUNT" -gt 0 ]; then
         return 1
     fi
@@ -256,6 +269,14 @@ _e2e_cleanup() {
     if [ -n "${PHANTOM_PID:-}" ]; then
         kill "$PHANTOM_PID" 2>/dev/null || true
     fi
+    # QUM-957: the capture-fault ledger and its per-subshell stderr spool live
+    # beside each other under TMPDIR. Path-guarded rather than globbed loosely:
+    # the variable is the harness's own, but /tmp is shared with other agents.
+    case "${E2E_CAPTURE_FAULT_FILE:-}" in
+        /tmp/* | "${TMPDIR:-/nonexistent}"/*)
+            rm -f -- "$E2E_CAPTURE_FAULT_FILE" "$E2E_CAPTURE_FAULT_FILE".err.* 2>/dev/null || true
+            ;;
+    esac
     if [ -n "${SPRAWL_TMUX_SOCKET:-}" ]; then
         tmux -L "$SPRAWL_TMUX_SOCKET" kill-server 2>/dev/null || true
         rm -f -- "/tmp/tmux-$(id -u)/$SPRAWL_TMUX_SOCKET" 2>/dev/null || true
@@ -287,15 +308,28 @@ e2e_install_cleanup_traps() {
     sandbox_install_watchdog "$$" "${SPRAWL_TMUX_SOCKET:-}" "${SPRAWL_ROOT:-}"
 }
 
-capture_pane() {
-    _stmux capture-pane -t "$1" -p 2>/dev/null || true
-}
+# QUM-957: capture_pane / capture_pane_ansi / capture_pane_scrollback /
+# capture_pane_best_effort / e2e_require_session_alive / e2e_pane_lacks /
+# capture_pane_assert_no_faults / e2e_capture_fault_reset all live here. Their
+# contract, and why a return code alone cannot enforce it in this harness, is
+# documented at the top of that file. Sourced with a path derived the same way
+# as sandbox-traps.sh above so a scrubbed PATH cannot break it.
+# shellcheck source=capture-pane.sh
+. "$E2E_COMMON_REPO_ROOT/scripts/lib/capture-pane.sh"
 
+# The three wait_for_* helpers below ABORT with rc 2 on a capture fault rather
+# than polling to their deadline. A dead session can never match, so the poll is
+# pure waste — and its eventual "timed out" message would be the last thing on
+# stderr, burying the fault that actually explains it. Every caller uses these in
+# an `if`, where 2 reads as falsy exactly like the 1 they returned before.
 wait_for_pattern() {
     local session="$1" pattern="$2" timeout="$3"
-    local elapsed=0
+    local elapsed=0 pane crc
     while [ "$elapsed" -lt "$timeout" ]; do
-        if capture_pane "$session" | grep -qE "$pattern"; then
+        pane=$(capture_pane "$session")
+        crc=$?
+        [ "$crc" -eq 0 ] || return 2
+        if printf '%s\n' "$pane" | grep -qE "$pattern"; then
             # QUM-671: emit a parseable elapsed-time record so consumers
             # (e.g. the S3 startup-time regression gate fed by
             # `wake-live.sh`'s TUI-rendered wait) have a comparable
@@ -316,8 +350,12 @@ wait_for_pattern_fast() {
     local session="$1" pattern="$2" timeout="$3"
     local start="$SECONDS"
     local end=$((SECONDS + timeout))
+    local pane crc
     while [ "$SECONDS" -lt "$end" ]; do
-        if capture_pane "$session" | grep -qE "$pattern"; then
+        pane=$(capture_pane "$session")
+        crc=$?
+        [ "$crc" -eq 0 ] || return 2
+        if printf '%s\n' "$pane" | grep -qE "$pattern"; then
             # QUM-671: see wait_for_pattern above. Mirrored here so any
             # consumer that switches between the slow and fast variants
             # gets identical elapsed-time telemetry.
@@ -332,8 +370,12 @@ wait_for_pattern_fast() {
 wait_for_substring_fast() {
     local session="$1" needle="$2" timeout="$3"
     local end=$((SECONDS + timeout))
+    local pane crc
     while [ "$SECONDS" -lt "$end" ]; do
-        if capture_pane "$session" | grep -qF "$needle"; then
+        pane=$(capture_pane "$session")
+        crc=$?
+        [ "$crc" -eq 0 ] || return 2
+        if printf '%s\n' "$pane" | grep -qF "$needle"; then
             return 0
         fi
         sleep 0.2

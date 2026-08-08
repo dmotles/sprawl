@@ -81,7 +81,15 @@ trap cleanup EXIT INT TERM HUP
 . "$(dirname "$0")/lib/sandbox-traps.sh"
 sandbox_install_watchdog "$$" "$SPRAWL_TMUX_SOCKET" "$SPRAWL_ROOT"
 
-capture_pane() { _stmux capture-pane -t "$1" -p 2>/dev/null || true; }
+# QUM-957: capture_pane comes from the shared lib. This is a manual repro driver,
+# not a test — it has no pass/fail counters and asserts nothing — so there is
+# nothing here for a fault to invert into a false green. It still gets the loud
+# form, because the operator reading this script's output is exactly who needs to
+# know the difference between "the pane says nothing happened" and "there was no
+# pane"; the summary gate at the end reports any fault before the operator draws
+# a conclusion from a blank dump.
+# shellcheck source=lib/capture-pane.sh
+. "$(dirname "$0")/lib/capture-pane.sh"
 wait_for_pattern() {
     local s=$1 p=$2 to=$3 e=0
     while [ "$e" -lt "$to" ]; do
@@ -149,3 +157,10 @@ fi
 echo ""
 echo "=== Final activity pane ==="
 capture_pane "$SESSION" | tail -25
+
+# QUM-957: report any capture fault BEFORE the operator interprets the panes
+# dumped above. A blank pane and an unreadable pane look identical in a dump.
+if ! capture_pane_assert_no_faults; then
+    echo "  NOTE: the pane dumps above are not evidence — tmux could not read the pane." >&2
+    exit 1
+fi

@@ -58,7 +58,16 @@ FAIL=0
 # Measured on the RED-first run — [17]'s totals are pass/fail-invariant, every one of
 # its assertions fires exactly once in either direction, so the figure does not move
 # when the implementation lands.
-MIN_ASSERTIONS=287
+# 380 once QUM-957 added section [18] (93 assertions: capture_pane must not
+# swallow a tmux failure). Re-measured on a full green run, not derived by
+# arithmetic on the red one. Section [18] is pass/fail-invariant in the same way
+# [17] is — every arm is a symmetric if/else or a helper that records exactly one
+# verdict in either direction, and the one `for` loop iterates a fixed literal
+# list — so the figure does not move when an arm flips. The EXCEPTION is
+# deliberate: [18]'s outer fixture guard (unreadable lib, failed mktemp, failed
+# fake-tmux build) records a single fail in place of ~90 assertions, and the floor
+# is exactly what turns that into a red instead of a suspiciously small green.
+MIN_ASSERTIONS=380
 # A [16b] nested child deliberately does NOT re-run section [16] (recursing would
 # fork-bomb, and counting there would corrupt the parity comparison), so it asserts
 # strictly fewer things and needs its own floor. Measured at de22410: 237; 238 after
@@ -67,7 +76,12 @@ MIN_ASSERTIONS=287
 # than reusing the parent's is the point — a child floor derived from the parent's
 # count would be the parity check again, and parity is what `0 == 0` satisfies.
 # 275 once QUM-1029 added section [17], which the child DOES run; 279 with F1 and 17k.
-MIN_ASSERTIONS_NESTED=279
+# 372 once QUM-957 added section [18], which the child DOES run. Read off a real
+# [16b] child ("372 passed / 0 failed"), not by subtracting [16]'s size from the
+# parent. Do not measure it by setting UNIT_NESTED_SEAM_CHECK to an arbitrary
+# value by hand: without a live nonce, 16c's deliberate fail fires and the total
+# reads one higher than any real child's.
+MIN_ASSERTIONS_NESTED=372
 
 # Pin the temp root. This suite runs inside `make validate` and therefore inside
 # the pre-commit hook, so it must not inherit the committing agent's TMPDIR:
@@ -102,6 +116,12 @@ UNIT_SCRUBBED_VARS=(
 	E2E_SKIP_FILE
 	SPRAWL_E2E_MATRIX_DEBUG_TALLY_SKEW
 	SPRAWL_E2E_MATRIX_DEBUG_STALE_SENTINEL
+	# QUM-957. Redirects state the harness owns, exactly like E2E_SKIP_FILE: an
+	# operator with this exported hands every fixture row a ledger it did not
+	# create, so a fault from a previous run fails an unrelated row and section
+	# [18]'s empty-ledger negative controls go red for a reason that has nothing
+	# to do with the code under test.
+	E2E_CAPTURE_FAULT_FILE
 )
 UNIT_SCRUB_ARGS=()
 for _v in "${UNIT_SCRUBBED_VARS[@]}"; do
@@ -2461,6 +2481,791 @@ else
 	fail "17j: row(s) never call e2e_print_results, so their floor is unreachable:$_floor_rows_unreachable"
 fi
 
+# ----------------------------------------------------------------------------
+# 18. QUM-957: capture_pane must not swallow a tmux failure
+# ----------------------------------------------------------------------------
+echo "[18] QUM-957 capture fault: an unreachable pane cannot satisfy an absence assertion"
+
+# The pre-fix helper was
+#     capture_pane() { _stmux capture-pane -t "$1" -p 2>/dev/null || true; }
+# which threw away BOTH halves of the evidence: `2>/dev/null` the diagnostic and
+# `|| true` the status. A capture against a dead session therefore returned
+# empty-stdout-with-exit-0, and every "pattern must NOT appear" verdict in the
+# harness was satisfied by there being no pane to look at.
+#
+# Two mechanism facts drive the design these arms pin, and both were measured
+# rather than assumed:
+#
+#   1. scripts/e2e-matrix.sh runs each row as `if run_row ...`, and an `if`
+#      condition suppresses `set -e` for everything inside it. A bare
+#      `return 1` from capture_pane aborts nothing.
+#   2. Nearly every call site is `capture_pane X | grep -q PAT`. In a pipeline
+#      the LHS's status is DISCARDED, and even an `exit` from the LHS kills only
+#      that pipeline element — grep still sees EOF and the pipeline's status is
+#      grep's. So neither a status nor a hard exit closes the hole.
+#
+# Hence the fault is recorded in a FILE (a subshell cannot assign to its
+# parent's variable but can append to an inherited path) and the aggregator —
+# the one function with unconditional authority to fail a row, reached on every
+# non-crash path — fails the row on a non-empty ledger. 18c is that arm and is
+# the headline of this section.
+#
+# Equally load-bearing, and the reason a naive fix regresses: an EMPTY PANE IS
+# NOT A FAULT. If capture failure and empty output are collapsed, a site that
+# legitimately reads a blank pane starts failing, someone re-adds `|| true`, and
+# the defect returns blessed by a commit. 18d/18e/18f are the arms that keep
+# empty-but-live silent, and 18n is the guard that turns `make validate` red if
+# the swallowed idiom is ever reintroduced anywhere under scripts/.
+
+CAPLIB="$REPO_ROOT/scripts/lib/capture-pane.sh"
+
+# Fake tmux, keyed on $UNIT_FAKETMUX_MODE so one shim covers every arm:
+#   dead  — no reachable server/session: capture-pane and has-session both fail
+#   empty — LIVE session whose pane is legitimately blank (exit 0, no stdout)
+#   text  — live session with content
+#
+# Real tmux is deliberately not used here. Makefile's test-e2e-matrix-unit is in
+# `validate` precisely because it needs neither claude nor tmux, and section
+# [16] re-runs this whole suite once per debug seam, so anything touching a real
+# server would run 3x and drag timing into the merge gate. The arms that
+# genuinely require a real live pane live in
+# scripts/e2e-tests/capture-pane-liveness.sh, which declares needs_tmux=1.
+#
+# The shim parses `-t <session>` rather than indexing $3: the plain, `-e` (ANSI)
+# and `-S` (scrollback) capture forms put the session at different positions, and
+# an arm that reported the wrong session name would defeat the print-your-subject
+# rule these tests exist to enforce.
+#
+# It also prints UNIT_FAKETMUX_TOKEN on every invocation, which 18-fixture keys
+# on. Without that, "dead mode exits 1" is equally satisfied by the REAL tmux
+# finding no server, and every positive arm below would be riding on a shim that
+# was never actually on PATH.
+_unit_mk_faketmux() {
+	local dir=$1
+	mkdir -p "$dir/bin" || return 1
+	cat >"$dir/bin/tmux" <<'FAKETMUX' || return 1
+#!/usr/bin/env bash
+mode=${UNIT_FAKETMUX_MODE:-dead}
+if [ "${1:-}" = "-L" ]; then shift 2; fi
+cmd=${1:-}
+session=""
+ansi=no
+scrollback=""
+prev=""
+for a in "$@"; do
+	case "$a" in
+		-e) ansi=yes ;;
+	esac
+	if [ "$prev" = "-t" ]; then session=$a; fi
+	if [ "$prev" = "-S" ]; then scrollback=$a; fi
+	prev=$a
+done
+echo "UNIT_FAKETMUX_TOKEN mode=$mode cmd=$cmd session=$session ansi=$ansi scrollback=$scrollback" >&2
+case "$mode:$cmd" in
+	dead:*)
+		echo "can't find session: $session" >&2
+		exit 1
+		;;
+	*:has-session) exit 0 ;;
+	empty:capture-pane) exit 0 ;;
+	text:capture-pane)
+		if [ "$ansi" = yes ]; then printf 'UNIT_ANSI_MARKER\n'; fi
+		if [ -n "$scrollback" ]; then printf 'UNIT_SCROLLBACK_MARKER %s\n' "$scrollback"; fi
+		printf 'UNIT_PANE_MARKER line one\nsecond line\n'
+		exit 0
+		;;
+	*) exit 0 ;;
+esac
+FAKETMUX
+	chmod +x "$dir/bin/tmux" || return 1
+}
+
+# Run a snippet in a fresh bash with the shim on PATH and the lib sourced,
+# capturing stdout/stderr/rc separately into _RC/_OUT/_ERR.
+# $1=mode, $2=ledger path ("" leaves E2E_CAPTURE_FAULT_FILE UNSET), $3=snippet.
+#
+# The snippet goes to a FILE rather than `bash -c`: these snippets contain both
+# quote styles and a command substitution (18j's injection payload), and nesting
+# them into a -c string is exactly where such a payload gets mis-escaped and the
+# arm silently stops testing what it names.
+#
+# _CRASHED is set when the probe could not even run its snippet — a failed
+# source (99) or a missing function (127). Every arm below that asserts the
+# ABSENCE of a string must consult it: absence is also what a probe that printed
+# nothing produces, so without this a crash reads as a pass on exactly the arms
+# whose whole purpose is to catch a vacuous pass.
+_unit_cap_probe() {
+	local mode=$1 ledger=$2 snippet=$3
+	local sf of ef
+	sf=$(mktemp "$UNIT_TMP_ROOT/e2e-cap-probe.XXXXXX") || return 1
+	of=$(mktemp "$UNIT_TMP_ROOT/e2e-cap-out.XXXXXX") || return 1
+	ef=$(mktemp "$UNIT_TMP_ROOT/e2e-cap-err.XXXXXX") || return 1
+	{
+		printf '%s\n' 'set -uo pipefail'
+		printf '. %q || exit 99\n' "$LIB"
+		printf '%s\n' "$snippet"
+	} >"$sf"
+	env "PATH=$UNIT_CAP_FIX/bin:$PATH" \
+		"UNIT_FAKETMUX_MODE=$mode" \
+		${ledger:+"E2E_CAPTURE_FAULT_FILE=$ledger"} \
+		"UNIT_MARKER_DIR=$UNIT_CAP_FIX/markers" \
+		"SPRAWL_TMUX_SOCKET=unit-fake-socket" \
+		"$UNIT_CAP_BASH" "$sf" >"$of" 2>"$ef"
+	_RC=$?
+	_OUT=$(cat "$of")
+	_ERR=$(cat "$ef")
+	_CRASHED=no
+	case "$_RC" in
+		99 | 127) _CRASHED=yes ;;
+	esac
+	if printf '%s\n' "$_ERR" | grep -qE ': line [0-9]+: .*(command not found|unbound variable)'; then
+		_CRASHED=yes
+	fi
+	rm -f -- "$sf" "$of" "$ef"
+}
+
+# Assert $1 contains (want=yes) or does not contain (want=no) fixed string $2.
+# NEEDLES MUST BE SINGLE-LINE: $1 is fed through grep line by line, so a needle
+# containing a newline can never match — which would make a want=no arm pass
+# unconditionally, the exact failure mode this section exists to catch.
+_unit_cap_has() {
+	local hay=$1 needle=$2 want=$3 desc=$4
+	if printf '%s\n' "$hay" | grep -qF -- "$needle"; then
+		if [ "$want" = yes ]; then pass "$desc"; else fail "$desc (found '$needle') text=$hay"; fi
+	else
+		if [ "$want" = no ]; then pass "$desc"; else fail "$desc (no '$needle') text=$hay"; fi
+	fi
+}
+
+# Assert on a `LABEL=<rc>` marker line the probe snippet echoed.
+# $1=text, $2=label, $3=zero|nonzero|<literal>, $4=description.
+#
+# Why this exists rather than `_unit_cap_has "$_OUT" 'X_RC=0' no`: a probe that
+# CRASHED prints no marker at all, and "does not contain X_RC=0" is then
+# satisfied by silence. Every rc arm therefore proves the marker is PRESENT
+# first and judges its value second, and reports a missing marker as its own
+# distinct failure rather than as a pass.
+_unit_cap_rc() {
+	local hay=$1 label=$2 want=$3 desc=$4
+	# A crashed probe proves nothing in EITHER direction. `want=nonzero` is the
+	# trap: bash's own 127 for a missing function satisfies it perfectly, so
+	# every "returns nonzero on a dead session" arm would pass against a lib
+	# that does not exist — and would keep passing against a stub that does
+	# nothing. This guard is what makes those arms discriminate.
+	if [ "${_CRASHED:-no}" = yes ]; then
+		fail "$desc (probe crashed before it could exercise the code under test; rc=$_RC err=$_ERR)"
+		return 1
+	fi
+	local line
+	line=$(printf '%s\n' "$hay" | grep -oE "$label=[0-9]+" | head -1)
+	if [ -z "$line" ]; then
+		fail "$desc (no '$label=<rc>' marker — the probe never got that far; rc=$_RC crashed=$_CRASHED err=$_ERR)"
+		return 1
+	fi
+	local got=${line#*=}
+	case "$want" in
+		zero) if [ "$got" -eq 0 ]; then pass "$desc"; else fail "$desc (got $label=$got, want 0) out=$hay err=$_ERR"; fi ;;
+		nonzero) if [ "$got" -ne 0 ]; then pass "$desc"; else fail "$desc (got $label=$got, want nonzero) out=$hay"; fi ;;
+		*) if [ "$got" = "$want" ]; then pass "$desc"; else fail "$desc (got $label=$got, want $want) out=$hay err=$_ERR"; fi ;;
+	esac
+}
+
+# As _unit_cap_has with want=no, but refuses to call a crashed probe a pass.
+_unit_cap_lacks() {
+	local hay=$1 needle=$2 desc=$3
+	if [ "${_CRASHED:-no}" = yes ]; then
+		fail "$desc (probe crashed, so absence proves nothing; rc=$_RC err=$_ERR)"
+		return 1
+	fi
+	_unit_cap_has "$hay" "$needle" no "$desc"
+}
+
+UNIT_CAP_BASH=$(command -v bash)
+UNIT_CAP_FIX=$(mktemp -d "$UNIT_TMP_ROOT/e2e-matrix-unit-cap.XXXXXX" 2>/dev/null)
+if [ ! -r "$LIB" ]; then
+	fail "18: scripts/lib/e2e-common.sh not readable — QUM-957 arms not run"
+elif [ -z "$UNIT_CAP_FIX" ] || [ ! -d "$UNIT_CAP_FIX" ]; then
+	fail "18: could not mktemp the QUM-957 fixture dir — arms not run"
+elif ! _unit_mk_faketmux "$UNIT_CAP_FIX" || ! mkdir -p "$UNIT_CAP_FIX/markers"; then
+	fail "18: could not build the fake-tmux fixture — arms not run"
+else
+	CAPLEDGER="$UNIT_CAP_FIX/fault-ledger"
+
+	# Prove the fixture itself works before trusting any arm built on it.
+	# Identity, not behaviour: "dead mode exits 1" is equally true of the real
+	# tmux with no server running, so the token is what distinguishes a shim
+	# that is genuinely on PATH from one that silently is not.
+	: >"$CAPLEDGER"
+	_unit_cap_probe dead "$CAPLEDGER" 'tmux -L x capture-pane -t unit-fixture-check -p; echo "FIXTURE_RC=$?"'
+	_unit_cap_has "$_ERR" 'UNIT_FAKETMUX_TOKEN' yes "18-fixture: the tmux on PATH is the unit shim, not the real binary"
+	_unit_cap_has "$_ERR" 'session=unit-fixture-check' yes "18-fixture: the shim resolves -t <session> correctly"
+	_unit_cap_rc "$_OUT" FIXTURE_RC 1 "18-fixture: the shim fails in dead mode"
+	_unit_cap_probe empty "$CAPLEDGER" 'tmux -L x capture-pane -t unit-fixture-check -p; echo "FIXTURE_RC=$?"'
+	_unit_cap_rc "$_OUT" FIXTURE_RC 0 "18-fixture: the shim succeeds in empty mode"
+
+	# --- 18a POSITIVE CONTROL (defect present -> probe MUST fire) ----------
+	# Dead session: capture_pane must report the failure in its status.
+	# Pre-fix this returned 0 because of `|| true`.
+	: >"$CAPLEDGER"
+	_unit_cap_probe dead "$CAPLEDGER" \
+		'capture_pane no-such-session-18a >/dev/null; echo "CAP_RC=$?"'
+	_unit_cap_rc "$_OUT" CAP_RC nonzero "18a POSITIVE CONTROL: capture_pane against a dead session returns nonzero"
+
+	# --- 18b POSITIVE CONTROL: it must PRINT ITS SUBJECT, not just a verdict
+	# The resolved session name, the actual tmux exit status, and tmux's own
+	# diagnostic. Pre-fix all three were discarded (`2>/dev/null`).
+	: >"$CAPLEDGER"
+	_unit_cap_probe dead "$CAPLEDGER" 'capture_pane no-such-session-18b >/dev/null || true'
+	_unit_cap_has "$_ERR" 'no-such-session-18b' yes "18b POSITIVE CONTROL: the fault diagnostic names the resolved session"
+	_unit_cap_has "$_ERR" 'tmux exit' yes "18b POSITIVE CONTROL: the fault diagnostic reports the actual tmux exit status"
+	_unit_cap_has "$_ERR" "can't find session" yes "18b POSITIVE CONTROL: tmux's own stderr survives instead of going to /dev/null"
+	_unit_cap_has "$_ERR" 'unit-fake-socket' yes "18b POSITIVE CONTROL: the fault diagnostic names the tmux socket it used"
+	# tmux's stderr must reach the OPERATOR's stderr, never the caller's stdout.
+	# A `2>&1`-shaped fix would turn "can't find session" into what looks like
+	# pane content, and a presence assertion somewhere would then match text
+	# tmux invented about its own failure.
+	_unit_cap_lacks "$_OUT" "can't find session" "18b POSITIVE CONTROL: tmux's error text does NOT leak into stdout as fake pane content"
+
+	# --- 18c POSITIVE CONTROL, THE HEADLINE -------------------------------
+	# The vacuous green, reproduced exactly: an absence assertion phrased as
+	# `capture_pane X | grep -q PAT`, which passes because the pane is
+	# unreadable, and a row that then reports all-green. The pipeline discards
+	# capture_pane's status, so only the aggregator can catch this.
+	: >"$CAPLEDGER"
+	_unit_cap_probe dead "$CAPLEDGER" '
+MIN_ASSERTIONS=1
+if capture_pane no-such-session-18c | grep -q "Session Error"; then
+	fail "18c fixture: banner present"
+else
+	pass "18c fixture: no error banner on screen"
+fi
+e2e_print_results
+echo "AGG_RC=$?"'
+	_unit_cap_rc "$_OUT" AGG_RC nonzero "18c POSITIVE CONTROL: a row whose only assertion was satisfied by an unreadable pane does NOT pass"
+	_unit_cap_has "$_ERR" 'FAIL' yes "18c POSITIVE CONTROL: the aggregator records the capture fault as a FAIL"
+	_unit_cap_has "$_ERR" 'no-such-session-18c' yes "18c POSITIVE CONTROL: the aggregator's breach names the session that could not be read"
+	# Distinct message from the QUM-1029 floor breach: a reader must never be
+	# told "the row measured less than it claims" when the truth is "tmux was
+	# unreachable". Those are different diagnoses with different remedies.
+	_unit_cap_lacks "$_ERR" 'MIN_ASSERTIONS' "18c: the capture-fault breach is not mis-reported as a MIN_ASSERTIONS shortfall"
+
+	# --- 18d NEGATIVE CONTROL (subject known clean -> probe MUST stay quiet)
+	# A LIVE session with a legitimately empty pane. This is the arm that
+	# protects against the `|| true` regression: if it goes red, someone
+	# collapsed "tmux succeeded and the pane is empty" into "tmux failed".
+	: >"$CAPLEDGER"
+	_unit_cap_probe empty "$CAPLEDGER" '
+MIN_ASSERTIONS=1
+out=$(capture_pane live-but-blank-18d); rc=$?
+echo "CAP_RC=$rc CAP_BYTES=${#out}"
+pass "18d fixture: assertion made"
+e2e_print_results
+echo "AGG_RC=$?"'
+	_unit_cap_rc "$_OUT" CAP_RC zero "18d NEGATIVE CONTROL: an empty pane on a LIVE session returns 0"
+	_unit_cap_rc "$_OUT" CAP_BYTES 0 "18d NEGATIVE CONTROL: an empty live pane yields empty output, not fabricated content"
+	_unit_cap_lacks "$_ERR" 'CAPTURE FAULT' "18d NEGATIVE CONTROL: an empty-but-live pane emits no fault diagnostic"
+	_unit_cap_rc "$_OUT" AGG_RC zero "18d NEGATIVE CONTROL: an empty-but-live pane does not fail the row"
+	if [ -s "$CAPLEDGER" ]; then
+		fail "18d NEGATIVE CONTROL: an empty-but-live pane wrote to the fault ledger: $(cat "$CAPLEDGER")"
+	else
+		pass "18d NEGATIVE CONTROL: an empty-but-live pane leaves the fault ledger empty"
+	fi
+
+	# --- 18e NEGATIVE CONTROL: content passes through unchanged -----------
+	# stdout must not be rerouted through a variable that strips trailing blank
+	# pane rows, and tmux's stderr must not be folded into stdout.
+	: >"$CAPLEDGER"
+	_unit_cap_probe text "$CAPLEDGER" 'capture_pane live-with-text-18e; echo "CAP_RC=$?"'
+	_unit_cap_has "$_OUT" 'UNIT_PANE_MARKER line one' yes "18e NEGATIVE CONTROL: pane content reaches stdout unchanged"
+	_unit_cap_has "$_OUT" 'second line' yes "18e NEGATIVE CONTROL: every captured line reaches stdout, not just the first"
+	_unit_cap_rc "$_OUT" CAP_RC zero "18e NEGATIVE CONTROL: a successful capture returns 0"
+	_unit_cap_lacks "$_OUT" 'UNIT_FAKETMUX_TOKEN' "18e NEGATIVE CONTROL: tmux's stderr is not folded into the captured content"
+
+	# --- 18f capture_pane_ansi: same contract, both directions ------------
+	# Two rows (pending-dim-bright.sh, qum1000-refused-slash.sh) carried their
+	# own `capture-pane -e -p 2>/dev/null || true` copies, and both use it for
+	# ABSENCE-of-an-attribute verdicts — the same defect, invisible to any fix
+	# that only touches capture_pane. The `-e` flag is asserted to reach tmux so
+	# capture_pane_ansi cannot be a silent alias that drops it.
+	: >"$CAPLEDGER"
+	_unit_cap_probe text "$CAPLEDGER" 'capture_pane_ansi live-18f; echo "ANSI_RC=$?"'
+	_unit_cap_rc "$_OUT" ANSI_RC zero "18f NEGATIVE CONTROL: capture_pane_ansi returns 0 on a live pane"
+	_unit_cap_has "$_OUT" 'UNIT_ANSI_MARKER' yes "18f NEGATIVE CONTROL: capture_pane_ansi passes -e through to tmux"
+	: >"$CAPLEDGER"
+	_unit_cap_probe dead "$CAPLEDGER" 'capture_pane_ansi dead-18f >/dev/null; echo "ANSI_RC=$?"'
+	_unit_cap_rc "$_OUT" ANSI_RC nonzero "18f POSITIVE CONTROL: capture_pane_ansi against a dead session returns nonzero"
+	if [ -s "$CAPLEDGER" ]; then
+		pass "18f POSITIVE CONTROL: a faulting capture_pane_ansi records the fault in the ledger"
+	else
+		fail "18f POSITIVE CONTROL: capture_pane_ansi faulted but wrote no ledger entry, so the row would still read green"
+	fi
+
+	# --- 18g capture_pane_scrollback -------------------------------------
+	# paste-coalesce (row and legacy driver) captures scrollback with
+	# `-p -S -200` inline, bypassing capture_pane entirely. Without a shared
+	# form for it those two sites keep the swallow.
+	: >"$CAPLEDGER"
+	_unit_cap_probe text "$CAPLEDGER" 'capture_pane_scrollback live-18g 200; echo "SB_RC=$?"'
+	_unit_cap_rc "$_OUT" SB_RC zero "18g NEGATIVE CONTROL: capture_pane_scrollback returns 0 on a live pane"
+	_unit_cap_has "$_OUT" 'UNIT_SCROLLBACK_MARKER -200' yes "18g NEGATIVE CONTROL: capture_pane_scrollback passes -S -<lines> through to tmux"
+	: >"$CAPLEDGER"
+	_unit_cap_probe dead "$CAPLEDGER" 'capture_pane_scrollback dead-18g 200 >/dev/null; echo "SB_RC=$?"'
+	_unit_cap_rc "$_OUT" SB_RC nonzero "18g POSITIVE CONTROL: capture_pane_scrollback against a dead session returns nonzero"
+
+	# --- 18h the sanctioned opt-out --------------------------------------
+	# Teardown diagnostics capture panes they have just killed on purpose. They
+	# need a NAMED opt-out, because the alternative an author reaches for is
+	# `|| true`, and that is the defect. capture_pane_best_effort is quiet and
+	# ledger-free by contract. The rc marker plus _CRASHED is what keeps a stub
+	# that does nothing from satisfying this.
+	: >"$CAPLEDGER"
+	_unit_cap_probe dead "$CAPLEDGER" '
+MIN_ASSERTIONS=1
+out=$(capture_pane_best_effort already-killed-18h); rc=$?
+echo "BE_RC=$rc BE_BYTES=${#out}"
+pass "18h fixture: assertion made"
+e2e_print_results
+echo "AGG_RC=$?"'
+	_unit_cap_rc "$_OUT" BE_RC zero "18h: capture_pane_best_effort tolerates a dead session by contract"
+	_unit_cap_rc "$_OUT" BE_BYTES 0 "18h: capture_pane_best_effort yields empty output for a dead session"
+	_unit_cap_rc "$_OUT" AGG_RC zero "18h: capture_pane_best_effort does not fail the row"
+	if [ -s "$CAPLEDGER" ]; then
+		fail "18h: capture_pane_best_effort wrote to the fault ledger: $(cat "$CAPLEDGER")"
+	else
+		pass "18h: capture_pane_best_effort leaves the fault ledger empty"
+	fi
+	# ...and it must still be a real capture on a live pane, not a stub.
+	: >"$CAPLEDGER"
+	_unit_cap_probe text "$CAPLEDGER" 'capture_pane_best_effort live-18h; echo "BE_RC=$?"'
+	_unit_cap_has "$_OUT" 'UNIT_PANE_MARKER line one' yes "18h NEGATIVE CONTROL: capture_pane_best_effort still returns real content from a live pane"
+
+	# --- 18i e2e_require_session_alive, both directions -------------------
+	: >"$CAPLEDGER"
+	_unit_cap_probe dead "$CAPLEDGER" \
+		'e2e_require_session_alive dead-sess-18i; echo "ALIVE_RC=$?"'
+	_unit_cap_rc "$_OUT" ALIVE_RC nonzero "18i POSITIVE CONTROL: e2e_require_session_alive returns nonzero for a dead session"
+	_unit_cap_has "$_ERR" 'FAIL' yes "18i POSITIVE CONTROL: e2e_require_session_alive records a fail() for a dead session"
+	_unit_cap_has "$_OUT" 'has-session exit=' yes "18i: the liveness probe prints its subject (the actual has-session status)"
+	: >"$CAPLEDGER"
+	_unit_cap_probe empty "$CAPLEDGER" \
+		'e2e_require_session_alive live-sess-18i; echo "ALIVE_RC=$?"'
+	_unit_cap_rc "$_OUT" ALIVE_RC zero "18i NEGATIVE CONTROL: e2e_require_session_alive returns 0 for a live session"
+	_unit_cap_has "$_OUT" 'PASS' yes "18i NEGATIVE CONTROL: e2e_require_session_alive records a pass() for a live session"
+
+	# --- 18j e2e_pane_lacks: absence is only provable on a readable pane ---
+	# All three directions. The first is the one the whole issue is about:
+	# "the pattern is absent" and "I could not look" must not be the same
+	# verdict.
+	: >"$CAPLEDGER"
+	_unit_cap_probe dead "$CAPLEDGER" \
+		'e2e_pane_lacks dead-sess-18j "Session Error" "no error banner"; echo "LACKS_RC=$?"'
+	_unit_cap_rc "$_OUT" LACKS_RC nonzero "18j POSITIVE CONTROL: e2e_pane_lacks on a dead session FAILS rather than passing vacuously"
+	# "absent" and "I could not look" must read differently to a human too, not
+	# just differ in a status: the whole defect is a reader trusting the former
+	# when the latter happened.
+	_unit_cap_has "$_ERR" 'CANNOT JUDGE' yes "18j POSITIVE CONTROL: the dead-session verdict says absence is UNPROVEN, not proven"
+	_unit_cap_has "$_OUT" 'capture exit=' yes "18j: the absence probe prints its subject before judging"
+	: >"$CAPLEDGER"
+	_unit_cap_probe empty "$CAPLEDGER" \
+		'e2e_pane_lacks live-sess-18j "Session Error" "no error banner"; echo "LACKS_RC=$?"'
+	_unit_cap_rc "$_OUT" LACKS_RC zero "18j NEGATIVE CONTROL: e2e_pane_lacks passes when the pane is live and the pattern absent"
+	_unit_cap_has "$_OUT" 'PASS' yes "18j NEGATIVE CONTROL: e2e_pane_lacks records a pass() on a live pane with the pattern absent"
+	: >"$CAPLEDGER"
+	_unit_cap_probe text "$CAPLEDGER" \
+		'e2e_pane_lacks live-sess-18j "UNIT_PANE_MARKER" "marker absent"; echo "LACKS_RC=$?"'
+	_unit_cap_rc "$_OUT" LACKS_RC nonzero "18j: e2e_pane_lacks fails when the pattern IS present on a live pane"
+
+	# --- 18k POSITIVE CONTROL: one fault, one diagnostic ------------------
+	# A 240s wait_for_pattern against a dead session polls hundreds of times.
+	# An unthrottled diagnostic would emit hundreds of blocks and bury the very
+	# verdict it is trying to surface — a defect that reads as noise gets
+	# ignored, so throttling is part of the fix, not a nicety. All 41 attempts'
+	# stderr is captured (no `2>&1` inside the loop): throttling to the FIRST
+	# fault would otherwise be indistinguishable from emitting nothing.
+	: >"$CAPLEDGER"
+	_unit_cap_probe dead "$CAPLEDGER" '
+MIN_ASSERTIONS=1
+i=0
+while [ "$i" -lt 41 ]; do i=$((i + 1)); capture_pane repeat-sess-18k >/dev/null || true; done
+pass "18k fixture: assertion made"
+e2e_print_results
+echo "AGG_RC=$?"'
+	_unit_cap_rc "$_OUT" AGG_RC nonzero "18k POSITIVE CONTROL: 41 faulting captures still fail the row"
+	_capblocks=$(printf '%s\n' "$_ERR" | grep -cF 'CAPTURE FAULT')
+	if [ "${_capblocks:-0}" -eq 1 ]; then
+		pass "18k: repeated faults on one session print exactly one diagnostic block (got $_capblocks)"
+	else
+		fail "18k: repeated faults on one session printed ${_capblocks:-0} diagnostic blocks, want 1"
+	fi
+	_caplines=$(grep -c . "$CAPLEDGER" 2>/dev/null)
+	if [ "${_caplines:-0}" -eq 1 ]; then
+		pass "18k: the fault ledger holds one line per faulting session, not one per attempt"
+	else
+		fail "18k: the fault ledger holds ${_caplines:-0} line(s) after 41 faults on one session, want 1"
+	fi
+	# Two distinct dead sessions must both be recorded — a throttle keyed on
+	# "have I ever faulted" instead of "have I faulted for THIS session" would
+	# hide the second, and a row that reads two panes would name only one.
+	: >"$CAPLEDGER"
+	_unit_cap_probe dead "$CAPLEDGER" '
+capture_pane sess-alpha-18k >/dev/null || true
+capture_pane sess-beta-18k >/dev/null || true'
+	_unit_cap_has "$_ERR" 'sess-alpha-18k' yes "18k: the first faulting session is named"
+	_unit_cap_has "$_ERR" 'sess-beta-18k' yes "18k: a second, DIFFERENT faulting session is also named (the throttle is per session)"
+
+	# --- 18l POSITIVE CONTROL: a session name is never evaluated ----------
+	# Session names reach this code from row scripts and from $SESSION-shaped
+	# variables. An implementation that put one inside $(( )) or eval would
+	# execute the payload; the marker it would drop is asserted absent. Mirrors
+	# [17g]'s arithmetic-injection case.
+	#
+	# The paired positive control below is what makes the absence meaningful:
+	# without it, a broken marker dir would satisfy this arm just as well as a
+	# safe implementation.
+	: >"$CAPLEDGER"
+	rm -f -- "$UNIT_CAP_FIX/markers/cap-pwned"
+	_unit_cap_probe dead "$CAPLEDGER" 'eval ": >\"\$UNIT_MARKER_DIR/cap-pwned\""; echo "CTRL_RC=$?"'
+	if [ -e "$UNIT_CAP_FIX/markers/cap-pwned" ]; then
+		pass "18l POSITIVE CONTROL: the injection detector fires when the payload really does run"
+	else
+		fail "18l POSITIVE CONTROL: the injection payload could not drop its marker at all, so 18l's absence check proves nothing"
+	fi
+	rm -f -- "$UNIT_CAP_FIX/markers/cap-pwned"
+	_unit_cap_probe dead "$CAPLEDGER" \
+		'capture_pane '"'"'x[$(: >"$UNIT_MARKER_DIR/cap-pwned")]'"'"' >/dev/null 2>&1 || true
+e2e_pane_lacks '"'"'y[$(: >"$UNIT_MARKER_DIR/cap-pwned")]'"'"' zzz desc >/dev/null 2>&1 || true
+e2e_require_session_alive '"'"'z[$(: >"$UNIT_MARKER_DIR/cap-pwned")]'"'"' >/dev/null 2>&1 || true
+echo "INJ_DONE=0"'
+	_unit_cap_rc "$_OUT" INJ_DONE 0 "18l: the injection probe ran to completion (so the absence check below is not vacuous)"
+	if [ -e "$UNIT_CAP_FIX/markers/cap-pwned" ]; then
+		fail "18l: a session name was EVALUATED — the injected command substitution ran"
+	else
+		pass "18l: a session name is never evaluated (no injection marker dropped)"
+	fi
+
+	# --- 18m wait_for_* must abort on fault, not burn the clock -----------
+	# A dead session can never match, so polling to the deadline wastes the
+	# timeout and buries the diagnostic under the eventual timeout message.
+	: >"$CAPLEDGER"
+	_unit_cap_probe dead "$CAPLEDGER" \
+		'wait_for_pattern dead-sess-18m "anything" 4 >/dev/null 2>&1; echo "WFP_RC=$?"'
+	_unit_cap_rc "$_OUT" WFP_RC 2 "18m POSITIVE CONTROL: wait_for_pattern aborts on a capture fault (rc 2) instead of polling to its deadline"
+	: >"$CAPLEDGER"
+	_unit_cap_probe dead "$CAPLEDGER" \
+		'wait_for_pattern_fast dead-sess-18m "anything" 4 >/dev/null 2>&1; echo "WFPF_RC=$?"'
+	_unit_cap_rc "$_OUT" WFPF_RC 2 "18m POSITIVE CONTROL: wait_for_pattern_fast aborts on a capture fault (rc 2)"
+	: >"$CAPLEDGER"
+	_unit_cap_probe dead "$CAPLEDGER" \
+		'wait_for_substring_fast dead-sess-18m "anything" 4 >/dev/null 2>&1; echo "WFSF_RC=$?"'
+	_unit_cap_rc "$_OUT" WFSF_RC 2 "18m POSITIVE CONTROL: wait_for_substring_fast aborts on a capture fault (rc 2)"
+	: >"$CAPLEDGER"
+	_unit_cap_probe text "$CAPLEDGER" \
+		'wait_for_pattern live-18m "UNIT_PANE_MARKER" 5 >/dev/null 2>&1; echo "WFP_RC=$?"'
+	_unit_cap_rc "$_OUT" WFP_RC zero "18m NEGATIVE CONTROL: wait_for_pattern still matches on a live pane"
+	: >"$CAPLEDGER"
+	_unit_cap_probe text "$CAPLEDGER" \
+		'wait_for_pattern_fast live-18m "UNIT_PANE_MARKER" 5 >/dev/null 2>&1; echo "WFPF_RC=$?"'
+	_unit_cap_rc "$_OUT" WFPF_RC zero "18m NEGATIVE CONTROL: wait_for_pattern_fast still matches on a live pane"
+	: >"$CAPLEDGER"
+	_unit_cap_probe text "$CAPLEDGER" \
+		'wait_for_substring_fast live-18m "UNIT_PANE_MARKER" 5 >/dev/null 2>&1; echo "WFSF_RC=$?"'
+	_unit_cap_rc "$_OUT" WFSF_RC zero "18m NEGATIVE CONTROL: wait_for_substring_fast still matches on a live pane"
+	# A live pane that simply does not contain the pattern must still TIME OUT
+	# (rc 1), not be reported as a fault. Collapsing "no match yet" into "could
+	# not look" is the mirror image of the defect.
+	: >"$CAPLEDGER"
+	_unit_cap_probe empty "$CAPLEDGER" \
+		'wait_for_pattern_fast live-18m "NEVER_APPEARS" 1 >/dev/null 2>&1; echo "WFPF_RC=$?"'
+	_unit_cap_rc "$_OUT" WFPF_RC 1 "18m NEGATIVE CONTROL: a live pane with no match times out (rc 1), it is not reported as a fault"
+
+	# --- 18n the ledger must work with E2E_CAPTURE_FAULT_FILE UNSET --------
+	# The nine legacy scripts/test-*-e2e.sh drivers are the whole reason the
+	# shared lib exists, and none of them will set this variable; several run
+	# under `set -u`, where a bare dereference aborts the driver outright. So
+	# the default path is part of the contract, not an implementation detail.
+	_unit_cap_probe text "" '
+out=$(capture_pane live-18n); rc=$?
+echo "CAP_RC=$rc"
+echo "LEDGER_SET=${E2E_CAPTURE_FAULT_FILE:+1}"'
+	_unit_cap_rc "$_OUT" CAP_RC zero "18n NEGATIVE CONTROL: capture_pane works with E2E_CAPTURE_FAULT_FILE unset (the legacy drivers never set it)"
+	_unit_cap_has "$_OUT" 'LEDGER_SET=1' yes "18n: the lib supplies a default ledger path when the caller sets none"
+	_unit_cap_probe dead "" '
+capture_pane dead-18n >/dev/null 2>&1 || true
+if [ -s "$E2E_CAPTURE_FAULT_FILE" ]; then echo "DEFAULT_LEDGER_WRITTEN=1"; else echo "DEFAULT_LEDGER_WRITTEN=0"; fi
+capture_pane_assert_no_faults >/dev/null 2>&1; echo "GATE_RC=$?"
+rm -f -- "$E2E_CAPTURE_FAULT_FILE"'
+	_unit_cap_has "$_OUT" 'DEFAULT_LEDGER_WRITTEN=1' yes "18n POSITIVE CONTROL: a fault is recorded at the default ledger path when the caller sets none"
+	_unit_cap_rc "$_OUT" GATE_RC nonzero "18n POSITIVE CONTROL: capture_pane_assert_no_faults returns nonzero after a fault"
+	_unit_cap_probe empty "" 'capture_pane_assert_no_faults >/dev/null 2>&1; echo "GATE_RC=$?"'
+	_unit_cap_rc "$_OUT" GATE_RC zero "18n NEGATIVE CONTROL: capture_pane_assert_no_faults returns 0 when nothing faulted"
+
+	# --- 18o the ledger path must be per-process, and never silently lost --
+	# Two rows run concurrently in a matrix invocation. A shared ledger path
+	# would let row A's dead session fail row B, which is a false red — and the
+	# fastest route back to `|| true`.
+	_unit_cap_probe empty "" 'echo "LEDGER_PATH=$E2E_CAPTURE_FAULT_FILE"'
+	_cap_path_a=$(printf '%s\n' "$_OUT" | sed -n 's/^LEDGER_PATH=//p')
+	_unit_cap_probe empty "" 'echo "LEDGER_PATH=$E2E_CAPTURE_FAULT_FILE"'
+	_cap_path_b=$(printf '%s\n' "$_OUT" | sed -n 's/^LEDGER_PATH=//p')
+	if [ -n "$_cap_path_a" ] && [ -n "$_cap_path_b" ] && [ "$_cap_path_a" != "$_cap_path_b" ]; then
+		pass "18o: the default ledger path is per-process, so concurrent rows cannot fail each other"
+	else
+		fail "18o: two separate processes derived the same default ledger path ('$_cap_path_a' vs '$_cap_path_b') — one row's dead session would fail another"
+	fi
+	# An unwritable ledger is the sneakiest route back to the defect: if the
+	# append silently fails, the fault is forgotten and the vacuous green
+	# returns with no `|| true` anywhere in sight.
+	mkdir -p "$UNIT_CAP_FIX/nowrite" && chmod 500 "$UNIT_CAP_FIX/nowrite"
+	: >"$CAPLEDGER"
+	_unit_cap_probe dead "$UNIT_CAP_FIX/nowrite/ledger" '
+MIN_ASSERTIONS=1
+capture_pane dead-18o >/dev/null 2>&1 || true
+pass "18o fixture: assertion made"
+e2e_print_results
+echo "AGG_RC=$?"'
+	_unit_cap_rc "$_OUT" AGG_RC nonzero "18o POSITIVE CONTROL: a fault whose ledger cannot be written still fails the row"
+	chmod 700 "$UNIT_CAP_FIX/nowrite" 2>/dev/null
+
+	# --- 18p e2e_capture_fault_reset: resettable, by exactly one row -------
+	# scripts/e2e-tests/capture-pane-liveness.sh faults ON PURPOSE and so must
+	# clear its own ledger before the aggregator. That escape hatch is the one
+	# thing here that could launder a real fault, so it must clear only what has
+	# already happened — a reset that permanently disarms the mechanism would be
+	# the defect with a nicer name.
+	: >"$CAPLEDGER"
+	_unit_cap_probe dead "$CAPLEDGER" '
+MIN_ASSERTIONS=1
+capture_pane reset-sess-18p >/dev/null 2>&1 || true
+e2e_capture_fault_reset
+pass "18p fixture: assertion made"
+e2e_print_results
+echo "AGG_RC=$?"'
+	_unit_cap_rc "$_OUT" AGG_RC zero "18p: e2e_capture_fault_reset clears the ledger so a deliberate fault does not fail its own row"
+	: >"$CAPLEDGER"
+	_unit_cap_probe dead "$CAPLEDGER" '
+MIN_ASSERTIONS=1
+capture_pane reset-sess-18p-first >/dev/null 2>&1 || true
+e2e_capture_fault_reset
+capture_pane reset-sess-18p-second >/dev/null 2>&1 || true
+pass "18p fixture: assertion made"
+e2e_print_results
+echo "AGG_RC=$?"'
+	_unit_cap_rc "$_OUT" AGG_RC nonzero "18p POSITIVE CONTROL: a fault AFTER a reset still fails the row (reset clears history, it does not disarm the gate)"
+fi
+
+# --- 18q: the shared capture lib exists and is sourceable standalone -------
+# The nine legacy scripts/test-*-e2e.sh drivers do NOT source e2e-common.sh, so
+# a fix confined to that file would leave nine live `make` targets producing
+# vacuous greens while QUM-957 read Done. One small lib both can source is what
+# makes the fix reach all of them from a single mechanism.
+echo "[18q] the shared capture-pane lib is present and sourceable on its own"
+if [ -r "$CAPLIB" ]; then
+	pass "18q: scripts/lib/capture-pane.sh exists and is readable"
+else
+	fail "18q: scripts/lib/capture-pane.sh not readable — the 9 legacy drivers have nothing to source"
+fi
+(
+	# Under `set -u` on purpose: most legacy drivers run with it, and a lib that
+	# dereferences an unset var bare would abort them at source time.
+	set -u
+	# shellcheck disable=SC1090
+	. "$CAPLIB" >/dev/null 2>&1
+)
+if [ $? -eq 0 ]; then
+	pass "18q: capture-pane.sh sources cleanly under set -u"
+	_caplib_sourceable=yes
+else
+	fail "18q: capture-pane.sh does not source cleanly under set -u"
+	_caplib_sourceable=no
+fi
+for fn in capture_pane capture_pane_ansi capture_pane_scrollback \
+	capture_pane_best_effort e2e_require_session_alive e2e_pane_lacks \
+	e2e_capture_fault_reset capture_pane_assert_no_faults; do
+	if [ "$_caplib_sourceable" != yes ]; then
+		# Distinct message: a failed source is a different diagnosis from a
+		# missing function, and reporting it eight times as the latter would
+		# send a reader hunting for definitions that are all present.
+		fail "18q: cannot check whether capture-pane.sh defines $fn (the lib did not source)"
+		continue
+	fi
+	(
+		# shellcheck disable=SC1090
+		. "$CAPLIB" >/dev/null 2>&1 || exit 99
+		declare -F "$fn" >/dev/null 2>&1
+	)
+	if [ $? -eq 0 ]; then
+		pass "18q: capture-pane.sh defines $fn"
+	else
+		fail "18q: capture-pane.sh does NOT define $fn"
+	fi
+done
+
+# --- 18r POSITIVE CONTROL: the swallowed idiom is gone, and cannot come back
+# This is the arm that blocks the realistic regression. If someone quiets a
+# newly-loud call site with `|| true`, `make validate` goes red and the commit
+# that would have blessed the defect cannot land.
+echo "[18r] no capture-pane call site swallows its status or its diagnostic"
+_cap_sites=$(grep -rlE '(^|[^a-z_])capture_pane|capture-pane' "$REPO_ROOT/scripts" 2>/dev/null | sort)
+_cap_site_count=$(printf '%s\n' "$_cap_sites" | grep -c .)
+# Non-vacuity FIRST: a corpus scan that found nothing satisfies every
+# "zero offenders" assertion below perfectly and reports green.
+if [ "${_cap_site_count:-0}" -ge 20 ]; then
+	pass "18r: found $_cap_site_count file(s) referencing a pane capture to scan"
+else
+	fail "18r: only ${_cap_site_count:-0} file(s) reference a pane capture — the scans below would be vacuous"
+fi
+# Both spellings on purpose. `capture-pane` (hyphen) catches a raw tmux call;
+# `capture_pane` (underscore) catches the far likelier regression once call sites
+# are loud — someone quieting the helper itself at a call site.
+# Comment lines are excluded (`file:NN:   #...`): the fix's own documentation
+# QUOTES the defective one-liner in several places so a future reader can
+# recognise it, and a scan that could not tell a quotation from a call would
+# make the fix's own comments the thing it fails on. Paths under scripts/
+# contain no colon, so the `file:line:` prefix strips unambiguously.
+_cap_swallow=$(grep -rnE '(capture-pane|capture_pane[a-z_]*)[^|]*(2>/dev/null|\|\| *true)' "$REPO_ROOT/scripts" 2>/dev/null \
+	| grep -vE '^[^:]*:[0-9]+:[[:space:]]*#' \
+	| grep -v '/test-e2e-matrix-unit.sh:' \
+	| grep -v '/lib/capture-pane.sh:' \
+	| grep -vE 'capture_pane(_ansi)?_best_effort' || true)
+if [ -z "$_cap_swallow" ]; then
+	pass "18r: no pane capture under scripts/ swallows its stderr or its exit status"
+else
+	fail "18r: the QUM-957 swallow is still present (or was reintroduced):
+$_cap_swallow"
+fi
+# The library is exempted from the scan above and pinned by COUNT here instead.
+# It has to contain the idiom: capture_pane_best_effort and its ANSI twin ARE the
+# sanctioned opt-out, so discarding tmux's stderr is their whole job. A blanket
+# exemption would leave the one file that matters most unscanned, and a
+# per-line-content exemption is what someone reintroducing the defect would
+# reach for. A count is neither: adding a third quiet capture to that file fails
+# this arm and forces the author to say why here.
+_cap_lib_quiet=$(grep -vE '^[[:space:]]*#' "$CAPLIB" 2>/dev/null | grep -cE 'capture-pane[^|]*2>/dev/null')
+if [ "${_cap_lib_quiet:-0}" -eq 2 ]; then
+	pass "18r: scripts/lib/capture-pane.sh discards tmux stderr in exactly the 2 sanctioned opt-out helpers"
+else
+	fail "18r: scripts/lib/capture-pane.sh has ${_cap_lib_quiet:-0} quiet capture(s), want exactly 2 (capture_pane_best_effort and capture_pane_ansi_best_effort) — a new one needs justifying"
+fi
+# One definition, not eleven. A local redefinition shadows the shared one at
+# call time, so a copy left behind is not merely untidy — it silently reinstates
+# the defect for that whole file. All three bash function spellings are matched.
+_cap_defs=$(grep -rnE '^[[:space:]]*(function[[:space:]]+)?capture_(pane|ansi)[a-z_]*[[:space:]]*\(\)?' "$REPO_ROOT/scripts" 2>/dev/null \
+	| grep -vE '^[^:]*:[0-9]+:[[:space:]]*#' \
+	| grep -v '/lib/capture-pane.sh:' \
+	| grep -v '/test-e2e-matrix-unit.sh:' || true)
+if [ -z "$_cap_defs" ]; then
+	pass "18r: the capture helpers are defined only in scripts/lib/capture-pane.sh"
+else
+	fail "18r: a capture helper is redefined outside the shared lib, shadowing the fix:
+$_cap_defs"
+fi
+
+# --- 18s POSITIVE CONTROL: every capture_pane caller reaches a fault gate ---
+# The ledger only fails a row if something reads it. A driver that captures
+# panes but never calls an aggregator arm keeps the vacuous green.
+echo "[18s] every capture_pane caller reaches a fault gate"
+_cap_ungated=""
+_cap_gated_seen=0
+_cap_legacy_expected=$(ls "$REPO_ROOT"/scripts/test-*-e2e.sh 2>/dev/null | xargs -r grep -lE '(^|[^a-z_])capture_pane' 2>/dev/null | grep -c . )
+if [ "${_cap_legacy_expected:-0}" -ge 9 ]; then
+	pass "18s: found $_cap_legacy_expected legacy scripts/test-*-e2e.sh driver(s) that capture panes"
+else
+	fail "18s: only ${_cap_legacy_expected:-0} legacy driver(s) capture panes — expected at least 9, so the gate scan below would be vacuous"
+fi
+while IFS= read -r _f; do
+	[ -n "$_f" ] || continue
+	case "$_f" in
+		*/lib/capture-pane.sh | */lib/e2e-common.sh | */test-e2e-matrix-unit.sh) continue ;;
+		# Rows under e2e-tests/ inherit the gate from e2e_print_results in the
+		# shared lib, which every row already calls ([17j] enforces that).
+		*/e2e-tests/*) continue ;;
+	esac
+	# Comment lines are stripped first, so a driver that merely NAMES the gate in
+	# a comment does not count. Position within the line is not constrained: the
+	# real call sites are `if ! capture_pane_assert_no_faults; then` at top level
+	# and an indented `e2e_print_results` inside a row's test_run.
+	if grep -vE '^[[:space:]]*#' "$_f" 2>/dev/null \
+		| grep -qE '(^|[^a-z_])(capture_pane_assert_no_faults|e2e_print_results)([^a-z_]|$)'; then
+		_cap_gated_seen=$((_cap_gated_seen + 1))
+	else
+		_cap_ungated="$_cap_ungated ${_f##*/}"
+	fi
+done <<CAPSITES
+$_cap_sites
+CAPSITES
+if [ "$_cap_gated_seen" -ge "${_cap_legacy_expected:-9}" ]; then
+	pass "18s: $_cap_gated_seen standalone driver(s) gate on a capture-fault check at top level"
+else
+	fail "18s: only $_cap_gated_seen standalone driver(s) gate on a capture-fault check — expected at least ${_cap_legacy_expected:-9}"
+fi
+if [ -z "$_cap_ungated" ]; then
+	pass "18s: no capture_pane caller is left without a fault gate"
+else
+	fail "18s: capture_pane caller(s) never check for a capture fault, so a dead pane still reads green:$_cap_ungated"
+fi
+
+# --- 18t: the real-tmux control row exists --------------------------------
+# The unit arms above use a shim, which cannot prove the contract against real
+# tmux. The negative control that matters most — a genuinely live pane that is
+# genuinely blank — needs a real server, so it lives in a matrix row.
+echo "[18t] the real-tmux capture-pane liveness row exists and declares its needs"
+CAPROW="$REPO_ROOT/scripts/e2e-tests/capture-pane-liveness.sh"
+if [ -r "$CAPROW" ]; then
+	pass "18t: scripts/e2e-tests/capture-pane-liveness.sh exists"
+	if grep -qE '^MIN_ASSERTIONS=[1-9][0-9]{0,8}$' "$CAPROW"; then
+		pass "18t: the liveness row declares a positive MIN_ASSERTIONS floor"
+	else
+		fail "18t: the liveness row declares no usable MIN_ASSERTIONS floor"
+	fi
+	if grep -q 'needs_tmux=1' "$CAPROW"; then
+		pass "18t: the liveness row declares needs_tmux=1"
+	else
+		fail "18t: the liveness row does not declare needs_tmux=1"
+	fi
+	if grep -q 'needs_claude=1' "$CAPROW"; then
+		fail "18t: the liveness row declares needs_claude=1 — it must not need claude, or it cannot run when claude is unavailable"
+	else
+		pass "18t: the liveness row does not need claude"
+	fi
+	# It is the one file allowed to reset the ledger, and it must actually do
+	# so: it faults on purpose, so without the reset it would fail itself.
+	if grep -qE '^[[:space:]]*e2e_capture_fault_reset' "$CAPROW"; then
+		pass "18t: the liveness row calls e2e_capture_fault_reset (it faults on purpose)"
+	else
+		fail "18t: the liveness row never calls e2e_capture_fault_reset, so its deliberate fault would fail itself"
+	fi
+else
+	fail "18t: scripts/e2e-tests/capture-pane-liveness.sh missing — the real-tmux control arms do not exist"
+	fail "18t: the liveness row declares no MIN_ASSERTIONS floor (row missing)"
+	fail "18t: the liveness row does not declare needs_tmux=1 (row missing)"
+	fail "18t: the liveness row's claude-independence is unverified (row missing)"
+	fail "18t: the liveness row's fault reset is unverified (row missing)"
+fi
+# The reset is the only thing here that can launder a real fault, so its spread
+# is pinned as a SUBSET of an allowlist: a new legitimate user is then a
+# deliberate edit to this list rather than a mystery red.
+_capreset_stray=""
+while IFS= read -r _f; do
+	[ -n "$_f" ] || continue
+	case "$_f" in
+		*/scripts/lib/capture-pane.sh | */scripts/e2e-tests/capture-pane-liveness.sh | */scripts/test-e2e-matrix-unit.sh) continue ;;
+		*) _capreset_stray="$_capreset_stray ${_f##*/}" ;;
+	esac
+done <<CAPRESET
+$(grep -rlE '^[[:space:]]*e2e_capture_fault_reset' "$REPO_ROOT/scripts" 2>/dev/null | sort)
+CAPRESET
+if [ -z "$_capreset_stray" ]; then
+	pass "18t: e2e_capture_fault_reset is confined to the lib that defines it and the one row that faults on purpose"
+else
+	fail "18t: e2e_capture_fault_reset appears in unexpected file(s), where it could launder a real fault:$_capreset_stray"
+fi
+
+if [ -n "${UNIT_CAP_FIX:-}" ]; then
+	case "$UNIT_CAP_FIX" in
+		"$UNIT_TMP_ROOT"/e2e-matrix-unit-cap.*) rm -rf -- "$UNIT_CAP_FIX" ;;
+		*) echo "  NOTE: refusing to remove unexpected fixture dir '$UNIT_CAP_FIX'" >&2 ;;
+	esac
+fi
 # Summary
 # ----------------------------------------------------------------------------
 echo
