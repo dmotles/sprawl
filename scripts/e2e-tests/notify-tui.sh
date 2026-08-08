@@ -37,6 +37,13 @@ count_inbox_banners() {
         echo "-1"
         return 1
     fi
+    # WARNING to the next author: the -1 is safe ONLY because every expectation
+    # in this row is `-eq 0`, `-eq 1` or an upper bound, and -1 satisfies none of
+    # them. That safety lives at the CALL SITES, not here. A future `-ge 0`,
+    # `-le N` or `-lt N` comparison would silently ACCEPT -1 and reinstate the
+    # vacuous pass this exists to stop — `[ -1 -gt 1 ]` is already false, so an
+    # upper-bound check on a dead pane records nothing. The capture-fault ledger
+    # would still fail the row, but that is defence in depth, not the guarantee.
     printf '%s\n' "$pane" | grep -cE "inbox: [0-9]+ new message" || true
 }
 
@@ -58,6 +65,13 @@ count_drain_notifications() {
         echo "-1"
         return 1
     fi
+    # WARNING to the next author: the -1 is safe ONLY because every expectation
+    # in this row is `-eq 0`, `-eq 1` or an upper bound, and -1 satisfies none of
+    # them. That safety lives at the CALL SITES, not here. A future `-ge 0`,
+    # `-le N` or `-lt N` comparison would silently ACCEPT -1 and reinstate the
+    # vacuous pass this exists to stop — `[ -1 -gt 1 ]` is already false, so an
+    # upper-bound check on a dead pane records nothing. The capture-fault ledger
+    # would still fail the row, but that is defence in depth, not the guarantee.
     printf '%s\n' "$pane" | grep -cE "(✉|⚡) (\\[interrupt\\] )?From $sender — mcp__sprawl__messages_read\\(id=[^)]+\\)" || true
 }
 

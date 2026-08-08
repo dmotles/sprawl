@@ -67,6 +67,14 @@ FAIL=0
 # deliberate: [18]'s outer fixture guard (unreadable lib, failed mktemp, failed
 # fake-tmux build) records a single fail in place of ~90 assertions, and the floor
 # is exactly what turns that into a red instead of a suspiciously small green.
+#
+# 401 currently EQUALS the observed count exactly, which is an invitation to
+# "simplify" this into something derived. Do not. A floor computed from the corpus
+# it checks is satisfied by an empty corpus — the very defect — and a floor that
+# tracks coverage follows it DOWN, so deleting assertions would silently stop
+# being detectable. The equality is a coincidence of the last measurement, not a
+# rule: raise it deliberately when you add assertions, and if you remove some,
+# lower it deliberately and say why. Same treatment as QUM-1029's per-row floor.
 MIN_ASSERTIONS=401
 # A [16b] nested child deliberately does NOT re-run section [16] (recursing would
 # fork-bomb, and counting there would corrupt the parity comparison), so it asserts
@@ -2911,7 +2919,11 @@ echo "AGG_RC=$?"'
 	_unit_cap_probe text "$CAPLEDGER" 'capture_pane_best_effort live-18h; echo "BE_RC=$?"'
 	_unit_cap_has "$_OUT" 'UNIT_PANE_MARKER line one' yes "18h NEGATIVE CONTROL: capture_pane_best_effort still returns real content from a live pane"
 
-	# --- 18h2 capture_pane_dump: the forensic form, now at ~45 sites --------
+	# --- 18h2 capture_pane_dump: the forensic form, now at 51 call sites ----
+	# 51 is measured, not estimated (this comment said "~45" first and was wrong):
+	#   grep -rn 'capture_pane_dump' scripts --include='*.sh' \
+	#     | grep -vE '^[^:]*:[0-9]+:[[:space:]]*#' \
+	#     | grep -v '/lib/capture-pane.sh:' | grep -v 'test-e2e-matrix-unit.sh:' | wc -l
 	# It replaced `capture_pane "$S" | tail -N >&2`, which under `set -euo
 	# pipefail` killed the driver AT THE DUMP once capture_pane went loud —
 	# skipping the summary and the capture-fault gate that would have explained
@@ -3323,6 +3335,13 @@ done
 # newly-loud call site with `|| true`, `make validate` goes red and the commit
 # that would have blessed the defect cannot land.
 echo "[18r] no capture-pane call site swallows its status or its diagnostic"
+# SCOPE LIMIT, stated because it is invisible from the arm's green: this scans
+# `$REPO_ROOT/scripts` ONLY. A pane capture added anywhere else is unguarded and
+# every arm below still prints PASS — a clean scan of the wrong corpus, which is
+# this section's own defect class. Verified at this commit that nothing outside
+# scripts/ captures a pane (the only hits are prose in
+# internal/config/errors{,_test}.go comments), so the limit costs nothing today
+# and is a trap tomorrow. Widen the root here if that changes.
 _cap_sites=$(grep -rlE '(^|[^a-z_])capture_pane|capture-pane' "$REPO_ROOT/scripts" 2>/dev/null | sort)
 _cap_site_count=$(printf '%s\n' "$_cap_sites" | grep -c .)
 # Non-vacuity FIRST: a corpus scan that found nothing satisfies every
@@ -3339,9 +3358,17 @@ fi
 #   `2>/dev/null` binds to ONE PIPELINE ELEMENT. In
 #       capture_pane "$S" | grep -q x 2>/dev/null
 #   it redirects grep's stderr, and grep writes none — the capture's diagnostic
-#   still reaches the operator. That spelling is NOT the defect, and ~45 of them
-#   exist in the tree as harmless cargo-cult. So this pattern keeps `[^|]*`: the
-#   redirect must be in the same element as the capture to count.
+#   still reaches the operator. That spelling is NOT the defect, and **40** of
+#   them exist in the tree as harmless cargo-cult. So this pattern keeps `[^|]*`:
+#   the redirect must be in the same element as the capture to count.
+#
+#   That 40 is MEASURED, and the derivation is here so the next reader re-derives
+#   it rather than trusting it — it was first written as "~45", which was wrong
+#   when written (not drift: the count is identical at the QUM-957 baseline and
+#   at HEAD). Re-derive with:
+#     grep -rnE '(capture-pane|capture_pane[a-z_]*).*\|.*2>/dev/null' scripts \
+#       | grep -vE '^[^:]*:[0-9]+:[[:space:]]*#' \
+#       | grep -v '/test-e2e-matrix-unit.sh:' | wc -l
 #
 #   `|| true` binds to the WHOLE AND-OR LIST, so
 #       capture_pane "$S" | tail -30 >&2 || true
@@ -3392,11 +3419,17 @@ else
 	fail "18r POSITIVE CONTROL: the scan CANNOT see a continuation-spelled swallow — its green above is not attributable"
 fi
 # ...and it must NOT report the harmless spelling. This control is load-bearing,
-# not tidiness: about 45 lines in the tree are `capture_pane X | grep -q y
+# not tidiness: **40** lines in the tree are `capture_pane X | grep -q y
 # 2>/dev/null`, where the redirect binds to grep and discards nothing. An arm that
-# flagged all 45 would be read as noisy, and the next person to look would exempt
+# flagged all 40 would be read as noisy, and the next person to look would exempt
 # it wholesale — which is how an anti-regression arm dies quietly while still
 # printing PASS. Keep this control whenever the pattern above is touched.
+#
+# The figure is measured, not estimated, and the derivation is at the pattern
+# above. It said "about 45" first, which was wrong by 12% — and a reader who
+# checks a supporting number, finds it off, and then discounts the argument
+# attached to it is exactly the reader this control has to convince. The argument
+# stands on its own; the number should not be its weakest part.
 printf '%s\n' 'if capture_pane "$s" | grep -q x 2>/dev/null; then :; fi' >"$_cap_join_fixture"
 if sed -e ':a' -e '/\\$/{N;s/\\\n//;ba}' "$_cap_join_fixture" \
 	| grep -qE '(capture-pane|capture_pane[a-z_]*)([^|]*2>/dev/null|.*\|\| *true)'; then
