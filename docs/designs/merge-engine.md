@@ -453,9 +453,12 @@ and they cover neither uncommitted work nor non-git agent data.
 * Is the ff still proven by BOTH predicates — `--is-ancestor <parentTip>
   <rebasedTip>` before and exact SHA equality after? Neither alone is enough,
   and `--ff-only`'s exit status substitutes for neither.
-* Does `internal/merge` still have no e2e matrix row? Yes — that gap is real and
-  tracked on QUM-1092. The real-git scenario tests in `scenario_test.go` are what
-  stand in for it; they are not optional.
+* Which e2e matrix row does `internal/merge` sit under? `merge-reuse`, scoped
+  (QUM-1154 resolved the gap this bullet used to report as open). It drives
+  `merge.go` and `git.go` live, but runs `--no-validate`, so `runtests.go` and
+  `validate_stream.go` are unreached and the premerge refs are written but not
+  asserted. The real-git scenario tests in `scenario_test.go` are what stand in
+  for the remainder; they are not optional.
 * Is `git merge --ff-only` still passed the validated **SHA** rather than a
   branch name? A name re-resolves at ff time and can carry an unvalidated tip.
 * Does the merge still create NO commit? If a commit reappears anywhere in the
