@@ -323,6 +323,14 @@ func (q *questionQueue) peek() (int, *PendingQuestion) {
 // blocked in ask_user_question would deliver the operator's answer to a
 // process that no longer exists.
 func (q *questionQueue) hasPendingFrom(name string) bool {
+	// Nil-receiver guard, not defensive noise: idleInputs.Questions is an
+	// INTERFACE holding a *questionQueue, so a nil queue is a non-nil
+	// interface and assessIdle's `== nil` arm does not fire. Without this a
+	// nil queue panics in the reaper goroutine and takes the process with it.
+	// Review F5.
+	if q == nil {
+		return false
+	}
 	q.mu.Lock()
 	defer q.mu.Unlock()
 	for _, e := range q.entries {

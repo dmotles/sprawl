@@ -28,6 +28,11 @@ or any MCP verb that targets an agent by name, this is the contract.
   the `send_message` auto-wake set, and is deliberately **excluded from the
   boot auto-resume loop** in `RecoverAgents` — resuming reclaimed agents at
   every `sprawl enter` would hand back the exact RSS the reaper freed.
+  **Nothing writes this status by default today**: the idle reaper
+  (`internal/supervisor/idlereap.go`) ships disabled — `idle_reclaim.after`
+  defaults to `0` — because its predicate cannot see an agent that is
+  mid-tool-call and reaps it (QUM-1197, which also blocks QUM-1187). The
+  status, the machinery and its coverage are all live; only the switch is off.
 - `IsTerminal(status)` returns true **only for `{retired, retiring}`**.
   Permanent termination is a deliberate parent action (`retire`/`kill`),
   never a side effect of anything the agent said about itself. Everything

@@ -3,8 +3,8 @@
 #
 # Re-homes the coverage that died with `report-then-send` (QUM-866). That row
 # existed solely to pin Real.ReportStatus's StopAfterTurn call; report_status is
-# deleted and (*Real).maybeReclaimIdle is now StopAfterTurn's ONLY production
-# caller, so the e2e coverage follows the call rather than evaporating.
+# deleted and (*Real).maybeReclaimIdle is now the only production caller of the
+# defer-teardown-to-turn-end primitive (StopAfterTurnIf), so the e2e coverage follows the call rather than evaporating.
 #
 # What this row proves that no unit test can: that reclamation is an OBSERVED
 # fact about the operating system. AgentRuntime.SubprocessAlive() is an
@@ -23,37 +23,22 @@
 #   4. send_message the reclaimed child; a NEW and DIFFERENT PID must answer.
 #      Asserting merely that the old PID is gone is much weaker — it cannot tell
 #      reclamation from a crash.
-#   5. NEGATIVE CONTROL, same probe: a child kept busy across the whole
-#      threshold window must still be alive and must NOT be `idle`. Direction:
-#      MUST STAY QUIET. Without this, P3 could be passing because the harness
-#      kills children for some unrelated reason.
-#      Its precondition is asserted from /proc, not assumed from the prompt:
-#      an INSTRUCTION to an agent is not an OBSERVATION of an agent. The first
-#      version of this phase asserted only that a child we had TOLD to run
-#      `sleep 90` was alive later, which cannot distinguish "the reaper spares
-#      busy agents" from "the model finished early and was legitimately
-#      reclaimed" — it measured our own prompt. It reported a defect that was
-#      never established. A live `sleep` process in the child's tree, checked
-#      at BOTH ends of the window, is the observation that claim needs, and it
-#      is what earned QUM-1197.
+
 #
-# PHASES 5 AND 6 ARE NOT IN THIS FILE TODAY. The busy-agent negative control (5)
+# PHASES 5 AND 6 LIVE IN idle-reclaim-busy.sh. The busy-agent negative control
 # reproduced QUM-1197 twice on a clean host, so the reaper ships disabled and
-# this row skips at rc 77 after phase 4 rather than asserting past a known
-# hazard. Phase 6 was the knob-disabled positive control and is unreachable
-# after that skip; both are in git history and come back with QUM-1197. They are
-# DELETED rather than commented out on purpose — unreachable code that reads as
-# live logic is the stranded-conditional shape this slice keeps paying for.
+# that half is a skipped row. It is a SEPARATE row rather than a skip at the end
+# of this one because e2e_skip_row exits 77 without reaching the
+# MIN_ASSERTIONS floor: a row that ends in a skip has its assertions executed
+# but never enforced. This row passes, counts, and is floored.
 #
 # The threshold is set through the sandbox's .sprawl/config.yaml, which NewReal
 # reads ONCE at startup — so it must be written before every `sprawl enter`
 # launch, and phase 6 needs a relaunch rather than a config edit.
 
-# QUM-1029: the number of assertions a COMPLETE run makes before it skips.
-# P1, P2, P3a, P3b, P4a, P4b — six, each on the single success path (every
-# alternative fails and returns). Lowered from 11 when P5/P6 became an rc-77
-# skip for QUM-1197; the floor is keyed to the CURRENT assertion count, and a
-# stale 11 here would fail every run while looking like a product failure.
+# QUM-1029: P1, P2, P3a, P3b, P4a, P4b — six, each on the single success path
+# (every alternative fails and returns). This floor is REACHED, because the row
+# ends in e2e_print_results rather than in a skip; see the note at phase 5.
 MIN_ASSERTIONS=6
 
 test_metadata() {
@@ -246,7 +231,7 @@ test_run() {
     echo "=== Phase 3: after the threshold the subprocess is GONE and the agent rests idle ==="
     local REAP_BUDGET=$((IR_THRESHOLD_SECS + IR_SWEEP_SECS + 120))
     if ir_wait_status "$STATE_IDLE" "idle" "$REAP_BUDGET"; then
-        pass "P3a: disk Status=idle (the reaper rested it via StopAfterTurn(stopReasonIdleReclaim))"
+        pass "P3a: disk Status=idle (the reaper rested it via StopAfterTurnIf(stopReasonIdleReclaim))"
     else
         fail "P3a: disk Status did not reach 'idle' within ${REAP_BUDGET}s (got '$(jq -r '.status // empty' "$STATE_IDLE" 2>/dev/null || true)')"
         cat "$STATE_IDLE" >&2 2>/dev/null || true
@@ -292,31 +277,13 @@ test_run() {
         return 1
     fi
 
-    # ----- Phase 5: the hazard, and why this row cannot assert past it ------
-    #
-    # This phase used to run a busy-agent negative control here. It REPRODUCED
-    # a defect, twice on a clean host: a child with a live `sleep` still in its
-    # process tree was reclaimed mid-tool-call. The predicate's turn term reads
-    # idle during a live tool call, which is QUM-1197.
-    #
-    # So the reaper now ships DISABLED by default, and this row skips at rc 77
-    # rather than continuing. Two things that are deliberately NOT done here:
-    #
-    #   - It does not run the control and record the red in a comment. A header
-    #     telling the reader a phase is expected to fail converts every real
-    #     failure into something to skip past — a gate disarmed by
-    #     documentation rather than by code, which no test review catches
-    #     because it is not a test.
-    #   - It does not quietly drop the phase and let P1-P4 report the row
-    #     green. A skip is accounted separately from a pass and forces a
-    #     nonzero exit, so nothing here is claimed that is not true.
-    #
-    # P1-P4 above already ran and are real: with the reaper explicitly enabled,
-    # an idle agent's subprocess is genuinely reclaimed (PID gone, RSS returned)
-    # and a message brings back a DIFFERENT pid. That is the StopAfterTurn e2e
-    # coverage that dropped to zero when report-then-send was deleted, and it is
-    # why this row exists at all rather than waiting for QUM-1197.
-    e2e_skip_row "idle-reclaim P5/P6: reaper is DISABLED by default because it reaps agents that are mid-tool-call (QUM-1197, Urgent, blocks QUM-1187). The busy-agent control reproduced this twice on a clean host: a child with a live 'sleep' in its process tree was torn down. Do NOT enable idle_reclaim.after until QUM-1197 lands. P1-P4 ran and passed above: with the reaper explicitly enabled an idle agent IS reclaimed (PID gone, RSS returned to the OS) and a send_message revives it as a NEW pid — that is the StopAfterTurn e2e coverage re-homed from the deleted report-then-send row. Restore P5 (busy-agent negative control, precondition asserted from /proc) and P6 (knob-disabled positive control) from git history when QUM-1197 is fixed."
-
+    # The busy-agent negative control and the knob-disabled positive control
+    # are NOT here. They live in idle-reclaim-busy.sh, which skips at rc 77 for
+    # QUM-1197. That split is deliberate: e2e_skip_row exits 77 WITHOUT calling
+    # e2e_print_results, so a row that ends in a skip never reaches the
+    # MIN_ASSERTIONS floor — its assertions are executed but not enforced, and
+    # someone could delete every one of them without the row noticing. Keeping
+    # P1-P4 in a row that genuinely PASSES is what makes this a gate rather than
+    # a notice.
     e2e_print_results
 }

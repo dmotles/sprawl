@@ -122,7 +122,7 @@ func assertRestingStatus(t *testing.T, rt *AgentRuntime, root, name, want string
 
 // waitDiskStatus polls the agent's on-disk Status until it equals want, with a
 // short bounded deadline. Shared by every assertion that checks the durable
-// resting status after waiting on the in-memory snapshot. QUM-1199.
+// resting status after waiting on the in-memory snapshot. QUM-1198.
 func waitDiskStatus(t *testing.T, root, name, want string) {
 	t.Helper()
 	deadline := time.Now().Add(2 * time.Second)

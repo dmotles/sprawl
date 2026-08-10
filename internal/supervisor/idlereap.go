@@ -269,6 +269,22 @@ func (r *Real) idleInputsFor(rt *AgentRuntime) idleInputs {
 //
 // The gate alone closes the before-A and after-C cases; only the backstop
 // closes the during-B case. Both are required. Do not simplify this to one.
+//
+// Two bounds this comment previously left implicit, because claiming the
+// boundaries are exhaustively reasoned while omitting them is its own kind of
+// false record (review F7/F8):
+//
+//   - Shutdown can block for up to idleReclaimStopBudget + runtimeStopTimeout
+//     on a reap that had already STARTED. The sweepCtx check below declines
+//     reaps that have not started; a started one deliberately runs to
+//     completion rather than leaving a half-torn-down agent.
+//   - Phase B does not hold the gate while WAITING, but the guard re-takes it
+//     and holds it ACROSS the stop — and that stop drains in-flight MCP
+//     handlers. An agent's own in-flight send_message TO ITSELF (permitted for
+//     now=false) blocks on this same per-agent gate, so that handler stalls
+//     until the drain timeout rather than deadlocking. Bounded, but it is the
+//     one place the gate is held across a wait on work that can itself be
+//     waiting for the gate.
 func (r *Real) maybeReclaimIdle(sweepCtx context.Context, rt *AgentRuntime) {
 	if rt == nil {
 		return
@@ -291,6 +307,13 @@ func (r *Real) maybeReclaimIdle(sweepCtx context.Context, rt *AgentRuntime) {
 		// because "why was this agent NOT reaped" is the question people will
 		// actually be asking once the reaper ships disabled by default, and a
 		// record that only explains reaps cannot answer it.
+		if assessment.Blocker == "disabled" {
+			// Six "unavailable"s would read as "nothing could be measured"
+			// when in fact nothing was ASKED. Review N3.
+			slog.Default().Debug("idle reclaim: disabled, no agent is reclaimed",
+				slog.String("agent", name))
+			return
+		}
 		logAssessment(slog.LevelDebug, "idle reclaim: agent not reclaimed", name, assessment, inputs)
 		return
 	}
@@ -323,7 +346,7 @@ func (r *Real) maybeReclaimIdle(sweepCtx context.Context, rt *AgentRuntime) {
 			gate.Unlock()
 			return false, nil
 		}
-		logAssessment(slog.LevelInfo, "idle reclaim: reaping agent", name, a, r.idleInputsFor(rt))
+		logAssessment(slog.LevelInfo, "idle reclaim: reaping agent", name, a, in)
 		return true, gate.Unlock
 	}
 	ctx, cancel := context.WithTimeout(context.Background(), idleReclaimStopBudget)
@@ -355,6 +378,14 @@ func (r *Real) maybeReclaimIdle(sweepCtx context.Context, rt *AgentRuntime) {
 		// for, so it is gone rather than left in with a comment.
 		slog.Default().Warn("idle reclaim: teardown failed; agent left as-is for the next sweep",
 			slog.String("agent", name), slog.Any("err", stopErr))
+		// RETURN, do not fall through. Review F3: without this the backstop
+		// runs against a handle that is still attached and healthy, Wake
+		// returns ErrWakeNotNeeded, and we log "had queued mail after teardown
+		// but could not be re-woken" — a warning asserting the mail is
+		// stranded when the agent is alive and its own drain will deliver it.
+		// A false alarm in the log is the same defect class as a false claim
+		// in an error string.
+		return
 	}
 	pending, listErr := agentloop.ListPending(r.sprawlRoot, name)
 	// An unreadable queue re-wakes on purpose: unknown is not empty, the same
@@ -362,7 +393,13 @@ func (r *Real) maybeReclaimIdle(sweepCtx context.Context, rt *AgentRuntime) {
 	if listErr == nil && len(pending) == 0 {
 		return
 	}
-	if _, wErr := r.Wake(ctx, name, agentpkg.WakeReasonSendMessage, ""); wErr != nil {
+	// Fresh budget, NOT the stop ctx: StopAfterTurnIf can return precisely
+	// BECAUSE that ctx fired, and handing an already-cancelled ctx to the wake
+	// would make this backstop's stated guarantee depend on Wake happening to
+	// ignore its ctx two layers down. Review F6.
+	wakeCtx, wakeCancel := context.WithTimeout(context.Background(), idleReclaimStopBudget)
+	defer wakeCancel()
+	if _, wErr := r.Wake(wakeCtx, name, agentpkg.WakeReasonSendMessage, ""); wErr != nil {
 		slog.Default().Warn("idle reclaim: agent had queued mail after teardown but could not be re-woken",
 			slog.String("agent", name),
 			slog.Any("err", wErr),

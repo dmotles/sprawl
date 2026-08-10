@@ -833,17 +833,19 @@ func (r *AgentRuntime) Pause(ctx context.Context, timeout time.Duration) (clean 
 // bookkeeping — i.e. the runaway guard, whose whole job is a reliable
 // teardown, would degrade. (QUM-866)
 //
-// SOLE PRODUCTION CALLER: (*Real).maybeReclaimIdle, the QUM-1186 lane-3 idle
-// reaper (idlereap.go). Its previous one went with the deleted
+// SOLE PRODUCTION CALLER: (*Real).maybeReclaimIdle (idlereap.go), via
+// StopAfterTurnIf. Its previous one went with the deleted
 // report_status(complete/failure) self-teardown path. The reaper passes
 // stopReasonIdleReclaim, which is what rests the agent at StatusIdle. Coverage
 // is runtime_stopafterturn_test.go plus idlereap_race_test.go — read both
 // before deleting this.
-func (r *AgentRuntime) StopAfterTurn(ctx context.Context, timeout time.Duration, reason stopReason) error {
-	_, err := r.StopAfterTurnIf(ctx, timeout, reason, nil)
-	return err
-}
-
+//
+// The unguarded StopAfterTurn wrapper is GONE (QUM-1186 lane 3 review F2): it
+// had zero production callers the moment the reaper moved to the guarded form,
+// and a two-line test-only wrapper that a reader greps for and mistakes for the
+// production path is the same "unreachable code reading as live logic" this
+// lane deleted elsewhere. Tests pass a nil guard, which is exactly equivalent
+// and is pinned by TestStopAfterTurnIf_NilGuard_IsUnconditional.
 // stopGuard is consulted immediately before each teardown attempt inside
 // StopAfterTurnIf. It answers two things at once, and the second is why it is
 // not a plain `func() bool`:

@@ -168,6 +168,8 @@ status({})                               {runtime, agents}: agents with state/ty
 
 An agent shown as `idle` had its process reclaimed for inactivity: it is not complete, its worktree and branch are intact, and it revives on the next message sent to it.
 
+**Reclamation is OFF by default** (`idle_reclaim.after` defaults to `0`). The reaper is built and covered, but enabling it today reaps agents that are mid-tool-call — the in-turn signal it depends on does not see a child executing a long tool call (QUM-1197). Until that is fixed, nothing reclaims an idle agent's process, so a parked agent holds its memory until it is retired.
+
 The durable record of *what work is being done* lives in the project's issue tracker, not in sprawl. Sprawl is tracker-agnostic; each project's own `CLAUDE.md` names its tracker, if it has one.
 
 ### Signaling
