@@ -105,7 +105,12 @@ FAIL=0
 # for (the ceiling now counts LINE-LEVEL exemptions only, so it needs an arm
 # proving the counter can reach 1). Re-measured on a FULL GREEN run — 480
 # passed / 0 failed.
-MIN_ASSERTIONS=480
+#
+# 486 once QA's Category-3 sweep landed: the inert-row floor-annotation arm and
+# its corpus floor (+2), and four controls for it (bare floor flagged;
+# annotated not flagged; annotation WRAPPED across lines not flagged; a live
+# row's reachable floor not flagged). Re-measured on a FULL GREEN run.
+MIN_ASSERTIONS=486
 # A [16b] nested child deliberately does NOT re-run section [16] (recursing would
 # fork-bomb, and counting there would corrupt the parity comparison), so it asserts
 # strictly fewer things and needs its own floor. Measured at de22410: 237; 238 after
@@ -127,7 +132,9 @@ MIN_ASSERTIONS=480
 # 472 once lane 5's [19c] never-existed tree scan landed (+14; the child DOES
 # run [19]). Measured with UNIT_NESTED_SEAM_CHECK set: "472 passed / 1 failed",
 # the one fail being 16c's deliberate one, per the recipe above.
-MIN_ASSERTIONS_NESTED=472
+# 478 once the inert-row floor-annotation arm landed (+6; the child DOES run
+# [19]). Measured with UNIT_NESTED_SEAM_CHECK set: "478 passed / 1 failed".
+MIN_ASSERTIONS_NESTED=478
 
 # Pin the temp root. This suite runs inside `make validate` and therefore inside
 # the pre-commit hook, so it must not inherit the committing agent's TMPDIR:
@@ -4071,6 +4078,47 @@ UNKTOOLS
 
 _p19_unreadable_lines() { printf '%s\n' "$1" | grep -c '^__UNREADABLE__:' || true; }
 _p19_exempt_lines() { printf '%s\n' "$1" | grep -c '^__EXEMPT__:' || true; }
+# LINE-LEVEL exemptions only — the whole-file `P19-INERT-ROW` entries carry
+# `:0:whole-file` and are counted by `_p19_exempt_lines` instead.
+#
+# This is a FUNCTION rather than an inline pipeline because the tree ceiling and
+# its positive control must run the SAME expression, per the rule at the top of
+# [19a]. The first draft inlined it at the arm and TEXTUALLY COPIED the same
+# characters into the control: mutating the arm's counter left the control
+# green, still printing "the exemption ceiling counts a planted line-level
+# exemption". A copy is not the same expression — that distinction is the entire
+# content of the rule, and this is where the rule's own remediation broke it.
+_p19_line_level_exempt_lines() {
+	printf '%s\n' "$1" | grep '^__EXEMPT__:' | grep -vc ':0:whole-file' || true
+}
+
+# True when $1 is an INERT row that declares a MIN_ASSERTIONS floor and does NOT
+# say the floor is unreachable.
+#
+# `e2e_skip_row` exits 77 WITHOUT calling `e2e_print_results`, so a row that
+# skips at the top never reaches its floor: every assertion in its body could be
+# deleted and the row would exit 77 and look identical. The floor is still worth
+# declaring — it tells the re-host what the row owes — but a bare
+# `MIN_ASSERTIONS=N` above an unconditional skip READS as an enforced gate and
+# is not one. That is a claim larger than the check, in the file whose whole job
+# is to catch claims larger than their checks.
+#
+# Deliberately keyed on the row being inert (`_p19_is_skipped_row`, the SAME
+# predicate the exemptions use) rather than on a filename list, so a future
+# skip-at-the-top row inherits the requirement instead of being missed.
+# The annotation is matched against the file with NEWLINES FLATTENED. A
+# line-based grep missed `idle-reclaim-busy.sh`, whose annotation wraps as
+# "…Never\n# reached while the skip is in place" — the one row that had done
+# this correctly since before the check existed. A checker that fails only on
+# correctly-annotated files would have driven the fix in the wrong direction
+# (reflow the compliant row) instead of at the checker.
+_p19_floor_unannotated() {
+	local f="$1"
+	_p19_is_skipped_row "$f" || return 1
+	grep -qE '^MIN_ASSERTIONS=' "$f" 2>/dev/null || return 1
+	tr '\n' ' ' <"$f" 2>/dev/null | tr -s ' #' ' #' | grep -qiE 'never *#? *reached' && return 1
+	return 0
+}
 _p19_violation_lines() { printf '%s\n' "$1" | grep -vE '^(__UNREADABLE__|__EXEMPT__):' | grep -c . || true; }
 
 # Derivation of the canonical tool set, factored out so the arms below can run
@@ -4205,7 +4253,12 @@ fi
 _p19_hits=$(_p19_scan_forbidden "${P19_CORPUS[@]}")
 _p19_hits_n=$(_p19_violation_lines "$_p19_hits")
 if [ "$_p19_hits_n" -eq 0 ]; then
-	pass "19c: no script under scripts/ names report_status, delegate, messages_send, last_report or status_change"
+	# The token set is INTERPOLATED, not spelled out. The hand-written list here
+	# said "report_status, delegate, messages_send, last_report or status_change"
+	# and silently stopped being the truth the moment `interrupt=` joined
+	# P19_FORBIDDEN — a pass message claiming less than it checked, which is the
+	# same class as one claiming more.
+	pass "19c: no script under scripts/ names any of: $P19_FORBIDDEN"
 else
 	fail "19c: $_p19_hits_n line(s) still advertise deleted or non-existent symbols — a live agent told to call a deleted tool improvises and the row can still go green:
 $(printf '%s\n' "$_p19_hits" | grep -vE '^(__UNREADABLE__|__EXEMPT__):' | sed 's/^/      /')"
@@ -4327,22 +4380,48 @@ fi
 # mentioning `e2e_skip_row` beside a never-existed name would be silently
 # exempt. The ceiling of 0 is what bounds that, so do not raise it without
 # splitting the two markers apart first.
-_p19_tree_exempt_n=$(printf '%s\n' "$_p19_tree_hits" | grep '^__EXEMPT__:' | grep -vc ':0:whole-file' || true)
+_p19_tree_exempt_n=$(_p19_line_level_exempt_lines "$_p19_tree_hits")
 if [ "$_p19_tree_exempt_n" -eq 0 ]; then
 	pass "19c: no line in the tracked tree claims exemption from the never-existed scan (ceiling 0; the $(_p19_exempt_lines "$_p19_tree_hits") whole-file inert-row exemptions are counted by P19_EXEMPT_CEILING instead)"
 else
 	fail "19c: $_p19_tree_exempt_n line(s) claim a line-level exemption from the never-existed scan, over the ceiling of 0 — a name that never existed has no history to recount, so the marker is silencing an advertisement:
 $(printf '%s\n' "$_p19_tree_hits" | grep '^__EXEMPT__:' | grep -v ':0:whole-file' | sed 's/^/      /')"
 fi
-# POSITIVE control for the ceiling, through the SAME counting expression: a
-# planted LINE-LEVEL exemption must be counted, and a planted WHOLE-FILE one
-# must not. Without it, "zero today" is indistinguishable from a counter that
-# can only ever be zero.
-if [ "$(printf '%s\n' "__EXEMPT__:docs/planted.md:9:messages_send
-__EXEMPT__:scripts/e2e-tests/inert.sh:0:whole-file (row skips before it asserts)" | grep '^__EXEMPT__:' | grep -vc ':0:whole-file' || true)" -eq 1 ]; then
+# POSITIVE control for the ceiling, through `_p19_line_level_exempt_lines` — the
+# SAME FUNCTION the arm above calls, not a copy of its text. A planted
+# LINE-LEVEL exemption must be counted, and a planted WHOLE-FILE one must not.
+# Without it, "zero today" is indistinguishable from a counter that can only
+# ever be zero; without the shared function, the control certifies its own copy.
+if [ "$(_p19_line_level_exempt_lines "__EXEMPT__:docs/planted.md:9:messages_send
+__EXEMPT__:scripts/e2e-tests/inert.sh:0:whole-file (row skips before it asserts)")" -eq 1 ]; then
 	pass "19c: positive control — the exemption ceiling counts a planted line-level exemption and does NOT count a planted whole-file one"
 else
 	fail "19c: positive control FAILED — the exemption counter cannot distinguish a line-level claim from a whole-file inert row, so its zero proves nothing"
+fi
+
+# --- an inert row's MIN_ASSERTIONS floor must SAY it is unreachable ----------
+_p19_inert_seen=0
+_p19_floor_bad=""
+for _f in "${P19_CORPUS[@]}"; do
+	_p19_is_skipped_row "$_f" || continue
+	_p19_inert_seen=$((_p19_inert_seen + 1))
+	if _p19_floor_unannotated "$_f"; then
+		_p19_floor_bad="$_p19_floor_bad ${_f##*/}"
+	fi
+done
+# Corpus floor for THIS loop, for the same reason every scan has one: if
+# `_p19_is_skipped_row` stopped matching, the loop would examine nothing and the
+# arm below would report clean — indistinguishable from every row being
+# annotated. Three inert rows exist today.
+if [ "$_p19_inert_seen" -ge 3 ]; then
+	pass "19c: the inert-row floor check examined $_p19_inert_seen inert row(s) (floor 3)"
+else
+	fail "19c: the inert-row floor check examined only $_p19_inert_seen inert row(s) — _p19_is_skipped_row is not matching, so the arm below would report clean against an empty set"
+fi
+if [ -z "$_p19_floor_bad" ]; then
+	pass "19c: every inert row's MIN_ASSERTIONS floor records that it is never reached"
+else
+	fail "19c: inert row(s) declare a MIN_ASSERTIONS floor that reads as an enforced gate but can never be reached ($_p19_floor_bad) — e2e_skip_row exits before e2e_print_results, so every assertion in those bodies could be deleted unnoticed. Say so at the declaration, as idle-reclaim-busy.sh does"
 fi
 
 # The exemption is a marker anyone can add to a live agent prompt to silence a
@@ -4355,7 +4434,14 @@ fi
 # and `idle-reclaim-busy` (lane 3 skipped it, blocked on QUM-1197). Each
 # exempted row is named in the pass message, so growing this set is visible in
 # the log and not only in the diff.
-P19_EXEMPT_CEILING=7
+#
+# MEASURED, NOT PADDED. This was 7 against a measured 3, which is four
+# exemptions of silent headroom — a marker could be added to four more lines
+# and this arm would still pass, which is exactly the "adding a marker shows up
+# in review" hope the ceiling exists to replace. The sibling ceiling on the tree
+# corpus is 0 for the same reason. Set it to what is measured; when a fourth
+# exemption is genuinely needed, raise it deliberately and name the row here.
+P19_EXEMPT_CEILING=3
 _p19_exempt_n=$(_p19_exempt_lines "$_p19_hits")
 if [ "$_p19_exempt_n" -le "$P19_EXEMPT_CEILING" ]; then
 	pass "19c: $_p19_exempt_n exemption(s) claimed (ceiling $P19_EXEMPT_CEILING):$(printf '%s\n' "$_p19_hits" | grep '^__EXEMPT__:' | cut -d: -f2 | sort -u | tr '\n' ' ')"
@@ -4519,6 +4605,50 @@ if [ "$P19_FIX_OK" -eq 1 ]; then
 	else
 		fail "19c: negative control FAILED — the whole-file row exemption leaked outside scripts/e2e-tests/, so any tracked file could evade the never-existed scan"
 	fi
+
+	# --- controls for the inert-row floor annotation, both directions -------
+	# Both call `_p19_floor_unannotated`, the SAME predicate the arm above uses.
+	_p19_inert_body='test_run() {\n    e2e_skip_row "subject deleted"\n    pass "unreachable"\n}\n'
+	# POSITIVE control (defect planted: a bare floor above an unconditional
+	# skip, which is exactly what complete-lifecycle and wake-on-traffic carried).
+	# shellcheck disable=SC2059
+	printf "# P19-INERT-ROW\nMIN_ASSERTIONS=9\n$_p19_inert_body" >"$P19_FIX/scripts/e2e-tests/bare-floor-row.sh"
+	if _p19_floor_unannotated "$P19_FIX/scripts/e2e-tests/bare-floor-row.sh"; then
+		pass "19c: positive control — an inert row declaring a bare MIN_ASSERTIONS floor is flagged"
+	else
+		fail "19c: positive control FAILED — a bare unreachable floor was not flagged, so the arm's clean verdict proves nothing"
+	fi
+	# NEGATIVE control: the same row, annotated. Without this the arm could be
+	# flagging every inert row and its silence on the real corpus would be luck.
+	# shellcheck disable=SC2059
+	printf "# P19-INERT-ROW\n# Never reached while the skip is in place.\nMIN_ASSERTIONS=9\n$_p19_inert_body" >"$P19_FIX/scripts/e2e-tests/annotated-floor-row.sh"
+	if _p19_floor_unannotated "$P19_FIX/scripts/e2e-tests/annotated-floor-row.sh"; then
+		fail "19c: negative control FAILED — an annotated inert row is still flagged, so the arm cannot be satisfied and the annotation is worthless"
+	else
+		pass "19c: negative control — an inert row whose floor records that it is never reached is not flagged"
+	fi
+	# NEGATIVE control for the WRAPPED annotation — the case that actually bit.
+	# The first draft grepped line-by-line and flagged `idle-reclaim-busy.sh`,
+	# whose annotation wraps across a comment-continuation line. Without this
+	# fixture the check silently regresses to line-based the next time someone
+	# simplifies it, and the only signal would be a red on the one row that had
+	# been right all along.
+	# shellcheck disable=SC2059
+	printf "# P19-INERT-ROW\n# declared for the restored row. Never\n# reached while the skip is in place.\nMIN_ASSERTIONS=9\n$_p19_inert_body" >"$P19_FIX/scripts/e2e-tests/wrapped-floor-row.sh"
+	if _p19_floor_unannotated "$P19_FIX/scripts/e2e-tests/wrapped-floor-row.sh"; then
+		fail "19c: negative control FAILED — an annotation wrapped across a comment-continuation line was not recognised, so the check flags the rows that did it right"
+	else
+		pass "19c: negative control — an inert row whose 'never reached' annotation wraps across lines is not flagged"
+	fi
+	# NEAR-MISS: a LIVE row (no unconditional skip) with a bare floor must NOT
+	# be flagged — its floor IS reachable and enforced, and demanding the
+	# annotation there would be wrong.
+	printf '#!/usr/bin/env bash\nMIN_ASSERTIONS=9\ntest_run() {\n    pass "this row really runs"\n}\n' >"$P19_FIX/scripts/e2e-tests/live-floor-row.sh"
+	if _p19_floor_unannotated "$P19_FIX/scripts/e2e-tests/live-floor-row.sh"; then
+		fail "19c: near-miss control FAILED — a LIVE row's reachable floor was flagged as unreachable, so the check is keying on the floor rather than on inertness"
+	else
+		pass "19c: near-miss control — a live row's reachable MIN_ASSERTIONS floor is not flagged"
+	fi
 else
 	fail "19c: no fixture dir — the forbidden-token scan ran with no positive control, so a clean verdict is not attributable"
 	fail "19c: no fixture dir — the unknown-tool scan ran with no positive control"
@@ -4535,6 +4665,10 @@ else
 	fail "19c: no fixture dir — the empty-token-list positive control did not run"
 	fail "19c: no fixture dir — the canonical-absence positive control did not run"
 	fail "19c: no fixture dir — the whole-file exemption leak negative control did not run"
+	fail "19c: no fixture dir — the inert-row bare-floor positive control did not run"
+	fail "19c: no fixture dir — the inert-row annotated-floor negative control did not run"
+	fail "19c: no fixture dir — the wrapped-annotation negative control did not run"
+	fail "19c: no fixture dir — the live-row floor near-miss control did not run"
 fi
 
 # --- 19d: the StopAfterTurn hand-off must not evaporate quietly -------------

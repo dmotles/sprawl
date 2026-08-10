@@ -23,6 +23,14 @@
 
 # QUM-1029: the number of assertions a COMPLETE, PASSING run of this row
 # makes. Twenty pass sites, less the phase-2 activity echo whose else arm only WARNs (the preamble is byte-pinned by unit tests instead). Each phase's outer gate is symmetric.
+#
+# NEVER REACHED while the skip below is in place. `e2e_skip_row` exits 77
+# WITHOUT calling `e2e_print_results`, so this floor is not enforced on any run
+# this row currently makes: every assertion in the body could be deleted and the
+# row would still exit 77 and look identical. The number is a DECLARATION FOR
+# THE RE-HOST, not a live gate — and note it counts BOTH halves of the old
+# subject, so the send_message-only re-host owes a re-measured, SMALLER number,
+# not this one. Same annotation as idle-reclaim-busy.sh:50.
 MIN_ASSERTIONS=19
 
 test_metadata() {

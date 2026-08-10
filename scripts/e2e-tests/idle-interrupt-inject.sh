@@ -51,7 +51,15 @@ NOW_WRITE_STORM_BOUND=5
 # ninth assertion is therefore a DIFFERENT gate: sprawl must ISSUE the
 # now-priority write promptly, mid-turn. That is the half sprawl owns, it holds
 # every run, and the timing stayed as a diagnostic.
-MIN_ASSERTIONS=9
+#
+# 10 since QA's Category-3 sweep: PHASE 2 now ASSERTS its own premise. It used
+# to sleep 14s and then claim the child was "still inside its ${BUSY_SECS}s
+# turn" without ever checking — so an improvising model that never called Bash
+# left the child idle and the phase green on a false premise. The tenth
+# assertion is the /proc precondition (a live `sleep` under the child's claude
+# PID); the both-ends check folds into the existing now-write gate rather than
+# adding an eleventh.
+MIN_ASSERTIONS=10
 
 test_metadata() {
     echo "needs_claude=1 needs_tmux=1 needs_jq=1"
@@ -237,8 +245,52 @@ test_run() {
     echo "=== Driving $CHILD2_NAME into a long mid-turn (GO-BUSY → sleep ${BUSY_SECS}) ==="
     e2e_send_user_prompt "$SESSION" \
         "Call mcp__sprawl__send_message with to='${CHILD2_NAME}', body='GO-BUSY', and now=false. Do nothing else."
-    echo "  waiting 14s for the child to enter its sleep turn"
-    sleep 14
+    # QUM-1186 lane 5 / QA Category-3 sweep. This was a blind `sleep 14`, and the
+    # gate below then claimed the now-write landed "with the child still inside
+    # its ${BUSY_SECS}s turn" — a statement about the child's state that this row
+    # never checked. If the model improvised and never called Bash, the child is
+    # IDLE: the now-write lands immediately, and both that gate and the ACK gate
+    # after it pass with the phase's premise false. AN INSTRUCTION TO AN AGENT IS
+    # NOT AN OBSERVATION OF AN AGENT — the same lesson recorded at
+    # idle-reclaim-busy.sh:31-38, whose /proc precondition this copies.
+    echo "  waiting for the child to be OBSERVABLY inside its sleep turn"
+    local CHILD2_WORKTREE CHILD2_PID="" SLEEP_PID="" bp_elapsed=0 bp_cand bp_cwd bp_want
+    CHILD2_WORKTREE=$(jq -r '.worktree // empty' "$CHILD2_STATE" 2>/dev/null || true)
+    bp_want=$(readlink -f "$CHILD2_WORKTREE" 2>/dev/null || true)
+    while [ "$bp_elapsed" -lt 90 ]; do
+        if [ -z "$CHILD2_PID" ] && [ -n "$bp_want" ]; then
+            # Resolve the child's claude PID from /proc rather than from any
+            # sprawl data structure: the point is an OS-level fact, and a PID
+            # read out of the thing under test would be circular.
+            for bp_cand in $(pgrep -x claude 2>/dev/null || true); do
+                bp_cwd=$(readlink -f "/proc/$bp_cand/cwd" 2>/dev/null || true)
+                if [ -n "$bp_cwd" ] && [ "$bp_cwd" = "$bp_want" ]; then
+                    CHILD2_PID="$bp_cand"
+                    break
+                fi
+            done
+        fi
+        if [ -n "$CHILD2_PID" ]; then
+            SLEEP_PID=$(pgrep -P "$CHILD2_PID" -f "sleep" 2>/dev/null | head -1 || true)
+            if [ -z "$SLEEP_PID" ]; then
+                # The CLI may run Bash under an intermediate shell, so also accept
+                # a `sleep ${BUSY_SECS}` below this claude. Only consulted once the
+                # child's own PID is known, so a co-tenant agent's sleep on this
+                # shared host cannot satisfy the precondition on its own.
+                SLEEP_PID=$(pgrep -f "sleep ${BUSY_SECS}" 2>/dev/null | head -1 || true)
+            fi
+        fi
+        [ -n "$SLEEP_PID" ] && break
+        sleep 2
+        bp_elapsed=$((bp_elapsed + 2))
+    done
+    if [ -z "$SLEEP_PID" ]; then
+        fail "no live 'sleep ${BUSY_SECS}' process appeared under $CHILD2_NAME within 90s, so the child was never observably mid-turn. PHASE 2's premise is unestablished and its assertions below would be measuring our own prompt rather than sprawl's urgency path — this is a refusal to render a verdict, not evidence that urgency is broken. (If pgrep is absent or /proc unreadable on this host, that is the cause; both are required to observe this at the OS level.)"
+        pgrep -af 'sleep|claude' >&2 || true
+        capture_pane "$SESSION" | tail -60 >&2
+        e2e_print_results; return 1
+    fi
+    pass "phase-2 child is OBSERVABLY mid-tool-call before the urgent send (claude PID=$CHILD2_PID, live sleep PID=$SLEEP_PID)"
     local BUSY_START=$SECONDS
 
     echo ""
@@ -276,8 +328,17 @@ test_run() {
         fi
         sleep 1
     done
-    if [ "$NW_EARLY" -eq 1 ]; then
-        pass "sprawl issued the now-priority stdin write $((SECONDS - URGENT_SENT))s after the urgent send, with the child still inside its ${BUSY_SECS}s turn"
+    # BOTH ENDS of the window. The precondition above proves the child was
+    # mid-tool-call when the urgent message was sent; this proves the same sleep
+    # was STILL running when the now-write was observed. Without it, "with the
+    # child still inside its turn" is asserted at a moment nobody checked — the
+    # narrower version of the same defect the precondition fixes.
+    local NW_STILL_BUSY=0
+    kill -0 "$SLEEP_PID" 2>/dev/null && NW_STILL_BUSY=1
+    if [ "$NW_EARLY" -eq 1 ] && [ "$NW_STILL_BUSY" -eq 1 ]; then
+        pass "sprawl issued the now-priority stdin write $((SECONDS - URGENT_SENT))s after the urgent send, with the child still inside its ${BUSY_SECS}s turn (sleep PID $SLEEP_PID still live at observation)"
+    elif [ "$NW_EARLY" -eq 1 ]; then
+        fail "the now-priority write landed, but the child's 'sleep ${BUSY_SECS}' had already exited by the time it was observed, so 'while the turn was in flight' is NOT established. This is a lapsed precondition — NO VERDICT on sprawl's urgency path in either direction. Re-run; if it repeats, the ${BUSY_SECS}s window is too short for this host."
     else
         fail "no now-priority write reached $CHILD2_NAME's wire log within 15s of the urgent send — sprawl deferred an urgent delivery instead of injecting it mid-turn (QUM-821)"
     fi

@@ -30,6 +30,14 @@
 
 # QUM-1029: the number of assertions a COMPLETE, PASSING run of this row
 # makes. Thirteen pass sites, less the soft-signal gate whose else only echoes a NOTE. The final case contributes 1 — its non-pass arms fail.
+#
+# NEVER REACHED while the skip below is in place. `e2e_skip_row` exits 77
+# WITHOUT calling `e2e_print_results`, so this floor is not enforced on any run
+# this row currently makes: every assertion in the body could be deleted and the
+# row would still exit 77 and look identical. The number is a DECLARATION FOR
+# THE RE-HOST, not a live gate — it says what a restored row owes, and whoever
+# re-hosts must re-measure it rather than trust it. Same annotation as
+# idle-reclaim-busy.sh:50; systemic to every skip-at-the-top row.
 MIN_ASSERTIONS=12
 
 test_metadata() {
