@@ -115,9 +115,10 @@ var mergeAllowedStatuses = []string{
 //     the version gate itself is pinned by
 //     TestLoadAgent_LegacyTokenRewriteIsVersionGated_StoppedIsNot in
 //     internal/state.
-//   - StatusRetired has no writer in this tree, current or historical (that is
-//     the honest form of the claim — "never persisted" would be stronger than
-//     the evidence supports). retire.go writes "retiring" and then DELETES the
+//   - StatusRetired has no PRODUCTION writer, current or historical — test
+//     fixtures do write it, including this file's own deny-set loop, so "no
+//     writer at all" would be false and "never persisted" stronger than the
+//     evidence supports. retire.go writes "retiring" and then DELETES the
 //     state file, so a retired agent fails precondition 1, not 4; that
 //     precedence is checked by
 //     TestMergePrecondition4_RetiredAgentIsGoneNotDenied below. Nothing
@@ -152,18 +153,33 @@ var mergeUnreachableStatuses = []string{
 	state.StatusStopped,
 }
 
-// TestMergePrecondition4_StoppedIsRewrittenBeforeItIsSeen documents WHY
-// StatusStopped is unreachable, so the claim is checked rather than asserted
-// in a comment. If the migration ever stops firing, this fails and the status
-// moves back into one of the reachable lists.
-func TestMergePrecondition4_StoppedIsRewrittenBeforeItIsSeen(t *testing.T) {
-	sprawlRoot, agentName := mergeableSetupRoot(t, state.StatusStopped)
-	loaded, err := state.LoadAgent(sprawlRoot, agentName)
-	if err != nil {
-		t.Fatalf("LoadAgent: %v", err)
+// TestMergePrecondition4_UnreachableStatusesAreRewrittenBeforeTheyAreSeen
+// documents WHY each member of mergeUnreachableStatuses is unreachable, so the
+// claim is checked rather than asserted in a comment. If a migration ever stops
+// firing, this fails and the status moves back into one of the reachable lists.
+//
+// It loops the LIST rather than naming StatusStopped, which is what makes the
+// "membership requires an ALWAYS-ON rewrite" rule structural instead of prose:
+// mergeableSetupRoot writes through SaveAgent, which stamps
+// CurrentSchemaVersion, so a version-gated rewrite cannot fire here and a
+// member added on that weaker basis fails immediately. That is exactly the trap
+// StatusDone would have fallen into.
+func TestMergePrecondition4_UnreachableStatusesAreRewrittenBeforeTheyAreSeen(t *testing.T) {
+	if len(mergeUnreachableStatuses) == 0 {
+		t.Fatal("mergeUnreachableStatuses is empty; this test would assert nothing")
 	}
-	if loaded.Status == state.StatusStopped {
-		t.Fatalf("Status survived load as %q; StatusStopped is reachable after all and must be classified as allowed or denied", loaded.Status)
+	for _, s := range mergeUnreachableStatuses {
+		t.Run(s, func(t *testing.T) {
+			sprawlRoot, agentName := mergeableSetupRoot(t, s)
+			loaded, err := state.LoadAgent(sprawlRoot, agentName)
+			if err != nil {
+				t.Fatalf("LoadAgent: %v", err)
+			}
+			if loaded.Status == s {
+				t.Fatalf("Status survived load as %q; it is reachable after all and must be classified as allowed or denied. "+
+					"If its rewrite is version-GATED rather than always-on, it does not belong in mergeUnreachableStatuses at all", loaded.Status)
+			}
+		})
 	}
 }
 
@@ -237,13 +253,38 @@ func TestMergePrecondition4_LegacyDoneAgentMergesAsComplete(t *testing.T) {
 	if _, err := Merge(context.Background(), mergeTestDeps(sprawlRoot), "kid", "", true, false, false); err != nil {
 		t.Fatalf("Merge of a legacy v0 \"done\" agent: err = %v, want nil — it migrates to complete, which is mergeable", err)
 	}
+
+	// AFTER the merge (so it cannot re-create the read-ordering trap above):
+	// pin that the success came from the MIGRATED value. Without this, deleting
+	// the migrate arm AND restoring StatusDone to the allow-set would leave the
+	// test green while its name says "MergesAsComplete" — green for the wrong
+	// reason, under exactly the change this test exists to argue against.
+	after, err := state.LoadAgent(sprawlRoot, "kid")
+	if err != nil {
+		t.Fatalf("LoadAgent after merge: %v", err)
+	}
+	if after.Status != state.StatusComplete {
+		t.Errorf("post-merge Status = %q, want %q — the merge must have succeeded via the migration, not by `done` becoming mergeable",
+			after.Status, state.StatusComplete)
+	}
 }
 
-// TestMergePrecondition4_RetiredAgentIsGoneNotDenied checks the mechanism that
-// keeps StatusRetired out of precondition 4's way, rather than asserting it in
-// the comment above: retire DELETES the state file, so the merge fails at
-// precondition 1 with "not found". If retire ever starts persisting `retired`
-// instead of deleting, this flips to the precondition-4 error and says so.
+// TestMergePrecondition4_RetiredAgentIsGoneNotDenied checks the PRECEDENCE the
+// StatusRetired deny-set entry depends on: when the state file is absent, Merge
+// fails at precondition 1 ("not found") and never reaches the precondition-4
+// status rejection.
+//
+// Scope, stated precisely because the distinction is the point: this deletes
+// the file directly and does NOT drive the retire path, so it does not check
+// that retire deletes the file. That half is real coverage elsewhere, not an
+// assumption: retire_test.go in this package asserts "state file still loads
+// after Retire; expected removal" on the direct, sub-agent and cascade paths.
+// Cited by assertion text rather than file:line so the hand-off stays greppable
+// when the lines move.
+// What it establishes is the half this comment
+// would otherwise merely assert — that a missing file loses the race to
+// precondition 4 — so if retire ever persists `retired` INSTEAD of deleting,
+// the deny-set entry stops being a dead guard and becomes load-bearing.
 func TestMergePrecondition4_RetiredAgentIsGoneNotDenied(t *testing.T) {
 	sprawlRoot, agentName := mergeableSetupRoot(t, state.StatusActive)
 	if err := state.DeleteAgent(sprawlRoot, agentName); err != nil {
@@ -255,8 +296,9 @@ func TestMergePrecondition4_RetiredAgentIsGoneNotDenied(t *testing.T) {
 		t.Fatal("Merge of a deleted agent returned nil error")
 	}
 	if strings.Contains(err.Error(), "cannot be merged") {
-		t.Errorf("error %q is the precondition-4 status rejection; a retired agent should fail EARLIER, at precondition 1 — "+
-			"if retire now persists `retired` rather than deleting, the deny-set entry is load-bearing and its comment must say so", err)
+		t.Errorf("error %q is the precondition-4 status rejection, but a missing state file must fail EARLIER, at precondition 1. "+
+			"This test does not drive retire, so it cannot tell you WHY the file is present — only that the precedence the "+
+			"StatusRetired deny-set entry relies on no longer holds", err)
 	}
 	if !strings.Contains(err.Error(), "not found") {
 		t.Errorf("error %q should be the precondition-1 not-found error", err)

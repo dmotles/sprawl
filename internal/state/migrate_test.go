@@ -27,13 +27,21 @@ import (
 // QUM-1186 D3 removed from the write path — and `faulted` is outside the
 // auto-resume accept-set, so the mislabel would cost the agent on next startup.
 //
-// Every case below drives a GENUINE raw v0 file through LoadAgent
-// (writeRawV0Agent), not a hand-built struct: the whole risk in a migration is
-// the shape on disk, and a struct literal cannot fail the way a real file can.
+// Every case below drives a GENUINE raw FILE through LoadAgent
+// (writeRawAgentJSON), not a hand-built struct: the whole risk in a migration
+// is the shape on disk, and a struct literal cannot fail the way a real file
+// can — SaveAgent stamps CurrentSchemaVersion, so a struct fixture silently
+// skips the version gate.
+//
+// Most rows omit schema_version entirely and are therefore true v0 files. A few
+// carry an EXPLICIT schema_version, deliberately, to exercise the gate from the
+// other side — see
+// TestLoadAgent_LegacyTokenRewriteIsVersionGated_StoppedIsNot.
 
-// writeRawV0Agent writes raw JSON bytes (genuinely lacking schema_version)
-// directly to the agents dir so LoadAgent sees a true v0 file.
-func writeRawV0Agent(t *testing.T, root, name, rawJSON string) {
+// writeRawAgentJSON writes raw JSON bytes directly to the agents dir, so
+// LoadAgent sees exactly the shape given — including whatever schema_version
+// the caller did or did not supply. Omit the key for a true v0 fixture.
+func writeRawAgentJSON(t *testing.T, root, name, rawJSON string) {
 	t.Helper()
 	dir := AgentsDir(root)
 	if err := os.MkdirAll(dir, 0o755); err != nil {
@@ -47,7 +55,7 @@ func writeRawV0Agent(t *testing.T, root, name, rawJSON string) {
 
 func TestLoadAgent_MigratesV0DoneToComplete(t *testing.T) {
 	root := t.TempDir()
-	writeRawV0Agent(t, root, "a", `{"name":"a","status":"done","session_id":"s1"}`)
+	writeRawAgentJSON(t, root, "a", `{"name":"a","status":"done","session_id":"s1"}`)
 
 	got, err := LoadAgent(root, "a")
 	if err != nil {
@@ -72,7 +80,7 @@ func TestLoadAgent_MigratesV0DoneToComplete(t *testing.T) {
 // stop coming back after a `sprawl enter` restart.
 func TestLoadAgent_MigratesV0StoppedToSuspendedNotFaulted(t *testing.T) {
 	root := t.TempDir()
-	writeRawV0Agent(t, root, "s0", `{"name":"s0","status":"stopped","session_id":"s1"}`)
+	writeRawAgentJSON(t, root, "s0", `{"name":"s0","status":"stopped","session_id":"s1"}`)
 
 	got, err := LoadAgent(root, "s0")
 	if err != nil {
@@ -89,7 +97,7 @@ func TestLoadAgent_MigratesV0StoppedToSuspendedNotFaulted(t *testing.T) {
 // it on disk forever.
 func TestLoadAgent_MigratesStoppedEvenOnVersionedFile(t *testing.T) {
 	root := t.TempDir()
-	writeRawV0Agent(t, root, "s1", `{"name":"s1","status":"stopped","schema_version":3}`)
+	writeRawAgentJSON(t, root, "s1", `{"name":"s1","status":"stopped","schema_version":3}`)
 
 	got, err := LoadAgent(root, "s1")
 	if err != nil {
@@ -104,7 +112,7 @@ func TestLoadAgent_MigratesStoppedEvenOnVersionedFile(t *testing.T) {
 // token: no status at all.
 func TestLoadAgent_MigratesV0EmptyStatusToSuspended(t *testing.T) {
 	root := t.TempDir()
-	writeRawV0Agent(t, root, "e0", `{"name":"e0"}`)
+	writeRawAgentJSON(t, root, "e0", `{"name":"e0"}`)
 
 	got, err := LoadAgent(root, "e0")
 	if err != nil {
@@ -121,7 +129,7 @@ func TestLoadAgent_MigratesV0EmptyStatusToSuspended(t *testing.T) {
 // — silent field loss should be deliberate.
 func TestLoadAgent_DropsLegacyReportKeys(t *testing.T) {
 	root := t.TempDir()
-	writeRawV0Agent(t, root, "lr", `{"name":"lr","status":"active","schema_version":3,`+
+	writeRawAgentJSON(t, root, "lr", `{"name":"lr","status":"active","schema_version":3,`+
 		`"last_report_state":"working","last_report_message":"halfway","last_report_at":"2026-06-06T12:00:00Z"}`)
 
 	got, err := LoadAgent(root, "lr")
@@ -148,7 +156,7 @@ func TestLoadAgent_DropsLegacyReportKeys(t *testing.T) {
 
 func TestLoadAgent_MigratesV0ProblemToFailure(t *testing.T) {
 	root := t.TempDir()
-	writeRawV0Agent(t, root, "b", `{"name":"b","status":"problem"}`)
+	writeRawAgentJSON(t, root, "b", `{"name":"b","status":"problem"}`)
 
 	got, err := LoadAgent(root, "b")
 	if err != nil {
@@ -165,7 +173,7 @@ func TestLoadAgent_MigratesV0ProblemToFailure(t *testing.T) {
 
 func TestLoadAgent_MigrateIdempotent(t *testing.T) {
 	root := t.TempDir()
-	writeRawV0Agent(t, root, "a", `{"name":"a","status":"done","session_id":"s1"}`)
+	writeRawAgentJSON(t, root, "a", `{"name":"a","status":"done","session_id":"s1"}`)
 
 	first, err := LoadAgent(root, "a")
 	if err != nil {
@@ -189,7 +197,7 @@ func TestLoadAgent_MigrateIdempotent(t *testing.T) {
 
 func TestLoadAgent_MigratePreservesValidLiveness(t *testing.T) {
 	root := t.TempDir()
-	writeRawV0Agent(t, root, "c", `{"name":"c","status":"suspended"}`)
+	writeRawAgentJSON(t, root, "c", `{"name":"c","status":"suspended"}`)
 
 	got, err := LoadAgent(root, "c")
 	if err != nil {
@@ -211,7 +219,7 @@ func TestLoadAgent_MigratePreservesValidLiveness(t *testing.T) {
 
 func TestLoadAgent_MigratePreservesActiveCrashSurvivor(t *testing.T) {
 	root := t.TempDir()
-	writeRawV0Agent(t, root, "f", `{"name":"f","status":"active","session_id":"s1"}`)
+	writeRawAgentJSON(t, root, "f", `{"name":"f","status":"active","session_id":"s1"}`)
 
 	got, err := LoadAgent(root, "f")
 	if err != nil {
@@ -242,7 +250,7 @@ func TestCurrentSchemaVersion_IsV4(t *testing.T) {
 // zero BlurbAt. Other fields must be preserved.
 func TestLoadAgent_MigratesV2ToV3_EmptyBlurb(t *testing.T) {
 	root := t.TempDir()
-	writeRawV0Agent(t, root, "b3", `{"name":"b3","status":"running","model":"opus","schema_version":2}`)
+	writeRawAgentJSON(t, root, "b3", `{"name":"b3","status":"running","model":"opus","schema_version":2}`)
 
 	got, err := LoadAgent(root, "b3")
 	if err != nil {
@@ -272,7 +280,7 @@ func TestLoadAgent_MigratesV2ToV3_EmptyBlurb(t *testing.T) {
 // model, no prompt append). The pre-existing liveness must be preserved.
 func TestLoadAgent_MigratesV1ToV2_EmptyModelAndAppend(t *testing.T) {
 	root := t.TempDir()
-	writeRawV0Agent(t, root, "g", `{"name":"g","status":"complete","last_report_state":"complete","schema_version":1}`)
+	writeRawAgentJSON(t, root, "g", `{"name":"g","status":"complete","last_report_state":"complete","schema_version":1}`)
 
 	got, err := LoadAgent(root, "g")
 	if err != nil {
@@ -298,7 +306,7 @@ func TestLoadAgent_MigratesV1ToV2_EmptyModelAndAppend(t *testing.T) {
 // version. Guards against the version bump skipping the v0→v1 body.
 func TestLoadAgent_MigrateV0ToV2Stepwise(t *testing.T) {
 	root := t.TempDir()
-	writeRawV0Agent(t, root, "h", `{"name":"h","status":"done","session_id":"s1"}`)
+	writeRawAgentJSON(t, root, "h", `{"name":"h","status":"done","session_id":"s1"}`)
 
 	got, err := LoadAgent(root, "h")
 	if err != nil {
@@ -380,7 +388,7 @@ func TestLoadAgent_LegacyTokenRewriteIsVersionGated_StoppedIsNot(t *testing.T) {
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
 			root := t.TempDir()
-			writeRawV0Agent(t, root, "n", tc.raw)
+			writeRawAgentJSON(t, root, "n", tc.raw)
 
 			got, err := LoadAgent(root, "n")
 			if err != nil {
