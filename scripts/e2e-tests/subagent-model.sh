@@ -197,7 +197,7 @@ test_run() {
     # for the cascade-retire test in Phase 5. Spawning both back-to-back
     # while tower is responsive avoids a fragile second tower-spawn under
     # later rate-limit conditions.
-    local SUB_SPAWN_PROMPT="Call mcp__sprawl__send_message with to='${TOWER_NAME}', body='IMPORTANT: as your next two actions, call mcp__sprawl__spawn TWICE to spawn two sub-engineers. (1) First call: subagent=true, type=\"engineer\", family=\"engineering\", prompt=\"You are QUM-756 sub-engineer ALPHA. Call mcp__sprawl__send_message with to=weave, body=SUB-ALPHA-READY-${BRANCH_SUFFIX}. Then stop and wait.\". (2) Second call: subagent=true, type=\"engineer\", family=\"engineering\", prompt=\"You are QUM-756 sub-engineer BRAVO. Call mcp__sprawl__send_message with to=weave, body=SUB-BRAVO-READY-${BRANCH_SUFFIX}. Then stop and wait.\". Do NOT set branch on either call. After both calls return, call mcp__sprawl__send_message with to=\"weave\", body=\"TWO-SUBS-SPAWNED-${BRANCH_SUFFIX}\".', interrupt=false."
+    local SUB_SPAWN_PROMPT="Call mcp__sprawl__send_message with to='${TOWER_NAME}', body='IMPORTANT: as your next two actions, call mcp__sprawl__spawn TWICE to spawn two sub-engineers. (1) First call: subagent=true, type=\"engineer\", family=\"engineering\", prompt=\"You are QUM-756 sub-engineer ALPHA. Call mcp__sprawl__send_message with to=weave, body=SUB-ALPHA-READY-${BRANCH_SUFFIX}. Then stop and wait.\". (2) Second call: subagent=true, type=\"engineer\", family=\"engineering\", prompt=\"You are QUM-756 sub-engineer BRAVO. Call mcp__sprawl__send_message with to=weave, body=SUB-BRAVO-READY-${BRANCH_SUFFIX}. Then stop and wait.\". Do NOT set branch on either call. After both calls return, call mcp__sprawl__send_message with to=\"weave\", body=\"TWO-SUBS-SPAWNED-${BRANCH_SUFFIX}\".', now=false."
     e2e_send_user_prompt "$SESSION" "$SUB_SPAWN_PROMPT"
 
     # Poll for two subs under tower.
@@ -279,7 +279,7 @@ test_run() {
     echo "=== Phase 2: sub commits to shared worktree ==="
     local SENTINEL_FILE="QUM756-${PROBE}.txt"
     local COMMIT_MSG="PHASE2-${PROBE}"
-    local COMMIT_PROMPT="Call mcp__sprawl__send_message with to='${SUB_NAME}', body='In your worktree, create a file named ${SENTINEL_FILE} containing the text \"qum-756 phase 2\". Then run: git add ${SENTINEL_FILE} && git commit -m \"${COMMIT_MSG}\". Then call mcp__sprawl__send_message with to=\"weave\", body=\"SUB-COMMITTED-${BRANCH_SUFFIX}\".', interrupt=false."
+    local COMMIT_PROMPT="Call mcp__sprawl__send_message with to='${SUB_NAME}', body='In your worktree, create a file named ${SENTINEL_FILE} containing the text \"qum-756 phase 2\". Then run: git add ${SENTINEL_FILE} && git commit -m \"${COMMIT_MSG}\". Then call mcp__sprawl__send_message with to=\"weave\", body=\"SUB-COMMITTED-${BRANCH_SUFFIX}\".', now=false."
     e2e_send_user_prompt "$SESSION" "$COMMIT_PROMPT"
 
     local COMMIT_SEEN=0
@@ -371,7 +371,7 @@ test_run() {
     # this two-hop dance is unreliable. The Go test gives byte-exact
     # coverage of the same gate. Keep the probe as a best-effort
     # signal that the MCP-tool surface is wired end-to-end.
-    local ERR_BRANCH_PROMPT="Call mcp__sprawl__send_message with to='${TOWER_NAME}', body='Call mcp__sprawl__spawn with subagent=true, type=\"engineer\", family=\"engineering\", branch=\"qum-756-bad-${BRANCH_SUFFIX}\", prompt=\"should fail\". The tool will return an error — quote the verbatim error message back to me via send_message to weave.', interrupt=false."
+    local ERR_BRANCH_PROMPT="Call mcp__sprawl__send_message with to='${TOWER_NAME}', body='Call mcp__sprawl__spawn with subagent=true, type=\"engineer\", family=\"engineering\", branch=\"qum-756-bad-${BRANCH_SUFFIX}\", prompt=\"should fail\". The tool will return an error — quote the verbatim error message back to me via send_message to weave.', now=false."
     e2e_send_user_prompt "$SESSION" "$ERR_BRANCH_PROMPT"
     if wait_for_substring_fast "$SESSION" "branch must not be set when subagent" 240; then
         pass "spawn(subagent=true, branch=...) rejected with 'branch must not be set when subagent ...' error (live probe)"
@@ -465,7 +465,7 @@ test_run() {
             fail "forge engineer did not stage a diff within 120s"
         fi
 
-        local REVIEW_PROMPT="Call mcp__sprawl__send_message with to='${FORGE_NAME}', body='Spawn a code-reviewer subagent: Call mcp__sprawl__spawn with subagent=true, type=\"engineer\", family=\"engineering\", and prompt=\"You are a code reviewer. Run the bash command: git diff --cached. Then call mcp__sprawl__send_message with to=\\\"${FORGE_NAME}\\\", body containing your findings (mention any bugs you spot in the staged files). Then call mcp__sprawl__send_message with to=\\\"weave\\\", body=\\\"REVIEW-DONE-${BRANCH_SUFFIX}\\\".\". Do not set branch.', interrupt=false."
+        local REVIEW_PROMPT="Call mcp__sprawl__send_message with to='${FORGE_NAME}', body='Spawn a code-reviewer subagent: Call mcp__sprawl__spawn with subagent=true, type=\"engineer\", family=\"engineering\", and prompt=\"You are a code reviewer. Run the bash command: git diff --cached. Then call mcp__sprawl__send_message with to=\\\"${FORGE_NAME}\\\", body containing your findings (mention any bugs you spot in the staged files). Then call mcp__sprawl__send_message with to=\\\"weave\\\", body=\\\"REVIEW-DONE-${BRANCH_SUFFIX}\\\".\". Do not set branch.', now=false."
         e2e_send_user_prompt "$SESSION" "$REVIEW_PROMPT"
 
         local REVIEWER_STATE="" REVIEWER_NAME=""

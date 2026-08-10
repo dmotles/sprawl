@@ -273,7 +273,7 @@ test_run() {
 
     # Post-wake turn — sentinel must round-trip through activity.ndjson.
     local S1_PROBE="WAKE-S1-PROBE-${SUFFIX}"
-    local S1_TURN="Call mcp__sprawl__send_message with to='$S1_NAME', body='Echo ${S1_PROBE} verbatim in your next reply and then stop.', interrupt=false."
+    local S1_TURN="Call mcp__sprawl__send_message with to='$S1_NAME', body='Echo ${S1_PROBE} verbatim in your next reply and then stop.', now=false."
     wake_send_one_line "$SESSION" "$S1_TURN"
     local S1_ACT="$SPRAWL_ROOT/.sprawl/agents/$S1_NAME/activity.ndjson"
     local act_end=$((SECONDS + 60)) act_seen=0

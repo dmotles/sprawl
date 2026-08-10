@@ -135,7 +135,7 @@ test_run() {
     echo ""
     echo "=== SCENARIO A: normal turn (PING → PONG), assert wire running+idle ==="
     e2e_send_user_prompt "$SESSION" \
-        "Call mcp__sprawl__send_message with to='${CHILD_NAME}', body='PING', and interrupt=false. Do nothing else."
+        "Call mcp__sprawl__send_message with to='${CHILD_NAME}', body='PING', and now=false. Do nothing else."
     if wait_for_substring_fast "$SESSION" "PONG-${SUFFIX}" 120; then
         pass "child ran a normal turn (PONG ACK rendered in weave)"
     else

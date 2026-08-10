@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 # scripts/e2e-tests/idle-interrupt-inject.sh — QUM-619 + QUM-821 guard.
 #
-# QUM-821 rewrote send_message(interrupt=true) content delivery: it no longer
+# QUM-821 rewrote send_message(now=true) content delivery: it no longer
 # issues a bare Session.Interrupt for delivery. Instead the inbound message is
 # written to the CLI stdin at priority "now" (cancel-and-replace urgency) via
 # the cooperative WakeForDelivery path. The bare interrupt frame is reserved
@@ -10,13 +10,13 @@
 # Two scenarios against a real claude binary:
 #
 #   PHASE 1 — idle recipient (QUM-619 regression):
-#     weave sends send_message(interrupt=true) to an idle child; the now-priority
+#     weave sends send_message(now=true) to an idle child; the now-priority
 #     stdin write must wake it so it reads the message and ACKs. Pre-QUM-619 the
 #     bare interrupt cancelled the just-injected notification turn and dropped it.
 #
 #   PHASE 2 — mid-turn recipient (QUM-821 urgency + storm regression gate):
 #     The child is driven into a long single turn (foreground `sleep`). While
-#     mid-turn, weave sends an urgent send_message(interrupt=true). Assertions:
+#     mid-turn, weave sends an urgent send_message(now=true). Assertions:
 #       (a) the child's urgent ACK reaches weave (now-priority preempts the
 #           in-flight turn — empirically it ACKs well before the sleep ends).
 #       (b) STORM REGRESSION GATE: the child's raw NDJSON shows a BOUNDED number
@@ -40,8 +40,13 @@
 NOW_WRITE_STORM_BOUND=5
 
 # QUM-1029: the number of assertions a COMPLETE, PASSING run of this row
-# makes. All eight pass sites are green-reachable; the final chain's other arms fail. The nested empirical if/else only echoes.
-MIN_ASSERTIONS=8
+# makes. Nine pass sites, all green-reachable; the final chain's other arms
+# fail. QUM-1186 lane 5 raised this from 8: the nested empirical if/else that
+# decided whether `now` had PREEMPTED the in-flight turn used to echo on both
+# arms, so it contributed 0 and could not fail — meaning the primary
+# interrupt-semantics row never asserted the one thing it exists to prove. It
+# is a symmetric pass/fail gate now, so it contributes 1.
+MIN_ASSERTIONS=9
 
 test_metadata() {
     echo "needs_claude=1 needs_tmux=1 needs_jq=1"
@@ -122,7 +127,7 @@ test_run() {
     if ! e2e_launch_tui "$SESSION" 200 50; then
         return 1
     fi
-    pass "TUI rendered ('weave (idle)' visible in tree panel)"
+    pass "TUI rendered ('weave' root visible in header tree)"
 
     if capture_pane "$SESSION" | grep -q "trust this folder" 2>/dev/null; then
         _stmux send-keys -t "$SESSION" "1" Enter
@@ -160,15 +165,35 @@ test_run() {
     sleep 3  # let the runtime fully park before the interrupt.
 
     echo ""
-    echo "=== Driving weave to send interrupt=true (now-priority) to idle $CHILD1_NAME ==="
+    echo "=== Driving weave to send now=true (now-priority) to idle $CHILD1_NAME ==="
     e2e_send_user_prompt "$SESSION" \
-        "Call mcp__sprawl__send_message with to='${CHILD1_NAME}', body='${PROBE}', and interrupt=true. Do nothing else. Do not read files, do not run commands."
+        "Call mcp__sprawl__send_message with to='${CHILD1_NAME}', body='${PROBE}', and now=true. Do nothing else. Do not read files, do not run commands."
 
-    local ACK1_NEEDLE="From ${CHILD1_NAME} — mcp__sprawl__messages_read(id="
-    if wait_for_substring_fast "$SESSION" "$ACK1_NEEDLE" 120; then
-        pass "idle recipient woken via now-priority delivery (ACK rendered)"
+    # QUM-1186 lane 5 — A DEFECT THIS MIGRATION INTRODUCED, recorded because the
+    # mechanism generalises. These two gates used to wait on the pane citation
+    # `From <child> — mcp__sprawl__messages_read(id=`, which was SPECIFIC when
+    # the child's only message to weave was its ACK. This lane replaced the
+    # child's deleted self-report readiness step with a `send_message` sentinel
+    # to weave — and that sentinel renders the SAME citation. So both gates began
+    # matching the readiness message instead of the ACK, passed instantly, and
+    # the preemption timing computed from them read 0s.
+    #
+    # It produced a GREEN. The row was caught only by the storm gate below,
+    # which counts now-priority stdin writes and correctly reported 0 for an
+    # urgent send that had not happened yet.
+    #
+    # The general hazard in the substitution recipe: a sentinel added to satisfy
+    # one probe can SATISFY A DIFFERENT PROBE that was keyed on the same
+    # observable being rare. Both gates now key on the unique ACK BODY in
+    # weave's maildir, which no other message in this row produces.
+    #
+    # Recorded reduction: the pane-citation half — "the drain row RENDERED in
+    # weave's viewport" — is no longer asserted here. It is asserted directly by
+    # the drain-row-inject row, whose entire subject is that citation.
+    if e2e_wait_maildir_substring weave "IDLE-PROBE-ACK" 120; then
+        pass "idle recipient woken via now-priority delivery (its ACK reached weave)"
     else
-        fail "idle child ACK '$ACK1_NEEDLE...' did NOT appear within 120s"
+        fail "idle child's 'IDLE-PROBE-ACK' did NOT reach weave within 120s"
         capture_pane "$SESSION" | tail -80 >&2
         sed 's/^/    /' "$CHILD1_STATE" >&2 2>/dev/null || true
         e2e_print_results; return 1
@@ -206,31 +231,50 @@ test_run() {
     echo ""
     echo "=== Driving $CHILD2_NAME into a long mid-turn (GO-BUSY → sleep ${BUSY_SECS}) ==="
     e2e_send_user_prompt "$SESSION" \
-        "Call mcp__sprawl__send_message with to='${CHILD2_NAME}', body='GO-BUSY', and interrupt=false. Do nothing else."
+        "Call mcp__sprawl__send_message with to='${CHILD2_NAME}', body='GO-BUSY', and now=false. Do nothing else."
     echo "  waiting 14s for the child to enter its sleep turn"
     sleep 14
     local BUSY_START=$SECONDS
 
     echo ""
-    echo "=== Sending urgent interrupt=true (now-priority) to mid-turn $CHILD2_NAME ==="
+    echo "=== Sending urgent now=true (now-priority) to mid-turn $CHILD2_NAME ==="
     e2e_send_user_prompt "$SESSION" \
-        "Call mcp__sprawl__send_message with to='${CHILD2_NAME}', body='${NOW_PROBE}', and interrupt=true. Do nothing else. Do not read files, do not run commands."
+        "Call mcp__sprawl__send_message with to='${CHILD2_NAME}', body='${NOW_PROBE}', and now=true. Do nothing else. Do not read files, do not run commands."
     local URGENT_SENT=$SECONDS
 
     echo ""
     echo "=== PHASE 2a: mid-turn child's urgent ACK reaches weave ==="
-    local ACK2_NEEDLE="From ${CHILD2_NAME} — mcp__sprawl__messages_read(id="
-    if wait_for_substring_fast "$SESSION" "$ACK2_NEEDLE" 120; then
+    # Unique body, for the reason recorded at the phase-1 gate above.
+    if e2e_wait_maildir_substring weave "URGENT-NOW-ACK" 120; then
         local ACK_AT=$SECONDS
         pass "mid-turn recipient delivered the now-priority urgent message (ACK rendered)"
         echo "  EMPIRICAL: time-to-ACK from urgent-send=$((ACK_AT - URGENT_SENT))s, from busy-start≈$((ACK_AT - BUSY_START))s (sleep=${BUSY_SECS}s)"
-        if [ "$((ACK_AT - BUSY_START))" -lt "$((BUSY_SECS - 8))" ]; then
-            echo "  EMPIRICAL: ACK landed before the ${BUSY_SECS}s sleep would finish ⇒ 'now' PREEMPTED the in-flight turn."
+        # QUM-1186 lane 5. This was an asymmetric if/else whose BOTH arms only
+        # echoed — one saying "'now' PREEMPTED the in-flight turn", the other
+        # "'now' reordered at the iteration boundary". It contributed 0
+        # assertions and could not fail, which means THE PRIMARY
+        # INTERRUPT-SEMANTICS ROW NEVER ASSERTED THAT PREEMPTION HAPPENED.
+        #
+        # That matters more after QUM-1186 than before. The ACK-rendered gate
+        # above passes whether the message preempted the turn or merely queued
+        # behind the ${BUSY_SECS}s sleep, so with the preemption arm inert the
+        # row is green under both "now preempts" and "now does nothing but
+        # eventually arrive" — including the specific degradation this slice
+        # could have introduced, where a stale legacy urgency key left in the
+        # prompt makes the agent's send fail and it silently retries without
+        # urgency.
+        #
+        # The threshold is the same one the echo used, now load-bearing: an ACK
+        # landing more than 8s before the sleep could have ended cannot be
+        # explained by waiting the turn out.
+        local PREEMPT_BY=$((BUSY_SECS - 8))
+        if [ "$((ACK_AT - BUSY_START))" -lt "$PREEMPT_BY" ]; then
+            pass "'now' PREEMPTED the in-flight turn — ACK at $((ACK_AT - BUSY_START))s, before the ${BUSY_SECS}s sleep could have ended (<${PREEMPT_BY}s)"
         else
-            echo "  EMPIRICAL: ACK landed at/after the ${BUSY_SECS}s sleep ⇒ 'now' reordered at the iteration boundary."
+            fail "'now' did NOT preempt: ACK landed at $((ACK_AT - BUSY_START))s into a ${BUSY_SECS}s sleep, i.e. only at/after the turn ended. The message arrived, so the ACK gate above still passed — but urgency did not, which is the whole claim of this row (QUM-821)"
         fi
     else
-        fail "mid-turn child urgent ACK '$ACK2_NEEDLE...' did NOT appear within 120s"
+        fail "mid-turn child's 'URGENT-NOW-ACK' did NOT reach weave within 120s"
         capture_pane "$SESSION" | tail -80 >&2
         sed 's/^/    /' "$CHILD2_STATE" >&2 2>/dev/null || true
         e2e_print_results; return 1

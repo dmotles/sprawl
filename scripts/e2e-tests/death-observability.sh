@@ -321,7 +321,7 @@ test_run() {
     echo ""
     echo "=== Phase 3: route-up single-hop (weave → dead engineer → weave) ==="
     local PROBE_SINGLE="QUM-745-SINGLE-$$-$(date +%s)"
-    local SEND_SINGLE="Call mcp__sprawl__send_message with to='${ENGINEER}', body='${PROBE_SINGLE}', interrupt=false."
+    local SEND_SINGLE="Call mcp__sprawl__send_message with to='${ENGINEER}', body='${PROBE_SINGLE}', now=false."
     e2e_send_user_prompt "$SESSION" "$SEND_SINGLE"
 
     # WrapForDeadTarget prefix: "This message was sent to <T> but <T> is dead."
@@ -480,7 +480,7 @@ test_run() {
     echo "=== Phase 4: sibling → dead engineer2 (multi-hop wrap to weave) ==="
     # Sibling.send_message(to=ENG2, ...) → walks ENG2(dead)→MANAGER(dead)→weave.
     local PROBE_MULTI="QUM-745-MULTI-$$-$(date +%s)"
-    local DRIVE_MULTI="Call mcp__sprawl__send_message with to='${SIBLING}', body='Call mcp__sprawl__send_message with to=\"${ENG2}\", body=\"${PROBE_MULTI}\", interrupt=false. Then stop.', interrupt=false."
+    local DRIVE_MULTI="Call mcp__sprawl__send_message with to='${SIBLING}', body='Call mcp__sprawl__send_message with to=\"${ENG2}\", body=\"${PROBE_MULTI}\", now=false. Then stop.', now=false."
     e2e_send_user_prompt "$SESSION" "$DRIVE_MULTI"
 
     local WRAP_MULTI="This message was sent to ${ENG2} but ${ENG2}, ${MANAGER} are dead."

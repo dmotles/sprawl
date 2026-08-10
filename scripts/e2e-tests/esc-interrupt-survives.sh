@@ -2,7 +2,7 @@
 # scripts/e2e-tests/esc-interrupt-survives.sh — QUM-827 regression guard.
 #
 # The live interactive Esc-during-turn gate that was NEVER exercised (the
-# idle-interrupt-inject row tests send_message(interrupt=true) now-priority
+# idle-interrupt-inject row tests send_message(now=true) now-priority
 # delivery to a CHILD; it does not press Esc mid-turn against the root weave
 # session). After QUM-821, a bare Esc-abort while an async MCP tool handler is
 # in flight cancelled that handler, whose ctx-cancelled error control_response

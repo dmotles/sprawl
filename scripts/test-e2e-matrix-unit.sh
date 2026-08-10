@@ -3811,7 +3811,7 @@ fi
 # a line carrying a literal `P19-ALLOW` comment. A context heuristic ("is this
 # line prose?") was rejected: a future prose style drifts past it silently,
 # whereas adding a marker is a deliberate edit that shows up in review.
-P19_FORBIDDEN='report_status delegate messages_send last_report status_change'
+P19_FORBIDDEN='report_status delegate messages_send last_report status_change interrupt='
 
 # Scripts deliberately outside the corpus, matched on REPO-RELATIVE PATH rather
 # than basename — a basename exclusion would silently drop a future matrix row
