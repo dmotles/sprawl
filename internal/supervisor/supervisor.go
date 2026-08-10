@@ -75,13 +75,17 @@ type PauseResult struct {
 // QUM-550 send_message tool replaces send_async + send_interrupt; this
 // result struct collapses their two distinct return shapes into one.
 //
-// Interrupted is best-effort: true iff interrupt=true was honored at the
-// supervisor layer. The recipient runtime may still observe the interrupt
-// asynchronously (see QUM-549 for the MCP-tool-wait blind spot).
+// Now is best-effort: true iff now=true was honored at the supervisor layer.
+// The recipient runtime may still observe the preemption asynchronously (see
+// QUM-549 for the MCP-tool-wait blind spot).
+//
+// QUM-1186 D6: this echoes the renamed `now` parameter. Leaving it named
+// `interrupted` would keep the response advertising a parameter that no longer
+// exists.
 type SendMessageResult struct {
-	MessageID   string `json:"message_id"`
-	QueuedAt    string `json:"queued_at"` // RFC3339
-	Interrupted bool   `json:"interrupted"`
+	MessageID string `json:"message_id"`
+	QueuedAt  string `json:"queued_at"` // RFC3339
+	Now       bool   `json:"now"`
 }
 
 // PeekResult is returned by Supervisor.Peek. See
@@ -268,10 +272,13 @@ type Supervisor interface {
 	// activity file yet) yields an empty slice and nil error.
 	PeekActivity(ctx context.Context, agentName string, tail int) ([]agentloop.ActivityEntry, error)
 
-	// SendMessage is the canonical messaging tool (QUM-550). When interrupt is
+	// SendMessage is the canonical messaging tool (QUM-550). When now is
 	// false, delivery is strictly cooperative (no Session.Interrupt). When true,
 	// the recipient is preempted unconditionally and the message is enqueued at
 	// the front of the queue (ClassInterrupt priority).
+	//
+	// QUM-1186: `body` is capped at sendMessageBodyMaxRunes and an over-cap send
+	// is a hard error, never a truncation. Spawn prompts are not capped.
 	// QUM-726: when wakeIfOffline is true and the recipient's projected
 	// liveness is offline-but-recoverable, the supervisor wakes the
 	// recipient and threads a send_message-flavored RestartInjection (built
@@ -280,7 +287,7 @@ type Supervisor interface {
 	// body. When false, an offline target returns the canonical
 	// "Delivery failed: agent <name> is <state>. Set wake_if_offline: true
 	// to wake and deliver." error.
-	SendMessage(ctx context.Context, to, body string, interrupt, wakeIfOffline bool) (*SendMessageResult, error)
+	SendMessage(ctx context.Context, to, body string, now, wakeIfOffline bool) (*SendMessageResult, error)
 
 	// Peek returns an agent's status, last report, and the tail of its
 	// activity ring in one call. See §4.2.4.

@@ -1,9 +1,9 @@
 // Tests for QUM-550 slice 1: Real.SendMessage. These tests pin the unified
 // send_message Supervisor method (the MCP send_async + send_interrupt collapse).
 //
-// QUM-821: send_message(interrupt=true) no longer takes a separate force-
-// interrupt path. Both interrupt=true and interrupt=false deliver via the
-// cooperative WakeForDelivery; urgency for interrupt=true is carried by the
+// QUM-821: send_message(now=true) no longer takes a separate force-
+// interrupt path. Both now=true and now=false deliver via the
+// cooperative WakeForDelivery; urgency for now=true is carried by the
 // enqueued ClassInterrupt entry, which drains to stdin at priority "now". The
 // bare Session.Interrupt frame is reserved for Esc-abort and is never issued for
 // message delivery — so these tests assert session.interrupts == 0.
@@ -19,13 +19,13 @@ import (
 	"github.com/dmotles/sprawl/internal/state"
 )
 
-// TestReal_SendMessage_InterruptFalse_DoesNotCallSessionInterrupt_EvenWhenTurnRunning
-// pins the QUM-549 fix: send_message(interrupt=false) must persist + enqueue +
+// TestReal_SendMessage_NowFalse_DoesNotCallSessionInterrupt_EvenWhenTurnRunning
+// pins the QUM-549 fix: send_message(now=false) must persist + enqueue +
 // cooperatively wake the recipient, never calling Session.Interrupt regardless
 // of whether a turn is currently running. The wake path goes through the
 // runtime handle's new WakeForDelivery method, which never forwards to the
 // backend session.
-func TestReal_SendMessage_InterruptFalse_DoesNotCallSessionInterrupt_EvenWhenTurnRunning(t *testing.T) {
+func TestReal_SendMessage_NowFalse_DoesNotCallSessionInterrupt_EvenWhenTurnRunning(t *testing.T) {
 	r, tmpDir := newFakeReal(t)
 	agentState := testAgentState("alice")
 	saveTestAgent(t, tmpDir, agentState)
@@ -48,7 +48,7 @@ func TestReal_SendMessage_InterruptFalse_DoesNotCallSessionInterrupt_EvenWhenTur
 
 	// QUM-549 lock-in: cooperative wake path must NOT call Session.Interrupt.
 	if got := session.interrupts.Load(); got != 0 {
-		t.Errorf("session.Interrupt called %d times for interrupt=false send_message; want 0 (QUM-549)", got)
+		t.Errorf("session.Interrupt called %d times for now=false send_message; want 0 (QUM-549)", got)
 	}
 	// Cooperative wake path MUST have signalled the WakeForDelivery counter at
 	// least once.
@@ -76,14 +76,14 @@ func TestReal_SendMessage_InterruptFalse_DoesNotCallSessionInterrupt_EvenWhenTur
 	}
 }
 
-// TestReal_SendMessage_InterruptTrue_RoutesViaNowPriorityWake pins the QUM-821
-// urgency tier: send_message(interrupt=true) persists a ClassInterrupt entry and
+// TestReal_SendMessage_NowTrue_RoutesViaNowPriorityWake pins the QUM-821
+// urgency tier: send_message(now=true) persists a ClassInterrupt entry and
 // cooperatively wakes the recipient (WakeForDelivery) so the entry drains to
 // stdin at priority "now". The bare Session.Interrupt frame is NO LONGER issued
 // for delivery — urgency is carried by the message priority, and the bare
 // interrupt is reserved for Esc-abort only (QUM-619 idle-interrupt-inject path
 // deleted).
-func TestReal_SendMessage_InterruptTrue_RoutesViaNowPriorityWake(t *testing.T) {
+func TestReal_SendMessage_NowTrue_RoutesViaNowPriorityWake(t *testing.T) {
 	r, tmpDir := newFakeReal(t)
 	// Caller is weave (the supervisor's default callerName) → recipient is
 	// "alice" whose Parent is weave (testAgentState default). Ancestor gate
@@ -106,14 +106,14 @@ func TestReal_SendMessage_InterruptTrue_RoutesViaNowPriorityWake(t *testing.T) {
 	if res == nil || res.MessageID == "" {
 		t.Fatalf("SendMessage result = %+v, want non-empty MessageID", res)
 	}
-	if !res.Interrupted {
-		t.Error("res.Interrupted = false, want true for interrupt=true (API contract preserved)")
+	if !res.Now {
+		t.Error("res.Now = false, want true for now=true (API contract preserved)")
 	}
 
-	// QUM-821: interrupt=true now cooperatively wakes (the now-priority drain
+	// QUM-821: now=true cooperatively wakes (the now-priority drain
 	// does the preempting) and must NOT issue a bare Session.Interrupt frame.
 	if got := session.wakeForDeliveryCalls.Load(); got < 1 {
-		t.Errorf("session.WakeForDelivery calls = %d, want >= 1 (interrupt=true routes via now-priority wake)", got)
+		t.Errorf("session.WakeForDelivery calls = %d, want >= 1 (now=true routes via now-priority wake)", got)
 	}
 	if got := session.interrupts.Load(); got != 0 {
 		t.Errorf("session.Interrupt calls = %d, want 0 (bare interrupt is Esc-only — QUM-821)", got)
@@ -132,12 +132,12 @@ func TestReal_SendMessage_InterruptTrue_RoutesViaNowPriorityWake(t *testing.T) {
 	}
 }
 
-// TestReal_SendMessage_InterruptTrue_WhenIdle_NoBareInterrupt pins that an idle
+// TestReal_SendMessage_NowTrue_WhenIdle_NoBareInterrupt pins that an idle
 // recipient is woken via the now-priority delivery path (a stdin write wakes the
 // CLI command queue) and is NOT bare-interrupted (QUM-821 deletes the QUM-619
 // idle-interrupt-inject content path that used to cancel the idle recipient's
 // turn).
-func TestReal_SendMessage_InterruptTrue_WhenIdle_NoBareInterrupt(t *testing.T) {
+func TestReal_SendMessage_NowTrue_WhenIdle_NoBareInterrupt(t *testing.T) {
 	r, tmpDir := newFakeReal(t)
 	agentState := testAgentState("alice")
 	saveTestAgent(t, tmpDir, agentState)
@@ -162,9 +162,9 @@ func TestReal_SendMessage_InterruptTrue_WhenIdle_NoBareInterrupt(t *testing.T) {
 	}
 }
 
-// TestReal_SendMessage_InterruptTrue_RequiresAncestor pins the §8.5 gate:
-// callers that are not an ancestor of `to` cannot use interrupt=true.
-func TestReal_SendMessage_InterruptTrue_RequiresAncestor(t *testing.T) {
+// TestReal_SendMessage_NowTrue_RequiresAncestor pins the §8.5 gate:
+// callers that are not an ancestor of `to` cannot use now=true.
+func TestReal_SendMessage_NowTrue_RequiresAncestor(t *testing.T) {
 	r, tmpDir := newFakeReal(t)
 	// Two siblings under weave. "bob" tries to interrupt "alice" — not an
 	// ancestor, so the gate should reject. Persist a weave root-state file
@@ -182,7 +182,7 @@ func TestReal_SendMessage_InterruptTrue_RequiresAncestor(t *testing.T) {
 	ctx := backendpkg.WithCallerIdentity(context.Background(), "bob")
 	_, err := r.SendMessage(ctx, "alice", "stop", true, false)
 	if err == nil {
-		t.Fatal("SendMessage(interrupt=true) sibling→sibling returned nil error; want ancestor-gate rejection")
+		t.Fatal("SendMessage(now=true) sibling→sibling returned nil error; want ancestor-gate rejection")
 	}
 	msg := err.Error()
 	if !strings.Contains(msg, "ancestor") && !strings.Contains(msg, "§8.5") {

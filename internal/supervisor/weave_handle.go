@@ -150,7 +150,10 @@ func (h *WeaveRuntimeHandle) runInboxRedrainTicker() func() {
 			case <-done:
 				return
 			case <-time.After(interval):
-				h.drainPendingToStdin()
+				// CALLERLESS (QUM-1186 D5): the ticker has nobody to return an
+				// error to, so the WARN inside writeInjection is the only channel
+				// here. Discarded explicitly rather than by signature.
+				_ = h.drainPendingToStdin()
 			}
 		}
 	}()
@@ -209,7 +212,11 @@ func NewWeaveRuntimeHandle(rt *runtimepkg.UnifiedRuntime, session backendpkg.Ses
 	// before this process existed, and the 2s TUI poll that used to catch them is
 	// gone — so drain once on Start. Start, not here: it runs after the TUI adapter
 	// has subscribed to the EventBus, so the frame actually renders.
-	rt.SetPostStartHook(h.drainPendingToStdin)
+	// CALLERLESS (QUM-1186 D5), same as the redrain ticker: the hook type is
+	// func() and there is no caller to inform, so the drain's WARN is the only
+	// channel. Wrapped here rather than widening SetPostStartHook, which lives in
+	// internal/runtime and is not part of this change.
+	rt.SetPostStartHook(func() { _ = h.drainPendingToStdin() })
 	return h, nil
 }
 
@@ -220,25 +227,24 @@ func (h *WeaveRuntimeHandle) Interrupt(ctx context.Context) error {
 
 // Wake drains weave's inbox to stdin, mirroring unifiedHandle.Wake (QUM-925).
 func (h *WeaveRuntimeHandle) Wake() error {
-	h.drainPendingToStdin()
-	return nil
+	return h.drainPendingToStdin()
 }
 
 // WakeForDelivery is the cooperative-wake path, fired unconditionally by the
-// producer side on every child report_status / send_message (see Real.SendMessage
-// only). It drains weave's inbox straight to the CLI stdin the
+// producer side on every child send_message (see Real.SendMessage). It drains
+// weave's inbox straight to the CLI stdin the
 // instant the notification arrives, regardless of weave's turn state (QUM-925).
 //
 // Before QUM-925 this was a no-op: pending entries were left on disk for the TUI's
 // peekAndDrainCmd, a 2-second AgentTreeMsg poll that only fired while
-// turnState == TurnIdle. That produced the reported bug — a child's report_status
+// turnState == TurnIdle. That produced the reported bug — a child's message
 // while weave sat idle accumulated silently and flushed stacked at weave's next
-// turn — and, worse, could LOSE a status ping outright: DrainStatusChangeLines is
+// turn — and, worse, could LOSE a status ping outright: the destructive status
+// drain is
 // destructive, and the TUI's InboxDrainMsg reducer discarded the drained frame if
 // a turn had started in the meantime. The poll is gone; this is the sole drainer.
 func (h *WeaveRuntimeHandle) WakeForDelivery() error {
-	h.drainPendingToStdin()
-	return nil
+	return h.drainPendingToStdin()
 }
 
 // drainPendingToStdin drains weave's inbox to stdin under the root policy
@@ -246,9 +252,10 @@ func (h *WeaveRuntimeHandle) WakeForDelivery() error {
 // and weaveDrainPolicy for every way the two differ and why.
 //
 // Kept as a zero-arg method because rt.SetPostStartHook and the redrain ticker
-// both take a func().
-func (h *WeaveRuntimeHandle) drainPendingToStdin() {
-	runDrain(h.rt, h.sprawlRoot, h.name, weaveDrainPolicy(&h.drainMu))
+// both take a func(); QUM-1186 added the error return for send_message's
+// caller, so those two wrap it to discard (see their call sites).
+func (h *WeaveRuntimeHandle) drainPendingToStdin() error {
+	return runDrain(h.rt, h.sprawlRoot, h.name, weaveDrainPolicy(&h.drainMu))
 }
 
 // Stop tears down the runtime, activity subscriber, session, and activity

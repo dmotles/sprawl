@@ -24,7 +24,7 @@ import (
 // derived type with the recording surface we need.
 //
 // QUM-550 design: both send_async and send_interrupt internally call
-// Supervisor.SendMessage with interrupt={false,true}. The legacy SendAsync /
+// Supervisor.SendMessage with now={false,true}. The legacy SendAsync /
 // SendInterrupt Supervisor methods should NOT be invoked from the MCP tool
 // dispatch path anymore.
 type mockSupervisorSendMessage struct {
@@ -33,17 +33,17 @@ type mockSupervisorSendMessage struct {
 	sendMessageCalls         int
 	sendMessageTo            string
 	sendMessageBody          string
-	sendMessageInterrupt     bool
+	sendMessageNow           bool
 	sendMessageWakeIfOffline bool // QUM-726
 	sendMessageResult        *supervisor.SendMessageResult
 	sendMessageErr           error
 }
 
-func (m *mockSupervisorSendMessage) SendMessage(_ context.Context, to, body string, interrupt, wakeIfOffline bool) (*supervisor.SendMessageResult, error) {
+func (m *mockSupervisorSendMessage) SendMessage(_ context.Context, to, body string, now, wakeIfOffline bool) (*supervisor.SendMessageResult, error) {
 	m.sendMessageCalls++
 	m.sendMessageTo = to
 	m.sendMessageBody = body
-	m.sendMessageInterrupt = interrupt
+	m.sendMessageNow = now
 	m.sendMessageWakeIfOffline = wakeIfOffline
 	if m.sendMessageErr != nil {
 		return nil, m.sendMessageErr
@@ -52,16 +52,16 @@ func (m *mockSupervisorSendMessage) SendMessage(_ context.Context, to, body stri
 		return m.sendMessageResult, nil
 	}
 	return &supervisor.SendMessageResult{
-		MessageID:   "msg_sm_stub",
-		QueuedAt:    "2026-05-12T00:00:00Z",
-		Interrupted: interrupt,
+		MessageID: "msg_sm_stub",
+		QueuedAt:  "2026-05-12T00:00:00Z",
+		Now:       now,
 	}, nil
 }
 
-// TestServer_ToolsCall_SendMessage_InterruptFalse pins the cooperative path
-// of the new tool: interrupt:false forwards to Supervisor.SendMessage with
+// TestServer_ToolsCall_SendMessage_NowFalse pins the cooperative path
+// of the new tool: now:false forwards to Supervisor.SendMessage with
 // the corresponding flag.
-func TestServer_ToolsCall_SendMessage_InterruptFalse(t *testing.T) {
+func TestServer_ToolsCall_SendMessage_NowFalse(t *testing.T) {
 	mock := &mockSupervisorSendMessage{
 		sendMessageResult: &supervisor.SendMessageResult{
 			MessageID: "msg-cooperative-1",
@@ -73,9 +73,9 @@ func TestServer_ToolsCall_SendMessage_InterruptFalse(t *testing.T) {
 	msg := makeJSONRPCRequest(60, "tools/call", map[string]any{
 		"name": "send_message",
 		"arguments": map[string]any{
-			"to":        "child",
-			"body":      "hi",
-			"interrupt": false,
+			"to":   "child",
+			"body": "hi",
+			"now":  false,
 		},
 	})
 	resp, err := srv.HandleMessage(context.Background(), msg)
@@ -92,8 +92,8 @@ func TestServer_ToolsCall_SendMessage_InterruptFalse(t *testing.T) {
 	if mock.sendMessageBody != "hi" {
 		t.Errorf("body = %q, want hi", mock.sendMessageBody)
 	}
-	if mock.sendMessageInterrupt != false {
-		t.Errorf("interrupt = %v, want false", mock.sendMessageInterrupt)
+	if mock.sendMessageNow != false {
+		t.Errorf("now = %v, want false", mock.sendMessageNow)
 	}
 
 	parsed := parseJSONRPCResponse(t, resp)
@@ -108,14 +108,14 @@ func TestServer_ToolsCall_SendMessage_InterruptFalse(t *testing.T) {
 	}
 }
 
-// TestServer_ToolsCall_SendMessage_InterruptTrue pins the force-interrupt
-// path: interrupt:true forwards through SendMessage with the flag set.
-func TestServer_ToolsCall_SendMessage_InterruptTrue(t *testing.T) {
+// TestServer_ToolsCall_SendMessage_NowTrue pins the now-priority
+// path: now:true forwards through SendMessage with the flag set.
+func TestServer_ToolsCall_SendMessage_NowTrue(t *testing.T) {
 	mock := &mockSupervisorSendMessage{
 		sendMessageResult: &supervisor.SendMessageResult{
-			MessageID:   "msg-force-1",
-			QueuedAt:    "2026-05-12T10:01:00Z",
-			Interrupted: true,
+			MessageID: "msg-force-1",
+			QueuedAt:  "2026-05-12T10:01:00Z",
+			Now:       true,
 		},
 	}
 	srv := New(mock)
@@ -123,9 +123,9 @@ func TestServer_ToolsCall_SendMessage_InterruptTrue(t *testing.T) {
 	msg := makeJSONRPCRequest(61, "tools/call", map[string]any{
 		"name": "send_message",
 		"arguments": map[string]any{
-			"to":        "child",
-			"body":      "stop now",
-			"interrupt": true,
+			"to":   "child",
+			"body": "stop now",
+			"now":  true,
 		},
 	})
 	if _, err := srv.HandleMessage(context.Background(), msg); err != nil {
@@ -135,15 +135,15 @@ func TestServer_ToolsCall_SendMessage_InterruptTrue(t *testing.T) {
 	if mock.sendMessageCalls != 1 {
 		t.Fatalf("SendMessage call count = %d, want 1", mock.sendMessageCalls)
 	}
-	if !mock.sendMessageInterrupt {
-		t.Errorf("interrupt = %v, want true", mock.sendMessageInterrupt)
+	if !mock.sendMessageNow {
+		t.Errorf("now = %v, want true", mock.sendMessageNow)
 	}
 }
 
-// TestServer_ToolsCall_SendMessage_InterruptDefaultsFalse pins the
-// default-false contract: when interrupt is omitted the supervisor receives
+// TestServer_ToolsCall_SendMessage_NowDefaultsFalse pins the
+// default-false contract: when now is omitted the supervisor receives
 // false (cooperative is the safe default).
-func TestServer_ToolsCall_SendMessage_InterruptDefaultsFalse(t *testing.T) {
+func TestServer_ToolsCall_SendMessage_NowDefaultsFalse(t *testing.T) {
 	mock := &mockSupervisorSendMessage{}
 	srv := New(mock)
 
@@ -160,14 +160,14 @@ func TestServer_ToolsCall_SendMessage_InterruptDefaultsFalse(t *testing.T) {
 	if mock.sendMessageCalls != 1 {
 		t.Fatalf("SendMessage calls = %d, want 1", mock.sendMessageCalls)
 	}
-	if mock.sendMessageInterrupt {
-		t.Error("interrupt = true, want false when omitted from args")
+	if mock.sendMessageNow {
+		t.Error("now = true, want false when omitted from args")
 	}
 }
 
 // TestServer_ToolsList_IncludesSendMessage asserts the tool list advertises
 // send_message with required `to` and `body` properties and an optional
-// `interrupt`.
+// `now`.
 func TestServer_ToolsList_IncludesSendMessage(t *testing.T) {
 	srv := New(&mockSupervisorSendMessage{})
 	resp, err := srv.HandleMessage(context.Background(), makeJSONRPCRequest(70, "tools/list", nil))
@@ -201,8 +201,8 @@ func TestServer_ToolsList_IncludesSendMessage(t *testing.T) {
 	if _, ok := props["body"]; !ok {
 		t.Error("send_message inputSchema: missing 'body' property")
 	}
-	if _, ok := props["interrupt"]; !ok {
-		t.Error("send_message inputSchema: missing 'interrupt' property")
+	if _, ok := props["now"]; !ok {
+		t.Error("send_message inputSchema: missing 'now' property")
 	}
 
 	required, _ := schema["required"].([]any)
@@ -216,8 +216,8 @@ func TestServer_ToolsList_IncludesSendMessage(t *testing.T) {
 	if !gotRequired["body"] {
 		t.Error("send_message required: missing 'body'")
 	}
-	if gotRequired["interrupt"] {
-		t.Error("send_message required: 'interrupt' must be optional (defaults to false)")
+	if gotRequired["now"] {
+		t.Error("send_message required: 'now' must be optional (defaults to false)")
 	}
 }
 
@@ -263,14 +263,14 @@ func TestServer_ToolsList_DeprecatedToolsRemoved(t *testing.T) {
 }
 
 // TestSendMessageResult_ShapeContract pins the SendMessageResult JSON shape.
-// The fields MessageID, QueuedAt, and Interrupted are the contract — if the
+// The fields MessageID, QueuedAt, and Now are the contract — if the
 // struct loses any of them, this test compile-fails before the production
 // callers do.
 func TestSendMessageResult_ShapeContract(t *testing.T) {
 	r := supervisor.SendMessageResult{
-		MessageID:   "id",
-		QueuedAt:    "ts",
-		Interrupted: true,
+		MessageID: "id",
+		QueuedAt:  "ts",
+		Now:       true,
 	}
 	b, err := json.Marshal(r)
 	if err != nil {
@@ -282,7 +282,7 @@ func TestSendMessageResult_ShapeContract(t *testing.T) {
 	if !strings.Contains(string(b), `"queued_at"`) {
 		t.Errorf("SendMessageResult JSON missing queued_at: %s", b)
 	}
-	if !strings.Contains(string(b), `"interrupted"`) {
-		t.Errorf("SendMessageResult JSON missing interrupted: %s", b)
+	if !strings.Contains(string(b), `"now"`) {
+		t.Errorf("SendMessageResult JSON missing now: %s", b)
 	}
 }

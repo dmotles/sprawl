@@ -542,18 +542,33 @@ func (s *Server) toolStatus(ctx context.Context) (string, error) {
 }
 
 // toolSendMessage dispatches the canonical send_message MCP tool (QUM-550).
-// interrupt=false maps to a cooperative wake; interrupt=true forces a preempt.
+// now=false maps to a cooperative wake; now=true forces a preempt.
 func (s *Server) toolSendMessage(ctx context.Context, args json.RawMessage) (string, error) {
 	var p struct {
 		To            string `json:"to"`
 		Body          string `json:"body"`
-		Interrupt     bool   `json:"interrupt"`
+		Now           bool   `json:"now"`
 		WakeIfOffline bool   `json:"wake_if_offline"`
 	}
 	if err := json.Unmarshal(args, &p); err != nil {
 		return "", fmt.Errorf("invalid arguments: %w", err)
 	}
-	result, err := s.sup.SendMessage(ctx, p.To, p.Body, p.Interrupt, p.WakeIfOffline)
+	// QUM-1186 D6: `interrupt` was renamed to `now`. This rejection is NOT
+	// optional politeness. encoding/json silently DROPS an unknown property, so
+	// without it a stale caller passing interrupt:true gets now==false and its
+	// urgent message is quietly downgraded to cooperative — the call succeeds and
+	// nobody is told. That is the same silent-false-claim defect this slice
+	// exists to remove, and it would be introduced by the fix for it. Same
+	// reasoning as the agent_name shim below.
+	var legacy struct {
+		Interrupt *bool `json:"interrupt"`
+	}
+	if err := json.Unmarshal(args, &legacy); err == nil && legacy.Interrupt != nil {
+		return "", fmt.Errorf("send_message: the `interrupt` parameter was renamed to `now` (same semantics). "+
+			"Passing `interrupt` is rejected rather than ignored, because an ignored urgency flag would silently "+
+			"downgrade this message to cooperative delivery. Next action: retry with `now: %v`", *legacy.Interrupt)
+	}
+	result, err := s.sup.SendMessage(ctx, p.To, p.Body, p.Now, p.WakeIfOffline)
 	if err != nil {
 		return "", err
 	}

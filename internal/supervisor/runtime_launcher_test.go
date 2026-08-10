@@ -3,6 +3,7 @@ package supervisor
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"log/slog"
 	"os"
 	"path/filepath"
@@ -58,6 +59,13 @@ type fakeBackendSession struct {
 	wedged       bool
 	writeRelease chan struct{}
 	released     bool
+
+	// failFirstWrites, when > 0, makes that many subsequent WriteUserMessage
+	// calls fail IMMEDIATELY with errFakeWriteFailed, after which writes succeed
+	// normally. Distinct from `writeErr` (fails every write) and from `wedged`
+	// (blocks until ctx expires): this models a partial drain failure without
+	// spending a deadline per frame.
+	failFirstWrites int
 
 	// attempted records every write the drain ATTEMPTED, including ones that then
 	// blocked and timed out. `writes` records only writes that SUCCEEDED, so it is
@@ -128,6 +136,15 @@ func (f *fakeBackendSession) StartTurn(_ context.Context, _ string, _ ...backend
 func (f *fakeBackendSession) WriteUserMessage(ctx context.Context, msg protocol.UserMessage) error {
 	f.mu.Lock()
 	werr, wedged, release := f.writeErr, f.wedged, f.writeRelease
+	// QUM-1186: failFirstWrites fails exactly the first N writes and lets the
+	// rest succeed, which `writeErr` (all-or-nothing) cannot express. Needed for
+	// the partial-failure case: an error-joining implementation that reports
+	// every batch as failed whenever any batch failed is indistinguishable from a
+	// correct one unless some frame actually succeeds in the same drain.
+	if f.failFirstWrites > 0 {
+		f.failFirstWrites--
+		werr = errFakeWriteFailed
+	}
 	// Recorded before any blocking or error return, so it means "the drain reached
 	// the wire", independent of whether the write then succeeded.
 	f.attempted = append(f.attempted, msg)
@@ -154,6 +171,17 @@ func (f *fakeBackendSession) WriteUserMessage(ctx context.Context, msg protocol.
 // attemptedSnapshot returns a copy of every ATTEMPTED write (see the `attempted`
 // field). Use it to prove a drain actually reached the wire; use writesSnapshot to
 // prove one succeeded.
+// errFakeWriteFailed is the error failFirstWrites returns. A distinct sentinel
+// so an assertion can tell a fixture-induced failure from a real one.
+var errFakeWriteFailed = errors.New("fake session: write failed")
+
+// failWrites makes the next n WriteUserMessage calls fail immediately.
+func (f *fakeBackendSession) failWrites(n int) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	f.failFirstWrites = n
+}
+
 func (f *fakeBackendSession) attemptedSnapshot() []protocol.UserMessage {
 	f.mu.Lock()
 	defer f.mu.Unlock()
@@ -986,7 +1014,7 @@ func TestUnifiedHandle_WakeForDelivery_WritesRealAsyncPromptNext(t *testing.T) {
 
 // TestUnifiedHandle_WakeForDelivery_WritesRealInterruptPromptNow pins the
 // QUM-821 urgency tier: an interrupt-class inbox entry (send_message(
-// interrupt=true)) drains to stdin with priority "now" (cancel-and-replace),
+// now=true)) drains to stdin with priority "now" (cancel-and-replace),
 // not "next". The content still rides the message; no bare interrupt frame is
 // issued for delivery.
 func TestUnifiedHandle_WakeForDelivery_WritesRealInterruptPromptNow(t *testing.T) {

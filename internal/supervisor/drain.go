@@ -30,6 +30,8 @@ package supervisor
 
 import (
 	"context"
+	"errors"
+	"fmt"
 	"log/slog"
 	"strings"
 	"sync"
@@ -57,7 +59,7 @@ type drainPolicy struct {
 	mu *sync.Mutex
 
 	// interruptPriority is the stdin priority for interrupt-class (
-	// send_message(interrupt=true)) entries. LOCKED asymmetry: `now` for children,
+	// send_message(now=true)) entries. LOCKED asymmetry: `now` for children,
 	// `next` for weave — see childDrainPolicy / weaveDrainPolicy, and QUM-925.
 	interruptPriority string
 
@@ -116,7 +118,7 @@ func weaveDrainPolicy(mu *sync.Mutex) drainPolicy {
 		// armInterruptLocked (runtime.writeMessage), preempting weave's in-flight
 		// turn — which contradicts "Esc interrupts the turn but system frames
 		// remain queued" and the dumb-forwarder rule against timing games.
-		// Documented consequence: an inter-agent send_message(interrupt=true)
+		// Documented consequence: an inter-agent send_message(now=true)
 		// targeting weave is non-preemptive, an asymmetry vs a child recipient.
 		// Restoring preemption is a follow-up issue, not a defect here.
 		interruptPriority: drainAsyncPriority,
@@ -347,7 +349,14 @@ func readInboxSnapshot(rt *runtimepkg.UnifiedRuntime, sprawlRoot, name string, p
 //  2. A FAILED FRAME MUST NOT ABORT THE REST. `continue`, never `return`: the
 //     pre-unification child's two writes were independent branches, and an
 //     interrupt-write failure still let the async batch through.
-func writeInjection(rt *runtimepkg.UnifiedRuntime, name string, frames []systemFrame, pol drainPolicy) {
+//
+// QUM-1186 D5: the per-frame failures are JOINED and returned so send_message's
+// caller can be told the injection was not confirmed. The WARN below is NOT
+// redundant with that return — the weave redrain ticker and post-start hook call
+// this path with nobody to hand an error to, so the log is their only channel.
+// Invariant 2 is what makes joining the right shape rather than returning early.
+func writeInjection(rt *runtimepkg.UnifiedRuntime, name string, frames []systemFrame, pol drainPolicy) error {
+	var errs []error
 	for _, f := range frames {
 		// BOUNDED write. Session.WriteUserMessage → transport.Send runs the
 		// blocking WriteJSON in a goroutine and selects on ctx.Done(), so the
@@ -376,6 +385,7 @@ func writeInjection(rt *runtimepkg.UnifiedRuntime, name string, frames []systemF
 			}
 			attrs = append(attrs, slog.Any("err", err))
 			slog.Default().Warn(msg, attrs...)
+			errs = append(errs, fmt.Errorf("%s [%s]: %w", frameLabelOrDefault(f.label), strings.Join(f.entryIDs, ","), err))
 			continue // invariant 2
 		}
 
@@ -387,14 +397,32 @@ func writeInjection(rt *runtimepkg.UnifiedRuntime, name string, frames []systemF
 			rt.ConfirmDeliveredWithoutReplay(uuid)
 		}
 	}
+	return errors.Join(errs...)
+}
+
+// frameLabelOrDefault names a frame in a joined error. The async frame carries
+// an empty label (it is the unlabelled default in the WARN too), which would
+// otherwise produce a nameless entry in the joined text. The labelled frame
+// already reads "interrupt batch", so the caller must not append "batch" again.
+func frameLabelOrDefault(label string) string {
+	if label == "" {
+		return "async batch"
+	}
+	return label
 }
 
 // runDrain is the whole drain: read, build, write, under the policy's lock.
-func runDrain(rt *runtimepkg.UnifiedRuntime, sprawlRoot, name string, pol drainPolicy) {
+//
+// The returned error covers the WRITE only. readInboxSnapshot still swallows a
+// ListPending failure into a WARN and returns an empty snapshot, so a nil return
+// means "every frame we built was written", not "the inbox was read completely".
+// Declared rather than fixed here: widening it changes the empty-inbox vs
+// unreadable-inbox distinction, which is outside D5.
+func runDrain(rt *runtimepkg.UnifiedRuntime, sprawlRoot, name string, pol drainPolicy) error {
 	if pol.mu != nil {
 		pol.mu.Lock()
 		defer pol.mu.Unlock()
 	}
 	snap := readInboxSnapshot(rt, sprawlRoot, name, pol)
-	writeInjection(rt, name, buildInjection(snap, pol), pol)
+	return writeInjection(rt, name, buildInjection(snap, pol), pol)
 }

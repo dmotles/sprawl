@@ -77,7 +77,7 @@ type mockSupervisor struct {
 	sendMessageCalls         int
 	sendMessageTo            string
 	sendMessageBody          string
-	sendMessageInterrupt     bool
+	sendMessageNow           bool
 	sendMessageWakeIfOffline bool // QUM-726
 	sendMessageResult        *supervisor.SendMessageResult
 	sendMessageErr           error
@@ -244,11 +244,11 @@ func (m *mockSupervisor) Peek(_ context.Context, agentName string, tail int) (*s
 	return &supervisor.PeekResult{Status: "active"}, nil
 }
 
-func (m *mockSupervisor) SendMessage(_ context.Context, to, body string, interrupt, wakeIfOffline bool) (*supervisor.SendMessageResult, error) {
+func (m *mockSupervisor) SendMessage(_ context.Context, to, body string, now, wakeIfOffline bool) (*supervisor.SendMessageResult, error) {
 	m.sendMessageCalls++
 	m.sendMessageTo = to
 	m.sendMessageBody = body
-	m.sendMessageInterrupt = interrupt
+	m.sendMessageNow = now
 	m.sendMessageWakeIfOffline = wakeIfOffline
 	if m.sendMessageErr != nil {
 		return nil, m.sendMessageErr
@@ -256,7 +256,7 @@ func (m *mockSupervisor) SendMessage(_ context.Context, to, body string, interru
 	if m.sendMessageResult != nil {
 		return m.sendMessageResult, nil
 	}
-	return &supervisor.SendMessageResult{MessageID: "msg_sm_stub", QueuedAt: "2026-05-12T00:00:00Z", Interrupted: interrupt}, nil
+	return &supervisor.SendMessageResult{MessageID: "msg_sm_stub", QueuedAt: "2026-05-12T00:00:00Z", Now: now}, nil
 }
 
 // makeJSONRPCRequest builds a raw JSON-RPC request for testing.

@@ -32,7 +32,7 @@ func TestToolSendMessage_ForwardsWakeIfOffline(t *testing.T) {
 		"arguments": map[string]any{
 			"to":              "alice",
 			"body":            "hi",
-			"interrupt":       false,
+			"now":             false,
 			"wake_if_offline": true,
 		},
 	})

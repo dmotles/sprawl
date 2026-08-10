@@ -8,7 +8,7 @@
 //   - report_status from a child to a Died parent likewise routes up to a
 //     live grandparent — the SendStatusChange envelope's `summary` field is
 //     wrapped.
-//   - interrupt=true sends against a dead descendant continue to enforce the
+//   - now=true sends against a dead descendant continue to enforce the
 //     §8.5 ancestor gate against the ORIGINAL `to` first. When the gate is
 //     satisfied, route-up still happens with the wrapped body landing in the
 //     live ancestor.
@@ -117,11 +117,11 @@ func TestReal_SendMessage_DeadTarget_MultiHop_RoutesUpToGrandparent(t *testing.T
 // TestReal_SendMessage_DeadTarget_* arms above and below, which drive the same
 // walk (single hop, multi hop, and both interrupt-gate directions).
 
-// TestReal_SendMessage_InterruptTrue_DeadDescendant_GateFiresOnOriginalTarget:
+// TestReal_SendMessage_NowTrue_DeadDescendant_GateFiresOnOriginalTarget:
 // the §8.5 ancestor-gate is evaluated against the *original* `to` first; a
 // sibling that fails the gate must still be rejected with the existing
 // error message, regardless of whether the recipient is dead.
-func TestReal_SendMessage_InterruptTrue_DeadDescendant_GateFiresOnOriginalTarget(t *testing.T) {
+func TestReal_SendMessage_NowTrue_DeadDescendant_GateFiresOnOriginalTarget(t *testing.T) {
 	r, tmpDir := newFakeReal(t)
 
 	saveTestAgent(t, tmpDir, &state.AgentState{
@@ -136,11 +136,11 @@ func TestReal_SendMessage_InterruptTrue_DeadDescendant_GateFiresOnOriginalTarget
 		Parent: "weave", Status: "active",
 	})
 
-	// bob (sibling, not ancestor) tries interrupt=true on dead alice.
+	// bob (sibling, not ancestor) tries now=true on dead alice.
 	ctx := backendpkg.WithCallerIdentity(context.Background(), "bob")
 	_, err := r.SendMessage(ctx, "alice", "stop", true, false)
 	if err == nil {
-		t.Fatal("SendMessage(interrupt=true) sibling -> dead sibling returned nil error; want §8.5 gate rejection")
+		t.Fatal("SendMessage(now=true) sibling -> dead sibling returned nil error; want §8.5 gate rejection")
 	}
 	msg := err.Error()
 	if !strings.Contains(msg, "ancestor") && !strings.Contains(msg, "§8.5") {
@@ -148,7 +148,7 @@ func TestReal_SendMessage_InterruptTrue_DeadDescendant_GateFiresOnOriginalTarget
 	}
 }
 
-// TestReal_SendMessage_InterruptTrue_DeadDescendant_GatePass_RoutesUp: when
+// TestReal_SendMessage_NowTrue_DeadDescendant_GatePass_RoutesUp: when
 // the caller IS an ancestor of the original dead target, the gate passes,
 // and the routed-up wrapped message lands in the (live) intermediate or
 // grandparent ancestor.
@@ -156,7 +156,7 @@ func TestReal_SendMessage_InterruptTrue_DeadDescendant_GateFiresOnOriginalTarget
 // Setup: weave (caller, root, alive) -> manager (alive) -> engineer (DIED).
 // Caller = weave. Original target = engineer. The first live ancestor walking
 // up from engineer is "manager" — that's where the wrapped body must land.
-func TestReal_SendMessage_InterruptTrue_DeadDescendant_GatePass_RoutesUp(t *testing.T) {
+func TestReal_SendMessage_NowTrue_DeadDescendant_GatePass_RoutesUp(t *testing.T) {
 	r, tmpDir := newFakeReal(t)
 
 	saveTestAgent(t, tmpDir, &state.AgentState{
@@ -185,7 +185,7 @@ func TestReal_SendMessage_InterruptTrue_DeadDescendant_GatePass_RoutesUp(t *test
 
 	// Caller weave (default in tests) is ancestor of engineer (via manager).
 	if _, err := r.SendMessage(context.Background(), "engineer", "stop now", true, false); err != nil {
-		t.Fatalf("SendMessage(interrupt=true) ancestor -> dead descendant: %v", err)
+		t.Fatalf("SendMessage(now=true) ancestor -> dead descendant: %v", err)
 	}
 
 	// engineer's queue empty; manager's queue holds wrapped interrupt entry.

@@ -110,10 +110,14 @@ type RuntimeStartSpec struct {
 type RuntimeHandle interface {
 	Interrupt(ctx context.Context) error
 	Wake() error
-	// WakeForDelivery is the delivery poke for send_message (both interrupt=
-	// false and interrupt=true). Must NEVER call Session.Interrupt: urgency for
-	// interrupt=true is carried by writing the message at priority `now`, not by
+	// WakeForDelivery is the delivery poke for send_message (both now=false
+	// and now=true). Must NEVER call Session.Interrupt: urgency for
+	// now=true is carried by writing the message at priority `now`, not by
 	// a bare interrupt frame (QUM-549/QUM-550/QUM-821).
+	//
+	// QUM-1186 D5: a non-nil error means the stdin injection was NOT CONFIRMED.
+	// It does NOT mean the message was lost — queue entries are durable in
+	// pending/ before the poke and are retried on the next one.
 	WakeForDelivery() error
 	Stop(ctx context.Context) error
 	// StopAbandon is the abandon-mode teardown variant: skips the polite

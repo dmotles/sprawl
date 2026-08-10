@@ -13,6 +13,7 @@ import (
 	"strings"
 	"sync"
 	"time"
+	"unicode/utf8"
 
 	agentpkg "github.com/dmotles/sprawl/internal/agent"
 	"github.com/dmotles/sprawl/internal/agentloop"
@@ -1781,11 +1782,39 @@ func agentCreatedAt(sprawlRoot, agentName string) (time.Time, bool) {
 	return t, true
 }
 
+// sendMessageBodyMaxRunes caps an agent-to-agent message body (QUM-1186 D7).
+//
+// RUNE-counted, following the toastTextMaxRunes precedent — a byte cap would
+// reject a legitimate 300-character message that happens to contain non-ASCII.
+// Enforced by HARD ERROR, never truncation: truncation silently loses content,
+// which is the failure class QUM-1185 exists to eliminate.
+//
+// Deliberately NOT applied to spawn prompts. The cap exists to push substantive
+// briefs into the project's issue tracker, where they outlive the message; a
+// spawn prompt is the agent's whole charter and has nowhere else to go.
+const sendMessageBodyMaxRunes = 300
+
 // SendMessage is the canonical messaging tool (QUM-550) that replaces
-// send_async + send_interrupt. interrupt=false: cooperative wake, ClassAsync,
-// no Session.Interrupt. interrupt=true: force preempt, ClassInterrupt, gated
+// send_async + send_interrupt. now=false: cooperative wake, ClassAsync,
+// no Session.Interrupt. now=true: force preempt, ClassInterrupt, gated
 // to ancestor-only per §8.5.
-func (r *Real) SendMessage(ctx context.Context, to, body string, interrupt, wakeIfOffline bool) (*SendMessageResult, error) {
+//
+// QUM-1186 D6: the parameter was renamed from `interrupt` to `now`. This is a
+// rename only — the semantics are unchanged, and agentloop.ClassInterrupt keeps
+// its name because it is embedded in on-disk queue filenames.
+func (r *Real) SendMessage(ctx context.Context, to, body string, now, wakeIfOffline bool) (*SendMessageResult, error) {
+	// The cap is checked FIRST, before name validation resolves anything and
+	// before any I/O, so a rejected send has zero side effects — nothing in the
+	// maildir, nothing in the queue, and no auto-wake of a `complete` recipient.
+	// D7 requires it above WrapForDeadTarget at minimum (or the routed-up prefix
+	// escapes the cap); placing it at the very top is strictly stronger and makes
+	// "nothing was persisted" structural rather than incidental.
+	if n := utf8.RuneCountInString(body); n > sendMessageBodyMaxRunes {
+		return nil, fmt.Errorf("send_message: body is %d characters, the limit is %d. Nothing was queued and nothing was delivered. "+
+			"Next action: send a %d-character summary instead and put the detail where it outlives the message — "+
+			"an issue in the project's tracker, or a file in the recipient's worktree that you name in the summary",
+			n, sendMessageBodyMaxRunes, sendMessageBodyMaxRunes)
+	}
 	if err := agentpkg.ValidateName(to); err != nil {
 		return nil, err
 	}
@@ -1833,12 +1862,12 @@ func (r *Real) SendMessage(ctx context.Context, to, body string, interrupt, wake
 			}
 		}
 	}
-	if interrupt {
+	if now {
 		if caller == "" {
 			return nil, fmt.Errorf("send_message: caller identity unknown; refusing to send")
 		}
 		if caller == to {
-			return nil, fmt.Errorf("send_message: cannot interrupt self")
+			return nil, fmt.Errorf("send_message: cannot send now-priority to self")
 		}
 		// QUM-725: the §8.5 ancestor gate fires against the ORIGINAL `to`
 		// (caller intent), NOT the route-up target. Otherwise a sibling that
@@ -1897,7 +1926,10 @@ func (r *Real) SendMessage(ctx context.Context, to, body string, interrupt, wake
 	}
 
 	class := agentloop.ClassAsync
-	if interrupt {
+	if now {
+		// ClassInterrupt keeps its name deliberately (QUM-1186 D6): it is
+		// embedded in on-disk queue filenames, so renaming it would be a
+		// migration for no behavioural gain.
 		class = agentloop.ClassInterrupt
 	}
 	entry, err := agentloop.Enqueue(r.sprawlRoot, to, agentloop.Entry{
@@ -1910,8 +1942,8 @@ func (r *Real) SendMessage(ctx context.Context, to, body string, interrupt, wake
 	if err != nil {
 		return nil, fmt.Errorf("enqueuing message: %w", err)
 	}
-	// QUM-821: both interrupt=true and interrupt=false deliver via the same
-	// cooperative wake. Urgency for interrupt=true is carried by the enqueued
+	// QUM-821: both now=true and now=false deliver via the same
+	// cooperative wake. Urgency for now=true is carried by the enqueued
 	// ClassInterrupt entry, which drainPendingToStdin writes at priority `now`
 	// (cancel-and-replace) for children. The bare interrupt frame is reserved for
 	// Esc-abort.
@@ -1923,13 +1955,31 @@ func (r *Real) SendMessage(ctx context.Context, to, body string, interrupt, wake
 	// swept it up; that poll is gone, so the missed poke is now the difference
 	// between instant delivery and waiting for unrelated traffic.
 	if runtime, runtimeBacked := r.startedRuntime(to); runtimeBacked {
-		_ = runtime.WakeForDelivery()
+		if wErr := runtime.WakeForDelivery(); wErr != nil {
+			// QUM-1186 D5 / AC 7. The entry is ALREADY durable in pending/ (the
+			// Enqueue above) and will be retried on the recipient's next poke, so
+			// this is neither a delivery nor a loss — it is an unconfirmed
+			// injection, and the caller must be told exactly that. "Delivery
+			// failed" would replace a silent false claim with a loud one.
+			//
+			// The drain's own error is deliberately NOT wrapped: it enumerates
+			// every failed batch's entry IDs, and the drain flushes whatever is
+			// pending rather than only this caller's entry — so those IDs belong
+			// to other agents' mail. That detail stays in the operator-facing
+			// WARN (drain.go); this message stays summarised and honest about
+			// scope.
+			return nil, fmt.Errorf("send_message: delivery to %s is NOT CONFIRMED. The message is queued and durable (id %s) "+
+				"and will be delivered on the recipient's next poke or turn boundary, but the stdin flush that carries it — "+
+				"along with any other mail pending for %s — did not complete in time. "+
+				"Next action: call peek to check whether it landed. Do NOT resend — the message is still queued and a resend duplicates it",
+				to, entry.ID, to)
+		}
 	}
 
 	return &SendMessageResult{
-		MessageID:   entry.ID,
-		QueuedAt:    entry.EnqueuedAt,
-		Interrupted: interrupt,
+		MessageID: entry.ID,
+		QueuedAt:  entry.EnqueuedAt,
+		Now:       now,
 	}, nil
 }
 

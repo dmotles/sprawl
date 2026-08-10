@@ -107,6 +107,25 @@
 //	      drainPendingToStdin arm stayed GREEN. That green-while-hung combination
 //	      is the whole point of the arm: bounding the drain alone looks complete
 //	      from the drain's own tests.
+//
+// QUM-1186 (lane 2) additions. PROVENANCE, stated because the distinction
+// matters: R1 is a RED-FIRST observation (the assertion was inverted against the
+// unmodified tree, which is the pre-slice state by definition — there was
+// nothing to mutate). M8/M9 are true mutations, applied to the implemented code
+// and then reverted.
+//
+//	R1  red-first, before any implementation: the inverted assertion run against
+//	    the tree where Real.SendMessage still discards the poke's result.
+//	    → SenderMCPCallReturns_WhileRecipientWedged FAILED: "SendMessage returned
+//	      err = <nil> while the recipient was wedged and the injection never
+//	      landed — want a not-confirmed error (QUM-1186 AC 7). A nil return here
+//	      claims delivery that did not happen."
+//	M8  make writeInjection `return err` instead of `continue` on a failed frame
+//	    — the natural-looking tidy once the function returns an error at all.
+//	M9  delete the slog.Warn in writeInjection, keeping the error return — the
+//	    "the caller gets it now, the log is redundant" refactor.
+//	    → both recorded, with what they printed, in the header of
+//	      qum1186_drain_error_surface_test.go, where their assertions live.
 package supervisor
 
 import (
@@ -393,6 +412,13 @@ func TestQUM1072_ChildDrain_TimedOutWrite_WarnsWithEntryIDsAndDeadline(t *testin
 // into its own goroutine (the issue notes that would downgrade the severity to a
 // leaked goroutine) — this test would then pass trivially, which is the correct
 // signal rather than a false one.
+//
+// QUM-1186 AC 7: this test now carries TWO claims, not one. The sender must
+// return BOUNDED (QUM-1072, unchanged) *and* must be TOLD the injection was not
+// confirmed (new). The err-is-nil assertion was inverted for the second claim;
+// see the block below and MUTATION LOG entry M7. Returning promptly with a nil
+// error is no longer a pass — it is the precise shape of the defect, because it
+// reports a delivery that did not happen.
 func TestQUM1072_SenderMCPCallReturns_WhileRecipientWedged(t *testing.T) {
 	const deadline = 150 * time.Millisecond
 	withShortChildDrainTimeout(t, deadline)
@@ -422,6 +448,12 @@ func TestQUM1072_SenderMCPCallReturns_WhileRecipientWedged(t *testing.T) {
 	}
 	t.Cleanup(func() { _ = rt.Stop(context.Background()) })
 
+	// QUM-1186: an UNRELATED entry, already queued by somebody else, that this
+	// drain will also try to flush. It exists so the leak assertion below has a
+	// subject — without it, "the error does not contain id-qum1072-unrelated" is
+	// trivially true and pins nothing.
+	seedAsyncEntry(t, tmpDir, "alice", "id-qum1072-unrelated", "someone else's mail")
+
 	mock.engageWriteWedge(t) // alice's stdin pipe is now full and unread
 
 	// weave sends alice a message. Real.SendMessage pokes alice's runtime
@@ -439,13 +471,49 @@ func TestQUM1072_SenderMCPCallReturns_WhileRecipientWedged(t *testing.T) {
 
 	select {
 	case got := <-done:
-		// The error MUST be checked. Real.SendMessage has several early returns
-		// that complete in microseconds (name validation, LoadAgent failure, the
-		// offline gate, the terminal-agent gate). Discarding the error would let
-		// any of them satisfy the timing assertion below and turn this into a test
-		// that passes for a reason unrelated to the bound.
-		if got.err != nil {
-			t.Fatalf("SendMessage returned err = %v — it failed before ever poking the recipient, so this test proves nothing about the bound", got.err)
+		// QUM-1186 AC 7 — INVERTED, deliberately. Until this slice the assertion
+		// here was `got.err != nil → Fatalf`. That was correct for QUM-1072, whose
+		// claim was solely "the sender's goroutine is unblocked", and a nil error
+		// was the cheapest proof the call had not bailed early.
+		//
+		// It is now wrong. Returning nil while the injection never landed tells
+		// the caller the message was delivered, which is the silent false claim
+		// QUM-1185 exists to eliminate. AC 7 makes this path TWO claims —
+		// *bounded* AND *reported* — and the timing assertion below still carries
+		// the first one, so inverting this does not relax QUM-1072's guarantee.
+		if got.err == nil {
+			t.Fatalf("SendMessage returned err = <nil> while the recipient was wedged and the injection never landed — want a not-confirmed error (QUM-1186 AC 7). A nil return here claims delivery that did not happen.")
+		}
+		// The error must be HONEST in both directions: the entry is already
+		// durable in pending/ before the write is attempted (real.go, the Enqueue
+		// above the poke) and is retried on the next poke, so this is neither a
+		// delivery nor a loss.
+		msg := got.err.Error()
+		lower := strings.ToLower(msg)
+		for _, want := range []string{"not confirmed", "queued", "next action:"} {
+			if !strings.Contains(lower, want) {
+				t.Errorf("error %q does not contain %q — AC 7 requires it to say delivery is NOT CONFIRMED and the message REMAINS QUEUED, with a next action", msg, want)
+			}
+		}
+		// The honesty guard. "delivery failed" would be a loud lie replacing a
+		// silent one — the message is still queued and will be retried.
+		if strings.Contains(strings.ToLower(msg), "delivery failed") {
+			t.Errorf("error %q claims delivery FAILED — the entry is durably queued and will be retried; that is a different false claim, not a fix", msg)
+		}
+		// Constraint C: the drain flushes whatever is pending, not only this
+		// caller's entry, so the error must not be attributed to this message.
+		for _, banned := range []string{"your message was lost", "message was not sent"} {
+			if strings.Contains(strings.ToLower(msg), banned) {
+				t.Errorf("error %q attributes the outcome to THIS message; the drain flushes the whole pending queue and cannot honestly single one out", msg)
+			}
+		}
+		// Constraint C, second half — the LAYERING rule. The drain's own error
+		// names every failed batch's entry IDs, which is right for the operator-
+		// facing WARN and wrong here: this error is returned to whichever agent
+		// called send_message, and those IDs belong to OTHER agents' queued mail.
+		// So Real.SendMessage must summarise, not wrap-and-forward.
+		if strings.Contains(msg, "id-qum1072-unrelated") {
+			t.Errorf("error %q leaks an unrelated queued entry's ID to the sender — the drain flushes the whole queue, so its per-entry detail belongs in the WARN, not in this caller's tool result", msg)
 		}
 		if upper := qum1072SlackFactor * deadline; got.elapsed > upper {
 			t.Fatalf("SendMessage returned after %v, want <= %v", got.elapsed, upper)

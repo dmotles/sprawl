@@ -497,27 +497,25 @@ func (h *unifiedHandle) Interrupt(ctx context.Context) error {
 }
 
 func (h *unifiedHandle) Wake() error {
-	h.drainPendingToStdin()
-	return nil
+	return h.drainPendingToStdin()
 }
 
-// WakeForDelivery is the sole delivery poke for send_message (both interrupt=
-// false and interrupt=true). QUM-817/QUM-821: it writes pending entries to the
+// WakeForDelivery is the sole delivery poke for send_message (both now=false
+// and now=true). QUM-817/QUM-821: it writes pending entries to the
 // CLI stdin — async-class at priority `next`, interrupt-class at priority `now`
 // (see drainPendingToStdin). The stdin write itself wakes the CLI's command
 // queue, so there is no separate signal to poke, and urgency is carried by the
 // `now` priority rather than a bare interrupt frame.
 func (h *unifiedHandle) WakeForDelivery() error {
-	h.drainPendingToStdin()
-	return nil
+	return h.drainPendingToStdin()
 }
 
 // drainPendingToStdin drains this child's inbox to stdin under the child policy
 // (QUM-1062). The implementation is shared with the root path — see drain.go,
 // and childDrainPolicy for every way the two differ and why, including the
 // deliberately-nil serialising mutex (the QUM-1066 TOCTOU residual).
-func (h *unifiedHandle) drainPendingToStdin() {
-	runDrain(h.rt, h.sprawlRoot, h.name, childDrainPolicy())
+func (h *unifiedHandle) drainPendingToStdin() error {
+	return runDrain(h.rt, h.sprawlRoot, h.name, childDrainPolicy())
 }
 
 // unifiedHandleStopWaitTimeout bounds the post-Kill session.Wait() inside

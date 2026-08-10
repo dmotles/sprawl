@@ -288,7 +288,7 @@ func TestWeaveRuntimeHandle_WakeForDelivery_TracksEntryIDsAsSystemKind(t *testin
 //     queued" and the dumb-forwarder rule against being cute about timing.
 //
 // Consequence, deliberate and documented: an inter-agent
-// send_message(interrupt=true) targeting weave is non-preemptive. That is an
+// send_message(now=true) targeting weave is non-preemptive. That is an
 // asymmetry vs a child recipient; restoring preemption would be a follow-up
 // issue, not a defect in this slice.
 func TestWeaveRuntimeHandle_WakeForDelivery_InterruptClass_StaysNextNotNow(t *testing.T) {
