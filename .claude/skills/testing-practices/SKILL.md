@@ -429,14 +429,14 @@ mutation: suppress the `kind:system` stdin write, keep the publish → L1 PASS, 
 FAIL, same run.
 
 **The contrast case, which is where the granularity rule earns its keep.**
-`drain-row-inject:162` greps for the *same self-minted string* — but it sits behind
-two unforgeable upstream assertions: a non-weave `state` file appearing (`:116`,
-minted by weave's CLI calling `spawn`) and the child's `messages_send` envelope
-landing in weave's maildir (`:144`, minted by the child's CLI). With a dead CLI the
-row dies at `:116` and never reaches `:162`. So the row is **sound**; the citation
-was still wrong — `:162` alone does not support *"weave acted on the notification"*,
-and `:116`/`:144` prove the CLI acted on the **spawn prompt**, which is a different
-claim. Remedy is a **citation fix — quote `:116`/`:144`** — not distrust of the row.
+`drain-row-inject:167` greps for the *same self-minted string* — but it sits behind
+two unforgeable upstream assertions: a non-weave `state` file appearing (`:118`,
+minted by weave's CLI calling `spawn`) and the child's `send_message` envelope
+landing in weave's maildir (`:149`, minted by the child's CLI). With a dead CLI the
+row dies at `:118` and never reaches `:167`. So the row is **sound**; the citation
+was still wrong — `:167` alone does not support *"weave acted on the notification"*,
+and `:118`/`:149` prove the CLI acted on the **spawn prompt**, which is a different
+claim. Remedy is a **citation fix — quote `:118`/`:149`** — not distrust of the row.
 
 The positive form is what licenses trust. L2 observes a `"kind":"result"` entry,
 which has exactly one producer chain, ending at `session.runReader` reading from

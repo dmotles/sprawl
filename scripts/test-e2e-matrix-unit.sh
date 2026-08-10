@@ -93,7 +93,16 @@ FAIL=0
 # being detectable. The equality is a coincidence of the last measurement, not a
 # rule: raise it deliberately when you add assertions, and if you remove some,
 # lower it deliberately and say why. Same treatment as QUM-1029's per-row floor.
-MIN_ASSERTIONS=466
+# 479 once QUM-1186 lane 5 extended [19c] with the never-existed-name scan over
+# the TRACKED TREE (git ls-files minus docs/archive/ minus P19_EXCLUDE): eight
+# arms (corpus floor + its control, exclusion accounting, token-list floor,
+# canonical-absence bound, the scan itself, unreadable accounting, exemption
+# ceiling) plus five controls (planted skill-shaped markdown fires; clean
+# markdown stays quiet; an empty token list reports clean on a known-dirty
+# subject; the canonical-absence check fires on a set shipping the name; the
+# whole-file P19-INERT-ROW exemption does not leak outside scripts/e2e-tests/).
+# Net +13 over 466. Re-measured on a FULL GREEN run — 479 passed / 0 failed.
+MIN_ASSERTIONS=479
 # A [16b] nested child deliberately does NOT re-run section [16] (recursing would
 # fork-bomb, and counting there would corrupt the parity comparison), so it asserts
 # strictly fewer things and needs its own floor. Measured at de22410: 237; 238 after
@@ -112,7 +121,10 @@ MIN_ASSERTIONS=466
 # with UNIT_NESTED_SEAM_CHECK set to any value and SUBTRACT ONE from the total —
 # without a live nonce 16c's deliberate fail fires, so a hand-driven child reads
 # exactly one higher than a real [16b] child ("393 passed / 1 failed" here).
-MIN_ASSERTIONS_NESTED=458
+# 471 once lane 5's [19c] never-existed tree scan landed (+13; the child DOES
+# run [19]). Measured with UNIT_NESTED_SEAM_CHECK set: "471 passed / 1 failed",
+# the one fail being 16c's deliberate one, per the recipe above.
+MIN_ASSERTIONS_NESTED=471
 
 # Pin the temp root. This suite runs inside `make validate` and therefore inside
 # the pre-commit hook, so it must not inherit the committing agent's TMPDIR:
@@ -3862,6 +3874,38 @@ fi
 # whereas adding a marker is a deliberate edit that shows up in review.
 P19_FORBIDDEN='report_status delegate messages_send last_report status_change interrupt='
 
+# NAMES THAT NEVER EXISTED, scanned over the whole TRACKED TREE rather than only
+# `scripts/`. This set is deliberately narrower than P19_FORBIDDEN, and the
+# corpus deliberately wider, because the two properties trade off:
+#
+#   A formerly-existing name (`report_status`, `delegate`, `last_report`,
+#   `status_change`) has legitimate HISTORY to recount. Retrospective prose
+#   naming it is not an advertisement, and eight such lines exist today in
+#   .claude/skills/ alone — load-bearing obligation prose in the e2e-matrix
+#   table, which a reviewer reads. Scanning those with P19_FORBIDDEN would
+#   require sprinkling P19-ALLOW markers through them and roughly doubling
+#   P19_EXEMPT_CEILING, which destroys what that ceiling measures.
+#
+#   A name that NEVER existed has no history to recount, anywhere. Every
+#   occurrence is an error by construction, so the wide corpus costs nothing.
+#
+# This is the gap that let `mcp__sprawl__messages_send` survive in
+# .claude/skills/testing-practices/SKILL.md (taught as the mechanism of the
+# LIVE drain-row-inject row) and in Makefile:315 — the same defect this section
+# already catches inside `scripts/`, sitting one directory outside its corpus.
+# A skill is loaded into agent context, so the next probe author writes the
+# nonexistent name and the model silently guesses `send_message`.
+#
+# THE BOUNDARY, stated rather than inherited: formerly-existed names remain
+# unguarded OUTSIDE `scripts/**/*.sh`. That is deliberate, not an oversight.
+#
+# Membership cannot be derived — "never existed" is a claim about history, and
+# deriving it would mean `git log -S` over the full history on every
+# `make validate`. Instead the list is hardcoded and BOUNDED: the arm below
+# asserts every member is absent from the canonical tool set, so if someone
+# ever ships a real `messages_send` this section fails and names its own remedy.
+P19_NEVER_EXISTED='messages_send'
+
 # Scripts deliberately outside the corpus, matched on REPO-RELATIVE PATH rather
 # than basename — a basename exclusion would silently drop a future matrix row
 # that happened to share a name. tower's ruling on the pre-matrix standalone
@@ -3938,19 +3982,36 @@ _p19_is_skipped_row() {
 	[ "$skip_ln" -lt "$assert_ln" ]
 }
 
-_p19_scan_forbidden() {
+# Repo-relative label. The scans used to print a BASENAME, which is unambiguous
+# for `scripts/**/*.sh` and useless for the tree corpus below, where eleven
+# distinct files are named SKILL.md. Fixtures live outside REPO_ROOT and keep
+# their basename, so every control's expectations are unchanged.
+_p19_label() {
+	case "$1" in
+		"$REPO_ROOT"/*) printf '%s' "${1#"$REPO_ROOT"/}" ;;
+		*) printf '%s' "${1##*/}" ;;
+	esac
+}
+
+# Token scan, parameterized on the token list in $1 so the tree corpus can run
+# the NARROWER `P19_NEVER_EXISTED` set through the SAME code path — and the same
+# exemptions, the same unreadable accounting — that every control below already
+# exercises. A second copy of this function would be a second thing to control.
+_p19_scan_tokens() {
+	local toks="$1"
+	shift
 	local f tok base line n body
 	for f in "$@"; do
 		if [ ! -r "$f" ]; then
-			printf '__UNREADABLE__:%s\n' "${f##*/}"
+			printf '__UNREADABLE__:%s\n' "$(_p19_label "$f")"
 			continue
 		fi
 		if _p19_is_skipped_row "$f"; then
-			printf '__EXEMPT__:%s:0:whole-file (row skips before it asserts)\n' "${f##*/}"
+			printf '__EXEMPT__:%s:0:whole-file (row skips before it asserts)\n' "$(_p19_label "$f")"
 			continue
 		fi
-		base="${f##*/}"
-		for tok in $P19_FORBIDDEN; do
+		base=$(_p19_label "$f")
+		for tok in $toks; do
 			while IFS= read -r line; do
 				[ -n "$line" ] || continue
 				n="${line%%:*}"
@@ -3963,11 +4024,15 @@ _p19_scan_forbidden() {
 				esac
 				printf '%s:%s:%s\n' "$base" "$n" "$tok"
 			done <<FTOK
-$(grep -nF -- "$tok" "$f" 2>/dev/null)
+$(grep -InF -- "$tok" "$f" 2>/dev/null)
 FTOK
 		done
 	done
 }
+
+# The original entry point, unchanged in behaviour: the script corpus is scanned
+# with the full forbidden set.
+_p19_scan_forbidden() { _p19_scan_tokens "$P19_FORBIDDEN" "$@"; }
 
 _p19_scan_unknown_tools() {
 	local f base name
@@ -4154,6 +4219,105 @@ else
 $(printf '%s\n' "$_p19_unknown_shown" | sed 's/^/      /')"
 fi
 
+# --- the never-existed scan, over the tracked tree --------------------------
+# TRACKED files, not a `find`: agent worktrees share a filesystem and carry
+# other agents' untracked scratch output, so a find-based corpus would make this
+# verdict a function of files nobody committed. Tracked-only is also the right
+# semantic boundary — the defect class is "content a future author reads".
+# `docs/archive/` is pruned: it is a dated record of what was true then, and
+# correcting it would falsify the record. If git is unavailable the corpus comes
+# back empty and the floor arm below fails loudly, which is the right direction.
+P19_TREE=()
+_p19_tree_excluded=0
+while IFS= read -r _rel; do
+	[ -n "$_rel" ] || continue
+	case "$_rel" in
+		docs/archive/*) continue ;;
+	esac
+	case "
+$P19_EXCLUDE
+" in
+		*"
+$_rel
+"*)
+			_p19_tree_excluded=$((_p19_tree_excluded + 1))
+			continue
+			;;
+	esac
+	P19_TREE+=("$REPO_ROOT/$_rel")
+done <<P19TREEFILES
+$(git -C "$REPO_ROOT" ls-files 2>/dev/null)
+P19TREEFILES
+
+# Floor 1, the corpus. Hardcoded just under the measured size (939 after
+# exclusions at the time of writing), on the same argument as P19_CORPUS_FLOOR:
+# a floor at half the tree would let half the tree vanish unnoticed.
+P19_TREE_FLOOR=880
+if [ "${#P19_TREE[@]}" -ge "$P19_TREE_FLOOR" ]; then
+	pass "19c: the tree corpus holds ${#P19_TREE[@]} tracked files (floor $P19_TREE_FLOOR)"
+else
+	fail "19c: the tree corpus holds only ${#P19_TREE[@]} tracked files — git ls-files is not resolving, and the never-existed scan below would report clean against an empty corpus"
+fi
+if [ 0 -ge "$P19_TREE_FLOOR" ]; then
+	fail "19c: positive control FAILED — the tree-corpus floor is satisfied by an empty corpus"
+else
+	pass "19c: positive control — the tree-corpus floor is non-zero, so it is not satisfied by an empty corpus"
+fi
+if [ "$_p19_tree_excluded" -eq "$P19_EXCLUDE_N" ]; then
+	pass "19c: the tree corpus applied all $P19_EXCLUDE_N exclusions (the inert standalone drivers and this suite)"
+else
+	fail "19c: the tree corpus applied $_p19_tree_excluded of $P19_EXCLUDE_N exclusions — the exclusion list is not the set this section believes it is"
+fi
+
+# Floor 2, the token list. An empty list makes _p19_scan_tokens iterate zero
+# times and report clean over any corpus — the `0 == 0` failure mode one layer
+# in from the corpus floor. Controlled below (PC: the hole is real).
+if [ -n "$P19_NEVER_EXISTED" ]; then
+	pass "19c: the never-existed token list is non-empty ($P19_NEVER_EXISTED)"
+else
+	fail "19c: the never-existed token list is EMPTY — the tree scan below iterates nothing and reports clean over any corpus"
+fi
+
+# The bound on the hardcoded list: a never-existed name must not be a live tool.
+_p19_ne_present=$(_p19_canon_present "$P19_CANONICAL" $P19_NEVER_EXISTED)
+if [ -z "$_p19_ne_present" ]; then
+	pass "19c: every name in P19_NEVER_EXISTED is absent from the canonical tool set (so the list has not rotted into forbidding a real tool)"
+else
+	fail "19c: P19_NEVER_EXISTED names a tool that NOW EXISTS:$_p19_ne_present — internal/sprawlmcp/ ships it, so strike that name from P19_NEVER_EXISTED"
+fi
+
+_p19_tree_hits=$(_p19_scan_tokens "$P19_NEVER_EXISTED" "${P19_TREE[@]}")
+_p19_tree_hits_n=$(_p19_violation_lines "$_p19_tree_hits")
+if [ "$_p19_tree_hits_n" -eq 0 ]; then
+	pass "19c: no tracked file names a sprawl tool that has never existed ($P19_NEVER_EXISTED)"
+else
+	fail "19c: $_p19_tree_hits_n line(s) in the tracked tree name a tool that has NEVER existed — an agent reading them writes the nonexistent name and the model silently guesses the real one:
+$(printf '%s\n' "$_p19_tree_hits" | grep -vE '^(__UNREADABLE__|__EXEMPT__):' | sed 's/^/      /')"
+fi
+
+_p19_tree_unread_n=$(_p19_unreadable_lines "$_p19_tree_hits")
+if [ "$_p19_tree_unread_n" -eq 0 ]; then
+	pass "19c: every file in the tree corpus was readable, so a clean verdict covers all of it"
+else
+	fail "19c: $_p19_tree_unread_n tree-corpus file(s) were unreadable — they contributed zero violations, which is indistinguishable from being clean"
+fi
+
+# Ceiling, measured: exactly THREE, and all three are WHOLE-FILE exemptions —
+# the inert `# P19-INERT-ROW` rows the script corpus already accounts for. Zero
+# line-level P19-ALLOW claims exist in the tracked tree, and the ceiling is set
+# at the measured 3 rather than padded, so the first line-level claim against a
+# never-existed name is a deliberate, reviewable bump. It needs a ceiling for
+# the same reason the script corpus does: otherwise "adding a marker shows up in
+# review" is a hope rather than a check.
+P19_TREE_EXEMPT_CEILING=3
+_p19_tree_exempt_n=$(_p19_exempt_lines "$_p19_tree_hits")
+if [ "$_p19_tree_exempt_n" -le "$P19_TREE_EXEMPT_CEILING" ]; then
+	pass "19c: $_p19_tree_exempt_n exemption(s) claimed against the never-existed scan (ceiling $P19_TREE_EXEMPT_CEILING):$(printf '%s\n' "$_p19_tree_hits" | grep '^__EXEMPT__:' | cut -d: -f2 | sort -u | tr '\n' ' ')"
+else
+	fail "19c: $_p19_tree_exempt_n line(s) claim an exemption from the never-existed scan, over the ceiling of $P19_TREE_EXEMPT_CEILING — a name that never existed has no history to recount, so the marker is being used to silence an advertisement:
+$(printf '%s\n' "$_p19_tree_hits" | grep '^__EXEMPT__:' | sed 's/^/      /')"
+fi
+
 # The exemption is a marker anyone can add to a live agent prompt to silence a
 # genuine advertisement, so it needs a ceiling for the same reason every row
 # needs an assertion floor: without one, "adding a marker shows up in review"
@@ -4273,6 +4437,56 @@ if [ "$P19_FIX_OK" -eq 1 ]; then
 	else
 		fail "19c: positive control FAILED — the marker alone exempted a row that runs, so the exemption is self-certified"
 	fi
+
+	# --- controls for the never-existed scan over the tree corpus ------------
+	# The red-first evidence (the scan firing on the two REAL hits at
+	# .claude/skills/testing-practices/SKILL.md:434 and Makefile:315) is not
+	# reproducible once those are fixed, so it cannot be this arm's standing
+	# control. These are.
+	mkdir -p "$P19_FIX/skills/planted" "$P19_FIX/docs"
+	# POSITIVE control (defect planted in a SKILL-shaped markdown file, which is
+	# the surface the corpus was widened to reach). Two names, so the arm cannot
+	# pass by keying on one literal.
+	printf 'The child calls `messages_send` to weave.\nThen `mcp__sprawl__no_such_tool_xyz`.\n' \
+		>"$P19_FIX/skills/planted/SKILL.md"
+	if [ "$(_p19_violation_lines "$(_p19_scan_tokens "$P19_NEVER_EXISTED messages_send no_such_tool_xyz" "$P19_FIX/skills/planted/SKILL.md")")" -ge 2 ]; then
+		pass "19c: positive control — the never-existed scan fires on planted names in a markdown skill file"
+	else
+		fail "19c: positive control FAILED — the never-existed scan stayed quiet on a skill file naming a nonexistent tool, so its clean verdict on the tracked tree proves nothing"
+	fi
+	# NEGATIVE control: a markdown subject naming only REAL tools. Without this,
+	# the control above is satisfied by an arm that fires on everything.
+	printf 'Call `send_message`, then `mcp__sprawl__spawn`, then messages_read.\n' \
+		>"$P19_FIX/skills/planted/clean.md"
+	if [ "$(_p19_violation_lines "$(_p19_scan_tokens "$P19_NEVER_EXISTED" "$P19_FIX/skills/planted/clean.md")")" -eq 0 ]; then
+		pass "19c: negative control — the never-existed scan stays quiet on markdown naming only tools that exist"
+	else
+		fail "19c: negative control FAILED — the never-existed scan flags real tool names, so its silence on the tracked tree is luck"
+	fi
+	# POSITIVE control for the token-list floor: the hole it guards is REAL. An
+	# empty list reports clean against the very fixture proven dirty above.
+	if [ "$(_p19_violation_lines "$(_p19_scan_tokens "" "$P19_FIX/skills/planted/SKILL.md")")" -eq 0 ]; then
+		pass "19c: positive control — an EMPTY token list reports clean against a known-dirty subject, which is what the non-empty check exists to stop"
+	else
+		fail "19c: positive control FAILED — an empty token list still reported violations, so the non-empty check is guarding a hole that does not exist and the real hole is elsewhere"
+	fi
+	# POSITIVE control for the canonical-absence arm (defect planted: a tool set
+	# that ships the never-existed name).
+	if [ -n "$(_p19_canon_present "a messages_send b" $P19_NEVER_EXISTED)" ]; then
+		pass "19c: positive control — the canonical-absence check fires on a tool set that ships a never-existed name"
+	else
+		fail "19c: positive control FAILED — the canonical-absence check stayed quiet on a set containing messages_send, so P19_NEVER_EXISTED cannot be bounded"
+	fi
+	# NEGATIVE control specific to WIDENING the corpus: the whole-file
+	# P19-INERT-ROW exemption is gated to scripts/e2e-tests/*.sh, and must not
+	# leak — otherwise any doc could silence this scan by pasting the marker.
+	printf '# P19-INERT-ROW\n    e2e_skip_row "not a row"\nprose naming messages_send\n' \
+		>"$P19_FIX/docs/pretend-inert.md"
+	if [ "$(_p19_violation_lines "$(_p19_scan_tokens "$P19_NEVER_EXISTED" "$P19_FIX/docs/pretend-inert.md")")" -eq 1 ]; then
+		pass "19c: negative control — a non-row file carrying P19-INERT-ROW is NOT whole-file exempt, so a doc cannot silence the scan by pasting the marker"
+	else
+		fail "19c: negative control FAILED — the whole-file row exemption leaked outside scripts/e2e-tests/, so any tracked file could evade the never-existed scan"
+	fi
 else
 	fail "19c: no fixture dir — the forbidden-token scan ran with no positive control, so a clean verdict is not attributable"
 	fail "19c: no fixture dir — the unknown-tool scan ran with no positive control"
@@ -4284,6 +4498,11 @@ else
 	fail "19c: no fixture dir — the whole-file skip exemption's near-miss positive control did not run"
 	fail "19c: no fixture dir — the conditional-skip positive control did not run"
 	fail "19c: no fixture dir — the marker-alone positive control did not run"
+	fail "19c: no fixture dir — the never-existed scan ran with no positive control, so a clean verdict over the tracked tree is not attributable"
+	fail "19c: no fixture dir — the never-existed scan ran with no negative control"
+	fail "19c: no fixture dir — the empty-token-list positive control did not run"
+	fail "19c: no fixture dir — the canonical-absence positive control did not run"
+	fail "19c: no fixture dir — the whole-file exemption leak negative control did not run"
 fi
 
 # --- 19d: the StopAfterTurn hand-off must not evaporate quietly -------------

@@ -214,16 +214,17 @@ hooks:
 	chmod +x .git/hooks/reference-transaction
 	@echo "Pre-commit and main-ref guard hooks installed."
 
-# Opt-in end-to-end smoke test for the TUI-mode parent-notification path
-# (QUM-312). Simulates a child agent by writing a state.json (state=complete,
-# last_report_message set) and a maildir envelope addressed to weave directly
-# into the sandbox state tree, then asserts that the `sprawl enter` TUI
-# surfaces an 'inbox: N new message(s) for weave' viewport banner and a '(N)'
-# unread badge on the synthesized weave row. Not part of `make validate`
-# — runs real subprocesses, launches a real claude, and interacts with
-# tmux. See scripts/test-notify-tui-e2e.sh. Mandatory before merging
-# any change to the TUI-notifier path: cmd/enter.go, cmd/enter_notify.go,
-# internal/tui/app.go, internal/tui/messages.go, or internal/tui/tree.go.
+# SUPERSEDED — this target no longer tests anything. QUM-1186 deleted the
+# `report_status` tool and the state fields the script probed with, so
+# scripts/test-notify-tui-e2e.sh now exits 77 (skip) at the top rather than
+# false-greening on assertions whose subject is gone. The TUI-mode
+# parent-notification coverage (QUM-312) lives in matrix row `notify-tui`:
+#
+#     make test-e2e-matrix-notify-tui
+#
+# Deleting this target and its script is tracked separately (QUM-1186 lane 5
+# hand-off). Until then it is kept so an existing invocation gets the rc-77
+# skip and the pointer above rather than a "no rule to make target" error.
 test-notify-tui-e2e: build
 	bash scripts/test-notify-tui-e2e.sh; rc=$$?; ./sprawl sandbox-gc --max-age=10m || true; exit $$rc
 
@@ -281,10 +282,13 @@ test-leak-resistance-e2e: build
 test-exit-code-preservation:
 	bash scripts/test-exit-code-preservation.sh
 
-# QUM-511 / QUM-489: end-to-end regression guard. After a delegate-style
-# branch swap (agent's worktree HEAD moves to a new branch but state.json
-# still records the spawn-time branch), `sprawl merge` must follow the
-# worktree's actual current branch. Pre-fix it silently no-ops because it
+# QUM-511 / QUM-489: end-to-end regression guard. When an agent's worktree
+# HEAD moves to a new branch but state.json still records the spawn-time
+# branch, `sprawl merge` must follow the worktree's actual current branch.
+# QUM-1186: this comment previously cited a "delegate-style branch swap".
+# That mechanism is deleted; the field still goes stale for the more general
+# reason above (any agent may check out or create a branch in its own
+# worktree), so the guard stays. Matches internal/agentops/merge.go:181. Pre-fix it silently no-ops because it
 # reads stale agentState.Branch. Pure shell — no claude required. See
 # scripts/test-merge-reuse-e2e.sh. Mandatory before merging any change to
 # internal/agentops/merge.go, internal/sprawlmcp/server.go (toolMerge),
@@ -312,7 +316,7 @@ test-ask-user-question-e2e: build
 	bash scripts/test-ask-user-question-e2e.sh; rc=$$?; ./sprawl sandbox-gc --max-age=10m || true; exit $$rc
 
 # Opt-in end-to-end smoke test for the drain-row prompt-inject path
-# (QUM-569). Drives a real claude child to call `mcp__sprawl__messages_send`
+# (QUM-569). Drives a real claude child to call `mcp__sprawl__send_message`
 # to weave, then asserts that weave's TUI pane renders the drain-row
 # citation `From <child> — mcp__sprawl__messages_read(id=...)` within a
 # bounded timeout. Restores the e2e regression guard for the
