@@ -640,11 +640,11 @@ func renderOutstanding(tasks []runtimepkg.OutstandingTask, now time.Time) string
 		if i > 0 {
 			b.WriteByte(',')
 		}
-		age := "age=unknown"
-		if !task.FirstSeen.IsZero() {
-			age = "age=" + now.Sub(task.FirstSeen).Round(time.Second).String()
-		}
-		fmt.Fprintf(&b, "%s:%s:%s", task.TaskType, task.TaskID, age)
+		// No zero-FirstSeen arm: noteBackgroundTasks stamps FirstSeen on every
+		// task it admits, so a zero value cannot reach here. An unreachable
+		// branch that reads as live logic is its own defect.
+		fmt.Fprintf(&b, "%s:%s:age=%s", task.TaskType, task.TaskID,
+			now.Sub(task.FirstSeen).Round(time.Second))
 	}
 	return b.String()
 }

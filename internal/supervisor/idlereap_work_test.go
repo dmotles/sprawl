@@ -18,6 +18,7 @@ package supervisor
 import (
 	"context"
 	"encoding/json"
+	"fmt"
 	"log/slog"
 	"strings"
 	"testing"
@@ -286,5 +287,41 @@ func TestRefusalRecord_EmptyObservedSet_CarriesNoTaskDetail(t *testing.T) {
 	}
 	if strings.Contains(got[0], "age=") {
 		t.Errorf("record carries per-task age detail with NO tasks outstanding; the detail must describe the set the decision saw: %s", got[0])
+	}
+}
+
+// TestRenderOutstanding_TruncationIsVisible pins the "+N more" marker. The
+// comment at renderOutstanding claims truncation is visible rather than silent,
+// and deleting the marker left the suite green. A 7-task set was measured on a
+// real agent and the cap is 8, so this path is reachable in production.
+//
+// Directions: the marker MUST appear above the cap (positive) and MUST NOT
+// appear at or below it (negative) — a marker that always fires would satisfy the
+// first assertion alone.
+func TestRenderOutstanding_TruncationIsVisible(t *testing.T) {
+	now := time.Date(2026, 8, 10, 12, 0, 0, 0, time.UTC)
+	build := func(n int) []runtimepkg.OutstandingTask {
+		var out []runtimepkg.OutstandingTask
+		for i := 0; i < n; i++ {
+			out = append(out, workTask(fmt.Sprintf("b%02d", i), protocol.BackgroundTaskLocalBash, now.Add(-time.Minute)))
+		}
+		return out
+	}
+
+	over := renderOutstanding(build(renderMaxOutstanding+3), now)
+	if !strings.Contains(over, fmt.Sprintf("+%d more", 3)) {
+		t.Errorf("rendering %d tasks did not report the %d it dropped; silent truncation reads as a complete set: %s",
+			renderMaxOutstanding+3, 3, over)
+	}
+	if got := strings.Count(over, "age="); got != renderMaxOutstanding {
+		t.Errorf("rendered %d task details, want the cap %d: %s", got, renderMaxOutstanding, over)
+	}
+
+	atCap := renderOutstanding(build(renderMaxOutstanding), now)
+	if strings.Contains(atCap, "more") {
+		t.Errorf("rendering exactly %d tasks claimed truncation: %s", renderMaxOutstanding, atCap)
+	}
+	if got := renderOutstanding(nil, now); got != "" {
+		t.Errorf("rendering an empty set = %q, want empty", got)
 	}
 }

@@ -9,15 +9,21 @@
 // replaces its set rather than incrementing a counter, and a dropped frame
 // self-corrects on the next one.
 //
-// This type lives in its own file rather than types.go on purpose: types.go is a
-// literal path entry in e2e matrix rows this change has no business owing.
+// This type lives in its own file rather than in types.go for readability — the
+// frame and its vocabulary belong together. (An earlier version of this comment
+// justified the split as avoiding e2e matrix rows that types.go appears in. That
+// was a bad reason and not even an effective one: the same diff touches
+// session.go, unified.go and idlereap.go, which owe a superset of those rows.)
+
 package protocol
 
 // SubtypeBackgroundTasksChanged is the frame's `subtype`.
 const SubtypeBackgroundTasksChanged = "background_tasks_changed"
 
 // The task_type vocabulary, closed at two values by a census over 260,374
-// recorded frames (QUM-1197 Lane 2, re-verified independently).
+// recorded frames as of 2026-08-10 (QUM-1197 Lane 2, re-verified independently).
+// The corpus is a live directory, so a recount will differ — the closed-vocabulary
+// claim is the durable part, the count is a date-stamped observation.
 //
 // These exist for RENDERING, not for filtering. A consumer deciding whether
 // work is outstanding must count every task whatever its type: the vocabulary

@@ -814,9 +814,10 @@ func (s *session) runReader(ctx context.Context) {
 		// QUM-1197 item 2: background_tasks_changed carries the FULL current set
 		// of the agent's outstanding background work (run_in_background tasks and
 		// live sidechains), and the idle reaper's work_outstanding term consumes
-		// it from routeFrame. Measured over the whole recorded corpus, 104 of
-		// 1,615 such frames arrive with tf==nil — and 66 of those are DRAIN
-		// frames (tasks:[]). Dropped as stray telemetry, the consumer's set goes
+		// it from routeFrame. Measured over the whole recorded corpus as of
+		// 2026-08-10 (a live directory — a recount will differ, and the ratio is
+		// the point): 104 of 1,615 such frames arrive with tf==nil, and 66 of
+		// those are DRAIN frames (tasks:[]). Dropped as stray telemetry, the consumer's set goes
 		// non-empty and never clears, so the agent becomes permanently
 		// unreclaimable: a failure that looks exactly like a working term.
 		//
@@ -825,6 +826,16 @@ func (s *session) runReader(ctx context.Context) {
 		// delivered immediately with PreInit, so it never allocates a turnFrame
 		// and never gates StartTurn (QUM-570). Narrowed to this one subtype;
 		// the gate is deliberately not broadened to all pre-init telemetry.
+		//
+		// SIDE EFFECT, stated because an earlier version of this comment denied
+		// it: routing these frames also publishes them as EventProtocolMessage,
+		// which feeds the activity ring, so LastActivityAt now advances on a
+		// between-turn task frame where it previously did not. That is an input
+		// to the predicate's OTHER time-based term (quiescent), and to peek's
+		// activity age. The direction is fail-safe — more observed activity means
+		// less reaping, never more — and mid-turn task frames already did exactly
+		// this. But it is a second term moved by this change, and QUM-1213 owns
+		// LastActivityAt, so it is recorded here rather than discovered later.
 		preInitBackgroundTasks := tf == nil && msg.Type == "system" && msg.Subtype == protocol.SubtypeBackgroundTasksChanged
 
 		// QUM-903: a session_state_changed frame is the CLI's authoritative

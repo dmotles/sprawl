@@ -167,6 +167,16 @@ func TestBackgroundTasks_MalformedFrame_DoesNotReadAsEmpty(t *testing.T) {
 	if observed {
 		t.Errorf("observed = true after an UNPARSEABLE frame (tasks=%+v); a scan that failed is not a scan that came back clean", tasks)
 	}
+	// The PRESERVATION half. The doc comment claimed it and nothing checked it:
+	// a mutation that cleared bgTasks on a parse failure left the whole suite
+	// green. Asserted on the field directly (this test is in package runtime)
+	// because the accessor deliberately hides the set while observed is false.
+	rt.bgMu.Lock()
+	kept := len(rt.bgTasks)
+	rt.bgMu.Unlock()
+	if kept != 1 {
+		t.Errorf("known set size = %d after an unreadable frame, want 1; the frame told us nothing, so discarding what we already knew turns 'cannot tell' into 'lost it'", kept)
+	}
 
 	// A frame with the subtype but no tasks key at all: same reading.
 	rt.routeFrame(
@@ -266,4 +276,41 @@ func TestBackgroundTasks_ConcurrentIngestAndRead(t *testing.T) {
 		}
 	}()
 	wg.Wait()
+}
+
+// TestBackgroundTasks_SortedOldestFirstThenByID pins the ordering the accessor's
+// docstring promises. Without it the claim is decoration: reversing both
+// comparators left the runtime AND supervisor suites green, because the record
+// assertions only look for substrings. Order matters because the refusal record
+// is truncated at a cap — with the wrong order, truncation drops the OLDEST
+// tasks, which are exactly the wedged ones the record exists to surface.
+func TestBackgroundTasks_SortedOldestFirstThenByID(t *testing.T) {
+	base := time.Date(2026, 8, 10, 12, 0, 0, 0, time.UTC)
+	clock := base
+	rt := newBGRuntime(func() time.Time { return clock })
+
+	// "old" is seen first; then a tie pair ("t-b", "t-a") arrives together, so the
+	// id comparator is the only thing that can order them.
+	rt.routeFrame(bgFrame(t, bgTask("old", protocol.BackgroundTaskLocalBash)))
+	clock = base.Add(time.Minute)
+	rt.routeFrame(bgFrame(t,
+		bgTask("old", protocol.BackgroundTaskLocalBash),
+		bgTask("t-b", protocol.BackgroundTaskLocalAgent),
+		bgTask("t-a", protocol.BackgroundTaskLocalAgent),
+	))
+
+	tasks, observed := rt.WorkOutstandingObserved()
+	if !observed || len(tasks) != 3 {
+		t.Fatalf("got (%d tasks, observed=%v), want (3, true)", len(tasks), observed)
+	}
+	var ids []string
+	for _, task := range tasks {
+		ids = append(ids, task.TaskID)
+	}
+	want := []string{"old", "t-a", "t-b"}
+	for i := range want {
+		if ids[i] != want[i] {
+			t.Fatalf("order = %v, want %v (oldest FirstSeen first, then by task id)", ids, want)
+		}
+	}
 }

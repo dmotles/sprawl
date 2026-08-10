@@ -4,54 +4,86 @@
 # [19c]'s deleted-token scan in scripts/test-e2e-matrix-unit.sh: an inert row
 # cannot advertise a deleted tool to a live agent, and its body is the blueprint
 # for re-hosting it. Delete this marker in the same commit that deletes the skip.
-# scripts/e2e-tests/idle-reclaim-busy.sh — QUM-1197 hazard row.
+# scripts/e2e-tests/idle-reclaim-busy.sh — the idle reaper's NEGATIVE half.
 #
-# The half of the idle-reaper coverage that CANNOT run today. Its sibling
-# idle-reclaim.sh proves the reaper reclaims an idle agent (real PID/RSS
-# evidence, and it passes). This row is the other direction: a child kept
-# demonstrably busy must NOT be reclaimed — and it fails, because the reaper
-# reaps agents that are mid-tool-call.
+# Its sibling idle-reclaim.sh proves the reaper reclaims an idle agent, with real
+# PID/RSS evidence. This row is the other direction: an agent that is NOT done
+# must not be reclaimed. Both directions are needed — "the busy agent survived"
+# is satisfied by a mechanism that never acts, and "the idle agent was reaped" is
+# satisfied by one that reaps everything.
 #
-# WHY THIS IS ITS OWN ROW rather than a skip at the end of idle-reclaim.sh:
-# e2e_skip_row exits 77 WITHOUT calling e2e_print_results, so a row that ends
-# in a skip never reaches the MIN_ASSERTIONS floor. Its assertions would be
-# executed but never enforced — someone could delete all of them and the row
-# would still exit 77 and look identical. Splitting means the passing half is a
-# real gate with a real floor, and the skip means what a skip is supposed to
-# mean: this row asserted nothing.
+# TWO AXES, and QUM-1197 is the proof they are different questions. The row used
+# to conflate them, and its skip text asserted a mechanism that was refuted:
 #
-# The phases are PRESENT below the skip, not deleted — see the note in test_run
-# for why the harness requires that. What they do:
+#   IS A TURN OPEN?        A foreground tool call. The turn stays open, and
+#                          `in_turn` blocks the reap. This is P5. (The old skip
+#                          text claimed in_turn cannot see a child mid-tool-call.
+#                          That was investigated across five runs and NOT
+#                          supported: QUM-1186 lane 3 made InTurnObserved the
+#                          union of the session probe and the phase machine.)
 #
-#   P5  NEGATIVE CONTROL, direction MUST STAY QUIET. Spawn a child, wait until a
+#   IS WORK OUTSTANDING?   A BACKGROUNDED tool call, or a live sidechain. The
+#                          turn CLOSES — `stop=end_turn` — and every one of the
+#                          six original terms read `idle` HONESTLY while the work
+#                          ran. That is the real defect QUM-1197 found: recorded,
+#                          a child backgrounded `sleep 900`, was reaped 34s later,
+#                          and 866 seconds of live work died with it. This is P7,
+#                          and it is what the seventh term (`work_outstanding`)
+#                          exists for.
+#
+# A precondition that only checks "a live sleep exists in the child's tree" is
+# satisfied by BOTH shapes, which is why it could not tell them apart. P7's
+# precondition therefore has a WIRE half as well as an OS half: a
+# background_tasks_changed frame with a non-empty task set, FOLLOWED by the turn's
+# terminal frame. That ordering IS "the turn closed with work outstanding".
+#
+# Phases:
+#
+#   P5  TURN-OPEN axis, direction MUST STAY QUIET. Spawn a child, wait until a
 #       real `sleep` process exists in its tree — an OS-level fact that the tool
 #       call is in flight, checked at BOTH ends of the threshold window — and
 #       assert its claude PID survives and it is not stamped `idle`.
 #
-#       That precondition is the load-bearing part, and it was learned the hard
-#       way. The first version asserted only that a child we had TOLD to run
-#       `sleep 90` was alive later. That cannot distinguish "the reaper spares
-#       busy agents" from "the model finished early and was legitimately
-#       reclaimed" — it measured our own prompt, not the product. AN
-#       INSTRUCTION TO AN AGENT IS NOT AN OBSERVATION OF AN AGENT; it is the
-#       same error as trusting a self-report, one level up. It produced a red
-#       that had to be withdrawn. Keep the /proc precondition, and keep the
-#       "precondition lapsed => no verdict in either direction" arm: a control
-#       that can say "I don't know" is worth more than one that always answers.
+#       That precondition is load-bearing, and it was learned the hard way. The
+#       first version asserted only that a child we had TOLD to run `sleep 90`
+#       was alive later. That cannot distinguish "the reaper spares busy agents"
+#       from "the model finished early and was legitimately reclaimed" — it
+#       measured our own prompt, not the product. AN INSTRUCTION TO AN AGENT IS
+#       NOT AN OBSERVATION OF AN AGENT; it is the same error as trusting a
+#       self-report, one level up. It produced a red that had to be withdrawn.
+#       Keep the /proc precondition, and keep the "precondition lapsed => no
+#       verdict in either direction" arm: a control that can say "I don't know"
+#       is worth more than one that always answers.
 #
 #   P6  POSITIVE CONTROL for the knob: relaunch with idle_reclaim.after=0 and
 #       show a comparably idle child is NOT reclaimed — which is what separates
 #       "the reaper did it" from "children die here anyway".
 #
-# Do NOT un-skip this while the reaper is disabled by default. It would fail on
-# a hazard we already know about, and a row that is expected to fail trains
-# every reader to skip past its failures.
-
-# QUM-1029: declared for the restored row (P5a, P5b, P5c, P6a, P6b). Never
-# reached while the skip is in place — e2e_skip_row exits before
-# e2e_print_results — which is exactly why the PASSING assertions live in the
-# sibling idle-reclaim row rather than behind this skip.
-MIN_ASSERTIONS=5
+#   P7  WORK-OUTSTANDING axis, direction MUST STAY QUIET, and the phase this row
+#       was rewritten for. A child backgrounds a tool call and ENDS ITS TURN;
+#       it must survive the threshold window. P7c is the part that makes the
+#       survival evidence rather than luck: the refusal record must name
+#       `blocker=work_outstanding`. Without it the child could have survived
+#       because some other term happened to block, and the row would bank a pass
+#       the new term never earned.
+#
+#   P8  POSITIVE CONTROL for the term, in the same session and window: a child
+#       with NO outstanding work IS still reaped. This is the control against the
+#       measured failure mode of a work-outstanding term — too eager to say busy,
+#       so the reaper never fires, and the mechanism looks safe because it does
+#       nothing. P6 controls the knob; only P8 controls the term.
+#
+# QUM-1029: a complete, passing run of the body below makes ten assertions —
+# P5a, P5b, P5c, P6a, P6b, P7a, P7b, P7c, P7d, P8. Counted against the written
+# body, not derived arithmetically: only `pass` calls on the single success path
+# count, and the hard-fail precondition gates count because a green run passes
+# through them.
+#
+# NEVER REACHED while the skip at the top of test_run stands — e2e_skip_row exits
+# before e2e_print_results — so this declaration is a promise about the restored
+# row, not an enforced gate. That is exactly why the PASSING assertions live in
+# the sibling idle-reclaim row instead. Delete the skip and this becomes real.
+MIN_ASSERTIONS=10
 
 test_metadata() {
     echo "needs_claude=1 needs_tmux=1 needs_jq=1"
@@ -160,17 +192,64 @@ ir_spawn_child() {
     _stmux send-keys -t "$session" Enter
 }
 
+# ir_reaper_log echoes the path of the log the reaper's records actually land in.
+#
+# This is not the file e2e_launch_tui redirects to. The harness points the child's
+# stderr at $SPRAWL_ROOT/.sprawl/tui-stderr.log, but `sprawl enter` re-redirects
+# FD 2 into $SPRAWL_ROOT/.sprawl/logs/tui-stderr-<ts>.log once the TUI starts, so
+# the harness's file holds only pre-TUI output. Grepping the wrong one returns
+# nothing and reads as "the record does not exist" — it cost a reader exactly that
+# during QUM-1197.
+ir_reaper_log() {
+    ls -t "$SPRAWL_ROOT"/.sprawl/logs/tui-stderr-*.log 2>/dev/null | head -1
+}
+
+# ir_wire_log echoes the newest session wire log for agent $1.
+ir_wire_log() {
+    ls -t "$SPRAWL_ROOT"/.sprawl/logs/sessions/"$1"/*.ndjson 2>/dev/null | head -1
+}
+
+# ir_wire_work_outstanding_at_close greps a child's wire log for the ordering
+# that IS this row's subject: a background_tasks_changed frame carrying a
+# non-empty task set, FOLLOWED by that turn's terminal `result` frame.
+#
+# Carries its own parse floor. A scan that fails must not read as a scan that
+# came back clean — during this issue a broken jq pipeline returned a confident
+# ZERO twice over a corpus that contained 1,615 of these frames. Exit codes:
+#   0 = the ordering was observed;  1 = parsed fine, ordering absent;
+#   2 = could not parse anything, so NO claim is available in either direction.
+ir_wire_work_outstanding_at_close() {
+    local log="$1"
+    [ -n "$log" ] && [ -r "$log" ] || return 2
+    awk '
+        /"subtype":"background_tasks_changed"/ {
+            parsed++
+            if ($0 ~ /"tasks":\[\{/) { pending = 1 }
+            else                       { pending = 0 }
+            next
+        }
+        /"type":"result"/ { parsed++; if (pending) { closed = 1 } }
+        END {
+            if (parsed == 0) { exit 2 }
+            if (closed)      { exit 0 }
+            exit 1
+        }
+    ' "$log"
+}
+
 test_run() {
     # SKIP FIRST, then the phases. The body below is UNREACHABLE today and that
     # is deliberate rather than sloppy: scripts/test-e2e-matrix-unit.sh section
-    # [17j] fails any row that never calls e2e_print_results, because a floor
-    # that the aggregator never reaches is a floor that enforces nothing. The
-    # established convention for a blocked row in this repo (report-then-send,
-    # wake-on-traffic, complete-lifecycle) is to keep the body and skip at the
-    # top — which also means restoring this row is deleting one line rather
-    # than reconstructing it from git history.
-    e2e_skip_row "idle-reclaim-busy: BLOCKED by QUM-1197 (Urgent) — the idle reaper reaps agents that are mid-tool-call, so idle_reclaim.after ships defaulted to 0 (DISABLED) and this control cannot pass. Reproduced twice on a clean host: a child with a live 'sleep' still in its process tree was torn down, because the in_turn signal the predicate consumes does not see a child executing a long tool call. QUM-1197 also BLOCKS QUM-1187 (the merge quiescence gate reads the same signal, so a merge could be permitted over a working child). DO NOT set idle_reclaim.after until QUM-1197 lands. The reclaim path itself IS covered and passing — see the idle-reclaim row, which proves an idle agent's subprocess is genuinely returned to the OS and revives as a new pid. Restore this row by deleting the e2e_skip_row call below; its phases are intact underneath."
-
+    # [17j] fails any row that never calls e2e_print_results, because a floor the
+    # aggregator never reaches enforces nothing. The convention here for a
+    # blocked row is to keep the body and skip at the top, so restoring it is
+    # deleting one line rather than reconstructing it from git history.
+    #
+    # QUM-1197 items 2/5 REWROTE this body (P7 and P8 are new, P5's axis is now
+    # named correctly) and REPLACED the old skip text, which asserted a refuted
+    # mechanism as established fact. The skip itself stays for reasons that are
+    # measured, not assumed — see the text below.
+    e2e_skip_row "idle-reclaim-busy: the body is REWRITTEN and current (QUM-1197 items 2/5) but two measured blockers stand between it and a green run, and this row must be watched green AND red before it counts for anything. (1) QUM-1197's work_outstanding term is implemented, but 207 of 361 recorded sessions NEVER emit a background_tasks_changed frame at all, so under the ruling's 'never-observed blocks the reap' those agents are permanently unreclaimable — which reds P8, the positive control that a no-work agent IS still reaped, and also reds the sibling idle-reclaim row's P3a. That trade is with the operator; the term ships in the safe direction meanwhile. (2) QUM-1212: rows fail on this host downstream of a SUCCESSFUL spawn (wire-log evidence on that issue), so a red here is not attributable. WHAT IS NO LONGER TRUE, and was the old skip text: that in_turn cannot see a child mid-tool-call. Five runs did not support it, and QUM-1186 lane 3 made InTurnObserved the union of the session probe and the phase machine. The real defect was the MISSING TERM for work outstanding across a turn boundary. Un-skip by deleting this call once (1) is ruled on, and delete the P19-INERT-ROW marker at the top of this file plus its bookkeeping in scripts/test-e2e-matrix-unit.sh in the same commit."
     e2e_recover_oauth_token
     unset SPRAWL_AGENT_IDENTITY
     e2e_setup_tmux_socket "sprawl-idle-reclaim-busy-e2e"
@@ -314,6 +393,165 @@ test_run() {
         pass "P5c: busy child status is '$BUSY_STATUS', not 'idle'"
     else
         fail "P5c: busy child was stamped 'idle' while mid-turn"
+        e2e_print_results
+        return 1
+    fi
+
+    # ----- Phase 7: WORK OUTSTANDING — the axis QUM-1197 actually found ------
+    # PROBE DIRECTION: MUST STAY QUIET (the child must survive).
+    #
+    # Different question from P5. Here the child BACKGROUNDS its tool call and
+    # ends its turn, so `in_turn` reads idle honestly and only the
+    # work_outstanding term stands between the reaper and live work.
+    echo ""
+    echo "=== Phase 7: a child with BACKGROUNDED work ends its turn and must survive ==="
+    local BRANCH_BG="qum1197-bg-${SUFFIX}"
+    local BG_SECS=$((IR_THRESHOLD_SECS * 10))
+    ir_spawn_child "$SESSION" "$BRANCH_BG" \
+        "You are a QUM-1197 work-outstanding control. Run exactly one Bash command IN THE BACKGROUND (run_in_background: true): sleep ${BG_SECS}. Then reply BG_STARTED and stop immediately — do not wait for it, and call no other tools." \
+        "SPAWND_${SUFFIX}"
+
+    local STATE_BG WORKTREE_BG PID_BG BG_NAME
+    if ! STATE_BG=$(ir_find_child_by_branch "$BRANCH_BG"); then
+        fail "P7a: no work-outstanding child appeared within 180s for branch $BRANCH_BG"
+        capture_pane "$SESSION" | tail -60 >&2
+        e2e_print_results
+        return 1
+    fi
+    BG_NAME=$(jq -r '.name // empty' "$STATE_BG")
+    WORKTREE_BG=$(jq -r '.worktree // empty' "$STATE_BG")
+    if ! PID_BG=$(ir_wait_child_pid "$WORKTREE_BG" 180); then
+        fail "P7a: no claude process with cwd=$WORKTREE_BG appeared within 180s"
+        pgrep -af claude >&2 || true
+        e2e_print_results
+        return 1
+    fi
+
+    # OS half of the precondition: the backgrounded command is really running.
+    local BG_SLEEP_PID="" bg_elapsed=0
+    while [ "$bg_elapsed" -lt 180 ]; do
+        BG_SLEEP_PID=$(pgrep -f "sleep ${BG_SECS}" 2>/dev/null | head -1 || true)
+        [ -n "$BG_SLEEP_PID" ] && break
+        sleep 2
+        bg_elapsed=$((bg_elapsed + 2))
+    done
+    if [ -z "$BG_SLEEP_PID" ]; then
+        fail "P7a: no live 'sleep ${BG_SECS}' appeared within 180s, so no work was ever outstanding and this control cannot run. HARD FAIL BY DESIGN rather than a skip: e2e_skip_row exits 77 before e2e_print_results, which would leave this row's MIN_ASSERTIONS floor unenforced. An unmet premise here is host or model timing, not a reaper defect."
+        pgrep -af 'sleep|claude' >&2 || true
+        capture_pane "$SESSION" | tail -60 >&2
+        e2e_print_results
+        return 1
+    fi
+
+    # WIRE half — and this is what separates P7 from P5. A live `sleep` alone is
+    # satisfied by a FOREGROUND call too; only the frame ordering establishes that
+    # the turn CLOSED with work still outstanding.
+    local BG_WIRE
+    BG_WIRE=$(ir_wire_log "$BG_NAME")
+    local wire_elapsed=0 wire_rc=1
+    while [ "$wire_elapsed" -lt 120 ]; do
+        BG_WIRE=$(ir_wire_log "$BG_NAME")
+        ir_wire_work_outstanding_at_close "$BG_WIRE"
+        wire_rc=$?
+        [ "$wire_rc" -eq 0 ] && break
+        sleep 3
+        wire_elapsed=$((wire_elapsed + 3))
+    done
+    if [ "$wire_rc" -eq 2 ]; then
+        fail "P7a: the wire log for '$BG_NAME' could not be parsed at all (log='$BG_WIRE'), so NO claim is available in either direction. A scan that fails is not a scan that came back clean. HARD FAIL BY DESIGN."
+        e2e_print_results
+        return 1
+    fi
+    if [ "$wire_rc" -ne 0 ]; then
+        fail "P7a: parsed the wire log for '$BG_NAME' but never saw a background_tasks_changed frame with a non-empty task set FOLLOWED by a result frame, so the turn did not close with work outstanding — this is P5's shape, not P7's, and the two are different questions. HARD FAIL BY DESIGN: precondition unmet, not a reaper verdict."
+        e2e_print_results
+        return 1
+    fi
+    pass "P7a: turn CLOSED with work outstanding — wire shows background_tasks_changed(non-empty) then result, and 'sleep ${BG_SECS}' is live (claude PID=$PID_BG, sleep PID=$BG_SLEEP_PID)"
+
+    # Past the threshold plus several sweeps: an unprotected agent is reaped here.
+    sleep $((IR_THRESHOLD_SECS + IR_SWEEP_SECS * 3))
+
+    if ! kill -0 "$PID_BG" 2>/dev/null; then
+        fail "P7b: work-outstanding child PID $PID_BG was killed. Its turn had closed but 'sleep ${BG_SECS}' was live, so the reaper destroyed work the agent intended to return to — exactly the 866-second loss QUM-1197 records. The work_outstanding term is not blocking the reap."
+        cat "$STATE_BG" >&2 2>/dev/null || true
+        ir_reaper_log >&2 || true
+        e2e_print_results
+        return 1
+    fi
+    if ! kill -0 "$BG_SLEEP_PID" 2>/dev/null; then
+        fail "P7b: PRECONDITION LAPSED, not a product verdict. claude PID $PID_BG is alive but 'sleep ${BG_SECS}' (PID $BG_SLEEP_PID) is gone, so work was not outstanding for the whole window and a pass would be unearned. HARD FAIL BY DESIGN, as at P7a."
+        e2e_print_results
+        return 1
+    fi
+    pass "P7b: work-outstanding child PID $PID_BG and its backgrounded 'sleep' both survived $((IR_THRESHOLD_SECS + IR_SWEEP_SECS * 3))s (> the ${IR_THRESHOLD_SECS}s threshold)"
+
+    # P7c is what makes P7b evidence rather than luck. Without it the child could
+    # have survived because `quiescent` or `in_turn` happened to block, and the row
+    # would bank a pass the new term never earned.
+    local REAPER_LOG
+    REAPER_LOG=$(ir_reaper_log)
+    if [ -z "$REAPER_LOG" ] || [ ! -r "$REAPER_LOG" ]; then
+        fail "P7c: no reaper log under \$SPRAWL_ROOT/.sprawl/logs/tui-stderr-*.log, so the refusal record cannot be read and P7b's survival is unattributed. HARD FAIL BY DESIGN."
+        e2e_print_results
+        return 1
+    fi
+    # Exact token: 'blocker=work_outstanding ' with the trailing space, because
+    # 'blocker=work_outstanding_unobservable' is a DIFFERENT reading — it means
+    # the set could not be observed at all, and a row that accepted it would be
+    # green because the mechanism is broken.
+    if grep -q "agent=$BG_NAME .*blocker=work_outstanding " "$REAPER_LOG"; then
+        pass "P7c: the refusal record attributes the refusal to the new term (agent=$BG_NAME blocker=work_outstanding)"
+    else
+        fail "P7c: no refusal record naming agent=$BG_NAME with blocker=work_outstanding in $REAPER_LOG. P7b's survival is therefore NOT attributable to the work_outstanding term — some other term may have blocked, or the term read 'unobservable' (which is the mechanism failing safe, not working). Records for this agent:"
+        grep "agent=$BG_NAME" "$REAPER_LOG" >&2 | tail -20 || echo "  (none)" >&2
+        e2e_print_results
+        return 1
+    fi
+
+    local BG_STATUS
+    BG_STATUS=$(jq -r '.status // empty' "$STATE_BG" 2>/dev/null || true)
+    if [ "$BG_STATUS" != "idle" ]; then
+        pass "P7d: work-outstanding child status is '$BG_STATUS', not 'idle'"
+    else
+        fail "P7d: work-outstanding child was stamped 'idle' while its backgrounded work was live"
+        e2e_print_results
+        return 1
+    fi
+
+    # ----- Phase 8: POSITIVE CONTROL for the term ----------------------------
+    # Direction: MUST FIRE. In the SAME session and window, an agent with nothing
+    # outstanding is still reclaimed. This is the control against the measured
+    # failure mode of a work-outstanding term: too eager to say busy, so the
+    # reaper never fires and the mechanism looks safe because it does nothing.
+    # P6 controls the knob; only this controls the term.
+    echo ""
+    echo "=== Phase 8: POSITIVE CONTROL — an agent with NO outstanding work is still reaped ==="
+    local BRANCH_CLEAN="qum1197-clean-${SUFFIX}"
+    ir_spawn_child "$SESSION" "$BRANCH_CLEAN" \
+        "You are a QUM-1197 positive control. Reply with exactly the word READY and then stop. Call no tools and write no files." \
+        "SPAWNE_${SUFFIX}"
+
+    local STATE_CLEAN WORKTREE_CLEAN PID_CLEAN
+    if ! STATE_CLEAN=$(ir_find_child_by_branch "$BRANCH_CLEAN"); then
+        fail "P8: no positive-control child appeared within 180s for branch $BRANCH_CLEAN"
+        capture_pane "$SESSION" | tail -60 >&2
+        e2e_print_results
+        return 1
+    fi
+    WORKTREE_CLEAN=$(jq -r '.worktree // empty' "$STATE_CLEAN")
+    if ! PID_CLEAN=$(ir_wait_child_pid "$WORKTREE_CLEAN" 180); then
+        fail "P8: no claude process with cwd=$WORKTREE_CLEAN appeared within 180s"
+        pgrep -af claude >&2 || true
+        e2e_print_results
+        return 1
+    fi
+    if ir_wait_pid_gone "$PID_CLEAN" $((IR_THRESHOLD_SECS * 3 + IR_SWEEP_SECS * 3)); then
+        pass "P8: the no-work child (PID $PID_CLEAN) WAS reclaimed — the term protects work without disabling the reaper"
+    else
+        fail "P8: the no-work child (PID $PID_CLEAN) was never reclaimed. A work_outstanding term that blocks everything is a mechanism that never acts, and P7's 'the busy agent survived' would then be worth nothing."
+        cat "$STATE_CLEAN" >&2 2>/dev/null || true
+        ir_reaper_log >&2 || true
         e2e_print_results
         return 1
     fi

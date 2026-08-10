@@ -26,7 +26,11 @@
 //     task_id and never appears in the set. A large subset, not the whole.
 //  2. It protects the REAP DECISION only. An operator still sees an agent
 //     rendered idle while three sidechains run; that is QUM-1213, separately
-//     tracked, and nothing here changes rendering.
+//     tracked, and nothing here changes what the TUI renders from a transcript.
+//     It does, however, feed the activity ring (see the note in
+//     internal/backend/session.go): a between-turn task frame now advances
+//     LastActivityAt, which the `quiescent` term and peek's activity age read.
+//     Fail-safe in direction, and stated rather than denied.
 package runtime
 
 import (

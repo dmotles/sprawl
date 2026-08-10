@@ -194,6 +194,19 @@ func TestAssessIdle_NilProbe_DoesNotReap(t *testing.T) {
 	if got.Reap {
 		t.Fatal("assessIdle().Reap = true with no runtime probe at all, want false")
 	}
+	// Each probe helper's nil arm asserted SEPARATELY. !Reap alone is satisfied by
+	// whichever term happens to be evaluated first, so it masks the others: a
+	// mutation making probeWorkOutstanding return (nil, true) for a nil probe left
+	// the whole suite green, because probeInTurn's nil arm blocked before it.
+	if got.InTurn != obsUnavailable {
+		t.Errorf("InTurn = %v with a nil probe, want unavailable", got.InTurn)
+	}
+	if got.Work != obsUnavailable {
+		t.Errorf("Work = %v with a nil probe, want unavailable; a nil probe is 'nobody could be asked', never 'asked, and nothing is outstanding'", got.Work)
+	}
+	if got.InFlight != obsUnavailable {
+		t.Errorf("InFlight = %v with a nil probe, want unavailable", got.InFlight)
+	}
 }
 
 func TestAssessIdle_OutstandingQuestion_DoesNotReap(t *testing.T) {
