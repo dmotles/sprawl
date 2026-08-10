@@ -796,8 +796,8 @@ func (r *AgentRuntime) Pause(ctx context.Context, timeout time.Duration) (clean 
 // StopAfterTurn defers the runtime teardown until the agent's current turn
 // actually yields, instead of tearing down immediately. It is the reusable
 // "defer self-teardown to turn-end" primitive (QUM-866): a mid-turn caller
-// (e.g. report_status(complete/failure)) can finish emitting a follow-on
-// send_message or trailing text before the subprocess + EventBus subscribers
+// (today the idle reaper — see the note below) lets the agent finish emitting a
+// follow-on send_message or trailing text before the subprocess + EventBus subscribers
 // are released. drainInflight (invoked by Stop) cancels in-flight async MCP
 // handlers, so stopping mid-turn silently drops anything the agent does after
 // the triggering tool call — deferring to the genuine EndOfTurn closes that

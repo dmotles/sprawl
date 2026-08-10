@@ -215,7 +215,7 @@ func TestReal_SendMessage_TerminalStatus_ReturnsClearerError(t *testing.T) {
 
 	res, err := r.SendMessage(context.Background(), "alice", "hello body", false, false)
 	if err == nil {
-		t.Fatalf("SendMessage to faulted agent returned nil error; want descriptive terminal-status error (res=%+v)", res)
+		t.Fatalf("SendMessage to retired agent returned nil error; want descriptive terminal-status error (res=%+v)", res)
 	}
 	if res != nil {
 		t.Errorf("SendMessage result = %+v, want nil when send fails", res)

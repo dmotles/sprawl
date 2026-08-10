@@ -1,7 +1,7 @@
 // QUM-866: AgentRuntime.StopAfterTurn is the reusable "defer teardown to the
-// genuine turn-end" primitive. report_status(complete/failure) wires it so a
-// follow-on send_message emitted in the same turn is not silently cut off by
-// an immediate drainInflight teardown. The mechanism is generic (a later issue
+// genuine turn-end" primitive. Its caller wires it so a follow-on send_message
+// emitted in the same turn is not silently cut off by an immediate
+// drainInflight teardown. The mechanism is generic (a later issue
 // reuses it for handoff), so these tests pin the state machine directly on
 // AgentRuntime. QUM-1186 deleted the Real.ReportStatus wiring that was its
 // only production caller; the idle reaper ((*Real).maybeReclaimIdle) is now

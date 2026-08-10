@@ -10,6 +10,7 @@ import (
 	"path/filepath"
 	"testing"
 
+	"github.com/dmotles/sprawl/internal/agentloop"
 	"github.com/dmotles/sprawl/internal/agentops"
 	backendpkg "github.com/dmotles/sprawl/internal/backend"
 	"github.com/dmotles/sprawl/internal/config"
@@ -264,19 +265,33 @@ func TestRealSpawn_FailedSpawnDoesNotRegisterRuntime(t *testing.T) {
 // re-host off Real.Delegate, which left this body unable to fail even if
 // Real.SendMessage stopped poking altogether.
 //
-// The "only after persisted success" half is the failed-persist subtest below:
-// a runtime that IS started (so the poke gate is open) plus a send that fails
-// before it persists must leave WakeCount at 0. Without the started runtime
-// that arm proves nothing, which is why
-// TestRealSendMessage_FailedPersistLeavesRuntimeUnchanged — whose runtime is
-// never started — does not cover it.
+// The "only after persisted success" half is the rejected-send subtest below,
+// and the honest statement of its reach matters more than the clause in the
+// name. It rejects at the §8.5 ancestor gate — the last gate before
+// messages.Send — with the recipient's runtime STARTED, so it fires on a poke
+// emitted ANYWHERE from the top of SendMessage down to that gate (mutation:
+// poke at the function head -> WakeCount = 1, want 0). Two nearby variants do
+// NOT work and were tried: a missing state file rejects at the first
+// state.LoadAgent, so early that it only catches a poke above the load; and
+// TestRealSendMessage_FailedPersistLeavesRuntimeUnchanged never starts its
+// runtime, so its poke gate is shut and it cannot tell "gated on persistence"
+// from "gated on started".
+//
+// Residual gap, stated rather than papered over: a poke inserted BETWEEN the
+// gate and messages.Send is caught by neither arm — the rejected send never
+// reaches it, and the happy path cannot distinguish it from the real poke.
+// Closing it needs a seam that fails messages.Send/Enqueue itself, which does
+// not exist today.
 func TestRealSendMessage_SignalsWakeOnlyAfterPersistedSuccess(t *testing.T) {
-	t.Run("failed persist pokes nothing", func(t *testing.T) {
+	t.Run("send rejected before the persist pokes nothing", func(t *testing.T) {
 		r, tmpDir := newFakeReal(t)
-		agentState := testAgentState("alice")
-		// Deliberately NO saveTestAgent: the state load inside SendMessage
-		// fails, so the send errors before it persists anything.
-		rt := ensureRuntimeWithStarter(t, r, tmpDir, agentState, &runtimeTestStarter{
+		// Two siblings under weave: bob→alice at now=true fails the §8.5
+		// ancestor gate. Persist weave too so the ancestry walk terminates.
+		saveTestAgent(t, tmpDir, &state.AgentState{Name: "weave", Type: "root", Status: "active"})
+		alice := testAgentState("alice")
+		saveTestAgent(t, tmpDir, alice)
+		saveTestAgent(t, tmpDir, testAgentState("bob"))
+		rt := ensureRuntimeWithStarter(t, r, tmpDir, alice, &runtimeTestStarter{
 			session: &runtimeTestSession{
 				sessionID: "sess-alice",
 				caps:      backendpkg.Capabilities{SupportsInterrupt: true, SupportsResume: true},
@@ -286,10 +301,19 @@ func TestRealSendMessage_SignalsWakeOnlyAfterPersistedSuccess(t *testing.T) {
 			t.Fatalf("runtime start: %v", err)
 		}
 
-		if _, err := r.SendMessage(context.Background(), "alice", "implement feature", false, false); err == nil {
-			t.Fatal("SendMessage() error = nil, want failure when the state file is missing")
+		ctx := backendpkg.WithCallerIdentity(context.Background(), "bob")
+		if _, err := r.SendMessage(ctx, "alice", "implement feature", true, false); err == nil {
+			t.Fatal("SendMessage() error = nil, want the §8.5 ancestor-gate rejection")
 		}
 
+		// Both halves: nothing was persisted, and nothing was poked. Asserting
+		// only the poke would leave "before the persist" as a claim about
+		// where the rejection lands rather than something observed.
+		if pending, err := agentloop.ListPending(tmpDir, "alice"); err != nil {
+			t.Fatalf("ListPending: %v", err)
+		} else if len(pending) != 0 {
+			t.Errorf("pending entries = %d, want 0 — a rejected send must persist nothing", len(pending))
+		}
 		if got := rt.Snapshot().WakeCount; got != 0 {
 			t.Errorf("WakeCount = %d, want 0 — a send that never persisted must not poke the recipient", got)
 		}
