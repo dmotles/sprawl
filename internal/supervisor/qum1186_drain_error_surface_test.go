@@ -246,3 +246,58 @@ func TestQUM1186_Drain_PartialFailure_NamesOnlyTheFailingBatch(t *testing.T) {
 		{"next", "id-qum1186-partial-async"},
 	})
 }
+
+// TestQUM1186_WakeForDelivery_CountsTheWakeEvenWhenUnconfirmed guards a
+// behaviour change that arrives with the error return and produces no compile
+// error.
+//
+// `AgentRuntime.WakeForDelivery` increments `snapshot.WakeCount` after calling
+// the handle. Until this slice the handle ALWAYS returned nil, so the
+// `if err != nil { return err }` arm above the increment was unreachable and the
+// counter rose on every call. Propagating a real error through that arm silently
+// stops counting exactly the wakes most worth seeing — an unconfirmed injection
+// is still a wake: the entry is durably queued and the write was attempted.
+//
+// This is the "a read inside a conditional is a behaviour change wearing a
+// compile-clean disguise" class: the arm compiled, contained the right
+// identifier, and changed meaning the moment its input could be non-nil.
+func TestQUM1186_WakeForDelivery_CountsTheWakeEvenWhenUnconfirmed(t *testing.T) {
+	const deadline = 150 * time.Millisecond
+	withShortChildDrainTimeout(t, deadline)
+
+	r, tmpDir := newFakeReal(t)
+	agentState := testAgentState("alice")
+	worktree := filepath.Join(tmpDir, "wt-alice")
+	if err := os.MkdirAll(worktree, 0o755); err != nil {
+		t.Fatalf("mkdir worktree: %v", err)
+	}
+	agentState.Worktree = worktree
+	saveTestAgent(t, tmpDir, agentState)
+
+	mock := newFakeBackendSession("sess-alice", backend.Capabilities{})
+	oldStart := unifiedAdapterStartFn
+	t.Cleanup(func() { unifiedAdapterStartFn = oldStart })
+	unifiedAdapterStartFn = func(_ context.Context, _ backend.SessionSpec) (backend.Session, error) {
+		return mock, nil
+	}
+
+	rt := ensureRuntimeWithStarter(t, r, tmpDir, agentState,
+		newInProcessUnifiedStarter(backend.InitSpec{}, nil))
+	if err := rt.Start(); err != nil {
+		t.Fatalf("rt.Start: %v", err)
+	}
+	t.Cleanup(func() { _ = rt.Stop(context.Background()) })
+
+	before := rt.Snapshot().WakeCount
+
+	seedAsyncEntry(t, tmpDir, "alice", "id-qum1186-wakecount", "body")
+	mock.failWrites(1) // the drain reports an unconfirmed injection
+
+	if err := rt.WakeForDelivery(); err == nil {
+		t.Fatalf("WakeForDelivery returned nil against a failing write — this fixture is not exercising the error arm, so the assertion below would prove nothing")
+	}
+
+	if got := rt.Snapshot().WakeCount; got != before+1 {
+		t.Errorf("WakeCount = %d, want %d — an unconfirmed injection is still a wake; skipping the increment under-reports precisely the deliveries worth seeing", got, before+1)
+	}
+}

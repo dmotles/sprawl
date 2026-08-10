@@ -534,14 +534,19 @@ func (r *AgentRuntime) WakeForDelivery() error {
 	if handle == nil {
 		return fmt.Errorf("runtime session not started")
 	}
-	if err := handle.WakeForDelivery(); err != nil {
-		return err
-	}
+	wErr := handle.WakeForDelivery()
 
+	// QUM-1186: count the wake even when the drain reports an unconfirmed
+	// injection. Until this slice the handle ALWAYS returned nil, so this
+	// early-return arm was unreachable and WakeCount incremented on every call.
+	// Propagating the error without moving the increment above it would have
+	// silently changed that: a wake really did happen — the entry is durably
+	// queued and the write was attempted — so skipping the counter would
+	// under-report exactly the deliveries most worth seeing.
 	r.mu.Lock()
 	r.snapshot.WakeCount++
 	r.mu.Unlock()
-	return nil
+	return wErr
 }
 
 // stopReason records WHY a teardown was initiated. It is the in-memory
