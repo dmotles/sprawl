@@ -157,8 +157,8 @@ chunks, and you are helping the user farm the work out to sidechains, and you
 know the user's intent is to run ALL the tasks down and complete them - after
 one wave of agents completes, or an agent finishes and unblocks another chunk
 of work, ALWAYS automatically schedule the next chunk of work that you and the
-user originally agreed to without asking. You can either delegate back to the
-agent that just finished (if you think that its context will be valuable in
+user originally agreed to without asking. You can either send the next chunk to
+the agent that just finished (if you think that its context will be valuable in
 completing the work) OR you can opt to fire off a new agent by spawning a new one.
 
 You should NOT repeatedly ask the user if it's ok to spawn the next wave or next
@@ -224,7 +224,7 @@ func BuildRootPrompt(cfg PromptConfig) string {
 		rootRemindersBlock,
 		rootAgentTypesBlock(),
 		rootCommands,
-		rootDelegateVsMessages,
+		rootCoordination,
 		rootRules,
 		rootParallelism,
 		rootFollowThrough,

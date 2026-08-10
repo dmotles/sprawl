@@ -41,7 +41,7 @@ func TestBuildEngineerPrompt_ContainsKeyPhrases(t *testing.T) {
 		"zone",
 		"root",
 		"sprawl/zone",
-		"report_status",
+		"tracker",
 		"send_message",
 	}
 	for _, phrase := range keyPhrases {
@@ -81,7 +81,7 @@ func TestBuildResearcherPrompt_ContainsKeyPhrases(t *testing.T) {
 		"birch",
 		"root",
 		"sprawl/birch",
-		"report_status",
+		"tracker",
 		"send_message",
 		"SPRAWL_AGENT_IDENTITY",
 		"do NOT modify production code",
@@ -89,6 +89,7 @@ func TestBuildResearcherPrompt_ContainsKeyPhrases(t *testing.T) {
 		"document findings",
 		"systematic analysis",
 		"tradeoffs",
+		"tracker",
 		".sprawl/agents/birch/findings/",
 	}
 	for _, phrase := range keyPhrases {
@@ -299,7 +300,7 @@ func TestBuildEngineerPrompt_ReflectionBeforeDone(t *testing.T) {
 	// QUM-714 renamed the code-reviewer step to "Code review sub-agent".
 	reviewerIdx := strings.Index(prompt, "Code review sub-agent")
 	reflectIdx := strings.Index(prompt, "Reflect")
-	doneIdx := strings.Index(prompt, "Report done via:")
+	doneIdx := strings.Index(prompt, "Hand off —")
 
 	if reviewerIdx == -1 {
 		t.Fatal("engineer prompt missing 'Code review sub-agent'")
@@ -308,14 +309,14 @@ func TestBuildEngineerPrompt_ReflectionBeforeDone(t *testing.T) {
 		t.Fatal("engineer prompt missing 'Reflect'")
 	}
 	if doneIdx == -1 {
-		t.Fatal("engineer prompt missing 'Report done via:'")
+		t.Fatal("engineer prompt missing the 'Hand off' step")
 	}
 
 	if reflectIdx <= reviewerIdx {
 		t.Errorf("'Reflect' (idx %d) should appear after 'Code review sub-agent' (idx %d)", reflectIdx, reviewerIdx)
 	}
 	if reflectIdx >= doneIdx {
-		t.Errorf("'Reflect' (idx %d) should appear before 'Report done' (idx %d)", reflectIdx, doneIdx)
+		t.Errorf("'Reflect' (idx %d) should appear before 'Hand off' (idx %d)", reflectIdx, doneIdx)
 	}
 }
 
@@ -574,17 +575,17 @@ func TestBuildResearcherPrompt_ReflectionBeforeDone(t *testing.T) {
 	prompt := BuildResearcherPrompt("birch", "root", "sprawl/birch", testEnvConfig())
 
 	reflectIdx := strings.Index(prompt, "REFLECTION")
-	doneIdx := strings.Index(prompt, `report_status({state: "complete"`)
+	doneIdx := strings.Index(prompt, "When your work is ready, message")
 
 	if reflectIdx == -1 {
 		t.Fatal("researcher prompt missing 'REFLECTION'")
 	}
 	if doneIdx == -1 {
-		t.Fatal("researcher prompt missing 'report_status({state: \"complete\"'")
+		t.Fatal("researcher prompt missing the hand-off line")
 	}
 
 	if reflectIdx >= doneIdx {
-		t.Errorf("'REFLECTION' (idx %d) should appear before report_status done line (idx %d)", reflectIdx, doneIdx)
+		t.Errorf("'REFLECTION' (idx %d) should appear before the hand-off line (idx %d)", reflectIdx, doneIdx)
 	}
 }
 
@@ -594,7 +595,6 @@ func TestBuildRootPrompt_KeyCommands_AllCommandsPresent(t *testing.T) {
 	// Spawning & Lifecycle tools
 	spawnLifecycleCommands := []string{
 		"spawn({",
-		"delegate({",
 		"kill({",
 		"retire({",
 	}
@@ -608,7 +608,6 @@ func TestBuildRootPrompt_KeyCommands_AllCommandsPresent(t *testing.T) {
 	messagingCommands := []string{
 		"send_message({",
 		"peek({",
-		"report_status({",
 	}
 	for _, cmd := range messagingCommands {
 		if !strings.Contains(prompt, cmd) {
@@ -684,7 +683,7 @@ func TestBuildManagerPrompt_ContainsKeyPhrases(t *testing.T) {
 		"cedar",
 		"weave",
 		"dmotles/feature-x",
-		"report_status",
+		"tracker",
 		`send_message({to: "weave"`,
 	}
 	for _, phrase := range keyPhrases {
@@ -973,35 +972,36 @@ func TestBuildManagerPrompt_ScopeManagement(t *testing.T) {
 	}
 }
 
-// --- delegate vs messages guidance tests ---
+// --- coordination guidance tests (QUM-1186: the "DELEGATE VS. MESSAGES VS.
+// STATUS" section it replaced named two tools that no longer exist) ---
 
-func TestBuildRootPrompt_DelegateVsMessagesGuidance(t *testing.T) {
+func TestBuildRootPrompt_CoordinationGuidance(t *testing.T) {
 	prompt := BuildRootPrompt(defaultRootConfig("weave"))
 
 	keyPhrases := []string{
-		"delegate({",
-		"work assignments",
-		"tracked task",
 		"send_message({",
-		"coordination",
-		"information sharing",
-		"rules of thumb",
+		"now: false",
+		"now: true",
+		"300 characters",
+		"tracker",
+		"an assignment is a message",
+		"peek({",
 	}
 	for _, phrase := range keyPhrases {
 		if !strings.Contains(strings.ToLower(prompt), strings.ToLower(phrase)) {
-			t.Errorf("root prompt missing delegate vs messages guidance phrase: %q", phrase)
+			t.Errorf("root prompt missing coordination guidance phrase: %q", phrase)
 		}
 	}
 }
 
-func TestBuildRootPrompt_DelegateVsMessagesGuidance_Ordering(t *testing.T) {
+func TestBuildRootPrompt_CoordinationGuidance_Ordering(t *testing.T) {
 	prompt := BuildRootPrompt(defaultRootConfig("weave"))
 
-	guidanceIdx := strings.Index(prompt, "DELEGATE VS. MESSAGES")
+	guidanceIdx := strings.Index(prompt, "COORDINATION — HOW WORK REACHES AN AGENT:")
 	rulesIdx := strings.LastIndex(prompt, "RULES:")
 
 	if guidanceIdx == -1 {
-		t.Fatal("root prompt missing 'DELEGATE VS. MESSAGES' section")
+		t.Fatal("root prompt missing COORDINATION section")
 	}
 	if rulesIdx == -1 {
 		t.Fatal("root prompt missing 'RULES:'")
@@ -1012,47 +1012,47 @@ func TestBuildRootPrompt_DelegateVsMessagesGuidance_Ordering(t *testing.T) {
 		t.Fatal("root prompt missing 'KEY TOOLS (MCP):'")
 	}
 	if guidanceIdx <= keyCommandsIdx {
-		t.Errorf("DELEGATE VS. MESSAGES (idx %d) should appear after KEY TOOLS (idx %d)", guidanceIdx, keyCommandsIdx)
+		t.Errorf("COORDINATION (idx %d) should appear after KEY TOOLS (idx %d)", guidanceIdx, keyCommandsIdx)
 	}
 	if guidanceIdx >= rulesIdx {
-		t.Errorf("DELEGATE VS. MESSAGES (idx %d) should appear before RULES (idx %d)", guidanceIdx, rulesIdx)
+		t.Errorf("COORDINATION (idx %d) should appear before RULES (idx %d)", guidanceIdx, rulesIdx)
 	}
 }
 
-func TestBuildManagerPrompt_DelegateVsMessagesGuidance(t *testing.T) {
+func TestBuildManagerPrompt_CoordinationGuidance(t *testing.T) {
 	prompt := BuildManagerPrompt("cedar", "weave", "dmotles/feature-x", "engineering", testEnvConfig())
 
 	keyPhrases := []string{
-		"delegate({",
-		"work assignments",
-		"tracked task",
 		"send_message({",
-		"coordination",
-		"information sharing",
-		"rules of thumb",
+		"now: false",
+		"now: true",
+		"300 characters",
+		"tracker",
+		"an assignment is a message",
+		"peek({",
 	}
 	for _, phrase := range keyPhrases {
 		if !strings.Contains(strings.ToLower(prompt), strings.ToLower(phrase)) {
-			t.Errorf("manager prompt missing delegate vs messages guidance phrase: %q", phrase)
+			t.Errorf("manager prompt missing coordination guidance phrase: %q", phrase)
 		}
 	}
 }
 
-func TestBuildManagerPrompt_DelegateVsMessagesGuidance_Ordering(t *testing.T) {
+func TestBuildManagerPrompt_CoordinationGuidance_Ordering(t *testing.T) {
 	prompt := BuildManagerPrompt("cedar", "weave", "dmotles/feature-x", "engineering", testEnvConfig())
 
-	guidanceIdx := strings.Index(prompt, "DELEGATE VS. MESSAGES")
+	guidanceIdx := strings.Index(prompt, "COORDINATION — HOW WORK REACHES AN AGENT:")
 	dispatchIdx := strings.Index(prompt, "# DISPATCHING:")
 
 	if guidanceIdx == -1 {
-		t.Fatal("manager prompt missing 'DELEGATE VS. MESSAGES' section")
+		t.Fatal("manager prompt missing COORDINATION section")
 	}
 	if dispatchIdx == -1 {
 		t.Fatal("manager prompt missing '# DISPATCHING:'")
 	}
 	// Guidance should appear after DISPATCHING
 	if guidanceIdx <= dispatchIdx {
-		t.Errorf("DELEGATE VS. MESSAGES (idx %d) should appear after DISPATCHING (idx %d)", guidanceIdx, dispatchIdx)
+		t.Errorf("COORDINATION (idx %d) should appear after DISPATCHING (idx %d)", guidanceIdx, dispatchIdx)
 	}
 
 	// And before PARALLELISM
@@ -1061,7 +1061,7 @@ func TestBuildManagerPrompt_DelegateVsMessagesGuidance_Ordering(t *testing.T) {
 		t.Fatal("manager prompt missing '# PARALLELISM'")
 	}
 	if guidanceIdx >= parallelismIdx {
-		t.Errorf("DELEGATE VS. MESSAGES (idx %d) should appear before PARALLELISM (idx %d)", guidanceIdx, parallelismIdx)
+		t.Errorf("COORDINATION (idx %d) should appear before PARALLELISM (idx %d)", guidanceIdx, parallelismIdx)
 	}
 }
 
@@ -1346,10 +1346,8 @@ func TestBuildRootPrompt_ContainsMCPTools(t *testing.T) {
 		"spawn",
 		"send_message",
 		"peek",
-		"report_status",
 		"merge",
 		"retire",
-		"delegate",
 		"kill",
 		"status",
 		"handoff",
@@ -1391,7 +1389,7 @@ func TestBuildRootPrompt_SharedContent(t *testing.T) {
 func TestBuildEngineerPrompt_ContainsMCPTools(t *testing.T) {
 	prompt := BuildEngineerPrompt("zone", "root", "sprawl/zone", testEnvConfig())
 
-	required := []string{"send_message", "report_status"}
+	required := []string{"send_message", "messages_read"}
 	for _, tool := range required {
 		if !strings.Contains(prompt, tool) {
 			t.Errorf("engineer prompt should contain MCP tool %q", tool)
@@ -1413,7 +1411,7 @@ func TestBuildEngineerPrompt_NoCLIReportCommand(t *testing.T) {
 func TestBuildResearcherPrompt_ContainsMCPTools(t *testing.T) {
 	prompt := BuildResearcherPrompt("birch", "root", "sprawl/birch", testEnvConfig())
 
-	required := []string{"send_message", "report_status"}
+	required := []string{"send_message", "messages_read"}
 	for _, tool := range required {
 		if !strings.Contains(prompt, tool) {
 			t.Errorf("researcher prompt should contain MCP tool %q", tool)
@@ -1439,10 +1437,8 @@ func TestBuildManagerPrompt_ContainsMCPTools(t *testing.T) {
 		"spawn",
 		"merge",
 		"retire",
-		"delegate",
 		"send_message",
 		"peek",
-		"report_status",
 		"status",
 	}
 	for _, tool := range mcpTools {
@@ -1619,10 +1615,8 @@ func TestBuildRootPrompt_ComprehensiveNoCLIReferences(t *testing.T) {
 		"spawn",
 		"send_message",
 		"peek",
-		"report_status",
 		"merge",
 		"retire",
-		"delegate",
 		"kill",
 		"status",
 		"handoff",
@@ -1745,13 +1739,13 @@ func TestBuildQAPrompt_ContainsKeyPhrases(t *testing.T) {
 		"inspector",
 		"tower",
 		"dmotles/feature-x",
-		"report_status",
+		"tracker",
 		"send_message",
 		"verdict",
 		"git fetch",
 		"git diff",
 		"make validate",
-		"Linear",
+		"tracking issue",
 		"VERIFICATION PROTOCOL",
 	}
 	// QA agent identity should be referenced (case-insensitive).
@@ -1803,9 +1797,8 @@ func TestBuildQAPrompt_VerificationProtocolOrder(t *testing.T) {
 	peekIdx := strings.Index(prompt, "peek")
 	gitDiffIdx := strings.Index(prompt, "git diff")
 	makeValidateIdx := strings.Index(prompt, "make validate")
-	linearIdx := strings.Index(prompt, "Linear")
-	sendMsgIdx := strings.Index(prompt, "send_message")
-	reportStatusIdx := strings.Index(prompt, "report_status")
+	postFindingsIdx := strings.Index(prompt, "Post findings as a comment")
+	sendMsgIdx := strings.Index(prompt, `send_message({to: "<manager>"`)
 
 	if peekIdx == -1 {
 		t.Fatal("qa prompt missing 'peek'")
@@ -1816,14 +1809,11 @@ func TestBuildQAPrompt_VerificationProtocolOrder(t *testing.T) {
 	if makeValidateIdx == -1 {
 		t.Fatal("qa prompt missing 'make validate'")
 	}
-	if linearIdx == -1 {
-		t.Fatal("qa prompt missing 'Linear'")
+	if postFindingsIdx == -1 {
+		t.Fatal("qa prompt missing the post-findings-to-the-issue step")
 	}
 	if sendMsgIdx == -1 {
-		t.Fatal("qa prompt missing 'send_message'")
-	}
-	if reportStatusIdx == -1 {
-		t.Fatal("qa prompt missing 'report_status'")
+		t.Fatal("qa prompt missing the send_message hand-off step")
 	}
 
 	type entry struct {
@@ -1834,9 +1824,8 @@ func TestBuildQAPrompt_VerificationProtocolOrder(t *testing.T) {
 		{"peek", peekIdx},
 		{"git diff", gitDiffIdx},
 		{"make validate", makeValidateIdx},
-		{"Linear", linearIdx},
+		{"post findings on the issue", postFindingsIdx},
 		{"send_message", sendMsgIdx},
-		{"report_status", reportStatusIdx},
 	}
 	for i := 1; i < len(order); i++ {
 		if order[i].idx <= order[i-1].idx {
@@ -1881,10 +1870,7 @@ func TestBuildQAPrompt_ReflectionBeforeDone(t *testing.T) {
 	if reflectIdx == -1 {
 		reflectIdx = strings.Index(prompt, "Reflect")
 	}
-	doneIdx := strings.Index(prompt, `report_status({state: "complete"`)
-	if doneIdx == -1 {
-		doneIdx = strings.Index(prompt, "Report done")
-	}
+	doneIdx := strings.Index(prompt, "When your work is ready, message")
 
 	if reflectIdx == -1 {
 		t.Fatal("qa prompt missing reflection step")
@@ -1937,7 +1923,7 @@ func TestBuildQAPrompt_NoCLICommands(t *testing.T) {
 func TestBuildQAPrompt_ContainsMCPTools(t *testing.T) {
 	prompt := BuildQAPrompt("inspector", "tower", "dmotles/feature-x", testEnvConfig())
 
-	required := []string{"send_message", "report_status", "peek"}
+	required := []string{"send_message", "peek"}
 	for _, tool := range required {
 		if !strings.Contains(prompt, tool) {
 			t.Errorf("qa prompt should contain MCP tool %q", tool)

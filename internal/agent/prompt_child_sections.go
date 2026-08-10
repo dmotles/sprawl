@@ -56,7 +56,7 @@ against your branch. Do NOT invoke QA yourself.
 5. Code review sub-agent — Before reporting done, spawn a code reviewer as a sprawl sub-agent
    that shares your worktree so it can see your staged and committed changes. Call it directly
    via the sprawl MCP tool — do NOT route through your manager:
-     spawn({subagent: true, type: "engineer", family: "engineering", prompt: "Code review focus: <files you changed>. Read the diff in our shared worktree, evaluate code quality, codebase conventions, error handling, scope creep, naming, edge cases, and potential bugs. Post findings via send_message back to me, then report_status complete."})
+     spawn({subagent: true, type: "engineer", family: "engineering", prompt: "Code review focus: <files you changed>. Read the diff in our shared worktree, evaluate code quality, codebase conventions, error handling, scope creep, naming, edge cases, and potential bugs. Post findings via send_message back to me, then stop."})
    Wait for the reviewer's send_message reply with findings. Address every finding (or
    justify ignoring it) before proceeding. Then retire the reviewer with
    retire({agent: "<reviewer-name>"}).
@@ -205,14 +205,13 @@ Your output is a per-AC pass/fail verdict, posted as a comment on the tracking i
 // qaVerificationProtocolSection returns the numbered verification protocol for QA agents.
 func qaVerificationProtocolSection(agentName string) string {
 	return fmt.Sprintf(`VERIFICATION PROTOCOL (MANDATORY):
-1. Read the tracking issue and enumerate every acceptance criterion via mcp__linear__get_issue (or your repo's issue MCP).
-2. peek({agent: "<engineer>"}) — if the engineer is not yet complete, report a blocked status with summary "engineer-not-done" and stop.
+1. Read the tracking issue and enumerate every acceptance criterion. Use the repo's issue MCP tools if it has any — the project's CLAUDE.md names the tracker.
+2. peek({agent: "<engineer>"}) — if the engineer's work is not ready yet, message your manager with "engineer-not-done" and stop.
 3. From your worktree: `+"`git fetch`"+` then `+"`git diff <engineer_branch>`"+` to inspect the change set.
 4. Run `+"`make validate`"+` (or the configured validate command from .sprawl/config.yaml). If validate reports lock contention, retry with backoff — do NOT bypass.
 5. Run any additional E2E specified by the issue.
-6. Post findings as a Linear comment on the issue (mcp__linear__save_comment) with per-AC pass/fail and evidence. Longer artifacts go in findings/%s/ in your worktree.
-7. send_message({to: "<manager>", body: "verdict: pass|fail|needs-rework\n\n<details>"}).
-8. report_status({state: "complete", summary: "<verdict>: <one-liner>"}).`, agentName)
+6. Post findings as a comment on the tracking issue with per-AC pass/fail and evidence. Longer artifacts go in findings/%s/ in your worktree.
+7. send_message({to: "<manager>", body: "verdict: pass|fail|needs-rework — <one-line reason>; per-AC evidence is on the issue", now: false}) — under 300 characters, so the detail stays on the issue rather than in the message.`, agentName)
 }
 
 // qaReflectionSection returns the "Reflection" section for QA agents.
@@ -277,7 +276,7 @@ decomposition before spawning sprawl agents for the real work.`
 
 // managerDispatchingSection returns the "Dispatching" through "Post-dispatch" sections.
 func managerDispatchingSection() string {
-	return managerCommands + "\n\n" + managerDelegateVsMessages + "\n\n" + managerPostDispatchBlock()
+	return managerCommands + "\n\n" + managerCoordination + "\n\n" + managerPostDispatchBlock()
 }
 
 // managerParallelismSection returns the "Parallelism vs serialization" section.
@@ -342,10 +341,9 @@ const managerFailureSection = `# FAILURE HANDLING:
 
 // managerScopeSection returns the "Scope management" section.
 func managerScopeSection() string {
-	reportCmd := "`report_status` (state: \"blocked\") or `send_message`"
 	return `# SCOPE MANAGEMENT:
 - Own your scope. Execute the task you were given.
-- Do not expand beyond your assigned scope. If you discover work that is important but outside your scope, report it to your parent via ` + reportCmd + `.
+- Do not expand beyond your assigned scope. If you discover work that is important but outside your scope, record it in the project's tracker and tell your parent it exists via ` + "`send_message`" + `.
 - Do not gold-plate, add unrequested features, or refactor code beyond what was asked.`
 }
 
@@ -353,8 +351,8 @@ func managerScopeSection() string {
 const managerFollowThroughSection = `# FOLLOW THROUGH:
 When orchestrating multi-wave work, after one wave of agents completes or an
 agent finishes and unblocks another chunk of work, automatically schedule and
-fire off the next wave or next chunk. You can either delegate back to the agent
-that just finished (if its context will be valuable) or spawn a new agent.
+fire off the next wave or next chunk. You can either send the next task to the
+agent that just finished (if its context will be valuable) or spawn a new agent.
 
 Do not pause between waves waiting for external confirmation. Keep momentum.
 If you and your parent agreed on a plan, execute it through to completion.`

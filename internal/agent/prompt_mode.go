@@ -14,18 +14,27 @@ import "strings"
 // this file makes the prompt template grep-able and lowers the cost of adding
 // new mode-specific bits.
 
-// --- Child report bullets (the four mode-specific status/messaging bullets
-// used in every child agent's RULES section). ---
+// --- Child coordination bullets (the messaging + work-record bullets used in
+// every child agent's RULES section). ---
 
-const childReportBulletsTemplate = `- Decision rule: use report_status for state pings (working / blocked / complete / failure) — they update your global state and notify the parent asynchronously, but are NOT inbox messages and cannot be read back. Use send_message for substantive content (questions, findings, context) — it's durable and retrievable via messages_read.
-- Report progress at each meaningful step with report_status({state: "working", summary: "<≤160 char update>"}) — not just at the end.
-- When done, use: report_status({state: "complete", summary: "<{{DONE_SUMMARY}}>"})
-- If you discover work beyond your scope, use: report_status({state: "blocked", summary: "<one-line>"}) or send_message({to: "{{PARENT_NAME}}", body: "<description>", interrupt: false}).
-- If you need clarification, use: send_message({to: "{{PARENT_NAME}}", body: "<your question>", interrupt: false}) — interrupt=true is reserved for rare urgent parent→descendant corrections.`
+// QUM-1186: these bullets used to teach the self-report tool. It is deleted
+// and its habit is deliberately NOT moved onto send_message — an agent that
+// narrates its state over the messaging channel floods its parent's inbox with
+// content the runtime already observes. The work record moves to the project's
+// tracker, and messages are reserved for things the recipient must act on.
+//
+// The guidance is tracker-agnostic on purpose: sprawl runs on projects with
+// other trackers or none, and each project's own CLAUDE.md names its tracker.
+const childReportBulletsTemplate = `- Record your work in the project's tracker if it has one: pick the issue up, comment decisions, findings and blockers on it as you go, and close it out with a summary. The tracker is the work record — it outlives this session and {{PARENT_NAME}} can read it without asking you.
+- sprawl observes whether you are alive and in a turn, so nobody needs to be told you are still working. Message {{PARENT_NAME}} when they have something to act on: your work is ready, you are blocked, or you need a decision only they can make.
+- send_message({to: "{{PARENT_NAME}}", body: "<what they need>", now: false}) is the only way to make another agent receive text. It lands in their inbox and stays retrievable via messages_read; the first line of body is the subject.
+- body is capped at 300 characters. Over the cap the call is a hard error, never a truncated message — put the detail in the tracker or a findings file and send the key.
+- now: false (the default) is cooperative: the message lands at the recipient's next turn boundary. now: true jumps the queue and requests preemption, and is reserved for rare urgent parent→descendant corrections — you will almost never send one.
+- When your work is ready, message {{PARENT_NAME}} with {{DONE_SUMMARY}}. If you discover work beyond your scope, describe it the same way rather than doing it.`
 
-// childReportBullets returns the four status/messaging bullets used in every
-// child agent's RULES section. doneSummary fills the "<…>" placeholder for the
-// "When done" line (e.g. "summary of what you did").
+// childReportBullets returns the coordination bullets used in every child
+// agent's RULES section. doneSummary fills the placeholder for the hand-off
+// line (e.g. "a summary of what you did").
 func childReportBullets(parentName, doneSummary string) string {
 	tmpl := strings.ReplaceAll(childReportBulletsTemplate, "{{DONE_SUMMARY}}", doneSummary)
 	tmpl = strings.ReplaceAll(tmpl, "{{PARENT_NAME}}", parentName)
@@ -44,7 +53,7 @@ const childRulesTemplate = `RULES:
 
 // childRulesBlock returns the RULES section for engineer agents.
 func childRulesBlock(parentName string) string {
-	bullets := childReportBullets(parentName, "summary of what you did")
+	bullets := childReportBullets(parentName, "a summary of what you did")
 	return strings.ReplaceAll(childRulesTemplate, "{{REPORT_BULLETS}}", bullets)
 }
 
@@ -58,7 +67,7 @@ const researcherRulesTemplate = `RULES:
 
 // researcherRulesBlock returns the RULES section for researcher agents.
 func researcherRulesBlock(parentName string) string {
-	bullets := childReportBullets(parentName, "summary of what you found")
+	bullets := childReportBullets(parentName, "a summary of what you found")
 	return strings.ReplaceAll(researcherRulesTemplate, "{{REPORT_BULLETS}}", bullets)
 }
 
@@ -71,14 +80,16 @@ const qaRulesTemplate = `RULES:
 
 // qaRulesBlock returns the RULES section for qa agents.
 func qaRulesBlock(parentName string) string {
-	bullets := childReportBullets(parentName, "verdict: pass|fail|needs-rework — one-liner")
+	bullets := childReportBullets(parentName, "your verdict (pass | fail | needs-rework) and a one-line reason")
 	return strings.ReplaceAll(qaRulesTemplate, "{{REPORT_BULLETS}}", bullets)
 }
 
-// engineerReportDoneLine returns the TDD final "Report done" step. The
-// numbering tracks the engineer TDD workflow in prompt_child_sections.go.
+// engineerReportDoneLine returns the TDD final hand-off step. The numbering
+// tracks the engineer TDD workflow in prompt_child_sections.go.
 func engineerReportDoneLine() string {
-	return `7. Report done via: report_status({state: "complete", summary: "<summary>"})`
+	return `7. Hand off — close out the tracker issue with a summary, then
+   send_message({to: "<your manager>", body: "<what landed, branch state, what they must verify>", now: false}).
+   Keep it under 300 characters; the detail belongs on the issue, not in the message.`
 }
 
 const managerRulesTemplate = `RULES:
@@ -92,7 +103,7 @@ const managerRulesTemplate = `RULES:
 
 // managerRulesBlock returns the RULES section for manager prompts.
 func managerRulesBlock(parentName string) string {
-	bullets := childReportBullets(parentName, "summary of what you did")
+	bullets := childReportBullets(parentName, "a summary of what you did")
 	return strings.ReplaceAll(managerRulesTemplate, "{{REPORT_BULLETS}}", bullets)
 }
 
@@ -111,7 +122,7 @@ const rootRemindersBlock = `## REMINDERS
 
 const rootAgentTypesTemplate = `AGENT TYPES YOU CAN SPAWN (via spawn tool):
 - Manager (type: "manager"): The STANDARD orchestration layer between you and any engineering work.
-  Spawn one engineering manager per Linear issue. The manager decomposes, dispatches engineers,
+  Spawn one engineering manager per tracked issue. The manager decomposes, dispatches engineers,
   dispatches QA after engineering reports done, integrates on its own branch, and reports back.
   You then land the integration branch on main. This is the default for ANY code-change work,
   including small bug fixes.
@@ -180,8 +191,7 @@ const rootMergeRetireBlock = `- When pulling in agent work, use merge({agent: "<
 const rootCommands = `KEY TOOLS (MCP):
 
   Spawning & Lifecycle:
-  spawn({type: "<type>", family: "<family>", prompt: "<task>", branch: "<branch>"})  — spawn agent with own worktree
-  delegate({agent: "<agent>", task: "<task>"})     — delegate a task to an existing agent
+  spawn({type: "<type>", family: "<family>", prompt: "<task>", branch: "<branch>"})  — spawn agent with own worktree. The spawn prompt is NOT length-capped; a substantial brief belongs here or in the tracker.
   retire({agent: "<agent>"})                       — Shut down agent, delete branch. Refuses if unmerged commits exist.
   retire({agent: "<agent>", merge: true})          — Merge agent's work into your branch, then retire.
   retire({agent: "<agent>", abandon: true})        — Discard work, delete branch, and retire. If it warns about unmerged commits or a live process, STOP and confirm with the user.
@@ -192,23 +202,26 @@ const rootCommands = `KEY TOOLS (MCP):
   merge({agent: "<agent>", no_validate: true})     — Skip validation. It normally runs on the rebased tree BEFORE your branch is touched.
 
   Messaging (prefer MCP over the CLI when available):
-  send_message({to: "<agent>", body: "<markdown>", interrupt: false})  — Durable correspondence channel. Lands in the recipient's inbox, increments unread, retrievable via messages_read. interrupt=false (default) is strictly cooperative — message lands at the recipient's next turn boundary. interrupt=true is RARE (parent→descendant urgent only): jumps the queue AND requests preemption (best-effort during MCP-tool-waits; honored for streaming/thinking only — see QUM-549; use kill for hard recovery from a wedged MCP call). The first line of body serves as the subject-equivalent in the inbox. For routine status pings, prefer report_status.
-  peek({agent: "<agent>", tail: 20})               — inspect an agent's recent activity + last report. Use before asking "are you done?" or nagging a child.
-  report_status({state: "<working|blocked|complete|failure>", summary: "<≤160 char>"})  — report YOUR status to your parent. Updates your global state and pings parent asynchronously (never preempts). NOT an inbox message: does not bump unread, not retrievable via messages_read. Use at every meaningful step. For anything substantive or retrievable, use send_message instead.
+  send_message({to: "<agent>", body: "<markdown>", now: false})  — the ONLY way to make another agent receive text. Lands in the recipient's inbox, increments unread, retrievable via messages_read; the first line of body is the subject-equivalent. body is capped at 300 characters and over the cap it is a hard error, never a truncated message — put the detail in the project's tracker and send the key. now: false (default) is strictly cooperative: the message lands at the recipient's next turn boundary. now: true is RARE (parent→descendant urgent only) — it jumps the queue AND requests preemption (best-effort during MCP-tool-waits; honored for streaming/thinking only — see QUM-549; use kill for hard recovery from a wedged MCP call).
+  peek({agent: "<agent>", tail: 20})               — inspect an agent's recent observed activity. Use before asking "are you done?" or nagging a child.
 
   Observability:
-  status({})                                       — {runtime, agents}: every agent's state/type/family/age, plus a runtime verdict on whether this process is the installed build
+  status({})                                       — {runtime, agents}: every agent's observed state/type/family/age, plus a runtime verdict on whether this process is the installed build. An agent shown as idle had its process reclaimed for inactivity: it is NOT complete, its work and branch are intact, and it revives on the next message you send it.
 
   Session:
   handoff({summary: "<markdown summary>"})         — weave-only. Persist a structured session summary and hand off to a fresh weave session with consolidated memory. Safe with active children: the host replaces ONLY weave's own Claude subprocess; the supervisor, runtime registry, all running child agents, and the inbox notifier survive untouched. You do NOT need to wait for in-flight agents to finish — mention what they are working on in the summary instead, so the next weave knows what's running. (This is an architectural invariant; if handoff ever kills or corrupts a child, that is a bug — file it.) Call this at session end. See the /handoff skill for the summary template.`
 
-const rootDelegateVsMessages = `DELEGATE VS. MESSAGES VS. STATUS — WHEN TO USE WHICH:
-- delegate({agent: "<agent>", task: "<task>"}) — Use for work assignments. Creates a tracked task in the agent's queue with status (queued → started → done). Use when you want the agent to execute something and track completion. Preferred for: assigning implementation work, requesting specific deliverables, any "go do this" instruction.
-- send_message({to: "<agent>", body: "<body>", interrupt: false}) — Durable correspondence. Lands in the recipient's inbox, retrievable via messages_read. Use for substantive coordination and information sharing: context, questions, findings, hand-offs. Queued cooperatively; recipient reads on next yield. No execution semantics.
-- send_message({to: "<descendant>", body: "<body>", interrupt: true}) — RARE. Jumps the queue and requests preemption. Only for urgent parent-side corrections; prefer interrupt=false by default. Honored for streaming/thinking; best-effort during MCP-tool-waits (QUM-549) — use kill for hard recovery.
-- report_status({state: "<state>", summary: "<≤160 char>"}) — YOUR own state ping. Updates your global state and asynchronously notifies your parent. NOT an inbox message: ephemeral, does not bump unread, not retrievable via messages_read. Children also use this to ping you; their pings show up in status/peek, not your inbox.
-- peek({agent: "<agent>"}) — Before nagging a child ("are you done?"), peek its activity/last_report first. Only send_message if peek is inconclusive.
-- Rules of thumb: (1) if you're telling an agent to *do* something, use delegate; (2) if you're telling an agent *about* something (and want it retrievable), use send_message; (3) if you're announcing your own state, use report_status.`
+// QUM-1186: this replaces the "DELEGATE VS. MESSAGES VS. STATUS" section. Two
+// of its three tools are deleted, so the section is not a rename — there is no
+// longer a choice to make. What remains worth saying is where a brief goes now
+// that message bodies are capped, and that agent state is observed rather than
+// asked for.
+const rootCoordination = `COORDINATION — HOW WORK REACHES AN AGENT:
+- send_message({to: "<agent>", body: "<body>", now: false}) is the only way to make another agent receive text. There is no separate work-assignment tool: an assignment is a message. body is capped at 300 characters, so put the brief in the project's tracker and send the issue key.
+- The spawn prompt is NOT capped. A substantial brief belongs there or in the tracker — point the agent at the issue rather than restating it.
+- send_message({to: "<descendant>", body: "<body>", now: true}) — RARE. Jumps the queue and requests preemption. Only for urgent parent-side corrections; prefer the cooperative default. Honored for streaming/thinking; best-effort during MCP-tool-waits (QUM-549) — use kill for hard recovery.
+- Agents do not tell you what they are doing, and you should not ask them to. Liveness is observed from the process, so status({}) and peek({agent: "<agent>"}) already answer "is it alive, is it in a turn". Before nagging a child ("are you done?"), peek first; only send_message if peek is inconclusive.
+- The work record lives in the project's tracker, not in sprawl. Have agents comment decisions and findings on the issue, and read the issue when you want to know where things stand.`
 
 const rootRules = `RULES:
 - Keep your agent tree manageable. Do not have more than 3-10 active agents at a time.
@@ -216,7 +229,7 @@ const rootRules = `RULES:
 - **Default to safe retirement.** Always use plain retire({agent: "<agent>"}) first — it will refuse if unmerged commits exist. If that refuses, try retire with merge: true. Only use abandon: true when you genuinely want to discard work. If abandon warns about unmerged commits or a live process, STOP and confirm with the user.
 - **Before retiring researchers:** check for committed artifacts (findings docs, research reports) in their worktrees. Researchers often commit docs even though they don't write code. Use retire with merge: true or merge first to preserve their work.
 - If a task is atomic (one module, a few hundred lines, one commit), assign it to an engineer directly.
-- For Linear issue work, default to: spawn a manager, hand it the issue, let it run end-to-end. Do not pre-decompose into per-engineer tasks unless the manager is missing context only you have.
+- For tracked issue work, default to: spawn a manager, hand it the issue, let it run end-to-end. Do not pre-decompose into per-engineer tasks unless the manager is missing context only you have.
 - Leverage repo-level issue management systems when available.
 - When work comes back, you MUST verify it before reporting success.
 - After spawning an agent, wait for it to notify you. You will be notified when messages arrive. If you do need to check on a child, use peek first instead of sending a message.`
@@ -245,8 +258,7 @@ const managerCommands = `# DISPATCHING:
 Use sprawl MCP tools to create and manage agents:
 
   Spawning & Lifecycle:
-  spawn({type: "<type>", family: "<family>", prompt: "<task>", branch: "<branch>"})  — spawn agent with own worktree
-  delegate({agent: "<agent>", task: "<task>"})
+  spawn({type: "<type>", family: "<family>", prompt: "<task>", branch: "<branch>"})  — spawn agent with own worktree. The spawn prompt is NOT length-capped.
   retire({agent: "<agent>"})
   kill({agent: "<agent>"})
 
@@ -261,20 +273,20 @@ Use sprawl MCP tools to create and manage agents:
   - qa: Concerned with correctness. Testing, verification, quality assurance.
 
   Messaging (prefer MCP over the CLI when available):
-  send_message({to: "<agent>", body: "<markdown>", interrupt: false})  — Durable correspondence channel. Lands in the recipient's inbox, retrievable via messages_read. interrupt=false (default) cooperative; interrupt=true is RARE (urgent parent→descendant corrections) — jumps queue + requests preemption (best-effort during MCP-tool-waits; see QUM-549).
-  peek({agent: "<agent>", tail: 20})   — inspect a child/peer's recent activity + last report before nagging them.
-  report_status({state: "<working|blocked|complete|failure>", summary: "<≤160 char>"})  — report YOUR status to your parent. Updates your global state and pings parent asynchronously (never preempts). NOT an inbox message: ephemeral, does not bump unread, not retrievable via messages_read. For substantive content, use send_message.
+  send_message({to: "<agent>", body: "<markdown>", now: false})  — the ONLY way to make another agent receive text, in either direction. Lands in the recipient's inbox, retrievable via messages_read. body is capped at 300 characters and over the cap it is a hard error, never a truncated message — put the brief in the tracker and send the issue key. now: false (default) is cooperative; now: true is RARE (urgent parent→descendant corrections) — jumps queue + requests preemption (best-effort during MCP-tool-waits; see QUM-549).
+  peek({agent: "<agent>", tail: 20})   — inspect a child/peer's recent observed activity before nagging them.
 
   Observability:
-  status({})            — {runtime, agents}: all agents, plus a runtime staleness verdict`
+  status({})            — {runtime, agents}: all agents with their observed state, plus a runtime staleness verdict. An agent shown as idle had its process reclaimed for inactivity: it is NOT complete, its branch is intact, and it revives on the next message you send it.`
 
-const managerDelegateVsMessages = `DELEGATE VS. MESSAGES VS. STATUS — WHEN TO USE WHICH:
-- delegate({agent: "<agent>", task: "<task>"}) — Use for work assignments. Creates a tracked task in the agent's queue with status (queued → started → done). Use when you want the agent to execute something and track completion. Preferred for: assigning implementation work, requesting specific deliverables, any "go do this" instruction.
-- send_message({to: "<agent>", body: "<body>", interrupt: false}) — Durable correspondence. Lands in the recipient's inbox, retrievable via messages_read. Use for substantive coordination and information sharing: context, questions, findings, hand-offs. Queued cooperatively; recipient reads on next yield. No execution semantics.
-- send_message({to: "<descendant>", body: "<body>", interrupt: true}) — RARE. Jumps the queue and requests preemption. Only for urgent parent-side corrections; prefer interrupt=false by default. Honored for streaming/thinking; best-effort during MCP-tool-waits (QUM-549) — use kill for hard recovery.
-- report_status({state: "<state>", summary: "<≤160 char>"}) — YOUR own state ping to your parent. Updates global state and notifies parent asynchronously. NOT an inbox message: ephemeral, does not bump unread, not retrievable via messages_read. Children's status pings show up in status/peek, not your inbox.
-- peek({agent: "<agent>"}) — Before nagging a child, peek its activity/last_report first. Only send_message if peek is inconclusive.
-- Rules of thumb: (1) if you're telling an agent to *do* something, use delegate; (2) if you're telling an agent *about* something (and want it retrievable), use send_message; (3) if you're announcing your own state, use report_status.`
+// QUM-1186: replaces the manager's "DELEGATE VS. MESSAGES VS. STATUS" section,
+// for the same reason as rootCoordination above.
+const managerCoordination = `COORDINATION — HOW WORK REACHES AN AGENT:
+- send_message({to: "<agent>", body: "<body>", now: false}) is the only way to make another agent receive text. There is no separate work-assignment tool: an assignment is a message. body is capped at 300 characters, so put the brief in the project's tracker and send the issue key.
+- The spawn prompt is NOT capped. When you dispatch new work, prefer spawning with a short prompt that points at the tracked issue over restating the issue in a message.
+- send_message({to: "<descendant>", body: "<body>", now: true}) — RARE. Jumps the queue and requests preemption. Only for urgent corrections to a child; prefer the cooperative default. Honored for streaming/thinking; best-effort during MCP-tool-waits (QUM-549) — use kill for hard recovery.
+- Your children do not tell you what they are doing, and you must not ask them to. Liveness is observed from the process, so status({}) and peek({agent: "<agent>"}) already answer "is it alive, is it in a turn". Peek before nagging; only send_message if peek is inconclusive.
+- The work record lives in the project's tracker. Have children comment decisions and findings on the issue, and read the issue when you want to know where things stand.`
 
 const managerIntegrationTemplate = `# INTEGRATION:
 Use merge({agent: "<agent>"}) to land work on your integration branch. It rebases
@@ -315,7 +327,7 @@ func managerIntegrationBlock() string {
 }
 
 const managerLifecycle = `# AGENT LIFECYCLE:
-- delegate({agent: "<agent>", task: "<task>"}) — Reuse an existing agent for follow-up work. Prefer this when the agent's context is valuable for the next task.
+- send_message({to: "<agent>", body: "<next task>", now: false}) — Reuse an existing agent for follow-up work. Prefer this when the agent's context is valuable for the next task; a reclaimed (idle) agent revives on the message with its worktree intact.
 - merge({agent: "<agent>"}) — Pull in work. Agent stays alive and can continue to receive work.
 - retire({agent: "<agent>"}) — Shut down agent. Refuses if unmerged commits exist.
 - retire({agent: "<agent>", merge: true}) — Merge + retire in one shot ("done, goodbye").

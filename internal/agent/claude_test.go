@@ -82,7 +82,7 @@ func TestEngineerSystemPrompt_ContainsKeyPhrases(t *testing.T) {
 		"frank",
 		"root",
 		"sprawl/frank",
-		"report_status",
+		"tracker",
 		"send_message",
 		"TDD WORKFLOW",
 		"oracle",

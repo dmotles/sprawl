@@ -7,6 +7,7 @@ package sprawlmcp
 
 import (
 	"os"
+	"regexp"
 	"strings"
 	"testing"
 )
@@ -40,9 +41,19 @@ var canonicalMessagingTools = []string{
 	"retire",
 }
 
+// nowParamRe matches the `now` PARAMETER, not the English adverb.
+//
+// The naive flip of this test's §2 probe when `interrupt` was renamed is
+// `strings.Contains(window, "now")` — and that assertion CANNOT FAIL. "now" is
+// an ordinary English word already present in prompt_mode.go prose, and
+// strings.Contains is substring-matched, so "know"/"known" alone satisfies it.
+// It would stay green with the parameter entirely absent. Requiring the
+// `now:` / `now =` shape is the form only the parameter produces.
+var nowParamRe = regexp.MustCompile(`now\s*[:=]`)
+
 // TestPromptModeDescriptions_InSyncWithMCPTools verifies the canonical
 // messaging surface is mentioned in prompt_mode.go and that the canonical
-// `send_message(to, body, interrupt)` argument shape is preserved.
+// `send_message(to, body, now)` argument shape is preserved.
 func TestPromptModeDescriptions_InSyncWithMCPTools(t *testing.T) {
 	src := promptModeSource(t)
 
@@ -53,9 +64,11 @@ func TestPromptModeDescriptions_InSyncWithMCPTools(t *testing.T) {
 		}
 	}
 
-	// 2. send_message: must appear with `interrupt` referenced nearby
-	//    (within 500 chars of a `send_message(` call site). This pins
-	//    the canonical (to, body, interrupt) shape.
+	// 2. send_message: must appear with the `now` parameter referenced nearby
+	//    (within 500 chars of a `send_message(` call site), and must NOT still
+	//    reference the renamed-away `interrupt`. Both arms are needed:
+	//    `send_message({to, body, now: false, interrupt: false})` would satisfy
+	//    the first alone.
 	if idx := strings.Index(src, "send_message("); idx < 0 {
 		t.Errorf("prompt_mode.go must reference `send_message(` (canonical messaging tool)")
 	} else {
@@ -65,15 +78,26 @@ func TestPromptModeDescriptions_InSyncWithMCPTools(t *testing.T) {
 			end = len(src)
 		}
 		window := src[start:end]
-		if !strings.Contains(window, "interrupt") {
-			t.Errorf("prompt_mode.go mentions send_message( but not `interrupt` argument within 500 chars; window=%q", window)
+		if !nowParamRe.MatchString(window) {
+			t.Errorf("prompt_mode.go mentions send_message( but not its `now` argument within 500 chars; window=%q", window)
+		}
+		if strings.Contains(window, "interrupt") {
+			t.Errorf("prompt_mode.go still references the renamed-away `interrupt` argument near send_message(; it is `now` as of QUM-1186; window=%q", window)
 		}
 	}
 
-	// 3. Deprecated tools must NOT appear anywhere in prompt_mode.go.
-	for _, banned := range []string{"send_async", "send_interrupt"} {
+	// 3. Removed tools must NOT appear anywhere in prompt_mode.go. A prompt
+	//    that keeps teaching a deleted tool makes every spawned agent call it
+	//    and collect an unknown-tool error — the deletion reaches the
+	//    implementation but not the advertisement.
+	//
+	//    `delegate(` and not bare `delegate`: "if you delegate research to a
+	//    sidechain" at prompt_mode.go's sidechain guidance is ordinary English
+	//    and must survive. The bare-word ban belongs in internal/agent's
+	//    prompt-render test, which can allowlist by line.
+	for _, banned := range []string{"send_async", "send_interrupt", "report_status", "delegate("} {
 		if strings.Contains(src, banned) {
-			t.Errorf("prompt_mode.go must not reference removed tool %q (QUM-550 slice 5)", banned)
+			t.Errorf("prompt_mode.go must not reference removed tool %q", banned)
 		}
 	}
 
@@ -101,25 +125,36 @@ func TestPromptModeDescriptions_InSyncWithMCPTools(t *testing.T) {
 		searchFrom = abs + len("send_message(")
 	}
 
-	// 5. report_status mentions must NOT include `detail:` (slice 2/5
-	//    dropped the field).
-	searchFrom = 0
-	for {
-		i := strings.Index(src[searchFrom:], "report_status(")
-		if i < 0 {
-			break
+	// QUM-1186: the former §5 scanned every `report_status(` mention for a
+	// banned `detail:` field. §3 now bans `report_status` outright, so that
+	// loop could only ever iterate zero times — a permanently vacuous check
+	// that still reads as coverage. It is deleted rather than "updated":
+	// there is no report_status contract left to pin.
+}
+
+// TestNowParamRe_Controls demonstrates the §2 probe both firing and staying
+// quiet. The needle is a common English word, which is exactly the shape that
+// produces a check that cannot fail, so it is not accepted green on trust.
+func TestNowParamRe_Controls(t *testing.T) {
+	// Positive control, direction = MUST fire (i.e. MUST NOT match): the word
+	// "now" (and "know"/"known") is present, the PARAMETER is absent.
+	vacuous := `send_message({to: "x", body: "..."}) — you now know the recipient is notified; it is known to be async.`
+	if !strings.Contains(vacuous, "now") {
+		t.Fatal("fixture no longer contains the English word `now`; the demonstration is broken")
+	}
+	if nowParamRe.MatchString(vacuous) {
+		t.Errorf("nowParamRe matched a subject carrying no `now` parameter — it is as vacuous as strings.Contains(w, \"now\"); subject=%q", vacuous)
+	}
+
+	// Negative control, direction = MUST stay quiet (i.e. MUST match): the
+	// parameter really is there, in both spellings a prompt might use.
+	for _, subject := range []string{
+		`send_message({to: "x", body: "y", now: true})`,
+		`send_message(to = "x", now = false)`,
+	} {
+		if !nowParamRe.MatchString(subject) {
+			t.Errorf("nowParamRe missed a real `now` parameter; subject=%q", subject)
 		}
-		abs := searchFrom + i
-		lo := abs
-		hi := abs + 200
-		if hi > len(src) {
-			hi = len(src)
-		}
-		window := src[lo:hi]
-		if strings.Contains(window, "detail:") {
-			t.Errorf("prompt_mode.go mentions report_status with banned `detail:` field at offset %d; window=%q", abs, window)
-		}
-		searchFrom = abs + len("report_status(")
 	}
 }
 
@@ -132,21 +167,10 @@ func TestPromptModeDescriptions_SendMessageMentionedInTUITemplates(t *testing.T)
 	}
 }
 
-// TestPromptModeDescriptions_ReportStatusHasNoDetailField locks in the
-// slice-2 contract: report_status no longer accepts `detail:`.
-func TestPromptModeDescriptions_ReportStatusHasNoDetailField(t *testing.T) {
-	src := promptModeSource(t)
-	lines := strings.Split(src, "\n")
-	for i, line := range lines {
-		if !strings.Contains(line, "report_status(") {
-			continue
-		}
-		window := line
-		if i+1 < len(lines) {
-			window += "\n" + lines[i+1]
-		}
-		if strings.Contains(window, "detail:") {
-			t.Errorf("prompt_mode.go line %d: report_status carries banned `detail:` field; line=%q", i+1, line)
-		}
-	}
-}
+// TestPromptModeDescriptions_ReportStatusHasNoDetailField was deleted in
+// QUM-1186. It scanned prompt_mode.go for `report_status(` lines carrying a
+// banned `detail:` field; with report_status deleted the loop body was
+// unreachable, so the test passed by iterating zero times. A zero-iteration
+// loop that still reads as coverage is the vacuous green this slice exists to
+// remove. §3 of TestPromptModeDescriptions_InSyncWithMCPTools now bans the
+// tool name outright, which is the assertion that has a subject.
