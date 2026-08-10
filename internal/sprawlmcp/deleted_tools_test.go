@@ -81,3 +81,60 @@ func TestDeletedTools_ReturnUnknownToolError(t *testing.T) {
 		})
 	}
 }
+
+// TestMessagesList_FilterEnumHasNoStatusMode guards a gap found in code review
+// of QUM-1186: internal/messages.List stopped accepting filter:"status" when
+// the status_change envelope class was deleted, but the messages_list tool
+// schema still ADVERTISED it in its enum.
+//
+// That combination is worse than either half alone. An agent reading the tool
+// schema would see "status" as a valid choice, call it, and get a hard
+// "invalid filter" error from a mode the tool itself offered — the tool lying
+// about its own surface. Asserted against the live catalog, so the schema and
+// the implementation cannot drift apart again.
+func TestMessagesList_FilterEnumHasNoStatusMode(t *testing.T) {
+	for _, def := range baseToolDefinitions() {
+		if def["name"] != "messages_list" {
+			continue
+		}
+		schema, ok := def["inputSchema"].(map[string]any)
+		if !ok {
+			t.Fatal("messages_list has no inputSchema")
+		}
+		props, ok := schema["properties"].(map[string]any)
+		if !ok {
+			t.Fatal("messages_list inputSchema has no properties")
+		}
+		filter, ok := props["filter"].(map[string]any)
+		if !ok {
+			t.Fatal("messages_list has no filter property")
+		}
+		enum, ok := filter["enum"].([]string)
+		if !ok {
+			t.Fatalf("messages_list filter enum is %T, want []string", filter["enum"])
+		}
+		if len(enum) == 0 {
+			t.Fatal("messages_list filter enum is empty; refusing to conclude anything from it")
+		}
+		for _, v := range enum {
+			if v == "status" {
+				t.Errorf("messages_list still advertises filter=%q, but internal/messages.List rejects it", v)
+			}
+		}
+		// Positive half: the modes that DO survive must still be advertised,
+		// so this test cannot pass by the enum having been emptied.
+		for _, want := range []string{"all", "unread", "read", "archived"} {
+			found := false
+			for _, v := range enum {
+				if v == want {
+					found = true
+				}
+			}
+			if !found {
+				t.Errorf("messages_list filter enum lost the surviving mode %q", want)
+			}
+		}
+		return
+	}
+	t.Fatal("messages_list not found in the tool catalog")
+}

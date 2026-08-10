@@ -122,3 +122,46 @@ func TestTreeNodeAgentState_ReclaimedIsDistinct(t *testing.T) {
 		t.Errorf("TreeNodeAgentState(StatusIdle) = StateWorking; the process is gone")
 	}
 }
+
+// TestDeriveIconState_WeaveRootTurnStateIsNotADiskStatus is a REGRESSION guard
+// found by mandatory TUI validation (/tui-testing), not by the unit suite.
+//
+// The synthetic weave root is built by PrependWeaveRoot(nodes,
+// m.turnState.String(), …) — its Status field carries a TURN STATE, not a disk
+// status. TurnState.String() returns "idle", "thinking", "streaming" or
+// "complete", and TWO of those collide with disk-status constants that
+// DeriveIconState branches on: state.StatusIdle ("idle") and state.StatusComplete
+// ("complete").
+//
+// Observed in a live TUI before this guard: an idle root rendered with the
+// QUM-1186 "reclaimed" diamond, i.e. the operator was told the ROOT AGENT had
+// been reaped for inactivity. The "complete" collision predates QUM-1186 and is
+// fixed by the same guard.
+//
+// The pill view was never affected — TreeNodeAgentState short-circuits on
+// Type=="weave" before consulting DeriveIconState — which is exactly why this
+// slipped past: it reproduces only on the tree-row/modal path.
+func TestDeriveIconState_WeaveRootTurnStateIsNotADiskStatus(t *testing.T) {
+	for _, turn := range []TurnState{TurnIdle, TurnThinking, TurnStreaming, TurnComplete} {
+		n := TreeNode{Name: "weave", Type: "weave", Status: turn.String()}
+		got := DeriveIconState(n, time.Now())
+		if got == "reclaimed" {
+			t.Errorf("weave root with turn state %q rendered as %q — the root is not a reaped agent; its Status field is a turn state, not a disk status", turn.String(), got)
+		}
+		if got == "dormant" {
+			t.Errorf("weave root with turn state %q rendered as %q — the root has not finished", turn.String(), got)
+		}
+	}
+}
+
+// TestDeriveIconState_NonRootStillHonoursDiskStatus is the NEGATIVE control,
+// direction: must stay quiet. The weave-root guard must not disable the disk
+// status branches for ordinary agents, which is the whole point of them.
+func TestDeriveIconState_NonRootStillHonoursDiskStatus(t *testing.T) {
+	if got := DeriveIconState(TreeNode{Name: "kid", Type: "engineer", Status: state.StatusIdle}, time.Now()); got != "reclaimed" {
+		t.Errorf("non-root StatusIdle = %q, want reclaimed", got)
+	}
+	if got := DeriveIconState(TreeNode{Name: "kid", Type: "engineer", Status: state.StatusComplete}, time.Now()); got != "dormant" {
+		t.Errorf("non-root StatusComplete = %q, want dormant", got)
+	}
+}

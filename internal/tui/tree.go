@@ -93,25 +93,41 @@ func DeriveIconState(n TreeNode, now time.Time) string {
 	case "died":
 		return "died"
 	}
-	// QUM-788: dormant-but-revivable agents (disk Status == "complete") get
-	// a distinct dim icon so operators can tell them apart from generic
-	// Stopped/Idle (gray) and from Faulted/Failure (red). Placed after the
-	// paused/died Liveness checks (those are higher-priority operator
-	// signals) but before the ProcessAlive=false shortcut so a dormant
-	// agent does not collapse into the idle bucket.
-	if n.Status == state.StatusComplete {
-		return "dormant"
-	}
-	// QUM-1186: an idle-RECLAIMED agent (disk Status == "idle") gets its own
-	// icon state. It must be checked here — after the paused/died operator
-	// signals, but BEFORE the ProcessAlive/InTurn/LastActivityAt heuristics
-	// below — because those heuristics run off signals that are stale by
-	// construction after a reclaim: ProcessAlive is nil when the projection
-	// has no opinion, and InTurn/LastActivityAt still carry the pre-teardown
-	// values, so the node would render "working" for a process that no longer
-	// exists.
-	if n.Status == state.StatusIdle {
-		return "reclaimed"
+	// QUM-1186: the DISK-status branches below must not run for the synthetic
+	// weave root. PrependWeaveRoot builds it with Status = turnState.String(),
+	// so its Status field carries a TURN STATE from a different vocabulary —
+	// and two of those values ("idle", "complete") collide with disk-status
+	// constants. Without this guard an idle root renders with the reclaimed
+	// diamond, telling the operator the ROOT was reaped for inactivity, and a
+	// just-finished turn renders it dormant.
+	//
+	// Found by TUI validation, not by the unit suite: the pill view short-
+	// circuits on Type=="weave" in TreeNodeAgentState before reaching here, so
+	// the collision reproduces only on the tree-row / Ctrl+T modal path.
+	//
+	// The liveness and activity signals below are NOT skipped — they are real
+	// observations of the root and stay meaningful.
+	if n.Type != "weave" {
+		// QUM-788: dormant-but-revivable agents (disk Status == "complete") get
+		// a distinct dim icon so operators can tell them apart from generic
+		// Stopped/Idle (gray) and from Faulted/Failure (red). Placed after the
+		// paused/died Liveness checks (those are higher-priority operator
+		// signals) but before the ProcessAlive=false shortcut so a dormant
+		// agent does not collapse into the idle bucket.
+		if n.Status == state.StatusComplete {
+			return "dormant"
+		}
+		// QUM-1186: an idle-RECLAIMED agent (disk Status == "idle") gets its own
+		// icon state. It must be checked here — after the paused/died operator
+		// signals, but BEFORE the ProcessAlive/InTurn/LastActivityAt heuristics
+		// below — because those heuristics run off signals that are stale by
+		// construction after a reclaim: ProcessAlive is nil when the projection
+		// has no opinion, and InTurn/LastActivityAt still carry the pre-teardown
+		// values, so the node would render "working" for a process that no longer
+		// exists.
+		if n.Status == state.StatusIdle {
+			return "reclaimed"
+		}
 	}
 	if n.ProcessAlive != nil && !*n.ProcessAlive {
 		return "idle"

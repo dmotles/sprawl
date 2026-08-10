@@ -222,8 +222,8 @@ func baseToolDefinitions() []map[string]any {
 				"properties": map[string]any{
 					"filter": map[string]any{
 						"type":        "string",
-						"description": "Mailbox filter. Default \"all\" (new+cur). \"status\" surfaces only status_change envelopes (hidden from default views).",
-						"enum":        []string{"all", "unread", "read", "archived", "status"},
+						"description": "Mailbox filter. Default \"all\" (new+cur).",
+						"enum":        []string{"all", "unread", "read", "archived"},
 					},
 					"limit": map[string]any{
 						"type":        "integer",
