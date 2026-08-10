@@ -15,8 +15,6 @@ import (
 
 	backendpkg "github.com/dmotles/sprawl/internal/backend"
 	runtimepkg "github.com/dmotles/sprawl/internal/runtime"
-	"github.com/dmotles/sprawl/internal/state"
-	"github.com/dmotles/sprawl/internal/supervisor/liveness"
 )
 
 // stopAfterTurnHandle is a RuntimeHandle that exposes BOTH a UnifiedRuntime
@@ -215,112 +213,19 @@ func TestStopAfterTurn_NoUnifiedRuntimeStopsImmediately(t *testing.T) {
 	}
 }
 
-// TestReportStatusCompleteDefersStopUntilTurnEnd is the QUM-866 acceptance
-// wiring for state=complete: while the agent is still in-turn, ReportStatus
-// must NOT tear the runtime down (so a follow-on send_message survives). The
-// teardown fires only once the turn-end event is observed.
-func TestReportStatusCompleteDefersStopUntilTurnEnd(t *testing.T) {
-	r, tmpDir := newFakeReal(t)
-	saveTestAgent(t, tmpDir, testAgentState("weave"))
-	agentState := testAgentState("alice")
-	saveTestAgent(t, tmpDir, agentState)
-
-	urt := runtimepkg.New(runtimepkg.RuntimeConfig{Name: "alice"})
-	handle := &stopAfterTurnHandle{
-		runtimeTestSession: &runtimeTestSession{
-			sessionID: "sess-alice",
-			caps:      backendpkg.Capabilities{SupportsInterrupt: true, SupportsResume: true},
-		},
-		urt: urt,
-	}
-	handle.inTurn.Store(true)
-	rt := ensureRuntimeWithStarter(t, r, tmpDir, agentState, &runtimeTestStarter{session: handle})
-	if err := rt.Start(); err != nil {
-		t.Fatalf("runtime start: %v", err)
-	}
-
-	if _, err := r.ReportStatus(context.Background(), "alice", "complete", "done"); err != nil {
-		t.Fatalf("ReportStatus: %v", err)
-	}
-
-	// Deferred: still alive because the turn has not yielded yet.
-	time.Sleep(150 * time.Millisecond)
-	if got := handle.stopCalls.Load(); got != 0 {
-		t.Fatalf("Stop fired before turn-end: stopCalls = %d, want 0 (QUM-866: teardown must defer)", got)
-	}
-	if !rt.SubprocessAlive() {
-		t.Fatalf("SubprocessAlive() = false before turn-end; the follow-on send_message window was cut off")
-	}
-
-	// Turn ends → teardown fires.
-	urt.EventBus().Publish(runtimepkg.RuntimeEvent{Type: runtimepkg.EventTurnCompleted})
-	waitFor(t, func() bool { return !rt.SubprocessAlive() }, 2*time.Second,
-		"SubprocessAlive() to become false after turn-end")
-	if got := handle.stopCalls.Load(); got != 1 {
-		t.Errorf("stopCalls = %d, want 1", got)
-	}
-
-	st, err := state.LoadAgent(tmpDir, "alice")
-	if err != nil {
-		t.Fatalf("LoadAgent: %v", err)
-	}
-	if st.Status != state.StatusComplete {
-		t.Errorf("alice.Status = %q, want %q", st.Status, state.StatusComplete)
-	}
-	if got := rt.Snapshot().Liveness; got != liveness.Stopped {
-		t.Errorf("Snapshot().Liveness = %q, want %q after teardown", got, liveness.Stopped)
-	}
-}
-
-// TestReportStatusFailureDefersStopAndResyncs is the failure-path parity: the
-// deferred Stop fires at turn-end AND syncRuntimeFromState still runs, so the
-// snapshot projects DiskStatus=Faulted (QUM-606 Recover accepts the agent).
-func TestReportStatusFailureDefersStopAndResyncs(t *testing.T) {
-	r, tmpDir := newFakeReal(t)
-	saveTestAgent(t, tmpDir, testAgentState("weave"))
-	agentState := testAgentState("alice")
-	saveTestAgent(t, tmpDir, agentState)
-
-	urt := runtimepkg.New(runtimepkg.RuntimeConfig{Name: "alice"})
-	handle := &stopAfterTurnHandle{
-		runtimeTestSession: &runtimeTestSession{
-			sessionID: "sess-alice",
-			caps:      backendpkg.Capabilities{SupportsInterrupt: true, SupportsResume: true},
-		},
-		urt: urt,
-	}
-	handle.inTurn.Store(true)
-	rt := ensureRuntimeWithStarter(t, r, tmpDir, agentState, &runtimeTestStarter{session: handle})
-	if err := rt.Start(); err != nil {
-		t.Fatalf("runtime start: %v", err)
-	}
-
-	if _, err := r.ReportStatus(context.Background(), "alice", "failure", "boom"); err != nil {
-		t.Fatalf("ReportStatus: %v", err)
-	}
-
-	time.Sleep(150 * time.Millisecond)
-	if got := handle.stopCalls.Load(); got != 0 {
-		t.Fatalf("Stop fired before turn-end on failure path: stopCalls = %d, want 0", got)
-	}
-
-	urt.EventBus().Publish(runtimepkg.RuntimeEvent{Type: runtimepkg.EventTurnCompleted})
-	waitFor(t, func() bool { return !rt.SubprocessAlive() }, 2*time.Second,
-		"SubprocessAlive() to become false after turn-end (failure path)")
-	if got := handle.stopCalls.Load(); got != 1 {
-		t.Errorf("stopCalls = %d, want 1", got)
-	}
-
-	st, err := state.LoadAgent(tmpDir, "alice")
-	if err != nil {
-		t.Fatalf("LoadAgent: %v", err)
-	}
-	if st.Status != state.StatusFaulted {
-		t.Errorf("disk alice.Status = %q, want %q", st.Status, state.StatusFaulted)
-	}
-	// syncRuntimeFromState (failure-path only) must have re-synced the snapshot
-	// from disk so the projection sees Faulted, not the stale Stopped that
-	// stopWithFunc leaves for a non-complete LastReportState.
-	waitFor(t, func() bool { return rt.Snapshot().Status == state.StatusFaulted }, 2*time.Second,
-		"Snapshot().Status to reflect DiskStatus=Faulted after syncRuntimeFromState")
-}
+// QUM-1186: TestReportStatusCompleteDefersStopUntilTurnEnd and
+// TestReportStatusFailureDefersStopAndResyncs were removed here. They were the
+// QUM-866 acceptance wiring — report_status(complete|failure) must defer
+// teardown until the turn actually yields, so a follow-on send_message is not
+// cut off. The TOOL is deleted, so the wiring has no trigger.
+//
+// The PRIMITIVE they exercised survives untouched and is fully covered by the
+// TestStopAfterTurn_* tests above: in-turn deferral, firing on each terminal
+// event, immediate stop when idle, the runaway timeout bound, and the
+// no-UnifiedRuntime fast path.
+//
+// NOTE for lane 3: StopAfterTurn now has NO production caller until the idle
+// reaper wires one up. It is deliberately kept (with a new stopReason
+// parameter) rather than deleted. scripts/e2e-tests/report-then-send.sh and
+// the matrix row that pinned its only production call are flagged to the
+// manager for re-homing onto idle-reclaim, not silently left green.

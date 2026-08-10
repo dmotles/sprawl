@@ -103,13 +103,11 @@ func TestSendMessage_RetiredOrRetiring_ReturnsTerminalAgentError(t *testing.T) {
 func TestPeek_StatusComplete_Succeeds(t *testing.T) {
 	r, tmpDir := newFakeReal(t)
 	saveTestAgent(t, tmpDir, &state.AgentState{
-		Name:            "alice",
-		Type:            "engineer",
-		Family:          "engineering",
-		Parent:          "weave",
-		Status:          state.StatusComplete,
-		LastReportState: "complete",
-		LastReportAt:    "2026-06-06T12:00:00Z",
+		Name:   "alice",
+		Type:   "engineer",
+		Family: "engineering",
+		Parent: "weave",
+		Status: state.StatusComplete,
 	})
 
 	res, err := r.Peek(context.Background(), "alice", 10)
@@ -139,13 +137,11 @@ func TestPeek_FaultClasses_Succeed(t *testing.T) {
 		t.Run(st, func(t *testing.T) {
 			r, tmpDir := newFakeReal(t)
 			saveTestAgent(t, tmpDir, &state.AgentState{
-				Name:            "alice",
-				Type:            "engineer",
-				Family:          "engineering",
-				Parent:          "weave",
-				Status:          st,
-				LastReportState: "failure",
-				LastReportAt:    "2026-06-06T12:00:00Z",
+				Name:   "alice",
+				Type:   "engineer",
+				Family: "engineering",
+				Parent: "weave",
+				Status: st,
 			})
 
 			res, err := r.Peek(context.Background(), "alice", 10)
@@ -166,13 +162,11 @@ func TestPeek_RetiredOrRetiring_ReturnsTerminalAgentError(t *testing.T) {
 		t.Run(st, func(t *testing.T) {
 			r, tmpDir := newFakeReal(t)
 			saveTestAgent(t, tmpDir, &state.AgentState{
-				Name:            "alice",
-				Type:            "engineer",
-				Family:          "engineering",
-				Parent:          "weave",
-				Status:          st,
-				LastReportState: "complete",
-				LastReportAt:    "2026-06-06T12:00:00Z",
+				Name:   "alice",
+				Type:   "engineer",
+				Family: "engineering",
+				Parent: "weave",
+				Status: st,
 			})
 
 			_, err := r.Peek(context.Background(), "alice", 10)

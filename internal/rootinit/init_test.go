@@ -621,12 +621,16 @@ func TestPrepare_ResumePath_PreservesExistingFields(t *testing.T) {
 	// Simulate an existing state file with meaningful fields.
 	deps.LoadAgent = func(sprawlRoot, name string) (*state.AgentState, error) {
 		return &state.AgentState{
-			Name:              "weave",
-			Status:            "active",
-			Branch:            "main",
-			CreatedAt:         "2026-04-01T00:00:00Z",
-			SessionID:         "old-sess",
-			LastReportMessage: "all good",
+			Name:      "weave",
+			Status:    "active",
+			Branch:    "main",
+			CreatedAt: "2026-04-01T00:00:00Z",
+			SessionID: "old-sess",
+			// QUM-1186: this probe field was LastReportMessage. The subject is
+			// "Prepare preserves fields it does not own", not that specific
+			// field, so it is re-hosted onto Blurb — a surviving field Prepare
+			// likewise must not clobber.
+			Blurb: "knows the merge engine",
 		}, nil
 	}
 
@@ -651,9 +655,9 @@ func TestPrepare_ResumePath_PreservesExistingFields(t *testing.T) {
 	if savedAgent.CreatedAt != "2026-04-01T00:00:00Z" {
 		t.Errorf("CreatedAt: got %q, want preserved value", savedAgent.CreatedAt)
 	}
-	// Report fields should be preserved.
-	if savedAgent.LastReportMessage != "all good" {
-		t.Errorf("LastReportMessage: got %q, want preserved value", savedAgent.LastReportMessage)
+	// Fields Prepare does not own should be preserved.
+	if savedAgent.Blurb != "knows the merge engine" {
+		t.Errorf("Blurb: got %q, want preserved value", savedAgent.Blurb)
 	}
 }
 

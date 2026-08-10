@@ -192,15 +192,6 @@ func (f *fakeBackendSession) engageWriteWedge(t *testing.T) {
 	})
 }
 
-// setWriteErr makes every subsequent WriteUserMessage fail with err (nil clears
-// it), without recording the write. Used by the QUM-1061 destructive-drain test to
-// observe what a failed stdin write costs.
-func (f *fakeBackendSession) setWriteErr(err error) {
-	f.mu.Lock()
-	defer f.mu.Unlock()
-	f.writeErr = err
-}
-
 // SetFrameRouter captures the runtime's frame router (QUM-815/817) so tests can
 // synthesize the CLI's isReplay consumption ack via echoReplay.
 func (f *fakeBackendSession) SetFrameRouter(h func(*protocol.Message, backend.TurnInfo)) {

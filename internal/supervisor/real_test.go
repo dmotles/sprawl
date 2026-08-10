@@ -487,38 +487,10 @@ func TestEffectiveCaller_ContextOverride(t *testing.T) {
 	}
 }
 
-func TestReportStatus_UsesExplicitAgentName(t *testing.T) {
-	r, tmpDir := newFakeReal(t)
-	saveTestAgent(t, tmpDir, &state.AgentState{
-		Name: "finn", Type: "engineer", Family: "engineering",
-		Parent: "weave", Status: "active",
-	})
-
-	// When agentName is passed explicitly, it should be used even without
-	// context override (this is the MCP path after QUM-387 fix).
-	result, err := r.ReportStatus(context.Background(), "finn", "complete", "done")
-	if err != nil {
-		t.Fatalf("ReportStatus: %v", err)
-	}
-	if result == nil || result.ReportedAt == "" {
-		t.Fatal("expected non-nil result with ReportedAt")
-	}
-
-	// Verify state was updated for "finn", not "weave".
-	st, err := state.LoadAgent(tmpDir, "finn")
-	if err != nil {
-		t.Fatalf("LoadAgent(finn): %v", err)
-	}
-	// QUM-668: report.go atomically flips Status to a terminal liveness on a
-	// terminal outcome (partially reversing the QUM-625 M4 stance). A
-	// "complete" report flips Status → stopped in the same save.
-	if st.LastReportState != "complete" {
-		t.Errorf("finn.LastReportState = %q, want complete", st.LastReportState)
-	}
-	if st.Status != state.StatusComplete {
-		t.Errorf("finn.Status = %q, want %q (QUM-787: complete report lands in StatusComplete)", st.Status, state.StatusComplete)
-	}
-}
+// QUM-1186: TestReportStatus_UsesExplicitAgentName was removed here — it
+// pinned that an explicit agentName argument overrode the supervisor's own
+// callerName when persisting the LastReport* fields. Both the argument and the
+// fields are gone.
 
 func TestSendMessage_ContextIdentitySetsSender(t *testing.T) {
 	r, tmpDir := newFakeReal(t)
@@ -1389,7 +1361,7 @@ func TestSpawnDepsForCaller_ResolveBaseReturnsEmptyWhenCallerHasNoWorktree(t *te
 // by QUM-789 lifecycle arc #2: when an agent's persisted state shows a
 // truly-terminal lifecycle status (retired/retiring) AND no live runtime
 // is registered, Peek must return a descriptive "no longer running" error
-// referencing the last reported state and timestamp.
+// naming the agent and its observed status.
 //
 // QUM-789: the previous wider set (faulted/killed/stopped/retired) was
 // narrowed to {retired, retiring}. Fault classes are now introspectable
@@ -1397,20 +1369,21 @@ func TestSpawnDepsForCaller_ResolveBaseReturnsEmptyWhenCallerHasNoWorktree(t *te
 func TestReal_Peek_TerminalStatus_ReturnsClearerError(t *testing.T) {
 	r, tmpDir := newFakeReal(t)
 	saveTestAgent(t, tmpDir, &state.AgentState{
-		Name:            "alice",
-		Type:            "engineer",
-		Family:          "engineering",
-		Parent:          "weave",
-		Status:          state.StatusRetired,
-		LastReportState: "complete",
-		LastReportAt:    "2026-06-06T12:00:00Z",
+		Name:   "alice",
+		Type:   "engineer",
+		Family: "engineering",
+		Parent: "weave",
+		Status: state.StatusRetired,
 	})
 
 	got, err := r.Peek(context.Background(), "alice", 10)
 	if err == nil {
 		t.Fatalf("Peek on retired agent returned nil error; want descriptive terminal-status error (got=%+v)", got)
 	}
-	for _, want := range []string{"no longer running", "complete", `"alice"`} {
+	// QUM-1186: was {"no longer running", "complete", "alice"} — "complete"
+	// came from the deleted LastReportState. Replaced with the observed
+	// Status, which is the more specific claim.
+	for _, want := range []string{"no longer running", state.StatusRetired, `"alice"`} {
 		if !strings.Contains(err.Error(), want) {
 			t.Errorf("error %q missing substring %q", err.Error(), want)
 		}
@@ -1428,13 +1401,11 @@ func TestReal_Retire_TerminalStatus_DelegatesCleanup(t *testing.T) {
 	r, tmpDir := newFakeReal(t)
 
 	saveTestAgent(t, tmpDir, &state.AgentState{
-		Name:            "alice",
-		Type:            "engineer",
-		Family:          "engineering",
-		Parent:          "weave",
-		Status:          state.StatusFaulted,
-		LastReportState: "failure",
-		LastReportAt:    "2026-06-06T12:00:00Z",
+		Name:   "alice",
+		Type:   "engineer",
+		Family: "engineering",
+		Parent: "weave",
+		Status: state.StatusFaulted,
 	})
 
 	var retireCalls int

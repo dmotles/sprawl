@@ -8,13 +8,11 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
-	"strings"
 	"testing"
 
 	"github.com/dmotles/sprawl/internal/agentops"
 	backendpkg "github.com/dmotles/sprawl/internal/backend"
 	"github.com/dmotles/sprawl/internal/config"
-	"github.com/dmotles/sprawl/internal/inboxprompt"
 	"github.com/dmotles/sprawl/internal/sprawlmcp/calllog"
 	"github.com/dmotles/sprawl/internal/state"
 	"github.com/dmotles/sprawl/internal/supervisor/liveness"
@@ -322,88 +320,28 @@ func TestRealSendMessage_FailedPersistLeavesRuntimeUnchanged(t *testing.T) {
 	}
 }
 
-func TestRealReportStatus_SignalsParentRuntimeWakeAfterFullPersistence(t *testing.T) {
-	r, tmpDir := newFakeReal(t)
-	parent := testAgentState("alice")
-	child := testAgentState("bob")
-	child.Parent = "alice"
-	saveTestAgent(t, tmpDir, parent)
-	saveTestAgent(t, tmpDir, child)
-	rt := ensureRuntimeWithStarter(t, r, tmpDir, parent, &runtimeTestStarter{
-		session: &runtimeTestSession{
-			sessionID: "sess-alice",
-			caps:      backendpkg.Capabilities{SupportsInterrupt: true, SupportsResume: true},
-		},
-	})
-	if err := rt.Start(); err != nil {
-		t.Fatalf("runtime start: %v", err)
-	}
-
-	res, err := r.ReportStatus(context.Background(), "bob", "working", "writing tests")
-	if err != nil {
-		t.Fatalf("ReportStatus() error: %v", err)
-	}
-	if res == nil || res.ReportedAt == "" {
-		t.Fatalf("ReportStatus() result = %+v, want reported timestamp", res)
-	}
-
-	snap := rt.Snapshot()
-	if snap.WakeCount != 1 {
-		t.Fatalf("WakeCount = %d, want 1 after report delivery (QUM-550 slice 2 cooperative wake)", snap.WakeCount)
-	}
-	if snap.InterruptCount != 0 {
-		t.Fatalf("InterruptCount = %d, want 0 for report delivery cooperative wake path", snap.InterruptCount)
-	}
-}
-
-// QUM-559: removed TestRealReportStatus_QueueFailureDoesNotSignalParentRuntime
-// and TestRealReportStatus_MaildirFailureDoesNotSignalParentRuntime — those
-// pinned the OLD maildir/queue delivery contract for report_status. The new
-// contract is state-only persistence + an in-process ephemeral ring; there is
-// no maildir or harness-queue write to fail.
-
-func TestRealReportStatus_UpdatesRuntimeAfterPersistedSuccess(t *testing.T) {
-	r, tmpDir := newFakeReal(t)
-	agentState := testAgentState("alice")
-	saveTestAgent(t, tmpDir, agentState)
-	rt := ensureRuntime(t, r, tmpDir, agentState)
-
-	_, err := r.ReportStatus(context.Background(), "alice", "working", "writing tests")
-	if err != nil {
-		t.Fatalf("ReportStatus() error: %v", err)
-	}
-
-	snap := rt.Snapshot()
-	if snap.LastReport.State != "working" {
-		t.Fatalf("LastReport.State = %q", snap.LastReport.State)
-	}
-	if snap.LastReport.Message != "writing tests" {
-		t.Fatalf("LastReport.Message = %q", snap.LastReport.Message)
-	}
-}
-
-func TestRealReportStatus_FailedPersistLeavesRuntimeUnchanged(t *testing.T) {
-	r, tmpDir := newFakeReal(t)
-	agentState := testAgentState("alice")
-	rt := ensureRuntime(t, r, tmpDir, agentState)
-
-	before := rt.Snapshot()
-	_, err := r.ReportStatus(context.Background(), "alice", "working", "writing tests")
-	if err == nil {
-		t.Fatal("ReportStatus() error = nil, want failure when state file is missing")
-	}
-
-	after := rt.Snapshot()
-	if after != before {
-		t.Fatalf("snapshot changed on failed ReportStatus: before=%+v after=%+v", before, after)
-	}
-}
+// QUM-1186: the TestRealReportStatus_* runtime trio was removed here —
+// cooperative parent wake after full persistence, runtime update after
+// persisted success, and no snapshot change on failed persist.
+//
+// All three are exact twins of the TestRealSendMessage_* arms above, which
+// were re-hosted from the delegate versions of the same invariants and now
+// carry them for the only surviving delivery path. The child->root variant
+// (cooperative WakeForDelivery, never a preempt) is re-hosted as
+// TestSendMessage_FromChildOfWeave_WakesRootWithoutPreempting in
+// supervisor_test.go.
 
 // TestRealReportStatus_DoesNotInterruptParentSession pins QUM-550 slice 2:
 // report_status must route the parent-runtime notification through the
 // cooperative WakeForDelivery path — never Session.Interrupt. This mirrors the
 // SendAsync rewire in slice 1.
-func TestRealReportStatus_DoesNotInterruptParentSession(t *testing.T) {
+// QUM-1186: re-hosted from TestRealReportStatus_DoesNotInterruptParentSession.
+// Kept rather than folded into the snapshot-level twins because it asserts one
+// level DEEPER — on the backend session itself (Interrupt never called,
+// WakeForDelivery did) rather than on the runtime snapshot counters. A
+// regression that bumped the session but not the counters would slip past the
+// others.
+func TestRealSendMessage_DoesNotInterruptRecipientSession(t *testing.T) {
 	r, tmpDir := newFakeReal(t)
 	parent := testAgentState("alice")
 	child := testAgentState("bob")
@@ -419,16 +357,15 @@ func TestRealReportStatus_DoesNotInterruptParentSession(t *testing.T) {
 		t.Fatalf("runtime start: %v", err)
 	}
 
-	// NEW 4-arg ReportStatus signature: no detail.
-	if _, err := r.ReportStatus(context.Background(), "bob", "working", "summary text"); err != nil {
-		t.Fatalf("ReportStatus: %v", err)
+	if _, err := r.SendMessage(context.Background(), "alice", "summary text", false, false); err != nil {
+		t.Fatalf("SendMessage: %v", err)
 	}
 
 	if got := session.interrupts.Load(); got != 0 {
-		t.Errorf("session.Interrupt called %d times by ReportStatus; want 0 (QUM-550 slice 2 cooperative lock-in)", got)
+		t.Errorf("session.Interrupt called %d times by a cooperative send; want 0 (QUM-550 slice 2 cooperative lock-in)", got)
 	}
 	if got := session.wakeForDeliveryCalls.Load(); got < 1 {
-		t.Errorf("session.WakeForDelivery calls = %d, want >= 1 after ReportStatus rewire", got)
+		t.Errorf("session.WakeForDelivery calls = %d, want >= 1 after a cooperative send", got)
 	}
 
 	snap := rt.Snapshot()
@@ -440,44 +377,10 @@ func TestRealReportStatus_DoesNotInterruptParentSession(t *testing.T) {
 	}
 }
 
-// TestRealReportStatus_DrainedStatusChangeLineContainsSummaryVerbatim is the
-// QUM-614 successor to the legacy QUM-559 ring-drain test. The
-// status-notification line drained from the parent's maildir via
-// inboxprompt.DrainStatusChangeLines must contain the summary verbatim, with
-// no \n\n separator (detail-concat regression).
-func TestRealReportStatus_DrainedStatusChangeLineContainsSummaryVerbatim(t *testing.T) {
-	r, tmpDir := newFakeReal(t)
-	parent := testAgentState("alice")
-	child := testAgentState("bob")
-	child.Parent = "alice"
-	saveTestAgent(t, tmpDir, parent)
-	saveTestAgent(t, tmpDir, child)
-	rt := ensureRuntimeWithStarter(t, r, tmpDir, parent, &runtimeTestStarter{
-		session: &runtimeTestSession{
-			sessionID: "sess-alice",
-			caps:      backendpkg.Capabilities{SupportsInterrupt: true, SupportsResume: true},
-		},
-	})
-	if err := rt.Start(); err != nil {
-		t.Fatalf("runtime start: %v", err)
-	}
-
-	const summary = "MY-SLICE2-SUMMARY"
-	if _, err := r.ReportStatus(context.Background(), "bob", "working", summary); err != nil {
-		t.Fatalf("ReportStatus: %v", err)
-	}
-
-	drained := inboxprompt.DrainStatusChangeLines(tmpDir, "alice")
-	if len(drained) != 1 {
-		t.Fatalf("DrainStatusChangeLines(alice) len = %d, want 1; got %#v", len(drained), drained)
-	}
-	if !strings.Contains(drained[0], summary) {
-		t.Errorf("drained line missing summary: %q", drained[0])
-	}
-	if strings.Contains(drained[0], "\n\n") {
-		t.Errorf("drained line contains \\n\\n separator (detail concat leaked): %q", drained[0])
-	}
-}
+// QUM-1186: TestRealReportStatus_DrainedStatusChangeLineContainsSummaryVerbatim
+// was removed here. It pinned that the drained status_change line carried the
+// summary verbatim with no stray "\n\n" separator — a detail-concat
+// regression guard for a notification line that no longer exists.
 
 func TestRealKill_UpdatesRuntimeAfterPersistedSuccess(t *testing.T) {
 	r, tmpDir := newFakeReal(t)

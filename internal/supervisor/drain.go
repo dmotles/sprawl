@@ -192,11 +192,12 @@ func childDrainPolicy() drainPolicy {
 // inboxSnapshot is everything the drain read from disk, already filtered. Passing
 // it as one value is what lets buildInjection be pure.
 //
-// statusLines are DESTRUCTIVELY drained — the envelopes are off disk by the time
-// this struct exists, so these strings are the only surviving copy.
+// QUM-1186: statusLines is gone with the status_change envelope class. Every
+// read the drain now performs is a NON-destructive peek of agentloop entries,
+// which is why systemFrame.destructiveLines and the "these strings are the
+// only surviving copy" hazard went with it.
 type inboxSnapshot struct {
-	pending     []agentloop.Entry
-	statusLines []string
+	pending []agentloop.Entry
 }
 
 // systemFrame is one prepared stdin write. Nothing here has reached the wire.
@@ -216,12 +217,6 @@ type systemFrame struct {
 
 	// ackOnWrite confirms delivery on a successful write (QUM-821).
 	ackOnWrite bool
-
-	// destructiveLines are the status lines this frame carries, kept per-frame so
-	// a failed write can log the bodies. They exist nowhere else — see
-	// inboxSnapshot. Empty on any frame that carries none, which is what keeps the
-	// interrupt frame's WARN from claiming a loss it did not cause.
-	destructiveLines []string
 }
 
 // buildInjection turns a snapshot into the frames to write. PURE: no I/O, no
@@ -231,7 +226,7 @@ type systemFrame struct {
 // WriteSystemMessage, below this layer — which is exactly why assertions about
 // duplicate emission belong here rather than on a rendered frame body.
 func buildInjection(snap inboxSnapshot, pol drainPolicy) []systemFrame {
-	if len(snap.pending) == 0 && len(snap.statusLines) == 0 {
+	if len(snap.pending) == 0 {
 		return nil
 	}
 
@@ -239,10 +234,6 @@ func buildInjection(snap inboxSnapshot, pol drainPolicy) []systemFrame {
 
 	if pol.coalesceInterrupts {
 		var body strings.Builder
-		// Status lines first, ahead of BOTH classes (QUM-559).
-		for _, line := range snap.statusLines {
-			body.WriteString(line)
-		}
 		ids := make([]string, 0, len(snap.pending))
 		// Interrupt bodies before async bodies: the class precedence that the
 		// shared priority removed from scheduling survives as frame ordering.
@@ -265,7 +256,6 @@ func buildInjection(snap inboxSnapshot, pol drainPolicy) []systemFrame {
 			// ackOnWrite deliberately NOT set from pol.ackInterruptOnWrite: this
 			// frame carries async entries too, and acking it would mark them
 			// delivered before the CLI consumed them. See the field's doc.
-			destructiveLines: snap.statusLines,
 		}}
 	}
 
@@ -281,37 +271,29 @@ func buildInjection(snap inboxSnapshot, pol drainPolicy) []systemFrame {
 			priority:   pol.interruptPriority,
 			entryIDs:   ids,
 			ackOnWrite: pol.ackInterruptOnWrite,
-			// No destructiveLines: status lines ride the async frame below.
 		})
 	}
-	// Status lines ride along with the async batch, prepended so they surface
-	// before queued mail (QUM-559). The `|| len(statusLines) > 0` is what keeps a
-	// status-only frame flowing when every async entry was filtered as in-flight —
-	// dropping it would lose lines that are already off disk.
-	if len(asyncs) > 0 || len(snap.statusLines) > 0 {
+	// QUM-1186: this used to also fire on `len(statusLines) > 0` so a
+	// status-only frame still flowed when every async entry was filtered as
+	// in-flight. With status lines gone there is nothing to carry but asyncs.
+	if len(asyncs) > 0 {
 		ids := make([]string, 0, len(asyncs))
 		for _, e := range asyncs {
 			ids = append(ids, e.ID)
 		}
-		var body strings.Builder
-		for _, line := range snap.statusLines {
-			body.WriteString(line)
-		}
-		// Unconditional, matching the pre-unification child: BuildQueueFlushPrompt
-		// returns "" for an empty slice, so a status-only frame is just the lines.
-		body.WriteString(inboxprompt.BuildQueueFlushPrompt(asyncs))
 		frames = append(frames, systemFrame{
-			body:             body.String(),
-			priority:         drainAsyncPriority,
-			entryIDs:         ids,
-			destructiveLines: snap.statusLines,
+			body:     inboxprompt.BuildQueueFlushPrompt(asyncs),
+			priority: drainAsyncPriority,
+			entryIDs: ids,
 		})
 	}
 	return frames
 }
 
-// readInboxSnapshot performs the drain's reads: the maildir peek, the in-flight
-// filter, and the DESTRUCTIVE status_change drain.
+// readInboxSnapshot performs the drain's reads: the maildir peek and the
+// in-flight filter.
+//
+// QUM-1186: the DESTRUCTIVE status_change drain that used to run here is gone.
 //
 // Order is load-bearing and must not be "optimised": the destructive read happens
 // unconditionally, before any emptiness decision, because whether any lines exist
@@ -359,14 +341,7 @@ func readInboxSnapshot(rt *runtimepkg.UnifiedRuntime, sprawlRoot, name string, p
 		pending = kept
 	}
 
-	// DESTRUCTIVE read: DrainStatusChangeLines removes the envelope from the
-	// maildir. Unlike the agentloop entries above (a non-destructive peek, safe to
-	// re-drain), a status_change line drained here and then failing to reach stdin
-	// is GONE — which is why writeInjection logs the verbatim bodies. Re-queueing
-	// them is QUM-1034's job, deliberately not done here.
-	statusLines := inboxprompt.DrainStatusChangeLines(sprawlRoot, name)
-
-	return inboxSnapshot{pending: pending, statusLines: statusLines}
+	return inboxSnapshot{pending: pending}
 }
 
 // writeInjection writes each frame to stdin, bounded, acking and logging per
@@ -376,8 +351,7 @@ func readInboxSnapshot(rt *runtimepkg.UnifiedRuntime, sprawlRoot, name string, p
 //
 //  1. ONE CONTEXT PER FRAME, created inside the loop. Hoisting it would let the
 //     first frame consume the whole deadline and hand the second a near-expired
-//     one — turning a slow path into a guaranteed-failing one, and the second
-//     frame is the one carrying destructively-drained status lines. Accepted cost:
+//     one — turning a slow path into a guaranteed-failing one. Accepted cost:
 //     a fully wedged pipe carrying both classes blocks for 2× the deadline.
 //  2. A FAILED FRAME MUST NOT ABORT THE REST. `continue`, never `return`: the
 //     pre-unification child's two writes were independent branches, and an
@@ -388,9 +362,9 @@ func writeInjection(rt *runtimepkg.UnifiedRuntime, name string, frames []systemF
 		// blocking WriteJSON in a goroutine and selects on ctx.Done(), so the
 		// context is the ONLY escape when the recipient's stdin pipe is full
 		// (64 KiB, unread). An unbounded write here blocked FOREVER on the SENDER's
-		// goroutine — Real.SendMessage / Real.ReportStatus poke synchronously on
-		// the MCP handler goroutine — so one wedged recipient hung an unrelated
-		// agent's tool call. A bound degrades that to "this notification is late".
+		// goroutine — Real.SendMessage pokes synchronously on the MCP handler
+		// goroutine — so one wedged recipient hung an unrelated agent's tool
+		// call. A bound degrades that to "this notification is late".
 		// (QUM-1072.)
 		d := pol.writeTimeout()
 		ctx, cancel := context.WithTimeout(context.Background(), d)
@@ -408,14 +382,6 @@ func writeInjection(rt *runtimepkg.UnifiedRuntime, name string, frames []systemF
 				slog.Duration("deadline", d),
 				slog.Int("entry_count", len(f.entryIDs)),
 				slog.String("entry_ids", strings.Join(f.entryIDs, ",")),
-			}
-			if len(f.destructiveLines) > 0 {
-				// The only surviving copy — see systemFrame.destructiveLines.
-				msg += ", but any status_change lines in this batch are LOST (destructive drain); their bodies follow so they are recoverable from this log"
-				attrs = append(attrs,
-					slog.Int("lost_status_lines", len(f.destructiveLines)),
-					slog.String("lost_status_bodies", strings.Join(f.destructiveLines, "")),
-				)
 			}
 			attrs = append(attrs, slog.Any("err", err))
 			slog.Default().Warn(msg, attrs...)

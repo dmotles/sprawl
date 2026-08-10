@@ -4,14 +4,31 @@ import (
 	"encoding/json"
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
 )
 
 // QUM-625 M4: agent state files gain a schema_version and LoadAgent migrates
-// pre-versioned (v0) files forward on read. The legacy Status="done"/"problem"
-// axis is split: outcome moves to LastReportState and Status is reduced to a
-// pure liveness. These tests FAIL today because no migration runs and
-// SaveAgent does not stamp the schema version.
+// pre-versioned (v0) files forward on read.
+//
+// QUM-1186 changed the TARGET of that migration. The outcome axis
+// (LastReportState) is deleted, so the legacy Status tokens map straight onto
+// the Status axis instead of being split across two fields:
+//
+//	"done"    -> StatusComplete
+//	"problem" -> StatusFaulted
+//	""        -> StatusSuspended
+//	"stopped" -> StatusSuspended   (always-on, not version-gated)
+//
+// The "stopped" row is the one that changed most and matters most: it used to
+// split on LastReportState and DEFAULT TO StatusFaulted. Defaulting a legacy
+// clean stop to `faulted` would reproduce on the read path exactly the bug
+// QUM-1186 D3 removed from the write path — and `faulted` is outside the
+// auto-resume accept-set, so the mislabel would cost the agent on next startup.
+//
+// Every case below drives a GENUINE raw v0 file through LoadAgent
+// (writeRawV0Agent), not a hand-built struct: the whole risk in a migration is
+// the shape on disk, and a struct literal cannot fail the way a real file can.
 
 // writeRawV0Agent writes raw JSON bytes (genuinely lacking schema_version)
 // directly to the agents dir so LoadAgent sees a true v0 file.
@@ -35,15 +52,96 @@ func TestLoadAgent_MigratesV0DoneToComplete(t *testing.T) {
 	if err != nil {
 		t.Fatalf("LoadAgent: %v", err)
 	}
-	if got.LastReportState != "complete" {
-		t.Errorf("LastReportState = %q, want %q", got.LastReportState, "complete")
-	}
-	// SessionID present => suspended, not stopped.
-	if got.Status != "suspended" {
-		t.Errorf("Status = %q, want %q", got.Status, "suspended")
+	// The legacy token means "finished"; that information is preserved on the
+	// Status axis rather than discarded with the outcome field.
+	if got.Status != StatusComplete {
+		t.Errorf("Status = %q, want %q", got.Status, StatusComplete)
 	}
 	if got.SchemaVersion != CurrentSchemaVersion {
 		t.Errorf("SchemaVersion = %d, want %d", got.SchemaVersion, CurrentSchemaVersion)
+	}
+}
+
+// TestLoadAgent_MigratesV0StoppedToSuspendedNotFaulted is the load-bearing
+// row. A legacy file whose Status is the "stopped" sentinel and which carries
+// NO evidence of an outcome must rest at StatusSuspended.
+//
+// It must NOT become StatusFaulted: that is outside the auto-resume accept-set
+// (internal/supervisor RecoverAgents), so a clean legacy stop would silently
+// stop coming back after a `sprawl enter` restart.
+func TestLoadAgent_MigratesV0StoppedToSuspendedNotFaulted(t *testing.T) {
+	root := t.TempDir()
+	writeRawV0Agent(t, root, "s0", `{"name":"s0","status":"stopped","session_id":"s1"}`)
+
+	got, err := LoadAgent(root, "s0")
+	if err != nil {
+		t.Fatalf("LoadAgent: %v", err)
+	}
+	if got.Status != StatusSuspended {
+		t.Errorf("Status = %q, want %q (a clean stop nobody labelled is not a fault)", got.Status, StatusSuspended)
+	}
+}
+
+// TestLoadAgent_MigratesStoppedEvenOnVersionedFile pins that the stopped
+// rewrite is ALWAYS-ON rather than gated on schema_version < 1: older v1
+// writers still emitted the sentinel, so a version-gated rewrite would leave
+// it on disk forever.
+func TestLoadAgent_MigratesStoppedEvenOnVersionedFile(t *testing.T) {
+	root := t.TempDir()
+	writeRawV0Agent(t, root, "s1", `{"name":"s1","status":"stopped","schema_version":3}`)
+
+	got, err := LoadAgent(root, "s1")
+	if err != nil {
+		t.Fatalf("LoadAgent: %v", err)
+	}
+	if got.Status != StatusSuspended {
+		t.Errorf("Status = %q, want %q on an already-versioned file", got.Status, StatusSuspended)
+	}
+}
+
+// TestLoadAgent_MigratesV0EmptyStatusToSuspended covers the third legacy
+// token: no status at all.
+func TestLoadAgent_MigratesV0EmptyStatusToSuspended(t *testing.T) {
+	root := t.TempDir()
+	writeRawV0Agent(t, root, "e0", `{"name":"e0"}`)
+
+	got, err := LoadAgent(root, "e0")
+	if err != nil {
+		t.Fatalf("LoadAgent: %v", err)
+	}
+	if got.Status != StatusSuspended {
+		t.Errorf("Status = %q, want %q", got.Status, StatusSuspended)
+	}
+}
+
+// TestLoadAgent_DropsLegacyReportKeys pins the ONE-WAY DATA LOSS this schema
+// bump intends: the last_report_* keys have no struct fields left, so they are
+// dropped from every state file on its next save. Asserted rather than assumed
+// — silent field loss should be deliberate.
+func TestLoadAgent_DropsLegacyReportKeys(t *testing.T) {
+	root := t.TempDir()
+	writeRawV0Agent(t, root, "lr", `{"name":"lr","status":"active","schema_version":3,`+
+		`"last_report_state":"working","last_report_message":"halfway","last_report_at":"2026-06-06T12:00:00Z"}`)
+
+	got, err := LoadAgent(root, "lr")
+	if err != nil {
+		t.Fatalf("LoadAgent: %v", err)
+	}
+	if err := SaveAgent(root, got); err != nil {
+		t.Fatalf("SaveAgent: %v", err)
+	}
+	raw, err := os.ReadFile(filepath.Join(AgentsDir(root), "lr.json"))
+	if err != nil {
+		t.Fatalf("ReadFile: %v", err)
+	}
+	for _, key := range []string{"last_report_state", "last_report_message", "last_report_at", "last_report_type", "last_report_detail"} {
+		if strings.Contains(string(raw), key) {
+			t.Errorf("re-saved state file still contains %q:\n%s", key, raw)
+		}
+	}
+	// Non-report fields must survive the round trip — the loss is scoped.
+	if got.Status != "active" || got.Name != "lr" {
+		t.Errorf("unrelated fields damaged: Name=%q Status=%q", got.Name, got.Status)
 	}
 }
 
@@ -55,12 +153,7 @@ func TestLoadAgent_MigratesV0ProblemToFailure(t *testing.T) {
 	if err != nil {
 		t.Fatalf("LoadAgent: %v", err)
 	}
-	if got.LastReportState != "failure" {
-		t.Errorf("LastReportState = %q, want %q", got.LastReportState, "failure")
-	}
-	// No session_id => the v0→v1 step writes "stopped", then QUM-787's
-	// always-on stopped→{complete,faulted} re-classification rewrites it
-	// to "faulted" (LastReportState="failure" is not "complete").
+	// QUM-1186: "problem" maps straight to StatusFaulted on the Status axis.
 	if got.Status != StatusFaulted {
 		t.Errorf("Status = %q, want %q", got.Status, StatusFaulted)
 	}
@@ -91,9 +184,6 @@ func TestLoadAgent_MigrateIdempotent(t *testing.T) {
 	if second.Status != first.Status {
 		t.Errorf("Status unstable: first=%q second=%q", first.Status, second.Status)
 	}
-	if second.LastReportState != first.LastReportState {
-		t.Errorf("LastReportState unstable: first=%q second=%q", first.LastReportState, second.LastReportState)
-	}
 }
 
 func TestLoadAgent_MigratePreservesValidLiveness(t *testing.T) {
@@ -107,31 +197,16 @@ func TestLoadAgent_MigratePreservesValidLiveness(t *testing.T) {
 	if got.Status != "suspended" {
 		t.Errorf("Status = %q, want %q (unchanged)", got.Status, "suspended")
 	}
-	if got.LastReportState != "" {
-		t.Errorf("LastReportState = %q, want empty (suspended is not an outcome)", got.LastReportState)
-	}
 	if got.SchemaVersion != CurrentSchemaVersion {
 		t.Errorf("SchemaVersion = %d, want %d", got.SchemaVersion, CurrentSchemaVersion)
 	}
 }
 
-func TestLoadAgent_MigrateDoesNotClobberExistingReportState(t *testing.T) {
-	root := t.TempDir()
-	writeRawV0Agent(t, root, "e", `{"name":"e","status":"done","last_report_state":"working","session_id":"s1"}`)
-
-	got, err := LoadAgent(root, "e")
-	if err != nil {
-		t.Fatalf("LoadAgent: %v", err)
-	}
-	// Pre-existing last_report_state must be PRESERVED, not derived to
-	// "complete" — the migration guards on empty.
-	if got.LastReportState != "working" {
-		t.Errorf("LastReportState = %q, want %q (preserved, not derived)", got.LastReportState, "working")
-	}
-	if got.SchemaVersion != CurrentSchemaVersion {
-		t.Errorf("SchemaVersion = %d, want %d", got.SchemaVersion, CurrentSchemaVersion)
-	}
-}
+// QUM-1186: TestLoadAgent_MigrateDoesNotClobberExistingReportState was
+// removed here. It pinned that an explicit last_report_state on disk was
+// preserved rather than re-derived from the legacy Status token. There is no
+// longer a field to preserve; TestLoadAgent_DropsLegacyReportKeys above pins
+// the replacement behaviour (the keys are dropped, deliberately).
 
 func TestLoadAgent_MigratePreservesActiveCrashSurvivor(t *testing.T) {
 	root := t.TempDir()
@@ -146,19 +221,17 @@ func TestLoadAgent_MigratePreservesActiveCrashSurvivor(t *testing.T) {
 	if got.Status != "active" {
 		t.Errorf("Status = %q, want %q (not demoted)", got.Status, "active")
 	}
-	if got.LastReportState != "" {
-		t.Errorf("LastReportState = %q, want empty (active is not an outcome)", got.LastReportState)
-	}
 	if got.SchemaVersion != CurrentSchemaVersion {
 		t.Errorf("SchemaVersion = %d, want %d", got.SchemaVersion, CurrentSchemaVersion)
 	}
 }
 
-// TestCurrentSchemaVersion_IsV3 pins QUM-899: the schema version was bumped to
-// 3 when Blurb + BlurbAt were added to AgentState.
-func TestCurrentSchemaVersion_IsV3(t *testing.T) {
-	if CurrentSchemaVersion != 3 {
-		t.Errorf("CurrentSchemaVersion = %d, want 3 (QUM-899 bump)", CurrentSchemaVersion)
+// TestCurrentSchemaVersion_IsV4 pins QUM-1186: the schema version was bumped
+// to 4 when the last_report_* fields were removed from AgentState. The stamp
+// is what marks a file as written after the report axis was deleted.
+func TestCurrentSchemaVersion_IsV4(t *testing.T) {
+	if CurrentSchemaVersion != 4 {
+		t.Errorf("CurrentSchemaVersion = %d, want 4 (QUM-1186 bump)", CurrentSchemaVersion)
 	}
 }
 
@@ -230,12 +303,9 @@ func TestLoadAgent_MigrateV0ToV2Stepwise(t *testing.T) {
 	if err != nil {
 		t.Fatalf("LoadAgent: %v", err)
 	}
-	// v0→v1: done + session_id => suspended, LastReportState derived to complete.
-	if got.Status != "suspended" {
-		t.Errorf("Status = %q, want %q", got.Status, "suspended")
-	}
-	if got.LastReportState != "complete" {
-		t.Errorf("LastReportState = %q, want %q", got.LastReportState, "complete")
+	// QUM-1186: v0→v1 maps "done" straight to StatusComplete.
+	if got.Status != StatusComplete {
+		t.Errorf("Status = %q, want %q", got.Status, StatusComplete)
 	}
 	if got.SchemaVersion != CurrentSchemaVersion {
 		t.Errorf("SchemaVersion = %d, want %d", got.SchemaVersion, CurrentSchemaVersion)

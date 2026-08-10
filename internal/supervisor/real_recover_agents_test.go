@@ -18,105 +18,11 @@ import (
 	"github.com/dmotles/sprawl/internal/state"
 )
 
-// TestRealRecoverAgents_SettlePassFlipsZombieStatus (QUM-668) — at the top of
-// RecoverAgents, before the resume filter loop, a "settle pass" reconciles
-// the on-disk Status with the persisted outcome. Any agent whose
-// LastReportState is terminal (complete/failure) but whose Status is still
-// "active" (e.g. an earlier session crashed before Report's atomic flip ran,
-// or migrated from before QUM-668) must have its Status flipped to the
-// matching terminal liveness and persisted. Agents whose Status is not
-// "active" are left untouched.
-func TestRealRecoverAgents_SettlePassFlipsZombieStatus(t *testing.T) {
-	cases := []struct {
-		name            string
-		initialStatus   string
-		lastReportState string
-		wantStatus      string
-		wantResumed     bool
-	}{
-		{
-			// QUM-787: settle-pass for an agent whose last report was
-			// state=complete must land in StatusComplete (not StatusStopped).
-			// StatusStopped is no longer a write target anywhere in the
-			// supervisor.
-			name:            "complete+active settles to complete, skipped from resume",
-			initialStatus:   state.StatusActive,
-			lastReportState: "complete",
-			wantStatus:      state.StatusComplete,
-			wantResumed:     false,
-		},
-		{
-			name:            "failure+active settles to faulted, skipped from resume",
-			initialStatus:   state.StatusActive,
-			lastReportState: "failure",
-			wantStatus:      state.StatusFaulted,
-			wantResumed:     false,
-		},
-		{
-			name:            "working+active is a crash survivor — Status unchanged, resumed",
-			initialStatus:   state.StatusActive,
-			lastReportState: "working",
-			wantStatus:      state.StatusActive,
-			wantResumed:     true,
-		},
-		{
-			name:            "complete+suspended: settle pass does not touch Status (already non-active)",
-			initialStatus:   state.StatusSuspended,
-			lastReportState: "complete",
-			wantStatus:      state.StatusSuspended,
-			wantResumed:     false,
-		},
-		{
-			name:            "failure+suspended: settle pass does not touch Status (already non-active)",
-			initialStatus:   state.StatusSuspended,
-			lastReportState: "failure",
-			wantStatus:      state.StatusSuspended,
-			wantResumed:     false,
-		},
-	}
-
-	for _, tc := range cases {
-		t.Run(tc.name, func(t *testing.T) {
-			r, tmpDir := newFakeReal(t)
-			starter := &recoverTestStarter{session: recoverTestSession("sess-shared")}
-			installStarter(r, starter)
-
-			wt := makeWorktreeDir(t, tmpDir, "alice")
-			saveTestAgent(t, tmpDir, &state.AgentState{
-				Name: "alice", Type: "engineer", Family: "engineering", Parent: "weave",
-				Branch: "dmotles/alice", Worktree: wt, Status: tc.initialStatus,
-				CreatedAt: "2026-05-19T00:00:00Z", SessionID: "sess-alice", TreePath: "weave/alice",
-				LastReportState: tc.lastReportState,
-			})
-
-			resumed, _, _ := r.RecoverAgents(context.Background())
-
-			gotResumed := resumed == 1
-			if gotResumed != tc.wantResumed {
-				t.Errorf("resumed=%d want resumed=%v", resumed, tc.wantResumed)
-			}
-
-			loaded, err := state.LoadAgent(tmpDir, "alice")
-			if err != nil {
-				t.Fatalf("LoadAgent: %v", err)
-			}
-			if loaded.Status != tc.wantStatus {
-				t.Errorf("post-settle Status = %q, want %q", loaded.Status, tc.wantStatus)
-			}
-
-			// Resume-skip evidence: when a terminal-outcome settle path runs
-			// from Status=active, the agent must NOT appear in starter.specs.
-			// (Compare to working+active which DOES get resumed.)
-			if !tc.wantResumed {
-				for _, sp := range starter.specs {
-					if sp.Name == "alice" {
-						t.Errorf("starter.specs contains alice for non-resume case; settle pass should have excluded it before resume scan")
-					}
-				}
-			}
-		})
-	}
-}
+// QUM-1186: TestRealRecoverAgents_SettlePassFlipsZombieStatus was removed
+// here along with the settle-pass itself. Its whole subject was reconciling a
+// stale Status=="active" against a terminal LastReportState — i.e. the two
+// axes disagreeing. With the outcome axis deleted there is only one axis and
+// nothing to reconcile.
 
 // TestRealRecoverAgents_QuarantinesOrphanDir (QUM-668) — any directory under
 // .sprawl/agents/<name>/ without a matching <name>.json sibling is an orphan.
@@ -379,34 +285,29 @@ func TestRealRecoverAgents_CrashSurvivorActiveResumes(t *testing.T) {
 	}
 }
 
-// TestRealRecoverAgents_CompletedAgentNotResumed (QUM-625 Q2 AC #2): an agent
-// that reported complete (LastReportState="complete") must NOT be auto-resumed,
-// even though its liveness Status ("active"/"suspended") is otherwise eligible.
-// The done-exclusion lives on the OUTCOME axis now, not the Status string.
-func TestRealRecoverAgents_CompletedAgentNotResumed(t *testing.T) {
-	r, tmpDir := newFakeReal(t)
-	starter := &recoverTestStarter{session: recoverTestSession("sess-shared")}
-	installStarter(r, starter)
+// QUM-1186: TestRealRecoverAgents_CompletedAgentNotResumed was removed here.
+// It pinned the OUTCOME-axis exclusion (LastReportState=="complete" blocks
+// auto-resume even when Status is otherwise eligible). Exclusion now lives
+// purely on the Status axis: StatusComplete is outside the {Suspended,
+// Running} accept-set, which TestRealRecoverAgents_LegacyV0DoneNotResumed
+// AndIdempotent below exercises end-to-end from a real on-disk fixture.
 
-	wt := makeWorktreeDir(t, tmpDir, "donezo")
-	saveTestAgent(t, tmpDir, &state.AgentState{
-		Name: "donezo", Type: "engineer", Family: "engineering", Parent: "weave",
-		Branch: "dmotles/donezo", Worktree: wt, Status: state.StatusActive,
-		CreatedAt: "2026-05-19T00:00:00Z", SessionID: "sess-donezo", TreePath: "weave/donezo",
-		LastReportState: "complete",
-	})
-
-	resumed, _, _ := r.RecoverAgents(context.Background())
-	if resumed != 0 || len(starter.specs) != 0 {
-		t.Fatalf("completed agent (LastReportState=complete) must NOT resume: resumed=%d specs=%+v", resumed, starter.specs)
-	}
-}
-
-// TestRealRecoverAgents_LegacyV0DoneNotResumedAndIdempotent (QUM-625, weave's
-// requested pair): a legacy v0 agent with Status="done" must, after
-// migrate-on-load (done→Suspended + LastReportState=complete because SessionID
-// is set), (1) NOT be auto-resumed (outcome-axis exclusion), and (2) the
-// migration must be idempotent (re-load is a no-op).
+// TestRealRecoverAgents_LegacyV0DoneNotResumedAndIdempotent drives the legacy
+// migration from a GENUINE raw schema-version-0 file on disk (see
+// writeRawV0RecoverAgent), not a hand-built struct — the whole risk in a
+// migration is the shape on disk, and a struct literal cannot fail the way a
+// real file can.
+//
+// QUM-1186 changed the expected mapping. Previously "done" migrated to
+// Status=suspended plus LastReportState=complete, and the exclusion from
+// auto-resume came off that outcome field. With the outcome axis deleted,
+// "done" maps straight to StatusComplete — the information the legacy token
+// carried is preserved on the Status axis rather than discarded — and the
+// exclusion follows because StatusComplete is outside the {Suspended, Running}
+// accept-set.
+//
+// Still asserts both halves: (1) NOT auto-resumed, and (2) the migration is
+// idempotent across a second load.
 func TestRealRecoverAgents_LegacyV0DoneNotResumedAndIdempotent(t *testing.T) {
 	r, tmpDir := newFakeReal(t)
 	starter := &recoverTestStarter{session: recoverTestSession("sess-shared")}
@@ -425,19 +326,18 @@ func TestRealRecoverAgents_LegacyV0DoneNotResumedAndIdempotent(t *testing.T) {
 	if err != nil {
 		t.Fatalf("LoadAgent: %v", err)
 	}
-	if first.Status != state.StatusSuspended || first.LastReportState != "complete" || first.SchemaVersion != state.CurrentSchemaVersion {
-		t.Fatalf("v0 done migration: Status=%q LastReportState=%q SchemaVersion=%d; want suspended/complete/%d",
-			first.Status, first.LastReportState, first.SchemaVersion, state.CurrentSchemaVersion)
+	if first.Status != state.StatusComplete || first.SchemaVersion != state.CurrentSchemaVersion {
+		t.Fatalf("v0 done migration: Status=%q SchemaVersion=%d; want %q/%d",
+			first.Status, first.SchemaVersion, state.StatusComplete, state.CurrentSchemaVersion)
 	}
 	// Idempotent: a second load yields an identical result (no further drift).
 	second, err := state.LoadAgent(tmpDir, "legacydone")
 	if err != nil {
 		t.Fatalf("LoadAgent (2nd): %v", err)
 	}
-	if second.Status != first.Status || second.LastReportState != first.LastReportState || second.SchemaVersion != first.SchemaVersion {
-		t.Fatalf("migration not idempotent: first={%q,%q,%d} second={%q,%q,%d}",
-			first.Status, first.LastReportState, first.SchemaVersion,
-			second.Status, second.LastReportState, second.SchemaVersion)
+	if second.Status != first.Status || second.SchemaVersion != first.SchemaVersion {
+		t.Fatalf("migration not idempotent: first={%q,%d} second={%q,%d}",
+			first.Status, first.SchemaVersion, second.Status, second.SchemaVersion)
 	}
 }
 
@@ -766,7 +666,7 @@ func TestRecoverAgentsSkipsPaused(t *testing.T) {
 }
 
 // TestRecoverAgentsPausedSurvivesDirtyShutdown (QUM-723) — a paused agent
-// whose LastReportState is still "working" (paused mid-turn without a clean
+// paused mid-turn without a clean
 // outcome flip) must STILL be skipped and remain Status=paused after
 // RecoverAgents. The pause persistence axis is independent of the
 // last-report-state crash-survivor logic.
@@ -780,7 +680,6 @@ func TestRecoverAgentsPausedSurvivesDirtyShutdown(t *testing.T) {
 		Name: "snoozy", Type: "engineer", Family: "engineering", Parent: "weave",
 		Branch: "dmotles/snoozy", Worktree: wt, Status: state.StatusPaused,
 		CreatedAt: "2026-05-19T00:00:00Z", SessionID: "sess-snoozy", TreePath: "weave/snoozy",
-		LastReportState: "working",
 	})
 
 	resumed, failed, errs := r.RecoverAgents(context.Background())

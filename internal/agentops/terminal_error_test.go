@@ -54,46 +54,44 @@ func TestTerminalAgentError(t *testing.T) {
 			wantErr: false,
 		},
 		{
-			// QUM-787: a state file seeded with Status=stopped +
-			// LastReportState=complete is migrated to Status=complete on
-			// LoadAgent (stopped is no longer a write target). Complete
-			// is NOT in the TerminalAgentError set per the QUM-786
-			// lifecycle arc — it is revivable via wake/delegate — so
-			// TerminalAgentError returns nil.
-			name: "stopped+complete migrates to complete; not terminal",
+			// QUM-1186: a state file seeded with Status=stopped is migrated
+			// to Status=suspended on LoadAgent (stopped is not a write
+			// target, and a clean stop nobody labelled is not a fault).
+			// Suspended is NOT in the TerminalAgentError set — it is
+			// revivable — so TerminalAgentError returns nil.
+			name: "stopped migrates to suspended; not terminal",
 			seed: &state.AgentState{
-				Name:            "alice",
-				Status:          state.StatusStopped,
-				LastReportState: "complete",
-				LastReportAt:    "2026-06-06T12:00:00Z",
+				Name:   "alice",
+				Status: state.StatusStopped,
 			},
 			wantErr: false,
 		},
 		{
 			// QUM-789: faulted is wake_if_offline-recoverable (revivable),
-			// NOT terminal. The QUM-726 gate at the Real.Delegate /
-			// Real.SendMessage layer handles it.
+			// NOT terminal. The QUM-726 gate at the Real.SendMessage layer
+			// handles it.
 			name: "faulted status returns nil (revivable via wake_if_offline)",
 			seed: &state.AgentState{
-				Name:            "alice",
-				Status:          state.StatusFaulted,
-				LastReportState: "failure",
-				LastReportAt:    "2026-06-06T12:00:00Z",
+				Name:   "alice",
+				Status: state.StatusFaulted,
 			},
 			wantErr: false,
 		},
 		{
+			// QUM-1186: mustContain was {agent "alice", "complete",
+			// "no longer running"}; "complete" came from the deleted
+			// LastReportState. Replaced by the OBSERVED Status, which is a
+			// strictly more specific claim — it names the agent's actual
+			// lifecycle state rather than a self-report that could disagree.
 			name: "retired status returns descriptive error",
 			seed: &state.AgentState{
-				Name:            "alice",
-				Status:          state.StatusRetired,
-				LastReportState: "complete",
-				LastReportAt:    "2026-06-06T12:00:00Z",
+				Name:   "alice",
+				Status: state.StatusRetired,
 			},
 			wantErr: true,
 			mustContain: []string{
 				`agent "alice"`,
-				"complete",
+				state.StatusRetired,
 				"no longer running",
 			},
 		},
@@ -101,15 +99,13 @@ func TestTerminalAgentError(t *testing.T) {
 			// QUM-789: retiring is terminal (parent-decided permanent state).
 			name: "retiring status returns descriptive error",
 			seed: &state.AgentState{
-				Name:            "alice",
-				Status:          state.StatusRetiring,
-				LastReportState: "complete",
-				LastReportAt:    "2026-06-06T12:00:00Z",
+				Name:   "alice",
+				Status: state.StatusRetiring,
 			},
 			wantErr: true,
 			mustContain: []string{
 				`agent "alice"`,
-				"complete",
+				state.StatusRetiring,
 				"no longer running",
 			},
 		},
@@ -117,10 +113,8 @@ func TestTerminalAgentError(t *testing.T) {
 			// QUM-789: killed is wake_if_offline-recoverable, NOT terminal.
 			name: "killed status returns nil (revivable via wake_if_offline)",
 			seed: &state.AgentState{
-				Name:            "alice",
-				Status:          state.StatusKilled,
-				LastReportState: "failure",
-				LastReportAt:    "2026-06-06T12:00:00Z",
+				Name:   "alice",
+				Status: state.StatusKilled,
 			},
 			wantErr: false,
 		},

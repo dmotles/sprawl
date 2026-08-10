@@ -192,8 +192,6 @@ package supervisor
 import (
 	"context"
 	"encoding/json"
-	"errors"
-	"os"
 	"path/filepath"
 	"strings"
 	"testing"
@@ -201,37 +199,8 @@ import (
 
 	"github.com/dmotles/sprawl/internal/agentloop"
 	"github.com/dmotles/sprawl/internal/backend"
-	"github.com/dmotles/sprawl/internal/messages"
 	"github.com/dmotles/sprawl/internal/protocol"
 )
-
-// errQUM1061WriteFailed simulates a failed stdin write (a full/closed pipe).
-var errQUM1061WriteFailed = errors.New("qum1061: simulated stdin write failure")
-
-// statusChangeEnvelopePresent reports whether any status_change envelope is still
-// on disk for recipient. Non-destructive, unlike DrainStatusChangeLines.
-func statusChangeEnvelopePresent(t *testing.T, sprawlRoot, recipient string) bool {
-	t.Helper()
-	for _, sub := range []string{"new", "cur"} {
-		entries, err := os.ReadDir(filepath.Join(messages.MessagesDir(sprawlRoot), recipient, sub))
-		if err != nil {
-			continue
-		}
-		for _, e := range entries {
-			if e.IsDir() || !strings.HasSuffix(e.Name(), ".json") {
-				continue
-			}
-			b, err := os.ReadFile(filepath.Join(messages.MessagesDir(sprawlRoot), recipient, sub, e.Name())) //nolint:gosec // test-local path
-			if err != nil {
-				continue
-			}
-			if strings.Contains(string(b), `"status_change"`) {
-				return true
-			}
-		}
-	}
-	return false
-}
 
 // countEntryIDWrites counts how many times the maildir entry ID appears across
 // the bodies of the captured stdin writes. A maildir citation embeds the entry's
@@ -507,67 +476,10 @@ func TestQUM1066_ChildDrain_SecondEntryDeliveredWhileFirstInFlight(t *testing.T)
 	}
 }
 
-// TestQUM1066_ChildDrain_StatusLineStillWrittenWhenEveryAsyncFiltered guards the
-// failure mode the fix itself introduces. Status/liveness lines are read with the
-// DESTRUCTIVE inboxprompt.DrainStatusChangeLines, so a fix that early-returns once
-// the post-filter pending set is empty would drop them permanently, with no retry
-// and no record. The `len(asyncs) > 0 || len(statusLines) > 0` gate in the child
-// drain is what keeps that frame flowing; this arm is what proves it.
-//
-// THE CONTRACT ASSERTED IS IMMEDIATE DELIVERY IN THE SAME FRAME, deliberately, and
-// it is stricter than "not lost". A variant that placed the filter (and an
-// emptiness check) ahead of DrainStatusChangeLines would defer the line to the next
-// poke rather than lose it, and would fail here. That is intended: the line was
-// already drained destructively before the filter runs, so "deferred" is only
-// distinguishable from "lost" if some later poke is guaranteed, and none is. The
-// two assertions below observe BOTH halves — the envelope is gone from disk AND the
-// body reached stdin — so neither is inferred from the other.
-func TestQUM1066_ChildDrain_StatusLineStillWrittenWhenEveryAsyncFiltered(t *testing.T) {
-	const entryID = "id-qum1066-statusline"
-	uh, mock, sprawlRoot := buildStartedUnifiedHandleForTest(t, backend.Capabilities{})
-	defer func() { _ = uh.Stop(context.Background()) }()
-
-	openFrameTurnViaWire(t, mock)
-	seedAsyncEntry(t, sprawlRoot, "alice", entryID, "the only async")
-	if err := uh.WakeForDelivery(); err != nil {
-		t.Fatalf("WakeForDelivery #1: %v", err)
-	}
-	first := mock.settledWrites(1, 2*time.Second, 100*time.Millisecond)
-	if got := countEntryIDWrites(first, entryID); got != 1 {
-		t.Fatalf("[I] injections after the first drain = %d, want 1 — instrument not live", got)
-	}
-
-	// A status line arrives while the only async entry is in flight, so the
-	// post-filter pending set is empty and statusLines is the entire payload.
-	if _, err := messages.SendStatusChange(sprawlRoot, "child-of-alice", "alice", messages.StatusChangePayload{
-		State: "working", Summary: "n1-marker",
-	}); err != nil {
-		t.Fatalf("SendStatusChange: %v", err)
-	}
-	if !statusChangeEnvelopePresent(t, sprawlRoot, "alice") {
-		t.Fatal("setup: no status_change envelope on disk — the drain would have nothing to lose")
-	}
-	if err := uh.WakeForDelivery(); err != nil {
-		t.Fatalf("WakeForDelivery #2: %v", err)
-	}
-	all := mock.settledWrites(2, 2*time.Second, 150*time.Millisecond)
-
-	// The drain consumed the envelope destructively: from here the ONLY copy of
-	// the line is whatever reached stdin.
-	if statusChangeEnvelopePresent(t, sprawlRoot, "alice") {
-		t.Fatal("status_change envelope is still on disk — the drain did not read it, so the assertion below is not measuring the destructive-read hazard")
-	}
-	if len(all) != 2 {
-		t.Fatalf("stdin writes = %d, want 2 — the status line was never written; a destructive drain with no write means it is permanently LOST", len(all))
-	}
-	if !strings.Contains(all[1].Message.Content, "n1-marker") {
-		t.Fatalf("second write does not carry the status line body:\n%s", all[1].Message.Content)
-	}
-	// ...and the in-flight async was still suppressed in that same frame.
-	if got := countEntryIDWrites(all, entryID); got != 1 {
-		t.Fatalf("injections of the in-flight entry %s = %d, want 1 — the status-line frame re-injected it", entryID, got)
-	}
-}
+// QUM-1186: TestQUM1066_ChildDrain_StatusLineStillWrittenWhenEveryAsyncFiltered
+// was removed here. It pinned the `len(asyncs) > 0 || len(statusLines) > 0`
+// gate: a status-only payload had to still produce a frame, because the lines
+// were already off disk. Both the gate and the destructive read are gone.
 
 // TestQUM1066_ChildDrain_NeverAckedAsyncEntry_WrittenOnceAcrossManyBoundaries is
 // the unbounded-tail guard. It measures injections against MANY turn boundaries for
@@ -708,78 +620,17 @@ func TestQUM1066_ChildDrain_InterruptClassEntry_NotDuplicated(t *testing.T) {
 	}
 }
 
-// TestQUM1061_ChildDrain_DiscardsWriteErrorAndLosesStatusLines answers QUM-1061's
-// AC-4 lost_status_lines asymmetry by observation rather than by reading the source.
-// It is UNAFFECTED by QUM-1066 and still reproduces the loss ON PURPOSE — the fix is
-// QUM-1034's, out of scope here. Keep the name and the QUM-1061 prefix: this arm
-// belongs to that issue, not to the fix this file now guards.
+// QUM-1186: TestQUM1061_ChildDrain_DiscardsWriteErrorAndLosesStatusLines was
+// removed here.
 //
-// The child drain performs the SAME destructive inboxprompt.DrainStatusChangeLines
-// as the weave drain, so on a failed write the lines are gone from the maildir with
-// no recovery path. That is the finding, and it still reproduces below.
+// HANDOVER NOTE, because this one was not merely a status_change test: it was
+// the live REPRODUCTION of QUM-1034 — writeInjection discards the write error,
+// so a payload that fails to reach stdin is lost with no caller-visible
+// signal. The status_change envelope was only the vehicle that made the loss
+// PERMANENT (destructive read, nothing left in pending/ to retry).
 //
-// UPDATED BY QUM-1072, which fixed HALF of the original asymmetry. When this was
-// written the child drain discarded the write error entirely (`_, _ =
-// h.rt.WriteSystemMessage(...)`), so the loss had "no recovery path AND no record".
-// QUM-1072 bounded the write and made it log a WARN carrying the verbatim bodies,
-// matching weave — so there is now a RECORD. There is still no RECOVERY: nothing
-// re-queues the lines, which is what QUM-1034 owns and why this test is unchanged.
-func TestQUM1061_ChildDrain_DiscardsWriteErrorAndLosesStatusLines(t *testing.T) {
-	uh, mock, sprawlRoot := buildStartedUnifiedHandleForTest(t, backend.Capabilities{})
-	defer func() { _ = uh.Stop(context.Background()) }()
-
-	if _, err := messages.SendStatusChange(sprawlRoot, "child-of-alice", "alice", messages.StatusChangePayload{
-		State: "complete", Summary: "did the thing",
-	}); err != nil {
-		t.Fatalf("SendStatusChange: %v", err)
-	}
-	// The envelope is on disk before the drain.
-	if !statusChangeEnvelopePresent(t, sprawlRoot, "alice") {
-		t.Fatal("setup: no status_change envelope on disk — the loss cannot be demonstrated")
-	}
-
-	// Make the stdin write fail.
-	mock.setWriteErr(errQUM1061WriteFailed)
-
-	if err := uh.WakeForDelivery(); err != nil {
-		t.Fatalf("WakeForDelivery returned err = %v — the child drain swallows write errors, so this must stay nil (that IS the finding)", err)
-	}
-
-	// Nothing reached stdin...
-	if got := len(mock.writesSnapshot()); got != 0 {
-		t.Fatalf("stdin writes = %d, want 0 (the write was forced to fail)", got)
-	}
-	// ...and the envelope is gone from the maildir. Destructive drain, failed
-	// write, no re-queue, no WARN carrying the bodies.
-	if statusChangeEnvelopePresent(t, sprawlRoot, "alice") {
-		t.Fatal("status_change envelope is still on disk — the destructive-drain loss does NOT reproduce; re-derive AC 4 before routing it to QUM-1034")
-	}
-	// And a second drain has nothing left to deliver: the line is permanently lost.
-	mock.setWriteErr(nil)
-	if err := uh.WakeForDelivery(); err != nil {
-		t.Fatalf("WakeForDelivery #2: %v", err)
-	}
-	if got := len(mock.settledWrites(0, 200*time.Millisecond, 150*time.Millisecond)); got != 0 {
-		t.Fatalf("stdin writes after a retry drain = %d, want 0 — if the line came back it was not lost after all", got)
-	}
-
-	// POSITIVE ARM — this is what makes "0 writes" above a finding rather than a
-	// harness that never delivers status lines at all. Same handle, same drain, a
-	// working write: a fresh status_change DOES reach stdin as a rendered line. So
-	// the zero above is attributable to the write failure, not to the drain.
-	if _, err := messages.SendStatusChange(sprawlRoot, "child-of-alice", "alice", messages.StatusChangePayload{
-		State: "working", Summary: "control arm",
-	}); err != nil {
-		t.Fatalf("SendStatusChange (control): %v", err)
-	}
-	if err := uh.WakeForDelivery(); err != nil {
-		t.Fatalf("WakeForDelivery #3: %v", err)
-	}
-	ctl := mock.settledWrites(1, 2*time.Second, 100*time.Millisecond)
-	if len(ctl) != 1 {
-		t.Fatalf("stdin writes on the working-write control arm = %d, want 1 — the drain never delivers status lines, so the loss assertion above proves nothing", len(ctl))
-	}
-	if !strings.Contains(ctl[0].Message.Content, "control arm") {
-		t.Fatalf("control-arm write does not carry the status line body:\n%s", ctl[0].Message.Content)
-	}
-}
+// The underlying defect survives on the send_message path and is lane 2's
+// explicit subject (QUM-1186 AC 7: the bounded-write timeout must become a
+// caller-visible error). This deletion removes a reproduction, NOT the bug.
+// Flagged to the manager so lane 2 re-establishes it against send_message
+// rather than inheriting a suite that looks like it already covers this.

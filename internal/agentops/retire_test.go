@@ -230,7 +230,10 @@ func TestRetire_Subagent_SkipsWorktreeAndBranchDelete(t *testing.T) {
 // refused these cases, trapping zombie agents.
 func TestRetire_TerminalStatuses_Succeed(t *testing.T) {
 	terminalStatuses := []string{
-		state.StatusStopped,
+		// QUM-1186: state.StatusStopped removed — LoadAgent now migrates the
+		// legacy "stopped" sentinel to StatusSuspended, which is not a
+		// resolved orphan, so it is no longer reachable as a terminal status
+		// here. See the matching note in merge_test.go.
 		state.StatusFaulted,
 		state.StatusRetired,
 		state.StatusKilled,
@@ -254,15 +257,13 @@ func TestRetire_TerminalStatuses_Succeed(t *testing.T) {
 					t.Fatalf("mkdir: %v", err)
 				}
 				agentState := &state.AgentState{
-					Name:            agentName,
-					Type:            "engineer",
-					Family:          "engineering",
-					Branch:          "dmotles/zombie",
-					Worktree:        worktreePath,
-					Parent:          "weave",
-					Status:          status,
-					LastReportState: "complete",
-					LastReportAt:    "2026-06-09T20:00:00Z",
+					Name:     agentName,
+					Type:     "engineer",
+					Family:   "engineering",
+					Branch:   "dmotles/zombie",
+					Worktree: worktreePath,
+					Parent:   "weave",
+					Status:   status,
 				}
 				if err := state.SaveAgent(sprawlRoot, agentState); err != nil {
 					t.Fatalf("SaveAgent: %v", err)
@@ -302,7 +303,10 @@ func TestRetire_TerminalChildren_DoNotRequireCascade(t *testing.T) {
 	}
 
 	terminalStatuses := []string{
-		state.StatusStopped,
+		// QUM-1186: state.StatusStopped removed — LoadAgent now migrates the
+		// legacy "stopped" sentinel to StatusSuspended, which is not a
+		// resolved orphan, so it is no longer reachable as a terminal status
+		// here. See the matching note in merge_test.go.
 		state.StatusFaulted,
 		state.StatusRetired,
 		state.StatusKilled,

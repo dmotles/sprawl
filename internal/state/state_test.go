@@ -634,104 +634,59 @@ func TestStatusComplete_ConstantValue(t *testing.T) {
 	}
 }
 
-// TestMigrate_StoppedWithCompleteReport asserts the QUM-787 LoadAgent
-// migration: an on-disk state file with Status="stopped" AND
-// LastReportState="complete" loads as Status="complete" AND the migration
-// is persisted back to disk so subsequent loads are normalized.
-func TestMigrate_StoppedWithCompleteReport(t *testing.T) {
-	dir := t.TempDir()
-	agentsDir := AgentsDir(dir)
-	if err := os.MkdirAll(agentsDir, 0o755); err != nil {
-		t.Fatalf("mkdir agents dir: %v", err)
-	}
-	blob := `{
-  "name": "alice",
-  "type": "engineer",
-  "status": "stopped",
-  "last_report_state": "complete",
-  "schema_version": 1
-}`
-	path := filepath.Join(agentsDir, "alice.json")
-	if err := os.WriteFile(path, []byte(blob), 0o644); err != nil {
-		t.Fatalf("seed blob: %v", err)
-	}
+// TestMigrate_StoppedNormalizesAndPersists replaces the three QUM-787
+// stopped-migration tests that lived here (StoppedWithCompleteReport,
+// StoppedWithFailureReport, StoppedWithNoReport).
+//
+// QUM-1186 INVERTED their shared premise. They asserted that the legacy
+// "stopped" sentinel was re-classified by splitting on LastReportState —
+// complete => StatusComplete, anything else => StatusFaulted. That field is
+// deleted, there is no evidence left to split on, and defaulting to `faulted`
+// would reproduce on the read path the exact bug D3 removed from the write
+// path. All three collapse into one mapping: stopped => StatusSuspended.
+//
+// What this file uniquely contributed and is KEPT: the migration is PERSISTED
+// back to disk, so a second load does not have to re-run it. That assertion is
+// not duplicated in migrate_test.go.
+func TestMigrate_StoppedNormalizesAndPersists(t *testing.T) {
+	for _, tc := range []struct{ name, blob string }{
+		{"with a legacy complete report", `{"name":"alice","type":"engineer","status":"stopped","last_report_state":"complete","schema_version":1}`},
+		{"with a legacy failure report", `{"name":"alice","type":"engineer","status":"stopped","last_report_state":"failure","schema_version":1}`},
+		{"with no report at all", `{"name":"alice","type":"engineer","status":"stopped","schema_version":1}`},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			dir := t.TempDir()
+			agentsDir := AgentsDir(dir)
+			if err := os.MkdirAll(agentsDir, 0o755); err != nil {
+				t.Fatalf("mkdir agents dir: %v", err)
+			}
+			path := filepath.Join(agentsDir, "alice.json")
+			if err := os.WriteFile(path, []byte(tc.blob), 0o644); err != nil {
+				t.Fatalf("seed blob: %v", err)
+			}
 
-	loaded, err := LoadAgent(dir, "alice")
-	if err != nil {
-		t.Fatalf("LoadAgent: %v", err)
-	}
-	if loaded.Status != StatusComplete {
-		t.Errorf("loaded.Status = %q, want %q", loaded.Status, StatusComplete)
-	}
+			loaded, err := LoadAgent(dir, "alice")
+			if err != nil {
+				t.Fatalf("LoadAgent: %v", err)
+			}
+			// Same answer for all three: the legacy report value, whatever it
+			// was, no longer influences the resting status.
+			if loaded.Status != StatusSuspended {
+				t.Errorf("loaded.Status = %q, want %q", loaded.Status, StatusSuspended)
+			}
 
-	// Persisted normalization: subsequent loads should see Status=complete
-	// without re-running the migration. Re-read the raw bytes off disk.
-	raw, err := os.ReadFile(path)
-	if err != nil {
-		t.Fatalf("re-read raw: %v", err)
-	}
-	if !strings.Contains(string(raw), `"status": "complete"`) {
-		t.Errorf("on-disk status not normalized to complete:\n%s", raw)
-	}
-	if strings.Contains(string(raw), `"status": "stopped"`) {
-		t.Errorf("on-disk status still contains stopped:\n%s", raw)
-	}
-}
-
-// TestMigrate_StoppedWithFailureReport asserts the QUM-787 LoadAgent
-// migration: an on-disk state file with Status="stopped" AND
-// LastReportState="failure" loads as Status="faulted" (a clean subprocess
-// exit without a complete report is treated as the unexpected-exit case).
-func TestMigrate_StoppedWithFailureReport(t *testing.T) {
-	dir := t.TempDir()
-	agentsDir := AgentsDir(dir)
-	if err := os.MkdirAll(agentsDir, 0o755); err != nil {
-		t.Fatalf("mkdir agents dir: %v", err)
-	}
-	blob := `{
-  "name": "bob",
-  "type": "engineer",
-  "status": "stopped",
-  "last_report_state": "failure",
-  "schema_version": 1
-}`
-	if err := os.WriteFile(filepath.Join(agentsDir, "bob.json"), []byte(blob), 0o644); err != nil {
-		t.Fatalf("seed blob: %v", err)
-	}
-
-	loaded, err := LoadAgent(dir, "bob")
-	if err != nil {
-		t.Fatalf("LoadAgent: %v", err)
-	}
-	if loaded.Status != StatusFaulted {
-		t.Errorf("loaded.Status = %q, want %q", loaded.Status, StatusFaulted)
-	}
-}
-
-// TestMigrate_StoppedWithNoReport asserts the QUM-787 LoadAgent migration:
-// Status="stopped" with an empty LastReportState (no completion report ever
-// landed) loads as Status="faulted".
-func TestMigrate_StoppedWithNoReport(t *testing.T) {
-	dir := t.TempDir()
-	agentsDir := AgentsDir(dir)
-	if err := os.MkdirAll(agentsDir, 0o755); err != nil {
-		t.Fatalf("mkdir agents dir: %v", err)
-	}
-	blob := `{
-  "name": "carol",
-  "type": "engineer",
-  "status": "stopped",
-  "schema_version": 1
-}`
-	if err := os.WriteFile(filepath.Join(agentsDir, "carol.json"), []byte(blob), 0o644); err != nil {
-		t.Fatalf("seed blob: %v", err)
-	}
-
-	loaded, err := LoadAgent(dir, "carol")
-	if err != nil {
-		t.Fatalf("LoadAgent: %v", err)
-	}
-	if loaded.Status != StatusFaulted {
-		t.Errorf("loaded.Status = %q, want %q", loaded.Status, StatusFaulted)
+			// Persisted normalization: the rewrite reached disk, so a later
+			// load does not depend on the migration running again.
+			raw, err := os.ReadFile(path)
+			if err != nil {
+				t.Fatalf("re-read raw: %v", err)
+			}
+			if !strings.Contains(string(raw), `"status": "suspended"`) {
+				t.Errorf("on-disk status not normalized to suspended:\n%s", raw)
+			}
+			if strings.Contains(string(raw), `"status": "stopped"`) {
+				t.Errorf("on-disk status still contains stopped:\n%s", raw)
+			}
+		})
 	}
 }

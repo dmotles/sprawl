@@ -264,8 +264,6 @@ func (s *Server) dispatchTool(ctx context.Context, name string, args json.RawMes
 		return s.toolSendMessage(ctx, args)
 	case "peek":
 		return s.toolPeek(ctx, args)
-	case "report_status":
-		return s.toolReportStatus(ctx, args)
 	case "merge":
 		return s.toolMerge(ctx, args)
 	case "retire":
@@ -491,54 +489,10 @@ type statusView struct {
 	SessionCostUsd     float64 `json:"session_cost_usd,omitempty"`
 	Subagent           bool    `json:"subagent,omitempty"`
 	SharedWorktreeWith string  `json:"shared_worktree_with,omitempty"`
-	// Demoted secondary fields.
-	LastReportState string `json:"last_report_state,omitempty"`
-	// LastReportAt / LastReportAge do for the report what the pair above does
-	// for activity. A bare `working` with no timestamp at all was the whole
-	// defect: a report 15 hours stale read as live state on the surface agents
-	// actually use. QUM-1154.
-	LastReportAt      string `json:"last_report_at,omitempty"`
-	LastReportAge     string `json:"last_report_age,omitempty"`
-	LastReportMessage string `json:"last_report_message,omitempty"`
-}
-
-// reportStamp renders a stored RFC3339 report timestamp for the wire, as the
-// (timestamp, age) pair to emit. Never reported is silent; every BAD write is
-// labelled "unknown" rather than disguised, because a report whose age we
-// cannot vouch for must not read as one we can:
-//
-//   - never reported ("") — emit neither. An absent report has no age, and
-//     labelling it would invent a report that does not exist.
-//   - unparseable — keep the raw value, age "unknown". The value is the only
-//     evidence of the bad write.
-//   - the zero time — drop the value, age "unknown". "0001-01-01T00:00:00Z"
-//     parses cleanly, so it arrives here as a real time and omitempty will
-//     not elide the non-empty string; left alone it renders as data, and its
-//     age is the "106751d ago" shape tui.Ago exists to suppress. Dropping it
-//     silently is not enough either: that would leave last_report_state
-//     standing bare, which is the pre-fix shape this issue exists to remove.
-//   - the future — keep the raw value, age "unknown". HumanizeSince clamps a
-//     negative duration to 0, so an unguarded future stamp reads "0s ago":
-//     the inverse of the founding defect, and worse, because a stale report
-//     eventually looks stale while a skewed one never ages out.
-//
-// Shared by the status and peek surfaces so the two cannot diverge on any of
-// these cases. QUM-1154.
-func reportStamp(at string, now time.Time) (stamp, age string) {
-	if at == "" {
-		return "", ""
-	}
-	t, err := time.Parse(time.RFC3339, at)
-	if err != nil {
-		return at, "unknown"
-	}
-	if t.IsZero() {
-		return "", "unknown"
-	}
-	if t.After(now) {
-		return at, "unknown"
-	}
-	return at, tui.Ago(t, now)
+	// QUM-1186: last_report_state / _at / _age / _message are gone from this
+	// view with report_status. THIS IS A RESPONSE-SHAPE CHANGE — see
+	// CHANGELOG.md. The live answer to "what is this agent doing?" is now
+	// Blurb plus the OBSERVED last_activity_at / last_activity_age pair above.
 }
 
 type statusPayload struct {
@@ -551,7 +505,6 @@ type statusPayload struct {
 }
 
 func toStatusView(a supervisor.AgentInfo, now time.Time) statusView {
-	reportAt, reportAge := reportStamp(a.LastReportAt, now)
 	return statusView{
 		Name:               a.Name,
 		Type:               a.Type,
@@ -568,10 +521,6 @@ func toStatusView(a supervisor.AgentInfo, now time.Time) statusView {
 		SessionCostUsd:     a.SessionCostUsd,
 		Subagent:           a.Subagent,
 		SharedWorktreeWith: a.SharedWorktreeWith,
-		LastReportState:    a.LastReportState,
-		LastReportAt:       reportAt,
-		LastReportAge:      reportAge,
-		LastReportMessage:  a.LastReportMessage,
 	}
 }
 
@@ -656,28 +605,6 @@ func (s *Server) toolPeek(ctx context.Context, args json.RawMessage) (string, er
 	}
 	annotatePeekAges(m, result, s.now())
 	data, err := json.MarshalIndent(m, "", "  ")
-	if err != nil {
-		return "", fmt.Errorf("marshaling result: %w", err)
-	}
-	return string(data), nil
-}
-
-func (s *Server) toolReportStatus(ctx context.Context, args json.RawMessage) (string, error) {
-	var p struct {
-		State   string `json:"state"`
-		Summary string `json:"summary"`
-	}
-	if err := json.Unmarshal(args, &p); err != nil {
-		return "", fmt.Errorf("invalid arguments: %w", err)
-	}
-	// Pass caller identity from context so child agents report under their
-	// own name instead of the shared supervisor's callerName (QUM-387).
-	agentName := backendpkg.CallerIdentity(ctx)
-	result, err := s.sup.ReportStatus(ctx, agentName, p.State, p.Summary)
-	if err != nil {
-		return "", err
-	}
-	data, err := json.MarshalIndent(result, "", "  ")
 	if err != nil {
 		return "", fmt.Errorf("marshaling result: %w", err)
 	}
@@ -1135,25 +1062,11 @@ func toolErrorResult(id json.RawMessage, errMsg string) (json.RawMessage, error)
 	})
 }
 
-// annotatePeekAges adds relative ages to the peek payload. `last_report.at` is
-// an RFC3339 string and `activity[].ts` is a time.Time — two provenances, two
-// conversions, deliberately not unified.
+// annotatePeekAges adds relative ages to the peek payload.
 //
-// Both halves of the report stamp come from reportStamp, shared with the
-// status surface. Taking only the age would leave the two disagreeing on the
-// zero timestamp — status suppressing it while peek still printed
-// "0001-01-01T00:00:00Z", the "reads as data" shape surviving on the other
-// surface — so the suppressed timestamp is deleted here too. QUM-1154.
+// QUM-1186: the `last_report` half is gone with report_status; only the
+// observed activity age remains.
 func annotatePeekAges(m map[string]any, result *supervisor.PeekResult, now time.Time) {
-	if lr, ok := m["last_report"].(map[string]any); ok {
-		stamp, age := reportStamp(result.LastReport.At, now)
-		if age != "" {
-			lr["age"] = age
-		}
-		if stamp == "" {
-			delete(lr, "at")
-		}
-	}
 	var newest time.Time
 	for _, e := range result.Activity {
 		if e.TS.After(newest) {

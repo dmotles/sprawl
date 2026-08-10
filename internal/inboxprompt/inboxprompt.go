@@ -26,12 +26,8 @@
 package inboxprompt
 
 import (
-	"encoding/json"
 	"fmt"
-	"log/slog"
 	"strings"
-
-	"github.com/dmotles/sprawl/internal/messages"
 )
 
 // Class is the delivery class of a queued message.
@@ -124,26 +120,6 @@ func BuildQueueFlushPrompt(entries []Entry) string {
 	return b.String()
 }
 
-// BuildStatusNotification renders one ephemeral `<system-notification>`
-// line for a child's report_status emission. QUM-559: status updates do
-// not flow through the maildir/queue — they're emitted once into the
-// parent's next-turn prompt via the in-process per-recipient ring and
-// discarded.
-//
-// The line has the shape (QUM-562 typed-attribute form):
-//
-//	<system-notification type="status_change">$AGENT changed status to $STATE: $SUMMARY</system-notification>\n
-//
-// No body inlining, no `mcp__sprawl__messages_read` citation (this is a
-// status channel, not a mail channel). The `type="status_change"`
-// attribute lets the TUI renderer branch onto a distinct glyph + color
-// (◉ + StatusChangeText) instead of the mail/interrupt glyphs used for
-// message-class notifications.
-func BuildStatusNotification(agent, state, summary string) string {
-	return fmt.Sprintf("<system-notification type=\"status_change\">%s changed status to %s: %s</system-notification>\n",
-		agent, state, summary)
-}
-
 // BuildInterruptFlushPrompt renders one `<system-notification>` line per
 // pending interrupt-class entry. QUM-562: the line carries `type="message"
 // interrupt="true"` attributes for the TUI parser, AND keeps the inner
@@ -181,88 +157,4 @@ const heartbeatNotificationBody = `<system-notification type="liveness_check">Th
 // "liveness_check" constant and does not call this. (QUM-730/QUM-1071)
 func BuildHeartbeatNotification() string {
 	return heartbeatNotificationBody
-}
-
-// DrainStatusChangeLines pulls all type=status_change envelopes from the
-// recipient's maildir (QUM-614) and renders them as the same one-line
-// `<system-notification type="status_change">…</system-notification>` strings
-// that BuildStatusNotification produces. The envelopes are removed from disk by
-// the drain — status_change updates are ephemeral and not retrievable via
-// messages_read.
-//
-// QUM-1064: envelopes are coalesced last-wins per reporting agent, so N reports
-// from one agent in one drain render a single line carrying its newest state and
-// summary. This is lossless in practice for this channel and this channel only:
-// a status_change is a state snapshot, so an intermediate state is already stale
-// by the time the recipient reads it. That is not total: a blocked→working pair
-// inside one drain window loses the only signal the agent was ever blocked. The
-// spec accepts that trade for this channel; it is the reason the rule must not
-// spread to channels whose entries are events rather than snapshots. The
-// collapse is applied here rather than
-// in BuildStatusNotification because this is the only place it is typed — a
-// generic line-similarity rule at the aggregator would look equivalent while
-// silently collapsing mail citations, which are genuinely distinct per message.
-// Survivors are emitted in first-appearance order.
-//
-// Returns nil on empty / missing recipient or on drain error (errors are
-// logged at debug and swallowed; status_change is best-effort telemetry).
-func DrainStatusChangeLines(sprawlRoot, recipient string) []string {
-	envs, err := messages.DrainStatusChange(sprawlRoot, recipient)
-	if err != nil {
-		slog.Default().Debug(
-			"inboxprompt: DrainStatusChange failed",
-			slog.String("recipient", recipient),
-			slog.Any("err", err),
-		)
-		return nil
-	}
-	if len(envs) == 0 {
-		return nil
-	}
-	// envs is FIFO (oldest first), so a later envelope from the same agent
-	// simply overwrites the earlier payload. `order` records first appearance
-	// and is what the emit loop ranges over — never the map, whose iteration
-	// order Go randomizes.
-	latest := make(map[string]messages.StatusChangePayload, len(envs))
-	order := make([]string, 0, len(envs))
-	for _, env := range envs {
-		var payload messages.StatusChangePayload
-		// Body is always valid JSON when written by SendStatusChange, so a
-		// decode failure means a damaged envelope. Skip it rather than let it
-		// win the last-wins race: a zero payload renders "bob changed status
-		// to : ", and under coalescing that would be the ONLY thing the
-		// recipient ever sees for that agent. Skipping keeps the last valid
-		// snapshot, which is what the pre-coalescing behaviour effectively gave.
-		if err := json.Unmarshal([]byte(env.Body), &payload); err != nil {
-			slog.Default().Debug(
-				"inboxprompt: skipping undecodable status_change envelope",
-				slog.String("recipient", recipient),
-				slog.String("from", env.From),
-				slog.Any("err", err),
-			)
-			continue
-		}
-		if _, seen := latest[env.From]; !seen {
-			order = append(order, env.From)
-		}
-		latest[env.From] = payload
-	}
-
-	lines := make([]string, 0, len(order))
-	for _, from := range order {
-		payload := latest[from]
-		lines = append(lines, BuildStatusNotification(from, payload.State, payload.Summary))
-	}
-	if len(envs) > len(lines) {
-		// Once lines are collapsed this log is the only place the backlog depth
-		// is observable — the liveness flood was invisible for two months
-		// partly because nothing logged multiplicity.
-		slog.Default().Info(
-			"inboxprompt: coalesced status_change lines",
-			slog.String("recipient", recipient),
-			slog.Int("drained", len(envs)),
-			slog.Int("emitted", len(lines)),
-		)
-	}
-	return lines
 }

@@ -1,6 +1,6 @@
 // QUM-725: tests for WalkDeadAncestors. RED phase — the helper does not
 // exist yet. These tests pin the contract that drives SendMessage's and
-// ReportStatus's "route up to first live ancestor" rerouting.
+// SendMessage's "route up to first live ancestor" rerouting.
 package supervisor
 
 import (

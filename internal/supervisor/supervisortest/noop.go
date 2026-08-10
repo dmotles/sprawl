@@ -73,10 +73,6 @@ func (*NoopSupervisor) Peek(context.Context, string, int) (*supervisor.PeekResul
 	return nil, nil
 }
 
-func (*NoopSupervisor) ReportStatus(context.Context, string, string, string) (*supervisor.ReportStatusResult, error) {
-	return nil, nil
-}
-
 func (*NoopSupervisor) MessagesList(context.Context, string, int) (*supervisor.MessagesListResult, error) {
 	return nil, nil
 }

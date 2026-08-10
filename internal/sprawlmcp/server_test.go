@@ -73,13 +73,6 @@ type mockSupervisor struct {
 	peekActivityRes   []agentloop.ActivityEntry
 	peekActivityErr   error
 
-	// ReportStatus recording + seams
-	reportStatusAgent   string
-	reportStatusState   string
-	reportStatusSummary string
-	reportStatusResult  *supervisor.ReportStatusResult
-	reportStatusErr     error
-
 	// SendMessage recording + seams (QUM-550)
 	sendMessageCalls         int
 	sendMessageTo            string
@@ -168,19 +161,6 @@ func (m *mockSupervisor) MessagesPeek(_ context.Context) (*supervisor.MessagesPe
 		return m.messagesPeekResult, nil
 	}
 	return &supervisor.MessagesPeekResult{Agent: "weave"}, nil
-}
-
-func (m *mockSupervisor) ReportStatus(_ context.Context, agentName, reportState, summary string) (*supervisor.ReportStatusResult, error) {
-	m.reportStatusAgent = agentName
-	m.reportStatusState = reportState
-	m.reportStatusSummary = summary
-	if m.reportStatusErr != nil {
-		return nil, m.reportStatusErr
-	}
-	if m.reportStatusResult != nil {
-		return m.reportStatusResult, nil
-	}
-	return &supervisor.ReportStatusResult{ReportedAt: "2026-04-21T10:00:00Z"}, nil
 }
 
 func (m *mockSupervisor) Spawn(_ context.Context, req supervisor.SpawnRequest) (*supervisor.AgentInfo, error) {
@@ -362,7 +342,6 @@ func TestServer_ToolsList(t *testing.T) {
 		"status",
 		"send_message",
 		"peek",
-		"report_status",
 		"merge",
 		"retire",
 		"kill",
@@ -483,8 +462,6 @@ func TestToolStatus_ShapeDropsInternalFieldsKeepsBlurb(t *testing.T) {
 				Parent: "forge", TreePath: "weave/forge/ratz",
 				Status: "active", Branch: "dmotles/qum-899",
 				Blurb:              "Built the QUM-899 blurb pipeline; knows state migration.",
-				LastReportMessage:  "wiring the heartbeat refresh",
-				LastReportState:    "working",
 				SessionCostUsd:     1.23,
 				InTurn:             true,
 				Liveness:           "running",
@@ -551,9 +528,20 @@ func TestToolStatus_ShapeDropsInternalFieldsKeepsBlurb(t *testing.T) {
 	if v["blurb"] != "Built the QUM-899 blurb pipeline; knows state migration." {
 		t.Errorf("blurb = %v", v["blurb"])
 	}
-	// last_report_message demoted but still present.
-	if v["last_report_message"] != "wiring the heartbeat refresh" {
-		t.Errorf("last_report_message = %v", v["last_report_message"])
+	// QUM-1186 RESPONSE-SHAPE CHANGE: last_report_state / _message / _at /
+	// _age are GONE from the status view with report_status. Asserted as an
+	// absence, not merely dropped from the kept-fields list — a shape-dependent
+	// consumer breaks silently, so the removal is pinned deliberately.
+	for _, k := range []string{"last_report_state", "last_report_message", "last_report_at", "last_report_age"} {
+		if _, ok := v[k]; ok {
+			t.Errorf("status view still emits deleted field %q = %v\n%s", k, v[k], out)
+		}
+	}
+	rtv := reflect.TypeOf(statusView{})
+	for i := range rtv.NumField() {
+		if strings.HasPrefix(strings.Split(rtv.Field(i).Tag.Get("json"), ",")[0], "last_report") {
+			t.Errorf("statusView still declares a last_report* json field (%s)", rtv.Field(i).Name)
+		}
 	}
 }
 
@@ -1318,10 +1306,9 @@ func TestServer_UnknownMethod(t *testing.T) {
 func TestServer_ToolsCall_SprawlPeek(t *testing.T) {
 	mock := &mockSupervisor{
 		peekResult: &supervisor.PeekResult{
-			Status:     "active",
-			LastReport: supervisor.LastReport{Type: "status", Message: "working", At: "2026-04-21T09:00:00Z"},
-			Activity:   []agentloop.ActivityEntry{{Kind: "assistant_text", Summary: "hi"}},
-			InTurn:     true,
+			Status:   "active",
+			Activity: []agentloop.ActivityEntry{{Kind: "assistant_text", Summary: "hi"}},
+			InTurn:   true,
 		},
 	}
 	srv := New(mock)
@@ -1356,9 +1343,6 @@ func TestServer_ToolsCall_SprawlPeek(t *testing.T) {
 	}
 	if body.Status != "active" {
 		t.Errorf("status = %q", body.Status)
-	}
-	if body.LastReport.Type != "status" {
-		t.Errorf("last_report.type = %q", body.LastReport.Type)
 	}
 	if len(body.Activity) != 1 || body.Activity[0].Kind != "assistant_text" {
 		t.Errorf("activity = %v", body.Activity)
@@ -1509,207 +1493,11 @@ func TestServer_ToolsCall_SprawlPeek_DefaultTail(t *testing.T) {
 	}
 }
 
-func TestServer_ToolsCall_SprawlReportStatus(t *testing.T) {
-	mock := &mockSupervisor{
-		reportStatusResult: &supervisor.ReportStatusResult{ReportedAt: "2026-04-21T10:00:00Z"},
-	}
-	srv := New(mock)
-
-	msg := makeJSONRPCRequest(35, "tools/call", map[string]any{
-		"name": "report_status",
-		"arguments": map[string]any{
-			"state":   "working",
-			"summary": "halfway done",
-		},
-	})
-	resp, err := srv.HandleMessage(context.Background(), msg)
-	if err != nil {
-		t.Fatalf("HandleMessage: %v", err)
-	}
-
-	if mock.reportStatusState != "working" {
-		t.Errorf("state = %q", mock.reportStatusState)
-	}
-	if mock.reportStatusSummary != "halfway done" {
-		t.Errorf("summary = %q", mock.reportStatusSummary)
-	}
-	// MCP tool passes empty agentName — supervisor uses its own callerName.
-	if mock.reportStatusAgent != "" {
-		t.Errorf("agentName = %q, want empty (caller-resolved)", mock.reportStatusAgent)
-	}
-
-	parsed := parseJSONRPCResponse(t, resp)
-	result := parsed["result"].(map[string]any)
-	if isErr, _ := result["isError"].(bool); isErr {
-		t.Fatalf("unexpected isError: %v", result)
-	}
-	content := result["content"].([]any)
-	text := content[0].(map[string]any)["text"].(string)
-
-	var body struct {
-		ReportedAt string `json:"reported_at"`
-	}
-	if err := json.Unmarshal([]byte(text), &body); err != nil {
-		t.Fatalf("unmarshal: %v (text=%q)", err, text)
-	}
-	if body.ReportedAt != "2026-04-21T10:00:00Z" {
-		t.Errorf("reported_at = %q", body.ReportedAt)
-	}
-}
-
-// TestToolReportStatus_NoMaildirSideEffect — QUM-559 guard: when the MCP
-// report_status tool is dispatched, it must call Supervisor.ReportStatus
-// and MUST NOT call Supervisor.SendMessage. The new contract is
-// state-only mutation + ephemeral ring push; no maildir write of any
-// kind happens at the MCP layer (or below). A buggy implementation that
-// fell back to SendMessage to "still notify the parent" would surface
-// here as a non-zero sendMessageCalls count.
-func TestToolReportStatus_NoMaildirSideEffect(t *testing.T) {
-	mock := &mockSupervisor{
-		reportStatusResult: &supervisor.ReportStatusResult{ReportedAt: "2026-05-13T10:00:00Z"},
-	}
-	srv := New(mock)
-
-	msg := makeJSONRPCRequest(539, "tools/call", map[string]any{
-		"name": "report_status",
-		"arguments": map[string]any{
-			"state":   "working",
-			"summary": "halfway",
-		},
-	})
-	resp, err := srv.HandleMessage(context.Background(), msg)
-	if err != nil {
-		t.Fatalf("HandleMessage: %v", err)
-	}
-
-	if mock.reportStatusState != "working" || mock.reportStatusSummary != "halfway" {
-		t.Errorf("ReportStatus called with state=%q summary=%q; want (working, halfway)",
-			mock.reportStatusState, mock.reportStatusSummary)
-	}
-	if mock.sendMessageCalls != 0 {
-		t.Errorf("toolReportStatus must not invoke Supervisor.SendMessage (QUM-559); calls=%d to=%q body=%q",
-			mock.sendMessageCalls, mock.sendMessageTo, mock.sendMessageBody)
-	}
-
-	// Response shape: must be a successful tool response (isError != true)
-	// with a non-empty content array. Guards against a buggy impl that
-	// silently returns an error envelope after dropping the maildir write.
-	parsed := parseJSONRPCResponse(t, resp)
-	result, ok := parsed["result"].(map[string]any)
-	if !ok {
-		t.Fatalf("response missing result: %v", parsed)
-	}
-	if isErr, _ := result["isError"].(bool); isErr {
-		t.Errorf("report_status returned isError=true; want successful response. result=%v", result)
-	}
-	content, ok := result["content"].([]any)
-	if !ok || len(content) == 0 {
-		t.Errorf("report_status returned empty content; want non-empty. result=%v", result)
-	}
-}
-
-func TestServer_ToolsCall_SprawlReportStatus_SupervisorError(t *testing.T) {
-	mock := &mockSupervisor{reportStatusErr: fmt.Errorf("invalid state")}
-	srv := New(mock)
-
-	msg := makeJSONRPCRequest(36, "tools/call", map[string]any{
-		"name":      "report_status",
-		"arguments": map[string]any{"state": "bogus", "summary": "x"},
-	})
-	resp, _ := srv.HandleMessage(context.Background(), msg)
-
-	parsed := parseJSONRPCResponse(t, resp)
-	result := parsed["result"].(map[string]any)
-	if isErr, _ := result["isError"].(bool); !isErr {
-		t.Error("expected isError=true for supervisor error")
-	}
-}
-
-func TestServer_ToolsList_IncludesReportStatus(t *testing.T) {
-	srv := New(&mockSupervisor{})
-	resp, err := srv.HandleMessage(context.Background(), makeJSONRPCRequest(37, "tools/list", nil))
-	if err != nil {
-		t.Fatalf("HandleMessage: %v", err)
-	}
-	parsed := parseJSONRPCResponse(t, resp)
-	result := parsed["result"].(map[string]any)
-	tools := result["tools"].([]any)
-	found := false
-	for _, tool := range tools {
-		m := tool.(map[string]any)
-		if m["name"] == "report_status" {
-			found = true
-			break
-		}
-	}
-	if !found {
-		t.Error("report_status not in tools/list")
-	}
-}
-
-// QUM-550 slice 2: report_status tool input schema must NOT advertise a
-// `detail` property. The field is removed from the surface, and only
-// `state` + `summary` are required (and accepted).
-func TestServer_ToolsList_ReportStatus_NoDetailField(t *testing.T) {
-	srv := New(&mockSupervisor{})
-	resp, err := srv.HandleMessage(context.Background(), makeJSONRPCRequest(137, "tools/list", nil))
-	if err != nil {
-		t.Fatalf("HandleMessage: %v", err)
-	}
-	parsed := parseJSONRPCResponse(t, resp)
-	result := parsed["result"].(map[string]any)
-	tools := result["tools"].([]any)
-
-	var entry map[string]any
-	for _, tool := range tools {
-		m := tool.(map[string]any)
-		if m["name"] == "report_status" {
-			entry = m
-			break
-		}
-	}
-	if entry == nil {
-		t.Fatal("report_status not in tools/list")
-	}
-	schema, ok := entry["inputSchema"].(map[string]any)
-	if !ok {
-		t.Fatalf("inputSchema missing or wrong type: %T", entry["inputSchema"])
-	}
-	props, ok := schema["properties"].(map[string]any)
-	if !ok {
-		t.Fatalf("properties missing or wrong type: %T", schema["properties"])
-	}
-	if _, exists := props["detail"]; exists {
-		t.Errorf("report_status inputSchema.properties.detail must be absent (QUM-550 slice 2)")
-	}
-	if _, exists := props["state"]; !exists {
-		t.Errorf("report_status inputSchema.properties.state missing")
-	}
-	if _, exists := props["summary"]; !exists {
-		t.Errorf("report_status inputSchema.properties.summary missing")
-	}
-
-	required, ok := schema["required"].([]any)
-	if !ok {
-		// Some encoders preserve []string — accept either.
-		if reqS, okS := schema["required"].([]string); okS {
-			required = make([]any, 0, len(reqS))
-			for _, s := range reqS {
-				required = append(required, s)
-			}
-		} else {
-			t.Fatalf("required missing or wrong type: %T", schema["required"])
-		}
-	}
-	if len(required) != 2 {
-		t.Errorf("required len = %d, want 2 (state, summary)", len(required))
-	}
-	for _, r := range required {
-		if r == "detail" {
-			t.Errorf("report_status inputSchema.required must not contain \"detail\"")
-		}
-	}
-}
+// QUM-1186: the report_status MCP surface tests were removed here — the tool
+// call, its caller-resolved agent name, the no-maildir-side-effect guard, the
+// supervisor-error path, catalog presence, and the no-detail-field schema pin.
+// The tool is deleted. That it is now UNKNOWN over MCP is asserted positively
+// in deleted_tools_test.go rather than left to the absence of these tests.
 
 func TestServer_ToolsCall_SprawlPeek_TailClamp(t *testing.T) {
 	mock := &mockSupervisor{}
@@ -1728,64 +1516,13 @@ func TestServer_ToolsCall_SprawlPeek_TailClamp(t *testing.T) {
 
 // --- QUM-387: child MCP identity propagation ---
 
-func TestServer_ToolsCall_ReportStatus_UsesContextIdentity(t *testing.T) {
-	mock := &mockSupervisor{
-		reportStatusResult: &supervisor.ReportStatusResult{ReportedAt: "2026-04-30T10:00:00Z"},
-	}
-	srv := New(mock)
-
-	// Simulate a child agent calling report_status via MCP — context carries child identity.
-	ctx := context.Background()
-	ctx = withTestCallerIdentity(ctx, "finn")
-
-	msg := makeJSONRPCRequest(100, "tools/call", map[string]any{
-		"name": "report_status",
-		"arguments": map[string]any{
-			"state":   "complete",
-			"summary": "task done",
-		},
-	})
-	resp, err := srv.HandleMessage(ctx, msg)
-	if err != nil {
-		t.Fatalf("HandleMessage: %v", err)
-	}
-
-	// The supervisor should receive the child's identity, not empty string.
-	if mock.reportStatusAgent != "finn" {
-		t.Errorf("reportStatusAgent = %q, want %q (child identity from context)", mock.reportStatusAgent, "finn")
-	}
-
-	parsed := parseJSONRPCResponse(t, resp)
-	result := parsed["result"].(map[string]any)
-	if isErr, _ := result["isError"].(bool); isErr {
-		t.Fatalf("unexpected isError: %v", result)
-	}
-}
-
-func TestServer_ToolsCall_ReportStatus_EmptyContextFallsBack(t *testing.T) {
-	mock := &mockSupervisor{
-		reportStatusResult: &supervisor.ReportStatusResult{ReportedAt: "2026-04-30T10:00:00Z"},
-	}
-	srv := New(mock)
-
-	// Root weave session — no identity in context.
-	msg := makeJSONRPCRequest(101, "tools/call", map[string]any{
-		"name": "report_status",
-		"arguments": map[string]any{
-			"state":   "working",
-			"summary": "still going",
-		},
-	})
-	_, err := srv.HandleMessage(context.Background(), msg)
-	if err != nil {
-		t.Fatalf("HandleMessage: %v", err)
-	}
-
-	// Empty agentName means supervisor uses its own callerName (backward compat).
-	if mock.reportStatusAgent != "" {
-		t.Errorf("reportStatusAgent = %q, want empty (supervisor falls back to callerName)", mock.reportStatusAgent)
-	}
-}
+// QUM-1186: the two QUM-387 identity tests that drove report_status were
+// removed here. The MECHANISM they covered — backendpkg.CallerIdentity(ctx)
+// reaching the supervisor so a child acts under its own name — survives and is
+// still covered: the mgr-1 arms above (spawn/merge/retire identity) and the
+// tower arms below (send_message's ancestor gate) both drive it. report_status
+// was the only tool that used the identity as its SUBJECT rather than as an
+// authorization input, and that tool is gone.
 
 // --- QUM-316: messages_list / _read / _archive / _peek ---
 

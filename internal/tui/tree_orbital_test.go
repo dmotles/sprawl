@@ -6,6 +6,8 @@ import (
 	"testing"
 	"time"
 
+	"github.com/dmotles/sprawl/internal/state"
+
 	tea "charm.land/bubbletea/v2"
 	"charm.land/lipgloss/v2"
 )
@@ -246,19 +248,20 @@ func TestTreeNodeAgentState_Classifier(t *testing.T) {
 		want AgentState
 	}{
 		{"weave type → Root", TreeNode{Name: "weave", Type: "weave"}, StateRoot},
-		{"working self-report no longer special-cased (no liveness)", TreeNode{Name: "a", Type: "engineer", LastReportState: "working"}, StateIdle},
-		{"complete state", TreeNode{Name: "a", Type: "engineer", LastReportState: "complete"}, StateDone},
-		{"blocked state", TreeNode{Name: "a", Type: "engineer", LastReportState: "blocked"}, StateBlocked},
-		{"failure state", TreeNode{Name: "a", Type: "engineer", LastReportState: "failure"}, StateFailure},
-		{"empty state → Idle", TreeNode{Name: "a", Type: "engineer", LastReportState: ""}, StateIdle},
-		{"unknown state → Idle", TreeNode{Name: "a", Type: "engineer", LastReportState: "bogus"}, StateIdle},
-		{"fault on idle (empty state) → Failure", TreeNode{Name: "a", Type: "engineer", LastReportState: "", FaultClass: "HangTimeout"}, StateFailure},
-		{"fault overrides working", TreeNode{Name: "a", Type: "engineer", LastReportState: "working", FaultClass: "HangTimeout"}, StateFailure},
-		{"fault overrides complete", TreeNode{Name: "a", Type: "engineer", LastReportState: "complete", FaultClass: "HangTimeout"}, StateFailure},
+		// QUM-1186: the self-reported-state rows (working/complete/blocked/
+		// failure/empty/unknown) are gone with LastReportState. What replaces
+		// them is the OBSERVED-status projection: Status=complete -> Dormant
+		// and Status=idle -> Reclaimed, both asserted below.
+		{"no signals at all → Idle", TreeNode{Name: "a", Type: "engineer"}, StateIdle},
+		{"disk status complete → Dormant", TreeNode{Name: "a", Type: "engineer", Status: state.StatusComplete}, StateDormant},
+		{"disk status idle → Reclaimed", TreeNode{Name: "a", Type: "engineer", Status: state.StatusIdle}, StateReclaimed},
+		{"fault on idle (empty state) → Failure", TreeNode{Name: "a", Type: "engineer", FaultClass: "HangTimeout"}, StateFailure},
+		{"fault overrides working", TreeNode{Name: "a", Type: "engineer", FaultClass: "HangTimeout"}, StateFailure},
+		{"fault overrides complete", TreeNode{Name: "a", Type: "engineer", FaultClass: "HangTimeout"}, StateFailure},
 		{"in_autonomous_turn → Working", TreeNode{Name: "a", Type: "engineer", InTurn: true}, StateWorking},
 		{"recent activity → Working", TreeNode{Name: "a", Type: "engineer", LastActivityAt: now.Add(-1 * time.Second)}, StateWorking},
-		{"recent activity beats stale blocked report (QUM-665 repro)", TreeNode{Name: "a", Type: "engineer", LastReportState: "blocked", LastActivityAt: now.Add(-1 * time.Second)}, StateWorking},
-		{"process_alive=false stays Idle", TreeNode{Name: "a", Type: "engineer", ProcessAlive: ptr(false), InTurn: true, LastReportState: "working"}, StateIdle},
+		{"recent activity beats stale blocked report (QUM-665 repro)", TreeNode{Name: "a", Type: "engineer", LastActivityAt: now.Add(-1 * time.Second)}, StateWorking},
+		{"process_alive=false stays Idle", TreeNode{Name: "a", Type: "engineer", ProcessAlive: ptr(false), InTurn: true}, StateIdle},
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {

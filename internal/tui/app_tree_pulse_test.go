@@ -167,7 +167,7 @@ func TestRenderTreeOrbital_OnlyWorkingPillPulses(t *testing.T) {
 	nodes := []TreeNode{
 		{Name: "weave", Type: "weave"},
 		{Name: "kid", Type: "engineer", InTurn: true},
-		{Name: "done", Type: "engineer", LastReportState: "complete"},
+		{Name: "done", Type: "engineer", Status: state.StatusComplete},
 	}
 	p0 := strings.Join(RenderTreeOrbital(nodes, "", 200, 0), "\n")
 	p2 := strings.Join(RenderTreeOrbital(nodes, "", 200, 2), "\n")
@@ -177,7 +177,9 @@ func TestRenderTreeOrbital_OnlyWorkingPillPulses(t *testing.T) {
 		t.Fatal("expected the row to change across phases while a working pill is present")
 	}
 	// ...but the non-working sibling's exact styled bytes are present in both.
-	doneStyled := treeDoneStyle.Render("done ✓")
+	// QUM-1186: the sibling is now Status=complete (dormant) rather than a
+	// self-reported complete, so it renders with the dormant style/glyph.
+	doneStyled := treeDormantStyle.Render("done ◌")
 	if !strings.Contains(p0, doneStyled) || !strings.Contains(p2, doneStyled) {
 		t.Errorf("non-working 'done' pill must render statically across phases; expected %q in both frames", doneStyled)
 	}

@@ -111,6 +111,11 @@ func stateGlyph(s AgentState) string {
 		return "✗"
 	case StateDormant:
 		return "◌"
+	case StateReclaimed:
+		// QUM-1186: hollow diamond, matching the tree row's glyph. Distinct
+		// from the dormant dotted circle (which means FINISHED) and from the
+		// idle middot (which means "no signal").
+		return "◇"
 	}
 	return "·"
 }
@@ -134,17 +139,23 @@ func stateStyle(s AgentState) lipgloss.Style {
 		return treeFailureStyle
 	case StateDormant:
 		return treeDormantStyle
+	case StateReclaimed:
+		return treeReclaimedStyle
 	}
 	return treeIdleStyle
 }
 
 var (
-	treeRootStyle    = lipgloss.NewStyle().Foreground(lipgloss.Color("#A78BFA")).Bold(true)
-	treeWorkStyle    = lipgloss.NewStyle().Foreground(lipgloss.Color("#FBBF24"))
-	treeIdleStyle    = lipgloss.NewStyle().Foreground(lipgloss.Color("#71717A"))
-	treeDoneStyle    = lipgloss.NewStyle().Foreground(lipgloss.Color("#34D399"))
-	treeBlockedStyle = lipgloss.NewStyle().Foreground(lipgloss.Color("#F59E0B"))
-	treeFailureStyle = lipgloss.NewStyle().Foreground(lipgloss.Color("#EF4444"))
+	treeRootStyle = lipgloss.NewStyle().Foreground(lipgloss.Color("#A78BFA")).Bold(true)
+	treeWorkStyle = lipgloss.NewStyle().Foreground(lipgloss.Color("#FBBF24"))
+	treeIdleStyle = lipgloss.NewStyle().Foreground(lipgloss.Color("#71717A"))
+	treeDoneStyle = lipgloss.NewStyle().Foreground(lipgloss.Color("#34D399"))
+	// QUM-1186: idle-reclaimed. Slate — brighter than the idle grey so the
+	// operator can see the agent is parked-and-revivable, and a different hue
+	// from the dormant tint so "reclaimed" never reads as "finished".
+	treeReclaimedStyle = lipgloss.NewStyle().Foreground(lipgloss.Color("#94A3B8"))
+	treeBlockedStyle   = lipgloss.NewStyle().Foreground(lipgloss.Color("#F59E0B"))
+	treeFailureStyle   = lipgloss.NewStyle().Foreground(lipgloss.Color("#EF4444"))
 	// QUM-788: dormant-revivable agents (Status="complete"). Desaturated
 	// info-blue with Faint(true) so the pill reads as ambient/at-rest but
 	// distinct from StateIdle gray (#71717A) and StateFailure red.

@@ -532,11 +532,6 @@ func (r *Real) Status(_ context.Context) ([]AgentInfo, error) {
 			Status:             a.Status,
 			Branch:             a.Branch,
 			TreePath:           a.TreePath,
-			LastReportType:     a.LastReportType,
-			LastReportState:    a.LastReportState,
-			LastReportAt:       a.LastReportAt,
-			LastReportMessage:  a.LastReportMessage,
-			LastReportDetail:   a.LastReportDetail,
 			Blurb:              a.Blurb,
 			SessionCostUsd:     sessionUsageCostForAgent(r.sprawlRoot, a.Name, a.SessionID),
 			ProcessAlive:       processAliveByName[a.Name],
@@ -1191,38 +1186,14 @@ func (r *Real) RecoverAgents(_ context.Context) (resumed int, failed int, errs [
 	// <name>.json). Safe, reversible — moves them under .sprawl/agents/_orphaned/<ts>/.
 	r.quarantineOrphanAgentDirs()
 
-	// QUM-668 Problem B: settle-pass. Belt-and-suspenders for any agent whose
-	// LAST report was terminal (complete/failure) but whose persisted Status is
-	// still "active" — flip to the terminal liveness on disk so the resume
-	// filter and downstream MCP tools see a consistent picture. Only acts when
-	// Status==active AND no runtime is registered for the agent (the latter is
-	// trivially true at this point but stays defensive).
-	if settleAgents, lerr := state.ListAgents(r.sprawlRoot); lerr == nil {
-		for _, a := range settleAgents {
-			if a == nil || a.Status != state.StatusActive {
-				continue
-			}
-			var terminal string
-			switch a.LastReportState {
-			case agentops.ReportStateComplete:
-				// QUM-787: an agent that reported complete settles to
-				// StatusComplete (revivable). StatusStopped is no longer
-				// a write target.
-				terminal = state.StatusComplete
-			case agentops.ReportStateFailure:
-				terminal = state.StatusFaulted
-			default:
-				continue
-			}
-			if _, registered := r.runtimeRegistry.Get(a.Name); registered {
-				continue
-			}
-			a.Status = terminal
-			if sErr := state.SaveAgent(r.sprawlRoot, a); sErr != nil {
-				slog.Warn("supervisor: RecoverAgents settle-pass save", "agent", a.Name, "err", sErr)
-			}
-		}
-	}
+	// QUM-1186: the QUM-668 settle-pass was removed here. Its entire job was
+	// to reconcile a stale Status=="active" against a terminal
+	// LastReportState — an agent whose last SELF-REPORT said complete/failure
+	// but whose Status had not caught up. With the outcome axis deleted there
+	// is no second axis to disagree with Status, so there is nothing to
+	// settle. A crash survivor left at Status=="active" still auto-resumes
+	// via the Running arm of the accept-set below, which is the behaviour the
+	// settle-pass was careful NOT to disturb.
 
 	agents, err := state.ListAgents(r.sprawlRoot)
 	if err != nil {
@@ -1256,13 +1227,11 @@ func (r *Real) RecoverAgents(_ context.Context) (resumed int, failed int, errs [
 		if lv == liveness.Paused {
 			continue
 		}
-		// Terminal-outcome exclusion on the OUTCOME axis: a completed or
-		// failed agent is not auto-resumed. This replaces the old implicit
-		// done-exclusion (Status=="done" no longer occurs after the axis
-		// split). QUM-668: failure is also terminal — extend exclusion.
-		if a.LastReportState == agentops.ReportStateComplete || a.LastReportState == agentops.ReportStateFailure {
-			continue
-		}
+		// QUM-1186: the terminal-OUTCOME exclusion was removed here. It kept a
+		// self-reported complete/failure agent from auto-resuming. Agents no
+		// longer assert an outcome, so the exclusion now lives entirely on the
+		// Status axis: StatusComplete and StatusFaulted both fall outside the
+		// {Suspended, Running} accept-set above and are skipped there.
 		if a.Worktree == "" {
 			continue
 		}
@@ -2058,15 +2027,8 @@ func (r *Real) Peek(ctx context.Context, agentName string, tail int) (*PeekResul
 	}
 
 	pr := &PeekResult{
-		Status: st.Status,
-		Blurb:  st.Blurb,
-		LastReport: LastReport{
-			Type:    st.LastReportType,
-			Message: st.LastReportMessage,
-			At:      st.LastReportAt,
-			State:   st.LastReportState,
-			Detail:  st.LastReportDetail,
-		},
+		Status:             st.Status,
+		Blurb:              st.Blurb,
 		Activity:           activity,
 		InTurn:             inAutonomousTurn,
 		Liveness:           livenessTok,
@@ -2080,148 +2042,6 @@ func (r *Real) Peek(ctx context.Context, agentName string, tail int) (*PeekResul
 		pr.SharedWorktreeWith = st.Parent
 	}
 	return pr, nil
-}
-
-// ReportStatus delegates to agentops.Report, which is the single persistence
-// path used by the `report_status` MCP tool. See
-// docs/archive/designs/messaging-overhaul.md §4.2.3 / §4.7.
-//
-// An empty agentName defaults to r.callerName — the MCP tool invokes this
-// method with an empty name so child agents can report without passing their
-// own identity as a parameter.
-func (r *Real) ReportStatus(ctx context.Context, agentName, reportState, summary string) (*ReportStatusResult, error) {
-	_ = ctx // QUM-727: teardown uses a fresh background ctx since the goroutine outlives this request.
-	if agentName == "" {
-		agentName = r.callerName
-	}
-	if agentName == "" {
-		return nil, fmt.Errorf("reporter identity not set (callerName is empty)")
-	}
-
-	// Serialize concurrent reporters — state.SaveAgent is read-modify-write.
-	r.reportMu.Lock()
-	defer r.reportMu.Unlock()
-
-	// Load reporter state to resolve parent. A load failure (e.g. orphan
-	// reporter) is non-fatal — agentops.Report below will surface a clear
-	// error if the agent truly doesn't exist.
-	parent := ""
-	if agentState, err := state.LoadAgent(r.sprawlRoot, agentName); err == nil && agentState != nil {
-		parent = agentState.Parent
-	}
-
-	// State-only persistence (QUM-559): no maildir, no harness-queue enqueue.
-	res, err := agentops.Report(&agentops.ReportDeps{}, r.sprawlRoot, agentName, reportState, summary)
-	if err != nil {
-		return nil, err
-	}
-
-	// QUM-727: terminal-outcome reports (complete/failure) must release the
-	// live runtime — subprocess + EventBus subscribers — to prevent stopped
-	// agents from pinning ~280 MB RSS each and inflating goroutine fan-out.
-	// Run runtime.Stop in a goroutine so this method (and the MCP reply path)
-	// returns immediately: the JSON result frame must flush to claude's stdin
-	// before the subprocess transport closes (design §7). Use a fresh
-	// background ctx because the original MCP-request ctx is cancelled when
-	// the request returns — the goroutine outlives the request.
-	// QUM-899: regenerate the blurb once when an agent transitions to
-	// complete — the highest-value moment for the reuse use-case, since the
-	// resting blurb should describe finished expertise. Fired in the
-	// background so the report reply path is not blocked.
-	if reportState == agentops.ReportStateComplete && r.dispatchBlurb != nil {
-		r.dispatchBlurb(agentName, blurb.TriggerCompletion)
-	}
-
-	teardown := reportState == agentops.ReportStateComplete || reportState == agentops.ReportStateFailure
-	if teardown {
-		if runtime, ok := r.startedRuntime(agentName); ok {
-			go func(rt *AgentRuntime) {
-				// QUM-866: defer the actual teardown to the genuine turn-end
-				// (or the runtimeStopTimeout runaway guard) so a follow-on
-				// send_message / trailing text the agent emits AFTER this
-				// terminal report — in the SAME turn — is not silently cut off
-				// by drainInflight. When the agent is already idle (the report
-				// was its last action), StopAfterTurn tears down immediately.
-				// The wait is bounded by runtimeStopTimeout; StopAfterTurn gives
-				// the final Stop its own fresh budget, so background ctx here
-				// carries no deadline of its own.
-				if err := rt.StopAfterTurn(context.Background(), runtimeStopTimeout, stopReasonNone); err != nil {
-					slog.Default().Warn("supervisor: ReportStatus runtime.StopAfterTurn failed",
-						slog.String("agent", agentName),
-						slog.String("state", reportState),
-						slog.Any("err", err))
-				}
-				// QUM-727: for the failure path, stopWithFunc clobbers the
-				// in-memory snapshot.Status to "stopped" (it cannot
-				// distinguish a polite Stop from a Stop driven by a
-				// failure-report). The durable on-disk Status is "faulted"
-				// (agentops.Report wrote it, stopWithFunc's preservation
-				// switch kept it). Re-sync the snapshot from disk so the
-				// projection sees DiskStatus=Faulted and QUM-606 Recover
-				// accepts the agent as a legal source. The complete path
-				// keeps Liveness=Stopped (post-stopWithFunc) so callers see
-				// a deliberate-stop projection.
-				if reportState == agentops.ReportStateFailure {
-					r.syncRuntimeFromState(agentName)
-				}
-			}(runtime)
-		}
-	} else {
-		// Non-terminal report (working/blocked): the live handle stays
-		// attached; just mirror persisted state into the snapshot. For
-		// terminal reports we skip this sync to avoid racing the async
-		// Stop above — Stop owns the final snapshot mutation.
-		r.syncRuntimeFromState(agentName)
-	}
-
-	// QUM-614: write the status_change envelope into the parent's maildir
-	// (via messages.SendStatusChange — which deliberately bypasses the
-	// process-level defaultNotifier so this does NOT raise the inbox banner
-	// / unread badge / drain-row prompt-inject) and cooperatively wake the
-	// parent runtime. Status updates are never interrupt-class — children
-	// that genuinely need to preempt should use send_message(interrupt=true).
-	if parent != "" {
-		// QUM-725: if the parent is dead, route the status_change envelope up
-		// to the first live ancestor with the summary wrapped so the live
-		// recipient can tell the routed-up notification apart from a normal
-		// status_change.
-		originalParent := parent
-		effectiveSummary := summary
-		liveAncestor, deadChain, walkErr := WalkDeadAncestors(parent, r.livenessOf, r.parentOf)
-		if walkErr != nil {
-			// ReportStatus is best-effort (we already warn-and-continue on
-			// SendStatusChange errors below); log walkErr at warn and fall
-			// through to direct delivery against the original parent rather
-			// than failing the report.
-			slog.Default().Warn(
-				"supervisor: ReportStatus dead-parent walk failed",
-				slog.String("from", agentName),
-				slog.String("parent", parent),
-				slog.Any("err", walkErr),
-			)
-		}
-		if walkErr == nil && deadChain != nil {
-			parent = liveAncestor
-			effectiveSummary = inboxprompt.WrapForDeadTarget(agentName, originalParent, deadChain, summary)
-		}
-		payload := messages.StatusChangePayload{
-			State:     reportState,
-			Summary:   effectiveSummary,
-			Timestamp: res.ReportedAt,
-		}
-		if _, sendErr := messages.SendStatusChange(r.sprawlRoot, agentName, parent, payload); sendErr != nil {
-			slog.Default().Warn(
-				"supervisor: SendStatusChange failed",
-				slog.String("from", agentName),
-				slog.String("to", parent),
-				slog.Any("err", sendErr),
-			)
-		}
-		if parentRuntime, ok := r.startedRuntime(parent); ok {
-			_ = parentRuntime.WakeForDelivery()
-		}
-	}
-	return &ReportStatusResult{ReportedAt: res.ReportedAt}, nil
 }
 
 func (r *Real) syncRuntimeFromState(agentName string) {
@@ -2278,21 +2098,16 @@ func (r *Real) reconcileStateFromRegistry(agentName string) error {
 	}
 	snap := runtime.Snapshot()
 	synth := &state.AgentState{
-		Name:              snap.Name,
-		Type:              snap.Type,
-		Family:            snap.Family,
-		Parent:            snap.Parent,
-		Branch:            snap.Branch,
-		Worktree:          snap.Worktree,
-		Status:            snap.Status,
-		SessionID:         snap.SessionID,
-		TreePath:          snap.TreePath,
-		CreatedAt:         snap.CreatedAt,
-		LastReportType:    snap.LastReport.Type,
-		LastReportMessage: snap.LastReport.Message,
-		LastReportAt:      snap.LastReport.At,
-		LastReportState:   snap.LastReport.State,
-		LastReportDetail:  snap.LastReport.Detail,
+		Name:      snap.Name,
+		Type:      snap.Type,
+		Family:    snap.Family,
+		Parent:    snap.Parent,
+		Branch:    snap.Branch,
+		Worktree:  snap.Worktree,
+		Status:    snap.Status,
+		SessionID: snap.SessionID,
+		TreePath:  snap.TreePath,
+		CreatedAt: snap.CreatedAt,
 	}
 	if synth.Status == "" {
 		synth.Status = "active"

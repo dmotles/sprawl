@@ -120,7 +120,6 @@ import (
 
 	"github.com/dmotles/sprawl/internal/agentloop"
 	"github.com/dmotles/sprawl/internal/backend"
-	"github.com/dmotles/sprawl/internal/messages"
 )
 
 // qum1072TestTimeout is how long a bounded drain is given before the test calls it
@@ -337,14 +336,19 @@ func TestQUM1072_ChildDrain_BothWritesBounded_WorstCaseIsPerWrite(t *testing.T) 
 	}
 }
 
-// TestQUM1072_ChildDrain_TimedOutWrite_WarnsWithBodiesAndDeadline covers AC 4.
+// TestQUM1072_ChildDrain_TimedOutWrite_WarnsWithEntryIDsAndDeadline covers AC 4.
 //
-// The drain is DESTRUCTIVE, so a silent timeout is silent data loss: the
-// status_change envelope is already off disk by the time the write is attempted.
-// This issue does not implement recovery (QUM-1034 owns that), so the WARN —
-// carrying the verbatim bodies, matching weave's shape — is the only record that
-// the lines ever existed.
-func TestQUM1072_ChildDrain_TimedOutWrite_WarnsWithBodiesAndDeadline(t *testing.T) {
+// QUM-1186: this was ..._WarnsWithBodiesAndDeadline. The drain is no longer
+// destructive — the status_change envelope that used to be off disk before the
+// write was attempted is gone — so the WARN no longer carries verbatim line
+// bodies and that assertion went with it.
+//
+// What SURVIVES, and is still asserted: a timed-out write emits EXACTLY ONE
+// WARN, naming the recipient, the deadline that was exceeded, and the batch's
+// entry IDs. Those entries stay in pending/ for the next poke, so the WARN is
+// a lateness record rather than a loss record — but a timeout that logged
+// nothing at all would still be invisible, which is what this pins.
+func TestQUM1072_ChildDrain_TimedOutWrite_WarnsWithEntryIDsAndDeadline(t *testing.T) {
 	const deadline = 150 * time.Millisecond
 	withShortChildDrainTimeout(t, deadline)
 
@@ -354,11 +358,6 @@ func TestQUM1072_ChildDrain_TimedOutWrite_WarnsWithBodiesAndDeadline(t *testing.
 	defer func() { _ = uh.Stop(context.Background()) }()
 
 	seedAsyncEntry(t, sprawlRoot, "alice", "id-qum1072-warn", "queued body")
-	if _, err := messages.SendStatusChange(sprawlRoot, "child-of-alice", "alice", messages.StatusChangePayload{
-		State: "complete", Summary: "QUM1072-LOST-LINE",
-	}); err != nil {
-		t.Fatalf("SendStatusChange: %v", err)
-	}
 	mock.engageWriteWedge(t)
 
 	assertBounded(t, drainElapsed(t, uh), deadline, "async drain")
@@ -369,18 +368,17 @@ func TestQUM1072_ChildDrain_TimedOutWrite_WarnsWithBodiesAndDeadline(t *testing.
 	// mention the agent name and the entry ID.
 	recs := logs.recordsWithMessage("unified-runtime: drainPendingToStdin write failed")
 	if len(recs) != 1 {
-		t.Fatalf("WARN records for a timed-out write = %d, want exactly 1. A destructive drain that times out silently is QUM-1034's loss bug with a deadline attached.\nall logs:\n%s", len(recs), logs.String())
+		t.Fatalf("WARN records for a timed-out write = %d, want exactly 1. A write that times out with no log at all is invisible to the operator.\nall logs:\n%s", len(recs), logs.String())
 	}
 	warn := recs[0]
 
 	for _, want := range []string{
-		"QUM1072-LOST-LINE", // the verbatim body — the only surviving copy
-		"agent=alice",       // recipient (key=value, not a bare substring)
-		"id-qum1072-warn",   // the batch's entry IDs
-		deadline.String(),   // the deadline that was exceeded
+		"agent=alice",     // recipient (key=value, not a bare substring)
+		"id-qum1072-warn", // the batch's entry IDs
+		deadline.String(), // the deadline that was exceeded
 	} {
 		if !strings.Contains(warn, want) {
-			t.Fatalf("WARN record missing %q — AC 4 requires the recipient, the deadline, the batch entry IDs, and (because the drain is destructive) the lost line bodies.\nrecord: %s", want, warn)
+			t.Fatalf("WARN record missing %q — AC 4 requires the recipient, the deadline and the batch entry IDs.\nrecord: %s", want, warn)
 		}
 	}
 }

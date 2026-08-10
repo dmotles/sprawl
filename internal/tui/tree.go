@@ -27,7 +27,7 @@ const rowPrefixWidth = 2
 
 // clipTreeRow coerces an arbitrary row label into a single-line, width-bounded
 // string. Embedded newlines/tabs are replaced with spaces so a multi-line
-// LastReportMessage cannot push the tree onto extra visual rows, and the
+// a long blurb cannot push the tree onto extra visual rows, and the
 // result is then truncated (with an ellipsis) at width display cells. When
 // width <= 0 the content is returned with its newlines stripped but
 // otherwise unbounded — the caller hasn't been sized yet.
@@ -41,14 +41,17 @@ func clipTreeRow(line string, width int) string {
 
 // TreeNode represents a single node in the agent tree.
 type TreeNode struct {
-	Name              string
-	Type              string
-	Family            string
-	Status            string
-	Depth             int
-	Unread            int
-	LastReportState   string // working, blocked, complete, failure, ""
-	LastReportMessage string
+	Name   string
+	Type   string
+	Family string
+	Status string
+	Depth  int
+	Unread int
+	// Blurb is the short auto-generated capability summary (QUM-899),
+	// sourced from supervisor.AgentInfo.Blurb. QUM-1186: it replaced
+	// LastReportMessage as the row's trailing text when self-reported status
+	// was deleted — see tree_row_blurb_test.go for why.
+	Blurb string
 	// SessionCostUsd is the CURRENT session's cost, not lifetime spend
 	// (QUM-1093); sourced from supervisor.AgentInfo.SessionCostUsd.
 	SessionCostUsd float64
@@ -76,7 +79,7 @@ type TreeNode struct {
 
 // DeriveIconState returns the tree-row icon state for the given node,
 // derived primarily from liveness signals (InTurn, recent
-// activity) and secondarily from the agent's self-reported LastReportState.
+// activity) — never from anything the agent asserts about itself.
 // Returns one of "working", "blocked", "complete", "failure", "idle",
 // "paused", "died", "dormant", "reclaimed".
 // Pure (no time.Now); the caller supplies `now` for testability. (QUM-665)
@@ -119,14 +122,11 @@ func DeriveIconState(n TreeNode, now time.Time) string {
 	if !n.LastActivityAt.IsZero() && now.Sub(n.LastActivityAt) < RecentActivityWindow {
 		return "working"
 	}
-	switch n.LastReportState {
-	case "failure":
-		return "failure"
-	case "complete":
-		return "complete"
-	case "blocked":
-		return "blocked"
-	}
+	// QUM-1186: a fallback switch on the agent's self-reported LastReportState
+	// used to sit here. Agents no longer assert their own state, so every
+	// answer above this point is an OBSERVATION — a liveness projection, a
+	// process probe, or an activity timestamp — and the default is simply
+	// "no signal".
 	return "idle"
 }
 
@@ -256,8 +256,8 @@ func (m TreeModel) View() string {
 			costTag = fmt.Sprintf(" [$%.4f]", node.SessionCostUsd)
 		}
 		var line string
-		if node.LastReportMessage != "" {
-			line = fmt.Sprintf("%s%s %s %s%s — %s", indent, dot, icon, node.Name, costTag, node.LastReportMessage)
+		if node.Blurb != "" {
+			line = fmt.Sprintf("%s%s %s %s%s — %s", indent, dot, icon, node.Name, costTag, node.Blurb)
 		} else {
 			// R4 (QUM-623): unknown/nil liveness renders sanely. Empty
 			// status would otherwise show a bare "()"; substitute the
@@ -276,7 +276,9 @@ func (m TreeModel) View() string {
 		}
 
 		// QUM-324: clip the row to the tree's inner width so a long or
-		// multi-line LastReportMessage cannot bleed past the panel border.
+		// multi-line trailing text cannot bleed past the panel border.
+		// QUM-1186 made this LOAD-BEARING rather than defensive: a report
+		// message was one line by construction, a blurb is 2-3 sentences.
 		line = clipTreeRow(line, m.width-rowPrefixWidth)
 
 		if i == m.selected {
@@ -374,20 +376,19 @@ func buildTreeNodes(agents []supervisor.AgentInfo, unread map[string]int) []Tree
 	dfs = func(a supervisor.AgentInfo, depth int) bool {
 		idx := len(result)
 		result = append(result, TreeNode{
-			Name:              a.Name,
-			Type:              a.Type,
-			Family:            a.Family,
-			Status:            a.Status,
-			Depth:             depth,
-			Unread:            unread[a.Name],
-			LastReportState:   a.LastReportState,
-			LastReportMessage: a.LastReportMessage,
-			SessionCostUsd:    a.SessionCostUsd,
-			ProcessAlive:      a.ProcessAlive,
-			InTurn:            a.InTurn,
-			SelfInTurn:        a.InTurn,
-			LastActivityAt:    a.LastActivityAt,
-			Liveness:          a.Liveness,
+			Name:           a.Name,
+			Type:           a.Type,
+			Family:         a.Family,
+			Status:         a.Status,
+			Depth:          depth,
+			Unread:         unread[a.Name],
+			Blurb:          a.Blurb,
+			SessionCostUsd: a.SessionCostUsd,
+			ProcessAlive:   a.ProcessAlive,
+			InTurn:         a.InTurn,
+			SelfInTurn:     a.InTurn,
+			LastActivityAt: a.LastActivityAt,
+			Liveness:       a.Liveness,
 		})
 		subtreeInTurn := a.InTurn
 		for _, child := range children[a.Name] {

@@ -14,7 +14,6 @@ import (
 
 	"github.com/dmotles/sprawl/internal/agentloop"
 	backendpkg "github.com/dmotles/sprawl/internal/backend"
-	"github.com/dmotles/sprawl/internal/messages"
 	"github.com/dmotles/sprawl/internal/protocol"
 	runtimepkg "github.com/dmotles/sprawl/internal/runtime"
 )
@@ -30,7 +29,7 @@ import (
 // retired — peekAndDrainCmd is deleted, because it was (a) a 2s poll, which
 // cannot meet "the instant it arrives", (b) idle-gated, which is the QUM-925
 // defect, and (c) a SECOND drainer racing this one over the destructive
-// messages.DrainStatusChange. The pin is being deliberately inverted, not lost.
+// the status_change drain. The pin is being deliberately inverted, not lost.
 
 // buildWeaveHandleForTest builds a started root UnifiedRuntime + WeaveRuntimeHandle
 // over a fake backend session rooted at a fresh temp SPRAWL_ROOT.
@@ -104,18 +103,16 @@ func markRunning(t *testing.T, mock *fakeBackendSession) {
 
 // TestWeaveRuntimeHandle_WakeForDelivery_WritesPendingToStdin_AsSystemNext is the
 // QUM-925 core assertion for an IDLE weave: one poke, one priority-`next` stdin
-// write carrying both the status-change line and the queued maildir body, status
-// line first (the QUM-559 prepend order).
+// write carrying the queued maildir body.
+//
+// QUM-1186: this also carried a status_change line and pinned the QUM-559
+// prepend order (status line before queued mail). That channel is deleted, so
+// both the seed and the ordering assertion went with it. The one-poke /
+// one-frame / priority-next core is untouched.
 func TestWeaveRuntimeHandle_WakeForDelivery_WritesPendingToStdin_AsSystemNext(t *testing.T) {
 	h, rt, mock, sprawlRoot := buildWeaveHandleForTest(t)
 
 	seedAsyncEntry(t, sprawlRoot, "weave", "id-async-1", "all green")
-	if _, err := messages.SendStatusChange(sprawlRoot, "child", "weave", messages.StatusChangePayload{
-		State:   "complete",
-		Summary: "did the thing",
-	}); err != nil {
-		t.Fatalf("SendStatusChange: %v", err)
-	}
 
 	if rt.State().InTurn {
 		t.Fatal("setup: weave must be idle for this case")
@@ -138,21 +135,10 @@ func TestWeaveRuntimeHandle_WakeForDelivery_WritesPendingToStdin_AsSystemNext(t 
 		t.Error("write UUID is empty — the pending zone cannot track→settle the frame without it")
 	}
 	body := w.Message.Content
-	statusIdx := strings.Index(body, `type="status_change"`)
 	// The queue-flush prompt renders each entry as a messages_read pointer keyed on
 	// its short ID — the body is deliberately NOT inlined, so assert on the ID.
-	asyncIdx := strings.Index(body, "id-async-1")
-	if statusIdx < 0 {
-		t.Errorf("write body has no status_change notification:\n%s", body)
-	}
-	if !strings.Contains(body, "did the thing") {
-		t.Errorf("write body is missing the status_change summary:\n%s", body)
-	}
-	if asyncIdx < 0 {
+	if !strings.Contains(body, "id-async-1") {
 		t.Errorf("write body is missing the queued maildir entry pointer:\n%s", body)
-	}
-	if statusIdx >= 0 && asyncIdx >= 0 && statusIdx > asyncIdx {
-		t.Errorf("status_change line must be PREPENDED before queued maildir messages (QUM-559):\n%s", body)
 	}
 }
 
@@ -194,57 +180,13 @@ func TestWeaveRuntimeHandle_WakeForDelivery_MixedClass_OneNextFrame_InterruptFir
 	}
 }
 
-// TestWeaveRuntimeHandle_WakeForDelivery_StatusChangeWhileInTurn_NotLost is the
-// most important test in this slice: it pins a DATA-LOSS defect the QUM-925 issue
-// text explicitly denies ("they weren't dropped — they were queued and delivered
-// at weave's next turn boundary").
-//
-// They can be dropped. inboxprompt.DrainStatusChangeLines is DESTRUCTIVE (it
-// removes the envelope from the maildir). The old pipeline drained destructively
-// in peekAndDrainCmd (app.go:3456) and then the InboxDrainMsg reducer (app.go:1166)
-// discarded the resulting frame outright when `turnState != TurnIdle`. A status
-// ping caught by that turn-start race was gone for good — not late, LOST.
-//
-// Contract: a status_change arriving while weave is mid-turn reaches stdin.
-func TestWeaveRuntimeHandle_WakeForDelivery_StatusChangeWhileInTurn_NotLost(t *testing.T) {
-	h, rt, mock, sprawlRoot := buildWeaveHandleForTest(t)
-
-	// Weave is genuinely busy. Asserting this BEFORE the drain is what makes the
-	// test discriminate: without it, "wrote while busy" and "wrote while idle"
-	// are the same observation and the idle gate would go unmeasured.
-	markRunning(t, mock)
-	if !rt.State().InTurn {
-		t.Fatal("setup: runtime must be in-turn before the drain for this test to mean anything")
-	}
-
-	if _, err := messages.SendStatusChange(sprawlRoot, "child", "weave", messages.StatusChangePayload{
-		State:   "working",
-		Summary: "mid-turn ping",
-	}); err != nil {
-		t.Fatalf("SendStatusChange: %v", err)
-	}
-	// Both channels while busy: the destructive status_change drain AND a queued
-	// maildir entry. The old pipeline dropped the whole frame, losing both.
-	seedAsyncEntry(t, sprawlRoot, "weave", "id-async-busy", "mid-turn maildir body")
-
-	if err := h.WakeForDelivery(); err != nil {
-		t.Fatalf("WakeForDelivery: %v", err)
-	}
-
-	writes := mock.settledWrites(1, time.Second, 100*time.Millisecond)
-	if len(writes) != 1 {
-		t.Fatalf("stdin writes = %d, want 1 — a status ping arriving mid-turn was destructively drained and then DROPPED (data loss, not deferral)", len(writes))
-	}
-	if got := writes[0].Priority; got != "next" {
-		t.Errorf("write Priority = %q, want %q (a system frame never preempts the in-flight turn)", got, "next")
-	}
-	if !strings.Contains(writes[0].Message.Content, "mid-turn ping") {
-		t.Errorf("write body is missing the mid-turn status summary:\n%s", writes[0].Message.Content)
-	}
-	if !strings.Contains(writes[0].Message.Content, "id-async-busy") {
-		t.Errorf("write body is missing the mid-turn maildir entry:\n%s", writes[0].Message.Content)
-	}
-}
+// QUM-1186: TestWeaveRuntimeHandle_WakeForDelivery_StatusChangeWhileInTurn_
+// NotLost was removed here. Its subject was that a status_change arriving
+// while weave is MID-TURN still reaches stdin — load-bearing precisely because
+// DrainStatusChangeLines was destructive, so a dropped line was gone for good.
+// The channel and the destructive read are both deleted; maildir entries stay
+// in pending/ and are re-drained on the next poke, which the redraw and
+// redeliver tests below cover.
 
 // TestWeaveRuntimeHandle_WakeForDelivery_TracksEntryIDsAsSystemKind constrains the
 // fix to the RIGHT primitive. The write must be kind:system with its maildir entry
@@ -513,37 +455,25 @@ func TestWeaveRuntimeHandle_WakeForDelivery_RedrainBeforeAck_NoDuplicateWrite(t 
 
 // TestWeaveRuntimeHandle_ConcurrentWakeForDelivery_NoDuplicateWrite: two children
 // reporting at the same instant produce two concurrent WakeForDelivery calls on
-// different MCP handler goroutines. Both the agentloop maildir peek and
-// messages.DrainStatusChange (an UNLOCKED read-dir/read-file/remove sequence) can
-// then read the same envelope twice — the notification would appear twice in
-// weave's context and twice in the transcript. Serialised by drainMu.
+// different MCP handler goroutines. The agentloop maildir peek can then read
+// the same envelope twice — the notification would appear twice in weave's
+// context and twice in the transcript. Serialised by drainMu.
 //
-// Mutation control (recorded, and re-verified after the QUM-1064 reseed below):
-// deleting the drainMu lock/unlock makes this go red on the FIRST iteration.
-// Under the original single-sender seeding that printed every summary 4x; re-run
-// under the current per-sender seeding at `-race -count=5` it prints ping-* 2-4x
-// and id-async-* 4x. So drainMu is demonstrably load-bearing, not defensive, and
-// the reseed did not cost the signal. The deterministic
-// (non-timing-dependent) sibling guard is
+// QUM-1186: this used to drive BOTH channels, the destructive status_change
+// drain and the peek-then-ack agentloop maildir. Only the maildir survives —
+// and it was always the channel that could duplicate, so the test keeps its
+// teeth. The mutation control below was re-run after this change.
+//
+// Mutation control (recorded, and re-verified after the QUM-1186 reseed):
+// deleting the drainMu lock/unlock makes this go red on the FIRST iteration,
+// printing id-async-* more than once. So drainMu is demonstrably load-bearing,
+// not defensive. The deterministic (non-timing-dependent) sibling guard is
 // TestWeaveRuntimeHandle_WakeForDelivery_RedrainBeforeAck_NoDuplicateWrite above.
 func TestWeaveRuntimeHandle_ConcurrentWakeForDelivery_NoDuplicateWrite(t *testing.T) {
 	h, _, mock, sprawlRoot := buildWeaveHandleForTest(t)
 
 	const n = 8
 	for i := 0; i < n; i++ {
-		// Both channels: the destructive status_change drain AND the
-		// peek-then-ack agentloop maildir, which is the one that can duplicate.
-		// QUM-1064 forces the sender to vary: DrainStatusChangeLines coalesces
-		// last-wins per reporting agent, so 8 envelopes from one "child" now
-		// legitimately render a single line and 7 of the 8 exactly-once checks
-		// below fail loudly on a correct implementation. Distinct senders keep
-		// all 8 alive, which is what makes a double-read observable.
-		if _, err := messages.SendStatusChange(sprawlRoot, fmt.Sprintf("child-%d", i), "weave", messages.StatusChangePayload{
-			State:   "working",
-			Summary: fmt.Sprintf("ping-%d", i),
-		}); err != nil {
-			t.Fatalf("SendStatusChange: %v", err)
-		}
 		seedAsyncEntry(t, sprawlRoot, "weave", fmt.Sprintf("id-async-%d", i), fmt.Sprintf("queued-%d", i))
 	}
 
@@ -568,9 +498,6 @@ func TestWeaveRuntimeHandle_ConcurrentWakeForDelivery_NoDuplicateWrite(t *testin
 	}
 	body := all.String()
 	for i := 0; i < n; i++ {
-		if got := strings.Count(body, fmt.Sprintf("ping-%d", i)); got != 1 {
-			t.Errorf("status summary ping-%d appears %d times across stdin writes, want exactly 1", i, got)
-		}
 		if got := strings.Count(body, fmt.Sprintf("id-async-%d", i)); got != 1 {
 			t.Errorf("maildir entry id-async-%d appears %d times across stdin writes, want exactly 1", i, got)
 		}
@@ -955,7 +882,7 @@ func TestWeaveRuntimeHandle_ConsumedStateStaysSuppressed(t *testing.T) {
 
 // TestWeaveRuntimeHandle_InboxRedrain_DeliversUnpokedEntry closes the last
 // delivery hole left by deleting the TUI's 2s poll. The event-driven poke path
-// covers everything that goes through Real.SendMessage / Real.ReportStatus, but
+// covers everything that goes through Real.SendMessage, but
 // NOT an entry that appears in pending/ with no in-process producer:
 //
 //   - an out-of-process writer putting an envelope in the maildir directly (the

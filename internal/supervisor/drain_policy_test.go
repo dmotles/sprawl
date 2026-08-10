@@ -44,8 +44,9 @@ func qum1062Entry(id string, class inboxprompt.Class) agentloop.Entry {
 	}
 }
 
-func qum1062Snapshot(statusLines []string, entries ...agentloop.Entry) inboxSnapshot {
-	return inboxSnapshot{pending: entries, statusLines: statusLines}
+// QUM-1186: the statusLines parameter is gone with the status_change class.
+func qum1062Snapshot(entries ...agentloop.Entry) inboxSnapshot {
+	return inboxSnapshot{pending: entries}
 }
 
 // frameIndexCarrying returns the index of the frame whose body contains sub, or
@@ -71,7 +72,7 @@ func frameIndexCarrying(frames []systemFrame, sub string) int {
 // interruptPriority field — so this test pins a deliberate difference, not an
 // accident awaiting cleanup.
 func TestQUM1062_Policy_InterruptPriority_And_Coalescing(t *testing.T) {
-	snap := qum1062Snapshot(nil,
+	snap := qum1062Snapshot(
 		qum1062Entry("id-int", inboxprompt.ClassInterrupt),
 		qum1062Entry("id-async", inboxprompt.ClassAsync),
 	)
@@ -129,7 +130,7 @@ func TestQUM1062_Policy_InterruptPriority_And_Coalescing(t *testing.T) {
 // Weave has NO ack-on-write, and nothing before QUM-1062 tested that: turning it
 // on for weave would have gone unnoticed. That is the gap this row closes.
 func TestQUM1062_Policy_AckInterruptOnWrite(t *testing.T) {
-	snap := qum1062Snapshot(nil, qum1062Entry("id-int", inboxprompt.ClassInterrupt))
+	snap := qum1062Snapshot(qum1062Entry("id-int", inboxprompt.ClassInterrupt))
 
 	child := buildInjection(snap, childDrainPolicy())
 	if len(child) != 1 || !child[0].ackOnWrite {
@@ -190,59 +191,12 @@ func TestQUM1062_Policy_CoalescingPreconditions(t *testing.T) {
 }
 
 // --- ROW 6: where the destructively-drained status lines ride ------------------
-
-// TestQUM1062_Policy_StatusLinesRideTheAsyncFrame pins BOTH halves of the
-// status-line placement, which are separate observables:
-//
-//   - WHICH frame carries them (the child's async frame, never its interrupt
-//     frame — a live WARN test depends on the interrupt frame having none), and
-//   - WHERE they sit relative to the other bodies, which differs by path: weave
-//     puts status ahead of interrupt AND async in one frame; the child necessarily
-//     delivers its interrupt frame first and status lines only in frame 2.
-//
-// The second half is easy to miss because both paths "prepend status lines" — but
-// prepending to different frames produces a different wire order.
-func TestQUM1062_Policy_StatusLinesRideTheAsyncFrame(t *testing.T) {
-	const line = "QUM1062-STATUS-LINE\n"
-	snap := qum1062Snapshot([]string{line},
-		qum1062Entry("id-int", inboxprompt.ClassInterrupt),
-		qum1062Entry("id-async", inboxprompt.ClassAsync),
-	)
-
-	child := buildInjection(snap, childDrainPolicy())
-	if len(child) != 2 {
-		t.Fatalf("child frames = %d, want 2", len(child))
-	}
-	if strings.Contains(child[0].body, "QUM1062-STATUS-LINE") {
-		t.Error("status line rode the child's INTERRUPT frame; it must ride the async frame only — the interrupt frame's timeout WARN asserts it carries no lost lines")
-	}
-	if !strings.HasPrefix(child[1].body, line) {
-		t.Errorf("status line must be PREPENDED to the child's async frame so it surfaces before queued mail:\n%s", child[1].body)
-	}
-	// The destructive lines must be attached to the frame that carries them, so a
-	// failed write can name them in the WARN. This is the only surviving copy —
-	// DrainStatusChangeLines already removed the envelope from disk.
-	if len(child[0].destructiveLines) != 0 {
-		t.Errorf("interrupt frame destructiveLines = %v, want empty", child[0].destructiveLines)
-	}
-	if len(child[1].destructiveLines) != 1 {
-		t.Errorf("async frame destructiveLines = %v, want the one drained line — a failed write must be able to log the bodies", child[1].destructiveLines)
-	}
-
-	weave := buildInjection(snap, weaveDrainPolicy(nil))
-	if len(weave) != 1 {
-		t.Fatalf("weave frames = %d, want 1", len(weave))
-	}
-	body := weave[0].body
-	if !strings.HasPrefix(body, line) {
-		t.Errorf("weave must prepend status lines ahead of BOTH classes:\n%s", body)
-	}
-	if len(weave[0].destructiveLines) != 1 {
-		t.Errorf("weave frame destructiveLines = %v, want the drained line", weave[0].destructiveLines)
-	}
-}
-
-// --- entry-ID routing ---------------------------------------------------------
+// QUM-1186: TestQUM1062_Policy_StatusLinesRideTheAsyncFrame was removed here.
+// It pinned that destructively-drained status lines rode the ASYNC frame (so a
+// failed interrupt write could not lose them) and that systemFrame carried
+// them for the failure WARN. Both the lines and the destructiveLines field are
+// gone; every read the drain performs is now a non-destructive peek, so the
+// hazard the test guarded cannot occur.
 
 // TestQUM1062_Policy_EntryIDsRideTheirOwnFrame pins which IDs are attached to
 // which frame, and the coalesced ORDER.
@@ -252,7 +206,7 @@ func TestQUM1062_Policy_StatusLinesRideTheAsyncFrame(t *testing.T) {
 // it. The coalesced order (interrupts then asyncs) is preserved byte-for-byte
 // from the pre-refactor weave path.
 func TestQUM1062_Policy_EntryIDsRideTheirOwnFrame(t *testing.T) {
-	snap := qum1062Snapshot(nil,
+	snap := qum1062Snapshot(
 		qum1062Entry("id-int", inboxprompt.ClassInterrupt),
 		qum1062Entry("id-async", inboxprompt.ClassAsync),
 	)
@@ -279,32 +233,22 @@ func TestQUM1062_Policy_EntryIDsRideTheirOwnFrame(t *testing.T) {
 
 // --- empty / status-only shapes ----------------------------------------------
 
-// TestQUM1062_Policy_EmptyAndStatusOnly covers the two edge shapes both paths
-// shared before unification, either of which is easy to break while restructuring.
+// TestQUM1062_Policy_Empty pins that an empty snapshot produces no frame.
 //
-// The status-only case is the one with teeth: the lines have already been
-// destructively drained by the time buildInjection runs, so a policy that emitted
-// no frame because there were no maildir entries would LOSE them outright.
-func TestQUM1062_Policy_EmptyAndStatusOnly(t *testing.T) {
+// QUM-1186: this test used to also carry a "status only" case, which was the
+// one with teeth — status lines were destructively drained before
+// buildInjection ran, so emitting no frame lost them permanently. With the
+// status_change class deleted the drain reads nothing destructively and that
+// case has no subject. The empty case survives on its own merit: an empty
+// write would be a spurious turn.
+func TestQUM1062_Policy_Empty(t *testing.T) {
 	for _, pol := range []struct {
 		name string
 		p    drainPolicy
 	}{{"child", childDrainPolicy()}, {"weave", weaveDrainPolicy(nil)}} {
 		t.Run(pol.name+"/empty", func(t *testing.T) {
-			if frames := buildInjection(qum1062Snapshot(nil), pol.p); len(frames) != 0 {
+			if frames := buildInjection(qum1062Snapshot(), pol.p); len(frames) != 0 {
 				t.Fatalf("frames = %d, want 0 for an empty snapshot — an empty write would be a spurious turn", len(frames))
-			}
-		})
-		t.Run(pol.name+"/status only", func(t *testing.T) {
-			frames := buildInjection(qum1062Snapshot([]string{"only-a-status-line\n"}), pol.p)
-			if len(frames) != 1 {
-				t.Fatalf("frames = %d, want 1 — the lines are already off disk, so emitting nothing loses them permanently", len(frames))
-			}
-			if !strings.Contains(frames[0].body, "only-a-status-line") {
-				t.Errorf("status-only frame does not carry the line:\n%s", frames[0].body)
-			}
-			if len(frames[0].entryIDs) != 0 {
-				t.Errorf("status-only frame entryIDs = %v, want none — there is nothing to MarkDelivered", frames[0].entryIDs)
 			}
 		})
 	}
@@ -323,10 +267,7 @@ func TestQUM1062_Policy_EmptyAndStatusOnly(t *testing.T) {
 //   - mu — weave serialises, the child does not. Outcome pinned by
 //     TestWeaveRuntimeHandle_ConcurrentWakeForDelivery_NoDuplicateWrite, whose
 //     recorded mutation (delete the lock) goes red on the first iteration. Note
-//     that test keys on STATUS LINES as well as maildir entries, which is what
-//     makes it a test of drainMu rather than of the in-flight filter: status lines
-//     carry no entry ID, so the filter cannot suppress a concurrent double-read of
-//     them. The child's nil is the declared QUM-1066 TOCTOU residual — see the
+//     The child's nil is the declared QUM-1066 TOCTOU residual — see the
 //     comment on childDrainPolicy.
 //   - writeTimeout — a FUNC seam, not a value, so the child keeps following
 //     childDrainWriteTimeout when a test overrides it. Outcome pinned by the
@@ -336,7 +277,7 @@ func TestQUM1062_Policy_ProductionPoliciesMatchTheirPaths(t *testing.T) {
 
 	weave := weaveDrainPolicy(&mu)
 	if weave.mu == nil {
-		t.Error("weave policy mu = nil, want the handle's drainMu — weave takes concurrent pokes from independent MCP handler goroutines, and the destructive status_change read is unsafe to run twice at once")
+		t.Error("weave policy mu = nil, want the handle's drainMu — weave takes concurrent pokes from independent MCP handler goroutines, and a concurrent double-drain is unsafe")
 	}
 
 	child := childDrainPolicy()

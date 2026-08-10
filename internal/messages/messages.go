@@ -22,11 +22,6 @@ var NowFunc = time.Now
 // RandReader is the randomness source used by the messages package. Override in tests for determinism.
 var RandReader = rand.Reader
 
-// TypeStatusChange marks a maildir envelope as a status_change update (QUM-614)
-// — a child→parent state ping that should NOT raise the inbox banner/unread badge
-// and is hidden from default `messages_list` views. See StatusChangePayload.
-const TypeStatusChange = "status_change"
-
 // TypeLivenessCheck marks a maildir envelope as a supervisor heartbeat
 // liveness-check nudge (QUM-730).
 //
@@ -48,15 +43,6 @@ const TypeStatusChange = "status_change"
 // internal/tui/messages.go's NotificationKindLivenessCheck), which is a separate
 // use and is NOT legacy.
 const TypeLivenessCheck = "liveness_check"
-
-// StatusChangePayload is the JSON shape encoded into Message.Body for
-// envelopes with Type == TypeStatusChange. Exported so consumers can
-// unmarshal symmetrically.
-type StatusChangePayload struct {
-	State     string `json:"state"`     // working|blocked|complete|failure
-	Summary   string `json:"summary"`   // truncated to 160 chars by SendStatusChange
-	Timestamp string `json:"timestamp"` // RFC3339 UTC
-}
 
 // Message represents a message between agents.
 type Message struct {
@@ -224,157 +210,6 @@ func Send(sprawlRoot, from, to, subject, body string, opts ...SendOption) (strin
 	}
 
 	return shortID, nil
-}
-
-// SendStatusChange writes a status_change envelope into the recipient's maildir.
-// Unlike Send, it does NOT invoke the process-level default notifier — status_change
-// envelopes are ephemeral state pings and must not raise the inbox banner / unread
-// badge / drain-row prompt-inject (QUM-559 contract).
-//
-// Summary is hard-truncated to 160 chars. Empty payload.Timestamp is filled from
-// NowFunc().UTC().Format(time.RFC3339). No sent/ copy is written — status_change
-// is one-way telemetry.
-func SendStatusChange(sprawlRoot, from, to string, payload StatusChangePayload) (string, error) {
-	if from == "" {
-		return "", fmt.Errorf("sender (from) must not be empty")
-	}
-	if to == "" {
-		return "", fmt.Errorf("recipient (to) must not be empty")
-	}
-
-	agentDir := filepath.Join(MessagesDir(sprawlRoot), to)
-	for _, sub := range []string{"tmp", "new", "cur", "archive"} {
-		if err := os.MkdirAll(filepath.Join(agentDir, sub), 0o755); err != nil { //nolint:gosec // G301: world-readable message dirs are intentional
-			return "", fmt.Errorf("creating directory %s: %w", sub, err)
-		}
-	}
-
-	suffixBytes := make([]byte, 4)
-	if _, err := rand.Read(suffixBytes); err != nil {
-		return "", fmt.Errorf("generating random suffix: %w", err)
-	}
-	hexSuffix := hex.EncodeToString(suffixBytes)
-
-	now := NowFunc()
-	id := fmt.Sprintf("%d.%s.%s", now.UnixNano(), from, hexSuffix)
-
-	shortID, err := generateShortID(agentDir)
-	if err != nil {
-		return "", fmt.Errorf("generating short ID: %w", err)
-	}
-
-	if len(payload.Summary) > 160 {
-		payload.Summary = payload.Summary[:160]
-	}
-	if payload.Timestamp == "" {
-		payload.Timestamp = now.UTC().Format(time.RFC3339)
-	}
-
-	bodyBytes, err := json.Marshal(&payload)
-	if err != nil {
-		return "", fmt.Errorf("marshaling status_change payload: %w", err)
-	}
-
-	msg := &Message{
-		ID:        id,
-		ShortID:   shortID,
-		From:      from,
-		To:        to,
-		Subject:   "status_change",
-		Body:      string(bodyBytes),
-		Timestamp: now.UTC().Format(time.RFC3339),
-		Type:      TypeStatusChange,
-	}
-
-	data, err := json.MarshalIndent(msg, "", "  ")
-	if err != nil {
-		return "", fmt.Errorf("marshaling message: %w", err)
-	}
-
-	filename := id + ".json"
-	tmpPath := filepath.Join(agentDir, "tmp", filename)
-	newPath := filepath.Join(agentDir, "new", filename)
-
-	if err := os.WriteFile(tmpPath, data, 0o644); err != nil { //nolint:gosec // G306: world-readable message files are intentional
-		return "", fmt.Errorf("writing tmp file: %w", err)
-	}
-	if err := os.Rename(tmpPath, newPath); err != nil {
-		return "", fmt.Errorf("moving message to new/: %w", err)
-	}
-
-	// Intentionally skip: sent/ copy + notifier — status_change is one-way telemetry.
-	return shortID, nil
-}
-
-// DrainStatusChange reads all type=status_change envelopes from the recipient's
-// new/ and cur/ dirs, in FIFO order by Timestamp ascending, removes them from
-// disk, and returns them. Idempotent: empty/missing recipient returns (nil, nil).
-// Leaves non-status_change envelopes untouched.
-func DrainStatusChange(sprawlRoot, recipient string) ([]Message, error) {
-	agentDir := filepath.Join(MessagesDir(sprawlRoot), recipient)
-
-	type located struct {
-		msg  Message
-		path string
-	}
-	var found []located
-
-	for _, dir := range []string{"new", "cur"} {
-		dirPath := filepath.Join(agentDir, dir)
-		entries, err := os.ReadDir(dirPath)
-		if err != nil {
-			if os.IsNotExist(err) {
-				continue
-			}
-			return nil, fmt.Errorf("reading %s directory: %w", dir, err)
-		}
-		for _, entry := range entries {
-			if entry.IsDir() || !strings.HasSuffix(entry.Name(), ".json") {
-				continue
-			}
-			fullPath := filepath.Join(dirPath, entry.Name())
-			data, err := os.ReadFile(fullPath)
-			if err != nil {
-				continue
-			}
-			var msg Message
-			if err := json.Unmarshal(data, &msg); err != nil {
-				continue
-			}
-			if msg.Type != TypeStatusChange {
-				continue
-			}
-			msg.Dir = dir
-			found = append(found, located{msg: msg, path: fullPath})
-		}
-	}
-
-	if len(found) == 0 {
-		return nil, nil
-	}
-
-	// Stable, not sort.Slice: Timestamp is RFC3339 (second resolution), so a
-	// burst of reports inside one wall-clock second is entirely ties. `found` is
-	// already in ascending-ID order — os.ReadDir sorts by name and the envelope
-	// name is a fixed-width UnixNano prefix — so a stable sort preserves the
-	// true nanosecond write order for those ties. That order used to be
-	// cosmetic; since QUM-1064 coalesces last-wins per agent it selects which
-	// payload survives a destructive drain, so it must not rest on the sort
-	// implementation happening to leave sorted input alone.
-	sort.SliceStable(found, func(i, j int) bool {
-		ti, _ := time.Parse(time.RFC3339, found[i].msg.Timestamp)
-		tj, _ := time.Parse(time.RFC3339, found[j].msg.Timestamp)
-		return ti.Before(tj)
-	})
-
-	out := make([]Message, 0, len(found))
-	for _, f := range found {
-		if err := os.Remove(f.path); err != nil && !os.IsNotExist(err) {
-			return out, fmt.Errorf("removing drained envelope %s: %w", f.path, err)
-		}
-		out = append(out, f.msg)
-	}
-	return out, nil
 }
 
 // Inbox returns all messages for an agent from both new/ and cur/ directories,
@@ -663,59 +498,39 @@ func readMessagesFromDirs(agentDir string, dirs []string) ([]*Message, error) {
 }
 
 // List returns messages filtered by the given filter.
+//
+// QUM-1186: the `status` filter and the status-hiding logic are gone with the
+// status_change envelope class. Every remaining envelope is a real message, so
+// there is nothing to hide from the default views. The liveness_check skip
+// (QUM-730) is unrelated and SURVIVES — those envelopes are ephemeral probes
+// and must never surface in messages_list.
 func List(sprawlRoot, agent, filter string) ([]*Message, error) {
 	var dirs []string
-	var keepOnlyStatus bool
-	var hideStatus bool
 	switch filter {
 	case "", "all":
 		dirs = []string{"new", "cur"}
-		hideStatus = true
 	case "unread":
 		dirs = []string{"new"}
-		hideStatus = true
 	case "read":
 		dirs = []string{"cur"}
-		hideStatus = true
-	case "status":
-		dirs = []string{"new", "cur"}
-		keepOnlyStatus = true
 	case "archived":
 		dirs = []string{"archive"}
 	case "sent":
 		dirs = []string{"sent"}
 	default:
-		return nil, fmt.Errorf("invalid filter %q: must be one of all, unread, read, archived, sent, status", filter)
+		return nil, fmt.Errorf("invalid filter %q: must be one of all, unread, read, archived, sent", filter)
 	}
 
 	msgs, err := readMessagesFromDirs(filepath.Join(MessagesDir(sprawlRoot), agent), dirs)
 	if err != nil {
 		return nil, err
 	}
-	if !hideStatus && !keepOnlyStatus {
-		// Even on un-filtered views (archived/sent), hide ephemeral
-		// liveness_check envelopes — they should never surface in
-		// messages_list output. (QUM-730)
-		out := msgs[:0]
-		for _, m := range msgs {
-			if m.Type == TypeLivenessCheck {
-				continue
-			}
-			out = append(out, m)
-		}
-		return out, nil
-	}
 	out := msgs[:0]
 	for _, m := range msgs {
 		if m.Type == TypeLivenessCheck {
 			continue
 		}
-		isStatus := m.Type == TypeStatusChange
-		if keepOnlyStatus && isStatus {
-			out = append(out, m)
-		} else if hideStatus && !isStatus {
-			out = append(out, m)
-		}
+		out = append(out, m)
 	}
 	return out, nil
 }

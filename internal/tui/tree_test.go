@@ -479,19 +479,20 @@ func TestBuildTreeNodes_PropagatesSessionCostField(t *testing.T) {
 	}
 }
 
-func TestBuildTreeNodes_PropagatesReportFields(t *testing.T) {
+// QUM-1186: was TestBuildTreeNodes_PropagatesReportFields. buildTreeNodes must
+// still carry the row's trailing-text field from AgentInfo onto TreeNode; that
+// field is Blurb now rather than LastReportMessage. Without this the row would
+// silently render the status fallback for every agent.
+func TestBuildTreeNodes_PropagatesBlurb(t *testing.T) {
 	agents := []supervisor.AgentInfo{
-		{Name: "alice", Type: "engineer", Status: "active", LastReportState: "working", LastReportMessage: "in flight"},
+		{Name: "alice", Type: "engineer", Status: "active", Blurb: "in flight"},
 	}
 	nodes := buildTreeNodes(agents, nil)
 	if len(nodes) != 1 {
 		t.Fatalf("len = %d", len(nodes))
 	}
-	if nodes[0].LastReportState != "working" {
-		t.Errorf("LastReportState = %q", nodes[0].LastReportState)
-	}
-	if nodes[0].LastReportMessage != "in flight" {
-		t.Errorf("LastReportMessage = %q", nodes[0].LastReportMessage)
+	if nodes[0].Blurb != "in flight" {
+		t.Errorf("Blurb = %q, want %q", nodes[0].Blurb, "in flight")
 	}
 }
 
@@ -664,6 +665,12 @@ func TestTheme_ReportDot_PausedAndDied(t *testing.T) {
 // derivation: process-alive=false → idle; else in_autonomous_turn → working;
 // else recent activity (within RecentActivityWindow) → working; else fall
 // back to last_report_state for blocked/complete/failure; else idle.
+// QUM-1186: the four self-report rows (blocked / complete / failure, plus the
+// nil-ProcessAlive-routes-through-report-state fallback) were removed from
+// this table. LastReportState is deleted; there is no longer any input that
+// could produce "blocked", "complete" or "failure" from this function, so rows
+// asserting them would have been rows asserting an unreachable branch.
+//
 // "working" self-reports are NO LONGER special-cased — only liveness drives
 // the working state.
 func TestDeriveIconState_Mapping(t *testing.T) {
@@ -678,140 +685,81 @@ func TestDeriveIconState_Mapping(t *testing.T) {
 		{
 			name: "working: in_autonomous_turn beats stale blocked report",
 			node: TreeNode{
-				ProcessAlive:    boolPtr(true),
-				InTurn:          true,
-				LastActivityAt:  time.Time{},
-				LastReportState: "blocked",
+				ProcessAlive:   boolPtr(true),
+				InTurn:         true,
+				LastActivityAt: time.Time{},
 			},
 			want: "working",
 		},
 		{
 			name: "working: recent activity beats stale blocked report (QUM-665 repro)",
 			node: TreeNode{
-				ProcessAlive:    boolPtr(true),
-				InTurn:          false,
-				LastActivityAt:  now.Add(-1 * time.Second),
-				LastReportState: "blocked",
+				ProcessAlive:   boolPtr(true),
+				InTurn:         false,
+				LastActivityAt: now.Add(-1 * time.Second),
 			},
 			want: "working",
 		},
 		{
 			name: "working: recent activity beats stale working report",
 			node: TreeNode{
-				ProcessAlive:    boolPtr(true),
-				InTurn:          false,
-				LastActivityAt:  now.Add(-500 * time.Millisecond),
-				LastReportState: "working",
+				ProcessAlive:   boolPtr(true),
+				InTurn:         false,
+				LastActivityAt: now.Add(-500 * time.Millisecond),
 			},
 			want: "working",
 		},
 		{
 			name: "idle: working self-report no longer special-cased (no recent activity)",
 			node: TreeNode{
-				ProcessAlive:    boolPtr(true),
-				InTurn:          false,
-				LastActivityAt:  now.Add(-2 * RecentActivityWindow),
-				LastReportState: "working",
+				ProcessAlive:   boolPtr(true),
+				InTurn:         false,
+				LastActivityAt: now.Add(-2 * RecentActivityWindow),
 			},
 			want: "idle",
 		},
 		{
-			name: "blocked: idle by liveness, blocked self-report",
-			node: TreeNode{
-				ProcessAlive:    boolPtr(true),
-				InTurn:          false,
-				LastActivityAt:  time.Time{},
-				LastReportState: "blocked",
-			},
-			want: "blocked",
-		},
-		{
-			name: "blocked: idle by liveness with old activity, blocked self-report",
-			node: TreeNode{
-				ProcessAlive:    boolPtr(true),
-				InTurn:          false,
-				LastActivityAt:  now.Add(-2 * RecentActivityWindow),
-				LastReportState: "blocked",
-			},
-			want: "blocked",
-		},
-		{
-			name: "complete: idle by liveness, complete self-report",
-			node: TreeNode{
-				ProcessAlive:    boolPtr(true),
-				InTurn:          false,
-				LastActivityAt:  time.Time{},
-				LastReportState: "complete",
-			},
-			want: "complete",
-		},
-		{
-			name: "failure: idle by liveness, failure self-report",
-			node: TreeNode{
-				ProcessAlive:    boolPtr(true),
-				InTurn:          false,
-				LastActivityAt:  time.Time{},
-				LastReportState: "failure",
-			},
-			want: "failure",
-		},
-		{
 			name: "idle: no signal at all",
 			node: TreeNode{
-				ProcessAlive:    boolPtr(true),
-				InTurn:          false,
-				LastActivityAt:  time.Time{},
-				LastReportState: "",
+				ProcessAlive:   boolPtr(true),
+				InTurn:         false,
+				LastActivityAt: time.Time{},
 			},
 			want: "idle",
 		},
 		{
 			name: "idle: process dead beats any other signal",
 			node: TreeNode{
-				ProcessAlive:    boolPtr(false),
-				InTurn:          true,
-				LastActivityAt:  now,
-				LastReportState: "working",
+				ProcessAlive:   boolPtr(false),
+				InTurn:         true,
+				LastActivityAt: now,
 			},
 			want: "idle",
 		},
 		{
 			name: "weave row fallback: nil ProcessAlive + no signals + empty report",
 			node: TreeNode{
-				ProcessAlive:    nil,
-				InTurn:          false,
-				LastActivityAt:  time.Time{},
-				LastReportState: "",
+				ProcessAlive:   nil,
+				InTurn:         false,
+				LastActivityAt: time.Time{},
 			},
 			want: "idle",
 		},
 		{
-			name: "weave row fallback: nil ProcessAlive routes through report state when no activity",
-			node: TreeNode{
-				ProcessAlive:    nil,
-				InTurn:          false,
-				LastActivityAt:  time.Time{},
-				LastReportState: "blocked",
-			},
-			want: "blocked",
-		},
-		{
 			name: "boundary: exactly at RecentActivityWindow counts as not-recent",
 			node: TreeNode{
-				ProcessAlive:    boolPtr(true),
-				InTurn:          false,
-				LastActivityAt:  now.Add(-RecentActivityWindow),
-				LastReportState: "",
+				ProcessAlive:   boolPtr(true),
+				InTurn:         false,
+				LastActivityAt: now.Add(-RecentActivityWindow),
 			},
 			want: "idle",
 		},
 		{
 			name: "boundary: just inside RecentActivityWindow counts as recent",
 			node: TreeNode{
-				ProcessAlive:    boolPtr(true),
-				InTurn:          false,
-				LastActivityAt:  now.Add(-(RecentActivityWindow - 1*time.Millisecond)),
-				LastReportState: "blocked",
+				ProcessAlive:   boolPtr(true),
+				InTurn:         false,
+				LastActivityAt: now.Add(-(RecentActivityWindow - 1*time.Millisecond)),
 			},
 			want: "working",
 		},
@@ -887,10 +835,9 @@ func TestDeriveIconState_InTurnTrue_AlwaysWorking_RegardlessOfActivityWindow(t *
 	boolPtr := func(b bool) *bool { return &b }
 	now := time.Date(2026, 6, 5, 12, 0, 0, 0, time.UTC)
 	node := TreeNode{
-		ProcessAlive:    boolPtr(true),
-		InTurn:          true,
-		LastActivityAt:  now.Add(-1 * time.Hour),
-		LastReportState: "",
+		ProcessAlive:   boolPtr(true),
+		InTurn:         true,
+		LastActivityAt: now.Add(-1 * time.Hour),
 	}
 	if got := DeriveIconState(node, now); got != "working" {
 		t.Errorf("DeriveIconState() = %q, want \"working\" (InTurn=true must trump stale activity)", got)
@@ -909,10 +856,9 @@ func TestDeriveIconState_RecentActivityWindow_30Seconds(t *testing.T) {
 	}
 
 	node := TreeNode{
-		ProcessAlive:    boolPtr(true),
-		InTurn:          false,
-		LastActivityAt:  now.Add(-15 * time.Second),
-		LastReportState: "",
+		ProcessAlive:   boolPtr(true),
+		InTurn:         false,
+		LastActivityAt: now.Add(-15 * time.Second),
 	}
 	if got := DeriveIconState(node, now); got != "working" {
 		t.Errorf("DeriveIconState() = %q, want \"working\" (15s old activity must be within the 30s window)", got)
@@ -927,10 +873,9 @@ func TestDeriveIconState_Idle_NoInTurn_NoRecentActivity(t *testing.T) {
 	boolPtr := func(b bool) *bool { return &b }
 	now := time.Date(2026, 6, 5, 12, 0, 0, 0, time.UTC)
 	node := TreeNode{
-		ProcessAlive:    boolPtr(true),
-		InTurn:          false,
-		LastActivityAt:  now.Add(-5 * time.Minute),
-		LastReportState: "",
+		ProcessAlive:   boolPtr(true),
+		InTurn:         false,
+		LastActivityAt: now.Add(-5 * time.Minute),
 	}
 	if got := DeriveIconState(node, now); got != "idle" {
 		t.Errorf("DeriveIconState() = %q, want \"idle\"", got)

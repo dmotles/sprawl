@@ -169,47 +169,19 @@ func TestGenerateAndPersistBlurb_EmptyResultKeepsPrevious(t *testing.T) {
 	}
 }
 
-func TestReportStatus_CompleteDispatchesCompletionBlurb(t *testing.T) {
-	sup, tmp := newTestSupervisor(t)
-	saveTestAgent(t, tmp, &state.AgentState{
-		Name:   "kit",
-		Type:   "engineer",
-		Family: "engineering",
-		Parent: "weave",
-		Status: state.StatusRunning,
-	})
-	var gotName string
-	var gotKind blurb.TriggerKind
-	var calls int
-	sup.dispatchBlurb = func(name string, kind blurb.TriggerKind) {
-		calls++
-		gotName = name
-		gotKind = kind
-	}
-
-	if _, err := sup.ReportStatus(context.Background(), "kit", "complete", "done"); err != nil {
-		t.Fatalf("ReportStatus: %v", err)
-	}
-	if calls != 1 || gotName != "kit" || gotKind != blurb.TriggerCompletion {
-		t.Errorf("dispatch = (%d, %q, %v), want (1, kit, completion)", calls, gotName, gotKind)
-	}
-}
-
-func TestReportStatus_WorkingDoesNotDispatchBlurb(t *testing.T) {
-	sup, tmp := newTestSupervisor(t)
-	saveTestAgent(t, tmp, &state.AgentState{
-		Name: "kit", Type: "engineer", Family: "engineering", Parent: "weave", Status: state.StatusRunning,
-	})
-	var calls int
-	sup.dispatchBlurb = func(string, blurb.TriggerKind) { calls++ }
-
-	if _, err := sup.ReportStatus(context.Background(), "kit", "working", "wip"); err != nil {
-		t.Fatalf("ReportStatus: %v", err)
-	}
-	if calls != 0 {
-		t.Errorf("working report dispatched blurb %d times, want 0", calls)
-	}
-}
+// QUM-1186: TestReportStatus_CompleteDispatchesCompletionBlurb and
+// TestReportStatus_WorkingDoesNotDispatchBlurb were removed here. They drove
+// blurb dispatch through Real.ReportStatus, which is deleted.
+//
+// FLAGGED, because it is more than a test deletion: Real.ReportStatus was the
+// ONLY production caller of dispatchBlurb with blurb.TriggerCompletion. That
+// trigger is now unreachable in production — the completion one-shot blurb
+// regeneration never fires. blurb.TriggerInitial (real.go, on spawn) and
+// TriggerRefresh (maybeRefreshBlurb) are unaffected and still covered below.
+//
+// Re-homing TriggerCompletion is NOT done here: the natural new trigger is
+// the idle reaper reclaiming an agent, which is lane 3's work. Reported to
+// the manager rather than silently left dead.
 
 func TestMaybeRefreshBlurb_DispatchesWhenDirtyAndFloorElapsed(t *testing.T) {
 	sup, tmp := newTestSupervisor(t)

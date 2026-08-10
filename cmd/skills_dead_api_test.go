@@ -5,7 +5,6 @@ import (
 	"os"
 	"path/filepath"
 	"regexp"
-	"sort"
 	"strings"
 	"testing"
 )
@@ -58,42 +57,14 @@ func toolNameDeclRE(name string) *regexp.Regexp {
 }
 
 var (
-	reportStatusDeclRE = regexp.MustCompile(`"name":\s*"report_status"`)
-	propertiesKeyRE    = regexp.MustCompile(`"properties":\s*map\[string\]any\s*`)
-	schemaPropertyRE   = regexp.MustCompile(`"([a-z_]+)":\s*map\[string\]any\{`)
-	callArgRE          = regexp.MustCompile(`^\s*([a-z_]+):`)
-	stringLiteralRE    = regexp.MustCompile(`"[^"]*"`)
+	callArgRE       = regexp.MustCompile(`^\s*([a-z_]+):`)
+	stringLiteralRE = regexp.MustCompile(`"[^"]*"`)
 )
 
 // maxCallBlockLines bounds the report_status block walk. A block that never
 // closes within this many lines is reported as a violation rather than silently
 // scanned to EOF, which would attribute every later `key:` line to the block.
 const maxCallBlockLines = 40
-
-// braceBlock returns the substring from the first `{` at or after start through
-// its matching `}`, inclusive, or "" if there is no balanced block. Quoted
-// strings are not special-cased: it is only ever applied to Go source, where
-// the tool literals contain no unbalanced braces inside strings.
-func braceBlock(s string, start int) string {
-	open := strings.IndexByte(s[start:], '{')
-	if open < 0 {
-		return ""
-	}
-	open += start
-	depth := 0
-	for i := open; i < len(s); i++ {
-		switch s[i] {
-		case '{':
-			depth++
-		case '}':
-			depth--
-			if depth == 0 {
-				return s[open : i+1]
-			}
-		}
-	}
-	return ""
-}
 
 type skillViolation struct {
 	line int
@@ -111,6 +82,14 @@ func scanSkillDoc(content string, banned []string, reportStatusProps map[string]
 			if bannedRefRE(name).MatchString(line) {
 				out = append(out, skillViolation{line: i + 1, msg: fmt.Sprintf("references removed MCP tool %q", name)})
 			}
+		}
+		// QUM-1186: with report_status deleted there are no live arguments to
+		// compare against, so callers pass a nil prop set and the
+		// argument-shape scan below is skipped entirely. Skipped rather than
+		// inverted because banning the tool NAME is the correct guard, and
+		// that is owed to lane 4 — see the note on liveReportStatusProps.
+		if reportStatusProps == nil {
+			continue
 		}
 		if !strings.Contains(line, "report_status(") {
 			continue
@@ -154,65 +133,18 @@ func mcpToolsSource(t *testing.T) string {
 	return string(b)
 }
 
-// liveReportStatusProps extracts report_status's declared argument names from
-// the MCP tool definitions.
+// QUM-1186: liveReportStatusProps was removed here. It extracted
+// report_status's declared argument names from tools.go so skill prose could
+// be checked for stale ARGUMENTS. The tool is deleted, so there are no live
+// arguments to compare against, and callers now pass a nil prop set.
 //
-// The block is delimited by brace balance from report_status's own definition,
-// not by scanning forward to the next occurrence of some sibling key. An
-// earlier version anchored on the next `"required"` in the file; removing
-// report_status's own `"required"` silently ran the match into the following
-// tool and admitted `agent` / `no_validate` as valid report_status arguments.
-// It fails rather than returning an empty set — an empty set would make every
-// documented argument look valid.
-func liveReportStatusProps(t *testing.T) map[string]bool {
-	t.Helper()
-
-	src := mcpToolsSource(t)
-	loc := reportStatusDeclRE.FindStringIndex(src)
-	if loc == nil {
-		t.Fatal("could not locate the report_status tool definition in internal/sprawlmcp/tools.go")
-	}
-	def := braceBlock(src, loc[0])
-	if def == "" {
-		t.Fatal("report_status tool definition has no balanced brace block")
-	}
-	propsLoc := propertiesKeyRE.FindStringIndex(def)
-	if propsLoc == nil {
-		t.Fatal("report_status tool definition has no properties block")
-	}
-	// Scope to the properties sub-block, then take only its immediate keys, so
-	// the container key itself and any nested sub-properties stay out of the
-	// argument set.
-	block := braceBlock(def, propsLoc[0])
-	if block == "" {
-		t.Fatal("report_status properties block has no balanced brace block")
-	}
-	props := make(map[string]bool)
-	for _, m := range schemaPropertyRE.FindAllStringSubmatchIndex(block, -1) {
-		if braceDepthAt(block, m[0]) != 1 {
-			continue
-		}
-		props[block[m[2]:m[3]]] = true
-	}
-	if len(props) == 0 {
-		t.Fatal("extracted 0 properties from the report_status schema; the extraction is broken")
-	}
-	return props
-}
-
-// braceDepthAt reports the brace nesting depth at index i of s.
-func braceDepthAt(s string, i int) int {
-	depth := 0
-	for _, c := range s[:i] {
-		switch c {
-		case '{':
-			depth++
-		case '}':
-			depth--
-		}
-	}
-	return depth
-}
+// FOLLOW-UP OWED, and deliberately not done in this lane: `delegate` and
+// `report_status` should join bannedMCPTools, which would make skill prose
+// naming them a hard failure. They are NOT added yet because six files under
+// .claude/skills/ still document them, and that tree belongs to lane 4 —
+// adding the ban now would turn this suite red on work this lane does not own.
+// Flagged to the manager. Until then this file guards the other banned names
+// but says nothing about these two: a real, stated gap rather than a silent one.
 
 // skillDocs returns every SKILL.md under both skill trees, keyed by
 // repo-relative path. It fails per-root rather than in aggregate, so an emptied
@@ -254,9 +186,8 @@ func TestSkillsBanListMatchesLiveTools(t *testing.T) {
 // TestSkillsMatchLiveMCPSurface is the primary guard: skill prose must not
 // teach agents to call tools or arguments that no longer exist.
 func TestSkillsMatchLiveMCPSurface(t *testing.T) {
-	props := liveReportStatusProps(t)
 	for path, content := range skillDocs(t) {
-		for _, v := range scanSkillDoc(content, bannedMCPTools, props) {
+		for _, v := range scanSkillDoc(content, bannedMCPTools, nil) {
 			t.Errorf("%s:%d: %s", path, v.line, v.msg)
 		}
 	}
@@ -371,29 +302,5 @@ func TestToolNameDeclRE(t *testing.T) {
 	}
 	if re.MatchString(`"description": "replaces the removed send_async tool",`) {
 		t.Error("matched a prose mention inside a description; the guard would misreport it as live")
-	}
-}
-
-// TestLiveReportStatusProps pins that the extraction reads the report_status
-// block specifically, not the whole file.
-func TestLiveReportStatusProps(t *testing.T) {
-	props := liveReportStatusProps(t)
-	if !props["state"] || !props["summary"] {
-		names := make([]string, 0, len(props))
-		for n := range props {
-			names = append(names, n)
-		}
-		sort.Strings(names)
-		t.Errorf("report_status schema extraction returned %v; expected it to include state and summary", names)
-	}
-	// Leak controls in BOTH directions. The extraction only ever ran forward,
-	// so a backward-only control (send_message's `to`/`body`, declared earlier
-	// in the file) could never fire. `agent` and `no_validate` belong to
-	// `merge`, declared immediately after report_status, and are what a
-	// runaway match actually picks up.
-	for _, leaked := range []string{"to", "body", "agent", "no_validate", "properties"} {
-		if props[leaked] {
-			t.Errorf("report_status argument set contains %q; the extraction escaped its own schema block", leaked)
-		}
 	}
 }

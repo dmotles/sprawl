@@ -185,9 +185,11 @@ func TestAgentRuntime_StartInterruptQueueAndSyncEmitSnapshotsWithoutTmux(t *test
 	}
 
 	updated := testAgentState("alice")
-	updated.LastReportState = "working"
-	updated.LastReportMessage = "writing tests"
-	updated.LastReportDetail = "red phase"
+	// QUM-1186: this used to mutate the LastReport* fields so SyncAgentState
+	// had something observable to propagate. Blurb is the surviving field with
+	// the same shape — carried on AgentState, mirrored into the snapshot, not
+	// otherwise touched by Sync.
+	updated.Blurb = "writing tests"
 	rt.SyncAgentState(updated)
 
 	// QUM-1186: the RuntimeEventTaskQueued step is gone with the task
@@ -224,12 +226,6 @@ func TestAgentRuntime_StartInterruptQueueAndSyncEmitSnapshotsWithoutTmux(t *test
 	}
 	if snap.InterruptCount != 1 {
 		t.Fatalf("InterruptCount = %d, want 1", snap.InterruptCount)
-	}
-	if snap.LastReport.State != "working" {
-		t.Fatalf("LastReport.State = %q", snap.LastReport.State)
-	}
-	if snap.LastReport.Message != "writing tests" {
-		t.Fatalf("LastReport.Message = %q", snap.LastReport.Message)
 	}
 }
 

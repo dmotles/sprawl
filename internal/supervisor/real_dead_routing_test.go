@@ -1,4 +1,4 @@
-// QUM-725: route-up tests for Real.SendMessage and Real.ReportStatus.
+// QUM-725: route-up tests for Real.SendMessage.
 // RED phase — the dead-target rerouting path does not exist yet. These
 // tests pin the contract:
 //
@@ -16,14 +16,12 @@ package supervisor
 
 import (
 	"context"
-	"encoding/json"
 	"strings"
 	"testing"
 
 	"github.com/dmotles/sprawl/internal/agentloop"
 	backendpkg "github.com/dmotles/sprawl/internal/backend"
 	"github.com/dmotles/sprawl/internal/inboxprompt"
-	"github.com/dmotles/sprawl/internal/messages"
 	"github.com/dmotles/sprawl/internal/state"
 )
 
@@ -113,53 +111,11 @@ func TestReal_SendMessage_DeadTarget_MultiHop_RoutesUpToGrandparent(t *testing.T
 	}
 }
 
-// TestReal_ReportStatus_DeadParent_RoutesToLiveGrandparent: child reports
-// status; its parent is Died; routing must redirect the SendStatusChange
-// envelope to the live grandparent with the `summary` field wrapped.
-func TestReal_ReportStatus_DeadParent_RoutesToLiveGrandparent(t *testing.T) {
-	r, tmpDir := newFakeReal(t)
-
-	saveTestAgent(t, tmpDir, &state.AgentState{
-		Name: "weave", Type: "root", Status: "active",
-	})
-	saveTestAgent(t, tmpDir, &state.AgentState{
-		Name: "manager", Type: "manager", Family: "engineering",
-		Parent: "weave", Status: state.StatusDied,
-	})
-	saveTestAgent(t, tmpDir, &state.AgentState{
-		Name: "child", Type: "engineer", Family: "engineering",
-		Parent: "manager", Status: "active",
-	})
-
-	if _, err := r.ReportStatus(context.Background(), "child", "working", "polishing tests"); err != nil {
-		t.Fatalf("ReportStatus: %v", err)
-	}
-
-	// Manager (dead) must NOT receive the status_change envelope.
-	if envs, _ := messages.DrainStatusChange(tmpDir, "manager"); len(envs) != 0 {
-		t.Errorf("dead manager status_change envelopes = %d, want 0", len(envs))
-	}
-
-	// Live grandparent (weave) must receive the routed-up envelope.
-	envs, err := messages.DrainStatusChange(tmpDir, "weave")
-	if err != nil {
-		t.Fatalf("DrainStatusChange(weave): %v", err)
-	}
-	if len(envs) != 1 {
-		t.Fatalf("weave status_change envelopes = %d, want 1", len(envs))
-	}
-	var payload messages.StatusChangePayload
-	if err := json.Unmarshal([]byte(envs[0].Body), &payload); err != nil {
-		t.Fatalf("decode status_change payload: %v", err)
-	}
-	wantSummary := inboxprompt.WrapForDeadTarget("child", "manager", []string{"manager"}, "polishing tests")
-	if payload.Summary != wantSummary {
-		t.Errorf("routed status_change summary mismatch\n got: %q\nwant: %q", payload.Summary, wantSummary)
-	}
-	if payload.State != "working" {
-		t.Errorf("routed status_change state = %q, want %q", payload.State, "working")
-	}
-}
+// QUM-1186: TestReal_ReportStatus_DeadParent_RoutesToLiveGrandparent was
+// removed here. The QUM-725 route-up-to-first-live-ancestor walk it exercised
+// SURVIVES and is covered for the remaining path by the
+// TestReal_SendMessage_DeadTarget_* arms above and below, which drive the same
+// walk (single hop, multi hop, and both interrupt-gate directions).
 
 // TestReal_SendMessage_InterruptTrue_DeadDescendant_GateFiresOnOriginalTarget:
 // the §8.5 ancestor-gate is evaluated against the *original* `to` first; a

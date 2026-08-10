@@ -20,9 +20,9 @@ import (
 // StatusFaulted / StatusKilled / StatusDied / StatusPaused /
 // StatusResumeFailed are revivable via the QUM-726 wake_if_offline gate and
 // must NOT short-circuit here so they remain introspectable via peek.
-// StatusStopped is retained as a parseable token but never a write target
-// post-QUM-787; LoadAgent migrates it to complete/faulted on read so we
-// won't observe it here in practice.
+// StatusStopped is retained as a parseable token but never a write target;
+// LoadAgent migrates it to suspended on read (QUM-1186) so we won't observe
+// it here in practice.
 func TerminalAgentError(sprawlRoot, name string) error {
 	st, err := state.LoadAgent(sprawlRoot, name)
 	if err != nil {
@@ -31,13 +31,11 @@ func TerminalAgentError(sprawlRoot, name string) error {
 	if !state.IsTerminal(st.Status) {
 		return nil
 	}
-	reportState := st.LastReportState
-	if reportState == "" {
-		reportState = st.Status
-	}
-	at := st.LastReportAt
-	if at == "" {
-		at = "unknown time"
-	}
-	return fmt.Errorf("agent %q reported %s at %s; no longer running", name, reportState, at)
+	// QUM-1186: was "agent %q reported %s at %s; no longer running", built
+	// from the deleted LastReportState/LastReportAt. Both the state and the
+	// timestamp came from the agent's own self-report, so neither survives.
+	// The Status is an OBSERVED fact and is what the message names now.
+	// "no longer running" is kept verbatim — it is the phrase callers and the
+	// e2e suite match on.
+	return fmt.Errorf("agent %q is %s; no longer running", name, st.Status)
 }

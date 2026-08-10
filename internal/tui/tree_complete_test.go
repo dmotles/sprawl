@@ -31,9 +31,8 @@ func TestDeriveIconState_DormantBeatsProcessAliveAndReport(t *testing.T) {
 	now := time.Date(2026, 6, 11, 12, 0, 0, 0, time.UTC)
 	alive := false
 	n := TreeNode{
-		Status:          "complete",
-		ProcessAlive:    &alive,
-		LastReportState: "complete",
+		Status:       "complete",
+		ProcessAlive: &alive,
 	}
 	if got := DeriveIconState(n, now); got != "dormant" {
 		t.Errorf("DeriveIconState(Status=complete, ProcessAlive=false, report=complete) = %q, want %q",

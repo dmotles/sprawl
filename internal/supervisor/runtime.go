@@ -159,7 +159,6 @@ type RuntimeSnapshot struct {
 	Liveness       liveness.AgentLiveness
 	WakeCount      int
 	InterruptCount int
-	LastReport     LastReport
 	Capabilities   backendpkg.Capabilities
 }
 
@@ -248,13 +247,6 @@ func snapshotFromAgentState(agentState *state.AgentState) RuntimeSnapshot {
 		SessionID: agentState.SessionID,
 		TreePath:  agentState.TreePath,
 		CreatedAt: agentState.CreatedAt,
-		LastReport: LastReport{
-			Type:    agentState.LastReportType,
-			Message: agentState.LastReportMessage,
-			At:      agentState.LastReportAt,
-			State:   agentState.LastReportState,
-			Detail:  agentState.LastReportDetail,
-		},
 	}
 
 	switch agentState.Status {

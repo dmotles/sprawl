@@ -4,13 +4,11 @@ import (
 	"context"
 	"os"
 	"path/filepath"
-	"strings"
 	"testing"
 	"time"
 
 	"github.com/dmotles/sprawl/internal/agentloop"
 	backendpkg "github.com/dmotles/sprawl/internal/backend"
-	"github.com/dmotles/sprawl/internal/inboxprompt"
 	"github.com/dmotles/sprawl/internal/messages"
 	"github.com/dmotles/sprawl/internal/state"
 	"github.com/dmotles/sprawl/internal/supervisor/liveness"
@@ -211,11 +209,9 @@ func TestStatus_ProcessAliveTriStateComesFromRuntimeKnowledge(t *testing.T) {
 func TestPeek_ReturnsStateAndActivity(t *testing.T) {
 	sup, tmpDir := newTestSupervisor(t)
 	saveTestAgent(t, tmpDir, &state.AgentState{
-		Name:              "ghost",
-		Status:            "active",
-		LastReportType:    "status",
-		LastReportMessage: "working on X",
-		LastReportAt:      "2026-04-21T00:00:00Z",
+		Name:   "ghost",
+		Status: "active",
+		Blurb:  "working on X",
 	})
 
 	// Write one activity entry.
@@ -235,8 +231,11 @@ func TestPeek_ReturnsStateAndActivity(t *testing.T) {
 	if got.Status != "active" {
 		t.Errorf("status = %q", got.Status)
 	}
-	if got.LastReport.Type != "status" || got.LastReport.Message != "working on X" {
-		t.Errorf("last_report = %+v", got.LastReport)
+	// QUM-1186: this asserted last_report.{type,message}. Those fields are
+	// gone from PeekResult; Blurb is what peek now carries as the "what is
+	// this agent about?" answer, so the assertion moved rather than vanished.
+	if got.Blurb != "working on X" {
+		t.Errorf("blurb = %q, want %q", got.Blurb, "working on X")
 	}
 	if len(got.Activity) != 1 || got.Activity[0].Kind != "assistant_text" {
 		t.Errorf("activity = %+v", got.Activity)
@@ -251,83 +250,12 @@ func TestPeek_AgentNotFound(t *testing.T) {
 	}
 }
 
-func TestReportStatus_PersistsAndNotifiesParent(t *testing.T) {
-	sup, tmpDir := newTestSupervisor(t)
-	// Caller is "weave"; report as the weave agent so ReportStatus resolves
-	// agentName from r.callerName (MCP flow).
-	saveTestAgent(t, tmpDir, &state.AgentState{Name: "weave", Parent: "root", Status: "active"})
-	saveTestAgent(t, tmpDir, &state.AgentState{Name: "root", Status: "active"})
-
-	res, err := sup.ReportStatus(context.Background(), "", "working", "halfway")
-	if err != nil {
-		t.Fatalf("ReportStatus: %v", err)
-	}
-	if res.ReportedAt == "" {
-		t.Error("ReportedAt empty")
-	}
-
-	got, _ := state.LoadAgent(tmpDir, "weave")
-	if got.LastReportState != "working" {
-		t.Errorf("LastReportState = %q", got.LastReportState)
-	}
-	if got.LastReportMessage != "halfway" {
-		t.Errorf("LastReportMessage = %q", got.LastReportMessage)
-	}
-	// QUM-550 slice 2: detail dropped from the report_status surface; the
-	// supervisor passes "" to agentops.Report, so LastReportDetail stays empty.
-	if got.LastReportDetail != "" {
-		t.Errorf("LastReportDetail = %q, want empty (detail dropped from report_status)", got.LastReportDetail)
-	}
-
-	// QUM-614: report_status writes a type=status_change envelope into the
-	// parent's maildir, but it MUST stay hidden from the default messages
-	// listing (Inbox == List("all")), the unread badge, and the harness
-	// queue. The DrainStatusChangeLines helper surfaces it via the
-	// out-of-band "status" view.
-	msgs, _ := messages.Inbox(tmpDir, "root")
-	if len(msgs) != 0 {
-		t.Errorf("inbox len = %d, want 0 (status_change must be hidden from default filters, QUM-614)", len(msgs))
-	}
-	entries, _ := agentloop.ListPending(tmpDir, "root")
-	if len(entries) != 0 {
-		t.Errorf("queue len = %d, want 0 (QUM-614)", len(entries))
-	}
-	drained := inboxprompt.DrainStatusChangeLines(tmpDir, "root")
-	if len(drained) != 1 {
-		t.Fatalf("DrainStatusChangeLines(root) len = %d, want 1; got %#v", len(drained), drained)
-	}
-	if !strings.Contains(drained[0], "weave changed status to working: halfway") {
-		t.Errorf("drained line = %q; want it to mention weave's status update", drained[0])
-	}
-}
-
-func TestReportStatus_ExplicitAgentName(t *testing.T) {
-	sup, tmpDir := newTestSupervisor(t)
-	saveTestAgent(t, tmpDir, &state.AgentState{Name: "ratz", Parent: "weave", Status: "active"})
-
-	_, err := sup.ReportStatus(context.Background(), "ratz", "complete", "done")
-	if err != nil {
-		t.Fatalf("ReportStatus: %v", err)
-	}
-	got, _ := state.LoadAgent(tmpDir, "ratz")
-	// QUM-668: report.go atomically flips Status → stopped on a "complete"
-	// terminal outcome (partially reversing the QUM-625 M4 stance).
-	if got.LastReportState != "complete" {
-		t.Errorf("LastReportState = %q, want complete", got.LastReportState)
-	}
-	if got.Status != state.StatusComplete {
-		t.Errorf("Status = %q, want %q (QUM-787: complete report lands in StatusComplete)", got.Status, state.StatusComplete)
-	}
-}
-
-func TestReportStatus_InvalidState(t *testing.T) {
-	sup, tmpDir := newTestSupervisor(t)
-	saveTestAgent(t, tmpDir, &state.AgentState{Name: "weave", Status: "active"})
-	_, err := sup.ReportStatus(context.Background(), "", "bogus", "x")
-	if err == nil {
-		t.Fatal("expected error for invalid state")
-	}
-}
+// QUM-1186: TestReportStatus_PersistsAndNotifiesParent, _ExplicitAgentName
+// and _InvalidState were removed here. All three tested Real.ReportStatus —
+// persisting the LastReport* fields, resolving an explicit agent name, and
+// rejecting a state outside {working,blocked,complete,failure}. The tool, the
+// fields and the state vocabulary are all deleted; there is no surviving
+// behaviour to re-host.
 
 func TestPeek_DefaultsTailTo20(t *testing.T) {
 	sup, tmpDir := newTestSupervisor(t)
@@ -936,11 +864,15 @@ func TestRegisterRootRuntime_DoesNotOverwriteDiskTypeWhenAlreadySet(t *testing.T
 }
 
 // QUM-399 / QUM-550 slice 2: when weave is registered as a root runtime and a
-// child agent reports status, the child→parent notification path must hit the
-// registered handle via the cooperative WakeForDelivery. This guarantees child
-// reports drive weave's UnifiedRuntime queue without preempting an in-flight
-// turn.
-func TestReportStatus_FromChildOfWeave_WakesRootWithoutPreempting(t *testing.T) {
+// child agent sends it something, the child→parent notification path must hit
+// the registered handle via the COOPERATIVE WakeForDelivery — never a
+// preempting interrupt — so it drives weave's UnifiedRuntime queue without
+// cutting into an in-flight turn.
+//
+// QUM-1186: re-hosted from ReportStatus onto SendMessage. The invariant is
+// about the child->root delivery path, not about which tool triggered it, and
+// send_message is now the only thing that can.
+func TestSendMessage_FromChildOfWeave_WakesRootWithoutPreempting(t *testing.T) {
 	sup, tmpDir := newTestSupervisor(t)
 	saveTestAgent(t, tmpDir, &state.AgentState{
 		Name:   "weave",
@@ -959,8 +891,8 @@ func TestReportStatus_FromChildOfWeave_WakesRootWithoutPreempting(t *testing.T) 
 		t.Fatalf("RegisterRootRuntime: %v", err)
 	}
 
-	if _, err := sup.ReportStatus(context.Background(), "ratz", "working", "summary"); err != nil {
-		t.Fatalf("ReportStatus: %v", err)
+	if _, err := sup.SendMessage(context.Background(), "weave", "summary", false, false); err != nil {
+		t.Fatalf("SendMessage: %v", err)
 	}
 
 	if h.wakeForDeliveryCalls < 1 {

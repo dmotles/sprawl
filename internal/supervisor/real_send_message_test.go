@@ -205,13 +205,11 @@ func TestReal_SendMessage_TerminalStatus_ReturnsClearerError(t *testing.T) {
 	// after IsTerminal narrowed to {retired, retiring}; faulted/stopped flow
 	// through the QUM-726 wake-on-traffic gate, not TerminalAgentError.
 	saveTestAgent(t, tmpDir, &state.AgentState{
-		Name:            "alice",
-		Type:            "engineer",
-		Family:          "engineering",
-		Parent:          "weave",
-		Status:          state.StatusRetired,
-		LastReportState: "failure",
-		LastReportAt:    "2026-06-06T12:00:00Z",
+		Name:   "alice",
+		Type:   "engineer",
+		Family: "engineering",
+		Parent: "weave",
+		Status: state.StatusRetired,
 	})
 
 	res, err := r.SendMessage(context.Background(), "alice", "hello body", false, false)
@@ -221,7 +219,12 @@ func TestReal_SendMessage_TerminalStatus_ReturnsClearerError(t *testing.T) {
 	if res != nil {
 		t.Errorf("SendMessage result = %+v, want nil when send fails", res)
 	}
-	for _, want := range []string{"no longer running", "failure", `"alice"`} {
+	// QUM-1186: was {"no longer running", "failure", "alice"} — "failure"
+	// came from the deleted LastReportState. The replacement substring is the
+	// agent's OBSERVED Status, which is strictly more specific than the old
+	// one: it names the actual lifecycle state rather than a self-reported
+	// outcome that could disagree with it.
+	for _, want := range []string{"no longer running", state.StatusRetired, `"alice"`} {
 		if !strings.Contains(err.Error(), want) {
 			t.Errorf("error %q missing substring %q", err.Error(), want)
 		}

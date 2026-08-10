@@ -212,8 +212,8 @@ func (m TreeModalModel) renderRow(n TreeNode, idx int, now time.Time) string {
 	}
 
 	var tail string
-	if n.LastReportMessage != "" {
-		tail = m.theme.NormalText.Render(" — " + n.LastReportMessage)
+	if n.Blurb != "" {
+		tail = m.theme.NormalText.Render(" — " + n.Blurb)
 	} else {
 		status := n.Status
 		if status == "" {

@@ -27,10 +27,8 @@ const (
 	StatusFaulted      = "faulted"
 	// StatusStopped is retained as a parseable string for back-compat with
 	// older state files but is NEVER a write target after QUM-787 — the
-	// LoadAgent migration rewrites any "stopped" Status on read to either
-	// StatusComplete (when LastReportState=="complete") or StatusFaulted
-	// (otherwise). Supervisor set-sites that previously stamped
-	// StatusStopped now stamp StatusComplete or StatusFaulted instead.
+	// LoadAgent migration rewrites any "stopped" Status on read to
+	// StatusSuspended (QUM-1186). Supervisor set-sites no longer stamp it.
 	StatusStopped = "stopped"
 	// QUM-722: new lifecycle states for pause/death.
 	StatusPaused = "paused"
@@ -38,7 +36,7 @@ const (
 	// QUM-787: StatusComplete is the durable resting state for an agent
 	// that reported state=complete and had its runtime torn down. The
 	// agent's session_id, worktree, and branch are preserved — it is
-	// revivable via wake/delegate per the QUM-786 lifecycle arc. This
+	// revivable via wake per the QUM-786 lifecycle arc. This
 	// state replaces the previous overload of StatusStopped, which mixed
 	// "reported complete and torn down" with "clean subprocess exit
 	// without a completion report" (now StatusFaulted).
@@ -106,7 +104,7 @@ func IsResolvedOrphan(status string) bool {
 // the current code. LoadAgent migrates older (v0/v1) files forward on read and
 // SaveAgent stamps this value (QUM-625 M4; bumped to v2 for the QUM-851
 // Model / SystemPromptAppend fields).
-const CurrentSchemaVersion = 3
+const CurrentSchemaVersion = 4
 
 // AgentState holds the persistent metadata for a spawned agent.
 type AgentState struct {
@@ -146,14 +144,6 @@ type AgentState struct {
 	// current Blurb was produced. Used as the dirty-check baseline (refresh
 	// only when new activity postdates it). Zero until first generation.
 	BlurbAt time.Time `json:"blurb_at,omitempty"`
-
-	// Report fields — populated by the report_status MCP tool. See
-	// docs/archive/designs/messaging-overhaul.md §4.2.3.
-	LastReportType    string `json:"last_report_type,omitempty"` // back-compat: status, done, problem
-	LastReportMessage string `json:"last_report_message,omitempty"`
-	LastReportAt      string `json:"last_report_at,omitempty"`    // RFC3339
-	LastReportState   string `json:"last_report_state,omitempty"` // working, blocked, complete, failure
-	LastReportDetail  string `json:"last_report_detail,omitempty"`
 }
 
 // AgentsDir returns the path to the agents state directory under the given sprawl root.
@@ -162,61 +152,58 @@ func AgentsDir(sprawlRoot string) string {
 }
 
 // migrate brings a freshly-unmarshaled AgentState forward to the current
-// schema version (QUM-625 M4) and applies the QUM-787 stopped→{complete,
-// faulted} re-classification. Returns true if any field was rewritten so
-// LoadAgent can persist the normalized form back to disk.
+// schema version. Returns true if any field was rewritten so LoadAgent can
+// persist the normalized form back to disk.
 //
 // The v0 -> v1 migration splits the legacy combined Status axis. Pre-M4 code
 // overloaded Status with outcome tokens ("done"/"problem") that are not
-// livenesses. The migration:
+// livenesses, so those are rewritten to a pure liveness.
 //
-//  1. Derives LastReportState from the legacy outcome token (only when
-//     LastReportState is empty, so an explicit report value is never clobbered).
-//  2. Rewrites Status to a pure liveness when it currently holds a non-liveness
-//     value ("done"/"problem"/""): suspended if a session exists, else complete/
-//     faulted depending on whether a complete report was filed.
+// QUM-1186 changed what the legacy tokens map ONTO. The outcome axis
+// (LastReportState) is deleted, so there is no second field to record an
+// outcome in and nothing to consult when re-classifying:
 //
-// QUM-787 adds an additional always-on rewrite: any state file whose Status
-// is the legacy "stopped" sentinel is re-classified to StatusComplete when
-// LastReportState=="complete", else to StatusFaulted (the rare "clean exit
-// with no completion report" case is treated as unexpected). The rewrite is
-// idempotent — once Status is complete/faulted it stays.
+//   - "done"     -> StatusComplete. The token means the agent finished; that
+//     information is preserved on the Status axis rather than discarded.
+//   - "problem"  -> StatusFaulted.
+//   - ""         -> StatusSuspended.
+//   - "stopped"  -> StatusSuspended (always-on, not version-gated). It
+//     PREVIOUSLY split on LastReportState and defaulted to StatusFaulted.
+//     There is no longer any evidence to split on, and defaulting a legacy
+//     clean stop to `faulted` would reproduce on the READ path exactly the
+//     bug QUM-1186 D3 removed from the WRITE path: a clean exit nobody
+//     labelled is not a fault, and `faulted` is outside the auto-resume
+//     accept-set, so the mislabel would cost the agent on next startup.
 //
-// The v1 -> v2 migration (QUM-851) is a version-stamp only: the added Model and
-// SystemPromptAppend fields default to "" (type-default model, no append), which
-// is exactly the legacy behavior, so no field rewrite is needed. The migration
-// steps are gated independently so a v1 file only runs the v1→v2 stamp.
+// The SessionID-dependent branch is gone with it: a session cookie told us
+// whether the agent could be resumed, which is now decided purely by the
+// Status the tokens above map to.
 //
-// The v2 -> v3 migration (QUM-899) is likewise a version-stamp only: the added
-// Blurb and BlurbAt fields default to "" / zero time (no blurb yet), the correct
-// legacy behavior.
+// The v1 -> v2 (QUM-851) and v2 -> v3 (QUM-899) migrations are version-stamps
+// only; their added fields' zero values are the correct legacy behaviour.
+//
+// The v3 -> v4 migration (QUM-1186) is likewise a stamp. It marks state files
+// written after the report axis was deleted. NOTE the ONE-WAY DATA LOSS this
+// implies and which is intended: the last_report_type / _message / _at /
+// _state / _detail JSON keys no longer have struct fields, so they are dropped
+// silently from every existing state file on its next SaveAgent. There is no
+// consumer left to read them.
 func migrate(a *AgentState) bool {
 	mutated := false
 
 	if a.SchemaVersion < 1 {
-		// (a) Derive LastReportState from the legacy outcome token, only if empty.
-		if a.LastReportState == "" {
-			switch a.Status {
-			case StatusDone:
-				a.LastReportState = "complete"
-			case "problem":
-				a.LastReportState = "failure"
-			}
-		}
-
-		// (b) Rewrite Status only if it is a non-liveness value. Fall through
-		// to the QUM-787 stopped→{complete,faulted} re-classification below
-		// when no session exists.
+		// Rewrite Status only when it holds a non-liveness legacy token.
+		// QUM-1186: mapped straight onto the Status axis — there is no
+		// outcome axis left to record the token in.
 		switch a.Status {
-		case StatusDone, "problem", "":
-			if a.SessionID != "" {
-				a.Status = StatusSuspended
-			} else {
-				a.Status = StatusStopped
-			}
+		case StatusDone:
+			a.Status = StatusComplete
+		case "problem":
+			a.Status = StatusFaulted
+		case "":
+			a.Status = StatusSuspended
 		}
 
-		// (c) Stamp the v1 schema version.
 		a.SchemaVersion = 1
 		mutated = true
 	}
@@ -238,15 +225,18 @@ func migrate(a *AgentState) bool {
 		mutated = true
 	}
 
-	// QUM-787: re-classify any "stopped" Status (whether freshly migrated
-	// above or already on disk from older v1 writers) based on
-	// LastReportState. StatusStopped is no longer a write target.
+	// v3 -> v4 (QUM-1186): stamp-only. See the doc comment for the one-way
+	// removal of the last_report_* keys this version marks.
+	if a.SchemaVersion < 4 {
+		a.SchemaVersion = 4
+		mutated = true
+	}
+
+	// QUM-1186: re-classify the legacy "stopped" sentinel. ALWAYS-ON, not
+	// version-gated, because older v1 writers still emit it. It maps to
+	// StatusSuspended — see the doc comment for why NOT StatusFaulted.
 	if a.Status == StatusStopped {
-		if a.LastReportState == "complete" {
-			a.Status = StatusComplete
-		} else {
-			a.Status = StatusFaulted
-		}
+		a.Status = StatusSuspended
 		mutated = true
 	}
 

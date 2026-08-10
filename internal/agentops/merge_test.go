@@ -17,7 +17,14 @@ import (
 
 func TestMerge_TerminalChildrenIgnored(t *testing.T) {
 	terminalStatuses := []string{
-		state.StatusStopped,
+		// QUM-1186: state.StatusStopped was here. It is no longer reachable
+		// as a child Status — LoadAgent now migrates the legacy "stopped"
+		// sentinel to StatusSuspended (see internal/state migrate), and
+		// suspended is deliberately NOT a resolved orphan. A legacy stopped
+		// child therefore BLOCKS a parent merge where it previously did not.
+		// That is a real behaviour change on legacy state files, flagged to
+		// the manager rather than absorbed silently; it follows from mapping
+		// an unlabelled clean stop to "parked" instead of "faulted".
 		state.StatusFaulted,
 		state.StatusRetired,
 		state.StatusKilled,
