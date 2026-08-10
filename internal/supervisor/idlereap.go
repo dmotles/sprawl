@@ -301,22 +301,35 @@ func (r *Real) maybeReclaimIdle(sweepCtx context.Context, rt *AgentRuntime) {
 	assessment := assessIdle(inputs)
 	gate.Unlock()
 	if !assessment.Reap {
-		// Debug, not Info: this fires once per agent per sweep forever, and an
-		// Info-level line at that cadence is a log nobody can read. The level
-		// is the only concession — the CONTENT is identical to the reap line,
-		// because "why was this agent NOT reaped" is the question people will
-		// actually be asking once the reaper ships disabled by default, and a
-		// record that only explains reaps cannot answer it.
+		// QUM-1197: the level comes from refusalLevel, not from a constant here.
+		// The old rule was "Debug, not Info, because this fires once per agent
+		// per sweep forever" — true about the cadence, and wrong about the
+		// consequence: no slog level is configured outside cmd/hubd/main.go and
+		// slog's default is Info, so Debug did not make the record quiet, it
+		// made it ABSENT. A reap left a record and a refusal left nothing, with
+		// no knob to change it, and a five-run investigation on QUM-1197 could
+		// not answer "was this agent even assessed?". The CONTENT was always
+		// identical to the reap line; now the first refusal per reason reaches a
+		// shipped binary too, and only the repeats are demoted.
 		if assessment.Blocker == "disabled" {
 			// Six "unavailable"s would read as "nothing could be measured"
-			// when in fact nothing was ASKED. Review N3.
-			slog.Default().Debug("idle reclaim: disabled, no agent is reclaimed",
+			// when in fact nothing was ASKED. Review N3. Note real.go only
+			// constructs the reaper when the knob is > 0, so this arm is reached
+			// via a direct call or a mid-run knob change, not by a default
+			// install's sweep.
+			slog.Default().Log(context.Background(), r.refusalLevel(name, "disabled"),
+				"idle reclaim: disabled, no agent is reclaimed",
 				slog.String("agent", name))
 			return
 		}
-		logAssessment(slog.LevelDebug, "idle reclaim: agent not reclaimed", name, assessment, inputs)
+		logAssessment(r.refusalLevel(name, "assess:"+assessment.Blocker),
+			"idle reclaim: agent not reclaimed", name, assessment, inputs)
 		return
 	}
+	// The agent is reapable, so whatever it used to refuse for is over: forget
+	// it, or a later refusal for the same reason is demoted to Debug — i.e.
+	// invisible — for the rest of the process's life.
+	r.forgetRefusal(name)
 	// Declining here rather than mid-teardown is what keeps Shutdown from
 	// waiting out a full stop budget for a reap it never needed to start.
 	if sweepCtx != nil && sweepCtx.Err() != nil {
@@ -342,7 +355,11 @@ func (r *Real) maybeReclaimIdle(sweepCtx context.Context, rt *AgentRuntime) {
 		in := r.idleInputsFor(rt)
 		a := assessIdle(in)
 		if !a.Reap {
-			logAssessment(slog.LevelDebug, "idle reclaim: teardown abandoned, agent became active", name, a, in)
+			// Namespaced "abandon:" so this — the rarest and most interesting
+			// refusal in the file — cannot be swallowed by a routine phase-A
+			// refusal on the same term, and vice versa.
+			logAssessment(r.refusalLevel(name, "abandon:"+a.Blocker),
+				"idle reclaim: teardown abandoned, agent became active", name, a, in)
 			gate.Unlock()
 			return false, nil
 		}
@@ -409,10 +426,14 @@ func (r *Real) maybeReclaimIdle(sweepCtx context.Context, rt *AgentRuntime) {
 }
 
 // logAssessment emits the full six-term decision record. Every term is logged,
-// not just the deciding one, and each renders as idle/busy/UNAVAILABLE rather
+// not just the deciding one, and each renders as idle/busy/unavailable rather
 // than as a bool — flattening "unavailable" to "false" here would mislead the
 // next reader in exactly the direction D1a exists to prevent, and this line is
-// the only artifact a reap leaves behind.
+// the only artifact a reap or a refusal leaves behind.
+//
+// The level is a PARAMETER, not a per-message constant: the reap is always
+// Info, while a refusal's level is the caller's QUM-1197 dedup decision
+// (refusalLevel).
 func logAssessment(level slog.Level, msg, name string, a idleAssessment, in idleInputs) {
 	slog.Default().Log(context.Background(), level, msg,
 		slog.String("agent", name),
@@ -434,19 +455,77 @@ func logAssessment(level slog.Level, msg, name string, a idleAssessment, in idle
 // cannot complete promptly is abandoned rather than pinning the sweep.
 const idleReclaimStopBudget = 30 * time.Second
 
-// reclaimGate returns the per-agent mutex serialising a reap against a send.
-// Per-agent, not global: StopAfterTurn can block for the full runaway budget,
-// so one global gate would stall every send in the fleet behind one reap.
-func (r *Real) reclaimGate(name string) *sync.Mutex {
+// reclaimEntry is the per-agent reaper state. Two locks, deliberately not one:
+// gate is held ACROSS a whole teardown (up to idleReclaimStopBudget), and a
+// decision about a log level must never queue behind that.
+type reclaimEntry struct {
+	// gate serialises a reap against a send. Per-agent, not global:
+	// StopAfterTurn can block for the full runaway budget, so one global gate
+	// would stall every send in the fleet behind one reap.
+	gate sync.Mutex
+
+	// refusalMu guards lastRefusal ONLY. Lock order: gate → refusalMu.
+	refusalMu sync.Mutex
+	// lastRefusal is the key of the refusal last logged at Info for this agent.
+	// Empty means "no refusal outstanding", so the next one is news again.
+	lastRefusal string
+}
+
+// reclaimEntryFor returns the agent's entry, creating it on first use.
+func (r *Real) reclaimEntryFor(name string) *reclaimEntry {
 	r.reclaimMu.Lock()
 	defer r.reclaimMu.Unlock()
 	if r.reclaimGates == nil {
-		r.reclaimGates = make(map[string]*sync.Mutex)
+		r.reclaimGates = make(map[string]*reclaimEntry)
 	}
-	g, ok := r.reclaimGates[name]
+	e, ok := r.reclaimGates[name]
 	if !ok {
-		g = &sync.Mutex{}
-		r.reclaimGates[name] = g
+		e = &reclaimEntry{}
+		r.reclaimGates[name] = e
 	}
-	return g
+	return e
+}
+
+// reclaimGate returns the per-agent mutex serialising a reap against a send.
+func (r *Real) reclaimGate(name string) *sync.Mutex { return &r.reclaimEntryFor(name).gate }
+
+// refusalLevel is the QUM-1197 level policy for ONE refusal record, and the
+// reason the record is observable at all: slog's default level is Info and
+// nothing in this repo configures a level outside cmd/hubd/main.go, so a Debug
+// record is not a quieter record — it is no record.
+//
+// The first refusal under a given key is Info; identical repeats are demoted to
+// Debug. So a steady-state idle fleet costs ONE Info line per agent rather than
+// one per agent per sweep, which is what made Debug look like the only option.
+//
+// The key is the DECIDING term (the blocker), namespaced by call site by the
+// caller. Not the full six-term tuple: the non-deciding terms oscillate —
+// quiescent flips busy→idle the moment activity ages past the threshold while
+// in_turn keeps blocking — so a tuple key would change with no change of reason
+// and restore the flood. The accepted bound is that an agent whose BLOCKER
+// genuinely alternates costs one Info per sweep; that is an agent changing
+// state, and each line is real news.
+//
+// It returns the level rather than logging, so no handler's I/O runs under a
+// supervisor mutex.
+func (r *Real) refusalLevel(name, key string) slog.Level {
+	e := r.reclaimEntryFor(name)
+	e.refusalMu.Lock()
+	defer e.refusalMu.Unlock()
+	if e.lastRefusal == key {
+		return slog.LevelDebug
+	}
+	e.lastRefusal = key
+	return slog.LevelInfo
+}
+
+// forgetRefusal clears the dedup memory for an agent that has stopped refusing,
+// so its NEXT refusal is reported at Info even if the reason is the same one as
+// before. Without this the record silently goes dark again for any agent that
+// cycles between reapable and not.
+func (r *Real) forgetRefusal(name string) {
+	e := r.reclaimEntryFor(name)
+	e.refusalMu.Lock()
+	defer e.refusalMu.Unlock()
+	e.lastRefusal = ""
 }

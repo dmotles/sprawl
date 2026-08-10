@@ -189,13 +189,17 @@ type Real struct {
 	idleReclaimAfter *atomicDuration
 	idleReclaimSweep *atomicDuration
 
-	// reclaimMu guards reclaimGates only; reclaimGates holds the PER-AGENT
+	// reclaimMu guards the reclaimGates MAP only; each entry carries its own
+	// locks (see reclaimEntry in idlereap.go). The entry's gate is the PER-AGENT
 	// mutex that linearises Real.SendMessage's liveness decision + Enqueue
 	// against an idle reclaim. Per-agent rather than one global gate because a
 	// reclaim can block for the whole StopAfterTurn budget, and a global gate
-	// would stall every send in the fleet behind one reaping agent.
+	// would stall every send in the fleet behind one reaping agent. The entry
+	// also holds the QUM-1197 refusal-record dedup state under its own separate
+	// mutex — lock order is gate → refusalMu, never the reverse, because the
+	// phase-B abandon site logs with the gate already held.
 	reclaimMu    sync.Mutex
-	reclaimGates map[string]*sync.Mutex
+	reclaimGates map[string]*reclaimEntry
 }
 
 // realGitRevParseHEAD shells out to `git -C <dir> rev-parse HEAD`. stdio is

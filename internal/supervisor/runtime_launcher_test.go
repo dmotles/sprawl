@@ -1380,6 +1380,23 @@ func (h *captureSlogHandler) recordsWithMessage(sub string) []string {
 	return out
 }
 
+// recordsAtLevel is recordsWithMessage narrowed to an EXACT level. It lives
+// here rather than in the one test file that needs it so the two filters cannot
+// drift. QUM-1197: for the idle reaper's refusal record the level IS the
+// subject — a level-agnostic filter passes against a Debug-only record, which
+// in a shipped binary is no record at all.
+func (h *captureSlogHandler) recordsAtLevel(level slog.Level, sub string) []string {
+	h.mu.Lock()
+	defer h.mu.Unlock()
+	var out []string
+	for _, r := range h.records {
+		if r.Level == level && strings.Contains(r.Message, sub) {
+			out = append(out, renderSlogRecord(r))
+		}
+	}
+	return out
+}
+
 // installCaptureSlog swaps slog.Default() for a capturing handler for the
 // duration of the test and returns the capture sink.
 func installCaptureSlog(t *testing.T) *captureSlogHandler {
