@@ -3,14 +3,11 @@ package supervisor
 import (
 	"encoding/json"
 	"log/slog"
-	"strings"
 	"sync"
-	"time"
 
 	"github.com/dmotles/sprawl/internal/agentloop"
 	"github.com/dmotles/sprawl/internal/protocol"
 	runtimepkg "github.com/dmotles/sprawl/internal/runtime"
-	"github.com/dmotles/sprawl/internal/state"
 )
 
 // sweepMessagesReadToolName is the MCP tool name the delivery-confirmation
@@ -66,8 +63,10 @@ func (c *sweepCoordinator) Bind(wake func() error) {
 // It fires when a written stdin user message is confirmed consumed by its
 // isReplay echo, carrying the message's entryIDs. It increments the per-turn
 // delivered counter (once per delivered message) and flips each delivered
-// entry's on-disk state: task: prefixes mark the task as done; other entry IDs
-// are passed to agentloop.MarkDelivered.
+// entry's on-disk state via agentloop.MarkDelivered.
+//
+// QUM-1186: a `task:`-prefixed branch used to mark a delegated task done here.
+// The task subsystem is deleted; every entry ID is now an agentloop entry.
 func (c *sweepCoordinator) OnDelivered(entryIDs []string) {
 	if len(entryIDs) > 0 {
 		c.mu.Lock()
@@ -75,30 +74,6 @@ func (c *sweepCoordinator) OnDelivered(entryIDs []string) {
 		c.mu.Unlock()
 	}
 	for _, id := range entryIDs {
-		if strings.HasPrefix(id, "task:") {
-			taskID := strings.TrimPrefix(id, "task:")
-			found, err := state.GetTask(c.sprawlRoot, c.name, taskID)
-			if err != nil {
-				slog.Default().Warn(
-					"unified-runtime: get task on delivery failed",
-					slog.String("agent", c.name),
-					slog.String("task_id", taskID),
-					slog.Any("err", err),
-				)
-				continue
-			}
-			found.Status = "done"
-			found.DoneAt = time.Now().UTC().Format(time.RFC3339)
-			if err := state.UpdateTask(c.sprawlRoot, c.name, found); err != nil {
-				slog.Default().Warn(
-					"unified-runtime: mark task done failed",
-					slog.String("agent", c.name),
-					slog.String("task_id", taskID),
-					slog.Any("err", err),
-				)
-			}
-			continue
-		}
 		if err := agentloop.MarkDelivered(c.sprawlRoot, c.name, id); err != nil {
 			slog.Default().Warn(
 				"unified-runtime: mark delivered failed",

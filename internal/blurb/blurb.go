@@ -120,7 +120,6 @@ type Signals struct {
 	Delta        []agentloop.ActivityEntry
 	OmittedDelta int // older delta entries summarized out (see MaxDeltaEntries)
 	GitDiffStat  string
-	Tasks        []string
 	LinearKeys   []string
 }
 
@@ -237,14 +236,6 @@ func BuildPrompt(kind TriggerKind, s Signals) string {
 		b.WriteString("## Tool usage\n\n")
 		b.WriteString(hist)
 		b.WriteString("\n\n")
-	}
-
-	if len(s.Tasks) > 0 {
-		b.WriteString("## Task history\n\n")
-		for _, t := range s.Tasks {
-			fmt.Fprintf(&b, "- %s\n", t)
-		}
-		b.WriteString("\n")
 	}
 
 	if len(s.LinearKeys) > 0 {

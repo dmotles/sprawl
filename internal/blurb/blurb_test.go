@@ -238,7 +238,6 @@ func TestBuildPrompt_RefreshIncludesPrevBlurbDeltaAndSignals(t *testing.T) {
 		Delta:        []agentloop.ActivityEntry{{Kind: "tool_use", Tool: "Edit", Summary: "Edit state.go"}},
 		OmittedDelta: 12,
 		GitDiffStat:  " internal/blurb/blurb.go | 40 ++++",
-		Tasks:        []string{"implement blurb (in_progress)"},
 		LinearKeys:   []string{"QUM-899"},
 	}
 	p := BuildPrompt(TriggerRefresh, s)
@@ -246,7 +245,6 @@ func TestBuildPrompt_RefreshIncludesPrevBlurbDeltaAndSignals(t *testing.T) {
 		"Previously wired the heartbeat.",
 		"Edit state.go",
 		"internal/blurb/blurb.go",
-		"implement blurb (in_progress)",
 		"QUM-899",
 		"12", // omitted-count note, not a silent drop
 	} {

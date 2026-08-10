@@ -68,7 +68,6 @@ const (
 	RuntimeEventStarted     RuntimeEventKind = "started"
 	RuntimeEventStopped     RuntimeEventKind = "stopped"
 	RuntimeEventInterrupted RuntimeEventKind = "interrupted"
-	RuntimeEventTaskQueued  RuntimeEventKind = "task_queued"
 	RuntimeEventStateSynced RuntimeEventKind = "state_synced"
 	// RuntimeEventWoken fires after AgentRuntime.Wake swaps in a fresh
 	// handle for an offline session (faulted/paused/killed/died/resume_failed).
@@ -158,7 +157,6 @@ type RuntimeSnapshot struct {
 	TreePath       string
 	CreatedAt      string
 	Liveness       liveness.AgentLiveness
-	QueueDepth     int
 	WakeCount      int
 	InterruptCount int
 	LastReport     LastReport
@@ -1285,14 +1283,6 @@ func (r *AgentRuntime) stopWithFunc(_ context.Context, stop func(RuntimeHandle) 
 	return nil
 }
 
-// RecordQueuedTask updates the passive in-memory queue depth after task persistence succeeds.
-func (r *AgentRuntime) RecordQueuedTask() {
-	r.mu.Lock()
-	r.snapshot.QueueDepth++
-	r.mu.Unlock()
-	r.emit(RuntimeEventTaskQueued)
-}
-
 // SyncAgentState mirrors persisted agent state into the runtime snapshot.
 func (r *AgentRuntime) SyncAgentState(agentState *state.AgentState) {
 	if agentState == nil {
@@ -1301,7 +1291,6 @@ func (r *AgentRuntime) SyncAgentState(agentState *state.AgentState) {
 
 	r.mu.Lock()
 	updated := snapshotFromAgentState(agentState)
-	updated.QueueDepth = r.snapshot.QueueDepth
 	updated.WakeCount = r.snapshot.WakeCount
 	updated.InterruptCount = r.snapshot.InterruptCount
 	updated.Capabilities = r.snapshot.Capabilities

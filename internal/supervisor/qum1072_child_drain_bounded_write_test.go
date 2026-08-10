@@ -121,7 +121,6 @@ import (
 	"github.com/dmotles/sprawl/internal/agentloop"
 	"github.com/dmotles/sprawl/internal/backend"
 	"github.com/dmotles/sprawl/internal/messages"
-	"github.com/dmotles/sprawl/internal/state"
 )
 
 // qum1072TestTimeout is how long a bounded drain is given before the test calls it
@@ -477,32 +476,32 @@ func TestQUM1072_SenderMCPCallReturns_WhileRecipientWedged(t *testing.T) {
 	})
 }
 
-// TestQUM1072_FeedTasks_BoundedAgainstWedgedStdin covers the sibling write that
-// bounding drainPendingToStdin alone does NOT protect — found in code review.
+// TestQUM1072_Wake_BoundedAgainstWedgedStdin covers unifiedHandle.Wake() as a
+// SEPARATE entry point from WakeForDelivery.
 //
-// unifiedHandle.Wake calls feedTasks() BEFORE drainPendingToStdin(), and
-// Real.Delegate pokes inline via runtime.NotifyWake() → Wake. So on the delegate
-// path an unbounded feedTasks write hangs the DELEGATOR's MCP call forever and
-// the drain's deadline is never even reached. Same defect, same file, one call
-// away — and it makes "send_message/report_status are safe" only two thirds of
-// the fleet-hang story.
-func TestQUM1072_FeedTasks_BoundedAgainstWedgedStdin(t *testing.T) {
+// QUM-1186: this was TestQUM1072_FeedTasks_BoundedAgainstWedgedStdin. The
+// bounded-write invariant survives; only the feedTasks vehicle died. Wake()
+// used to call feedTasks() BEFORE drainPendingToStdin(), and the delegate poke
+// arrived through Wake, so an unbounded feedTasks write hung the delegator and
+// the drain's deadline was never reached. feedTasks is gone and Wake is now
+// the drain alone — but Wake remains independently reachable, so it keeps its
+// own arm rather than being folded into the WakeForDelivery tests. If a future
+// change re-adds a write ahead of the drain in Wake, this is what catches it.
+func TestQUM1072_Wake_BoundedAgainstWedgedStdin(t *testing.T) {
 	const deadline = 150 * time.Millisecond
 	withShortChildDrainTimeout(t, deadline)
-
-	logs := installCaptureSlog(t)
 
 	uh, mock, sprawlRoot := buildStartedUnifiedHandleForTest(t, backend.Capabilities{})
 	defer func() { _ = uh.Stop(context.Background()) }()
 
-	tk, err := state.EnqueueTask(sprawlRoot, "alice", "do the wedged task")
-	if err != nil {
-		t.Fatalf("EnqueueTask: %v", err)
+	if _, err := agentloop.Enqueue(sprawlRoot, "alice", agentloop.Entry{
+		ID: "id-qum1186-wake", ShortID: "id-qum1186-wake",
+		Class: agentloop.ClassAsync, From: "weave", Subject: "hi", Body: "do the wedged thing",
+	}); err != nil {
+		t.Fatalf("Enqueue async: %v", err)
 	}
 	mock.engageWriteWedge(t)
 
-	// Wake, not WakeForDelivery: this is the delegate-shaped entry point, and the
-	// ordering (feedTasks first) is exactly what makes this arm necessary.
 	done := make(chan time.Duration, 1)
 	start := time.Now()
 	go func() {
@@ -512,30 +511,18 @@ func TestQUM1072_FeedTasks_BoundedAgainstWedgedStdin(t *testing.T) {
 
 	select {
 	case elapsed := <-done:
-		// Wake does feedTasks THEN the drain; only the task write has anything to
-		// send here, so one deadline is the expected cost.
-		assertBounded(t, elapsed, deadline, "Wake (feedTasks)")
+		assertBounded(t, elapsed, deadline, "Wake")
 	case <-time.After(qum1072TestTimeout):
 		t.Fatalf("QUM-1072: unifiedHandle.Wake never returned within %v against a wedged stdin write.\n"+
-			"  feedTasks' write is unbounded, and it runs BEFORE the bounded drain — so\n"+
-			"  Real.Delegate → NotifyWake → Wake hangs the DELEGATOR's MCP call and never\n"+
-			"  reaches drainPendingToStdin's deadline at all.", qum1072TestTimeout)
+			"  Wake is a distinct entry point from WakeForDelivery; an unbounded write\n"+
+			"  reached through it hangs the caller's MCP call.", qum1072TestTimeout)
 	}
 
+	// THE NON-VACUITY CONTROL. Without this, a Wake that silently wrote nothing
+	// would satisfy the timing bound above while proving nothing.
 	assertAttempted(t, mock, []struct{ priority, bodyContains string }{
-		{"later", tk.ID},
+		{"next", "id-qum1186-wake"},
 	})
-
-	// The task is already flipped to in-progress, and feedTasks only feeds
-	// `queued` tasks — so this notification is NOT re-sent by a later poke and the
-	// WARN is the only record that it was lost.
-	recs := logs.recordsWithMessage("unified-runtime: feedTasks write failed")
-	if len(recs) != 1 {
-		t.Fatalf("WARN records for a timed-out feedTasks write = %d, want exactly 1 — the task is marked in-progress but its notification never landed, with no retry\nall logs:\n%s", len(recs), logs.String())
-	}
-	if !strings.Contains(recs[0], tk.ID) {
-		t.Fatalf("feedTasks WARN does not name the task whose notification was lost:\n%s", recs[0])
-	}
 }
 
 // TestQUM1072_ChildDrain_UnwedgedWriteStillDelivers is the positive control that

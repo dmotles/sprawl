@@ -4,7 +4,6 @@ import (
 	"context"
 	"errors"
 	"io"
-	"log/slog"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -16,18 +15,16 @@ import (
 	"github.com/dmotles/sprawl/internal/agentloop"
 	backendpkg "github.com/dmotles/sprawl/internal/backend"
 	backendclaude "github.com/dmotles/sprawl/internal/backend/claude"
-	"github.com/dmotles/sprawl/internal/inboxprompt"
 	"github.com/dmotles/sprawl/internal/protocol"
 	runtimepkg "github.com/dmotles/sprawl/internal/runtime"
 	"github.com/dmotles/sprawl/internal/state"
-	"github.com/dmotles/sprawl/internal/supervisor/liveness"
 	"github.com/dmotles/sprawl/internal/usage"
 )
 
 // childDrainWriteTimeout bounds EVERY stdin write made on behalf of a child
 // (QUM-1072): the drain's frames — now written by drain.go's shared
 // writeInjection, which reads this through childDrainPolicy's writeTimeout func
-// seam — AND the task write in feedTasks below. It deliberately shares weave's
+// seam. It deliberately shares weave's
 // single literal (weaveDrainWriteTimeout, weave_handle.go): QUM-1062 unified the
 // two drains behind one implementation, and two independent literals would drift
 // back apart.
@@ -107,7 +104,6 @@ type preparedLaunch struct {
 //     well-defined)
 //  8. rt.Start            — start the turn loop; first PostTurnSweep / first
 //     OnQueueItemDelivered fire only after this returns
-//  9. handle.feedTasks    — drain queued tasks into the runtime queue
 //
 // Each phase's rollback unwinds only what it constructed. The
 // closure-capture-race fragility that motivated QUM-584 is gone by
@@ -219,7 +215,6 @@ func (s *inProcessUnifiedStarter) Start(spec RuntimeStartSpec) (RuntimeHandle, e
 	}
 
 	// Phase 9: drain queued tasks from on-disk state into the runtime queue.
-	handle.feedTasks()
 	return handle, nil
 }
 
@@ -471,7 +466,6 @@ type unifiedHandle struct {
 	sprawlRoot    string
 	name          string
 
-	tasksMu  sync.Mutex
 	stopOnce sync.Once
 	stopErr  error
 
@@ -496,76 +490,6 @@ func (h *unifiedHandle) StopWaitTimedOut() bool {
 	return h.stopWaitTimedOut.Load()
 }
 
-// feedTasks drains queued tasks from on-disk state into the runtime queue,
-// flipping each to in-progress as it is enqueued. Idempotent across concurrent
-// callers via tasksMu and EntryID-based dedup in the runtime queue.
-func (h *unifiedHandle) feedTasks() {
-	if h.rt.State().Liveness == liveness.Stopped {
-		return
-	}
-	h.tasksMu.Lock()
-	defer h.tasksMu.Unlock()
-	tasks, err := state.ListTasks(h.sprawlRoot, h.name)
-	if err != nil {
-		slog.Default().Warn(
-			"unified-runtime: feedTasks list failed",
-			slog.String("agent", h.name),
-			slog.Any("err", err),
-		)
-		return
-	}
-	for _, tk := range tasks {
-		if tk.Status != "queued" {
-			continue
-		}
-		tk.Status = "in-progress"
-		tk.StartedAt = time.Now().UTC().Format(time.RFC3339)
-		if err := state.UpdateTask(h.sprawlRoot, h.name, tk); err != nil {
-			slog.Default().Warn(
-				"unified-runtime: feedTasks update failed",
-				slog.String("agent", h.name),
-				slog.String("task_id", tk.ID),
-				slog.Any("err", err),
-			)
-			continue
-		}
-		prompt := tk.Prompt
-		if tk.PromptFile != "" {
-			prompt = "You have a new task. Read it from @" + tk.PromptFile + " and begin working."
-		}
-		// QUM-817 + Amendment 1: a delegated task is written to stdin as a
-		// `later`-priority system message wrapped in the §3.2 task tag, so it
-		// defers to AFTER the current turn (a clean task boundary) rather than
-		// splicing mid-turn.
-		//
-		// BOUNDED (QUM-1072), for the same reason as the two writes in
-		// drainPendingToStdin — and this one is not merely symmetric, it is the
-		// path the drain's bound could NOT protect. Real.Delegate pokes inline via
-		// `runtime.NotifyWake()` → unifiedHandle.Wake, which calls feedTasks
-		// BEFORE drainPendingToStdin. So an unbounded write here hangs the
-		// DELEGATOR's MCP call forever and never reaches the bounded drain at all.
-		//
-		// Task state is already flipped to "in-progress" above, so a timed-out
-		// write means the task is marked started but its notification never landed
-		// — it is NOT re-fed by a later poke (this loop skips non-"queued" tasks).
-		// That makes the WARN the only record, hence the verbatim task ID.
-		d := childDrainWriteTimeout.get()
-		writeCtx, cancelWrite := context.WithTimeout(context.Background(), d)
-		_, err := h.rt.WriteSystemMessage(writeCtx,
-			inboxprompt.BuildTaskNotification(tk.ID, prompt), "later", []string{"task:" + tk.ID})
-		cancelWrite()
-		if err != nil {
-			slog.Default().Warn(
-				"unified-runtime: feedTasks write failed — the task is already marked in-progress and this loop only feeds `queued` tasks, so its notification will NOT be re-sent by a later poke",
-				slog.String("agent", h.name),
-				slog.String("task_id", tk.ID),
-				slog.Duration("deadline", d),
-				slog.Any("err", err),
-			)
-		}
-	}
-}
-
 func (h *unifiedHandle) Interrupt(ctx context.Context) error {
 	// Delegates to UnifiedRuntime.Interrupt, which forwards to the backend
 	// session unconditionally (QUM-435) and additionally drives runtime-state
@@ -574,7 +498,6 @@ func (h *unifiedHandle) Interrupt(ctx context.Context) error {
 }
 
 func (h *unifiedHandle) Wake() error {
-	h.feedTasks()
 	h.drainPendingToStdin()
 	return nil
 }

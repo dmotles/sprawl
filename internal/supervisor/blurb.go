@@ -2,7 +2,6 @@ package supervisor
 
 import (
 	"context"
-	"fmt"
 	"io"
 	"log/slog"
 	"os/exec"
@@ -13,10 +12,6 @@ import (
 	"github.com/dmotles/sprawl/internal/blurb"
 	"github.com/dmotles/sprawl/internal/state"
 )
-
-// blurbTaskFirstLineMax caps how much of a task prompt's first line is fed into
-// the blurb signal, so a long delegated prompt doesn't dominate the context.
-const blurbTaskFirstLineMax = 120
 
 // asyncGenerateBlurb is the default dispatchBlurb seam: it fires the generation
 // in a background goroutine (context.Background so it outlives the request) and
@@ -120,14 +115,11 @@ func (r *Real) assembleBlurbSignals(st *state.AgentState) blurb.Signals {
 		gitDiff, _ = r.gitDiffStat(st.Worktree)
 	}
 
-	tasks := r.blurbTaskSummaries(st.Name)
-
-	srcs := make([]string, 0, len(delta)+len(tasks)+2)
+	srcs := make([]string, 0, len(delta)+2)
 	srcs = append(srcs, st.Prompt, st.Blurb)
 	for _, e := range delta {
 		srcs = append(srcs, e.Summary)
 	}
-	srcs = append(srcs, tasks...)
 
 	return blurb.Signals{
 		AgentName:    st.Name,
@@ -137,31 +129,8 @@ func (r *Real) assembleBlurbSignals(st *state.AgentState) blurb.Signals {
 		Delta:        delta,
 		OmittedDelta: omitted,
 		GitDiffStat:  gitDiff,
-		Tasks:        tasks,
 		LinearKeys:   blurb.ExtractLinearKeys(srcs...),
 	}
-}
-
-// blurbTaskSummaries renders each queued/completed task as a compact
-// "first-line [status]" signal line.
-func (r *Real) blurbTaskSummaries(name string) []string {
-	tasks, err := state.ListTasks(r.sprawlRoot, name)
-	if err != nil || len(tasks) == 0 {
-		return nil
-	}
-	out := make([]string, 0, len(tasks))
-	for _, t := range tasks {
-		first := t.Prompt
-		if i := strings.IndexByte(first, '\n'); i >= 0 {
-			first = first[:i]
-		}
-		first = strings.TrimSpace(first)
-		if len(first) > blurbTaskFirstLineMax {
-			first = first[:blurbTaskFirstLineMax]
-		}
-		out = append(out, fmt.Sprintf("%s [%s]", first, t.Status))
-	}
-	return out
 }
 
 // realGitDiffStat resolves the `git diff --stat main...HEAD` signal for a

@@ -157,9 +157,6 @@ func TestAgentRuntime_SnapshotSeedsFromAgentState(t *testing.T) {
 	if snap.Liveness != liveness.Unstarted {
 		t.Fatalf("Lifecycle = %q, want %q", snap.Liveness, liveness.Unstarted)
 	}
-	if snap.QueueDepth != 0 {
-		t.Fatalf("QueueDepth = %d, want 0", snap.QueueDepth)
-	}
 }
 
 func TestAgentRuntime_StartInterruptQueueAndSyncEmitSnapshotsWithoutTmux(t *testing.T) {
@@ -187,19 +184,19 @@ func TestAgentRuntime_StartInterruptQueueAndSyncEmitSnapshotsWithoutTmux(t *test
 		t.Fatalf("Interrupt() error: %v", err)
 	}
 
-	rt.RecordQueuedTask()
-
 	updated := testAgentState("alice")
 	updated.LastReportState = "working"
 	updated.LastReportMessage = "writing tests"
 	updated.LastReportDetail = "red phase"
 	rt.SyncAgentState(updated)
 
-	gotKinds := nextRuntimeEventKinds(t, events, 4)
+	// QUM-1186: the RuntimeEventTaskQueued step is gone with the task
+	// subsystem. The Started -> Interrupted -> StateSynced ORDERING is the
+	// surviving subject and is still asserted.
+	gotKinds := nextRuntimeEventKinds(t, events, 3)
 	wantKinds := []RuntimeEventKind{
 		RuntimeEventStarted,
 		RuntimeEventInterrupted,
-		RuntimeEventTaskQueued,
 		RuntimeEventStateSynced,
 	}
 	for i, want := range wantKinds {
@@ -224,9 +221,6 @@ func TestAgentRuntime_StartInterruptQueueAndSyncEmitSnapshotsWithoutTmux(t *test
 	snap := rt.Snapshot()
 	if snap.Liveness != liveness.Running {
 		t.Fatalf("Lifecycle = %q, want %q", snap.Liveness, liveness.Running)
-	}
-	if snap.QueueDepth != 1 {
-		t.Fatalf("QueueDepth = %d, want 1", snap.QueueDepth)
 	}
 	if snap.InterruptCount != 1 {
 		t.Fatalf("InterruptCount = %d, want 1", snap.InterruptCount)
@@ -590,7 +584,11 @@ func TestAgentRuntime_CancelSubscriptionStopsDeliveryWithoutClosingChannel(t *te
 
 	events, cancel := rt.Subscribe(1)
 	cancel()
-	rt.RecordQueuedTask()
+	// QUM-1186: RecordQueuedTask was used here purely as an EVENT SOURCE, not
+	// as the subject. SyncAgentState is the substitute — it emits
+	// RuntimeEventStateSynced, so a live subscription would receive something
+	// and this test would fail if the cancel did not take effect.
+	rt.SyncAgentState(testAgentState("alice"))
 
 	select {
 	case _, ok := <-events:
