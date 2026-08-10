@@ -316,16 +316,25 @@ func (r *AgentRuntime) InTurnObserved() (inTurn bool, observed bool) {
 	if h == nil {
 		return false, false
 	}
-	if probe, ok := h.(turnProbe); ok {
-		inTurn, observed = probe.InTurn(), true
+	// The phase machine is REQUIRED, not merely preferred. Accepting the
+	// session probe's "not in turn" when the authority is absent would be a
+	// negative answer derived from an unavailable observation — the D1a defect
+	// wearing a union's clothes. Where the authority cannot be read, the whole
+	// term is unavailable and the agent is never reaped.
+	p, ok := h.(unifiedRuntimeProvider)
+	if !ok {
+		return false, false
 	}
-	if p, ok := h.(unifiedRuntimeProvider); ok {
-		if urt := p.UnifiedRuntime(); urt != nil {
-			inTurn = inTurn || urt.State().InTurn
-			observed = true
-		}
+	urt := p.UnifiedRuntime()
+	if urt == nil {
+		return false, false
 	}
-	return inTurn, observed
+	inTurn = urt.State().InTurn
+	// The session probe can only ADD busy-ness, never subtract it.
+	if probe, pok := h.(turnProbe); pok {
+		inTurn = inTurn || probe.InTurn()
+	}
+	return inTurn, true
 }
 
 // InFlightSystemObserved reports how many durable entry IDs the runtime is
@@ -831,10 +840,62 @@ func (r *AgentRuntime) Pause(ctx context.Context, timeout time.Duration) (clean 
 // is runtime_stopafterturn_test.go plus idlereap_race_test.go — read both
 // before deleting this.
 func (r *AgentRuntime) StopAfterTurn(ctx context.Context, timeout time.Duration, reason stopReason) error {
-	stop := func() error {
+	_, err := r.StopAfterTurnIf(ctx, timeout, reason, nil)
+	return err
+}
+
+// stopGuard is consulted immediately before each teardown attempt inside
+// StopAfterTurnIf. It answers two things at once, and the second is why it is
+// not a plain `func() bool`:
+//
+//   - proceed: is the teardown still the right thing to do, NOW?
+//   - release: if proceed, the caller MUST call this after the stop returns.
+//     It exists so the guard can hold a lock ACROSS the check and the stop,
+//     making "still idle" and "stopped" a single atomic step against whatever
+//     the guard is racing (for the reaper, Real.SendMessage's per-agent
+//     reclaim gate). A guard that released before returning would only
+//     re-check, not exclude — and a re-check that is not held is just a
+//     narrower window.
+//
+// When proceed is false the guard has already released whatever it took, and
+// release is nil.
+type stopGuard func() (proceed bool, release func())
+
+// StopAfterTurnIf is StopAfterTurn with an ABANDONABLE teardown.
+//
+// StopAfterTurn stops on every arm — turn completed, interrupted, failed,
+// faulted, bus closed, ctx cancelled, and the runaway timer. That was correct
+// while its only caller was report_status(complete), because the agent had
+// declared itself finished: the stop was CONSENTED, so "stop no matter what"
+// was the right semantics. The idle reaper stops an agent that has said
+// nothing at all, so the same code now means something different — the
+// function did not change, the meaning of calling it did. In particular the
+// timer arm is a mid-turn kill by construction, and the reaper's decision is
+// taken BEFORE the wait, so an inbound message can wake the agent into real
+// work inside the window.
+//
+// guard closes that: it is re-consulted immediately before every stop,
+// including the timer arm, and can hold a lock across the check and the stop.
+// Returns stopped=false, err=nil when the guard declined — the caller should
+// treat that as "not reclaimed" and let the next sweep reconsider. A ticker
+// that runs forever can afford to lose a race; it cannot afford to win one
+// wrongly.
+//
+// guard == nil restores the unconditional StopAfterTurn behaviour.
+func (r *AgentRuntime) StopAfterTurnIf(ctx context.Context, timeout time.Duration, reason stopReason, guard stopGuard) (stopped bool, err error) {
+	stop := func() (bool, error) {
+		if guard != nil {
+			proceed, release := guard()
+			if !proceed {
+				return false, nil
+			}
+			if release != nil {
+				defer release()
+			}
+		}
 		stopCtx, cancel := context.WithTimeout(context.Background(), runtimeStopTimeout)
 		defer cancel()
-		return r.StopWithReason(stopCtx, reason)
+		return true, r.StopWithReason(stopCtx, reason)
 	}
 
 	urt := r.UnifiedRuntime()

@@ -87,7 +87,7 @@ func TestIdleReaper_Loop_SweepsOnEveryTick(t *testing.T) {
 	}
 }
 
-// TestIdleReaper_StartedIsSetInsideTheGoroutine: with a NewTicker that never
+// TestIdleReaper_LoopReachesItsTickerInstall: with a NewTicker that never
 // delivers, Started() must still flip — evidence the loop goroutine got as far
 // as installing its ticker, rather than evidence that a struct was built.
 //
@@ -100,7 +100,7 @@ func TestIdleReaper_Loop_SweepsOnEveryTick(t *testing.T) {
 // that marks launched without a goroutine wedges Stop() on doneCh, and the
 // recorded control for that mutation was a 20s test-binary timeout panic, not
 // a clean failure.
-func TestIdleReaper_StartedIsSetInsideTheGoroutine(t *testing.T) {
+func TestIdleReaper_LoopReachesItsTickerInstall(t *testing.T) {
 	t.Parallel()
 	ir := newIdleReaper(idleReaperDeps{
 		Registry:  &fakeIdleLister{},
@@ -189,6 +189,11 @@ func TestNewReal_IdleReaperDisabledWhenThresholdZero(t *testing.T) {
 		t.Fatalf("NewReal: %v", err)
 	}
 
+	// 500ms against the paired positive's observed cost: in
+	// TestNewReal_StartsAndStopsIdleReaper the goroutine sets Started() within
+	// a single 10ms poll, so 500ms is ~50x the margin the positive needs. The
+	// pairing is what makes this window defensible — a window nobody has
+	// watched the positive fit inside is just a guess.
 	deadline := time.Now().Add(500 * time.Millisecond)
 	for time.Now().Before(deadline) {
 		if r.idleReaper != nil && r.idleReaper.Started() {

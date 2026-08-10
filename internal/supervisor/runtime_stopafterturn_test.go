@@ -233,3 +233,89 @@ func TestStopAfterTurn_NoUnifiedRuntimeStopsImmediately(t *testing.T) {
 // begins after the idle decision, and the StatusIdle resting stamp — is pinned
 // in idlereap_race_test.go. The e2e coverage that report-then-send.sh used to
 // carry re-homes onto scripts/e2e-tests/idle-reclaim.sh and its matrix row.
+
+// --- QUM-1186: the abandonable stop -----------------------------------------
+//
+// StopAfterTurn stops on EVERY arm, including the runaway timer. That was
+// correct when its only caller was report_status(complete) — the agent had
+// consented. The idle reaper stops an agent that has said nothing, so the
+// timer arm became a mid-turn kill by construction, and the reaper's decision
+// is taken before the wait even begins.
+
+// TestStopAfterTurnIf_TimerArm_HonoursAGuardThatDeclines is the load-bearing
+// one: the runaway timer fires while the agent is STILL in a turn, and the
+// guard says the teardown is no longer wanted. Under StopAfterTurn this is an
+// unconditional kill.
+func TestStopAfterTurnIf_TimerArm_HonoursAGuardThatDeclines(t *testing.T) {
+	tmp := t.TempDir()
+	rt, handle := newStopAfterTurnRuntime(t, tmp, true /* inTurn */)
+
+	var consulted atomic.Int64
+	guard := func() (bool, func()) {
+		consulted.Add(1)
+		return false, nil
+	}
+
+	stopped, err := rt.StopAfterTurnIf(context.Background(), 100*time.Millisecond, stopReasonIdleReclaim, guard)
+	if err != nil {
+		t.Fatalf("StopAfterTurnIf: %v", err)
+	}
+	if stopped {
+		t.Error("stopped = true although the guard declined")
+	}
+	if got := handle.stopCalls.Load(); got != 0 {
+		t.Errorf("stopCalls = %d after the runaway timer fired on an agent whose guard declined, want 0. "+
+			"The timer arm must be abandonable, or a reaper whose decision has gone stale kills an agent mid-work", got)
+	}
+	if consulted.Load() == 0 {
+		t.Error("the guard was never consulted; the timer arm bypassed it entirely")
+	}
+	if !rt.SubprocessAlive() {
+		t.Error("SubprocessAlive() = false after an abandoned teardown")
+	}
+}
+
+// TestStopAfterTurnIf_GuardHoldsItsLockAcrossTheStop pins the reason the guard
+// returns a release func rather than a bool. A guard that released before
+// returning would only RE-CHECK; whatever it is excluding could then land
+// between the check and the stop. Holding across the stop is what makes
+// "still idle" and "stopped" one atomic step.
+func TestStopAfterTurnIf_GuardHoldsItsLockAcrossTheStop(t *testing.T) {
+	tmp := t.TempDir()
+	rt, handle := newStopAfterTurnRuntime(t, tmp, false /* not in turn */)
+
+	var stopCallsAtRelease int64 = -1
+	guard := func() (bool, func()) {
+		return true, func() { stopCallsAtRelease = handle.stopCalls.Load() }
+	}
+
+	stopped, err := rt.StopAfterTurnIf(context.Background(), time.Second, stopReasonIdleReclaim, guard)
+	if err != nil {
+		t.Fatalf("StopAfterTurnIf: %v", err)
+	}
+	if !stopped {
+		t.Fatal("stopped = false although the guard allowed the teardown")
+	}
+	if stopCallsAtRelease != 1 {
+		t.Errorf("stopCalls at release time = %d, want 1 — release must run AFTER the stop, or the guard's lock does not span the stop",
+			stopCallsAtRelease)
+	}
+}
+
+// TestStopAfterTurnIf_NilGuard_IsUnconditional keeps the original contract
+// available and pins that adding the guard did not change the no-guard path.
+func TestStopAfterTurnIf_NilGuard_IsUnconditional(t *testing.T) {
+	tmp := t.TempDir()
+	rt, handle := newStopAfterTurnRuntime(t, tmp, true /* inTurn */)
+
+	stopped, err := rt.StopAfterTurnIf(context.Background(), 100*time.Millisecond, stopReasonNone, nil)
+	if err != nil {
+		t.Fatalf("StopAfterTurnIf: %v", err)
+	}
+	if !stopped {
+		t.Error("stopped = false with a nil guard; the timer arm must still stop unconditionally")
+	}
+	if got := handle.stopCalls.Load(); got != 1 {
+		t.Errorf("stopCalls = %d with a nil guard, want 1", got)
+	}
+}

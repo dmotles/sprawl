@@ -27,6 +27,14 @@
 #      threshold window must still be alive and must NOT be `idle`. Direction:
 #      MUST STAY QUIET. Without this, P3 could be passing because the harness
 #      kills children for some unrelated reason.
+#      Its precondition is asserted from /proc, not assumed from the prompt:
+#      an INSTRUCTION to an agent is not an OBSERVATION of an agent. The first
+#      version of this phase asserted only that a child we had TOLD to run
+#      `sleep 90` was alive later, which cannot distinguish "the reaper spares
+#      busy agents" from "the model finished early and was legitimately
+#      reclaimed" — it measured our own prompt. It reported a defect that was
+#      never established. A live `sleep` process in the child's tree, checked
+#      at BOTH ends of the window, is the observation that claim needs.
 #   6. POSITIVE CONTROL for the knob: relaunch with idle_reclaim.after=0 and
 #      show a comparably idle child is NOT reclaimed. Without this, P3 could be
 #      passing for a reason that has nothing to do with the reaper.
@@ -282,7 +290,11 @@ test_run() {
     echo ""
     echo "=== Phase 5: NEGATIVE CONTROL — a busy child survives the whole threshold window ==="
     local BRANCH_BUSY="qum1186-busy-${SUFFIX}"
-    local BUSY_SECS=$((IR_THRESHOLD_SECS * 3))
+    # 10x the threshold: the window we observe is ~1.5x the threshold, so the
+    # tool call has ample headroom to outlive it. The first version used 3x and
+    # the sleep still ended first, which cost a whole run to a precondition
+    # failure rather than a verdict.
+    local BUSY_SECS=$((IR_THRESHOLD_SECS * 10))
     ir_spawn_child "$SESSION" "$BRANCH_BUSY" \
         "You are a QUM-1186 busy-agent control. Run exactly one Bash command: sleep ${BUSY_SECS}. When it finishes, reply BUSY_DONE and stop. Do not call any other tools." \
         "SPAWNB_${SUFFIX}"
@@ -301,14 +313,65 @@ test_run() {
         e2e_print_results
         return 1
     fi
-    pass "P5a: busy control spawned (PID=$PID_BUSY, running sleep ${BUSY_SECS})"
+
+    # THE CONTROL'S OWN PRECONDITION, and the reason this row was rewritten:
+    # an INSTRUCTION to an agent is not an OBSERVATION of an agent. Asserting
+    # "a child we told to sleep 90 is alive later" cannot distinguish a reaper
+    # that spares busy agents from a model that finished early and was
+    # legitimately reclaimed — the control would have been measuring our own
+    # prompt. So wait for a real `sleep` process inside the child's tree: that
+    # is an OS-level fact that the tool call is genuinely in flight.
+    local SLEEP_PID=""
+    local sp_elapsed=0
+    while [ "$sp_elapsed" -lt 180 ]; do
+        SLEEP_PID=$(pgrep -P "$PID_BUSY" -f "sleep" 2>/dev/null | head -1 || true)
+        if [ -z "$SLEEP_PID" ]; then
+            # The CLI may run Bash under an intermediate shell, so also accept a
+            # `sleep <BUSY_SECS>` anywhere under this claude's descendants.
+            SLEEP_PID=$(pgrep -f "sleep ${BUSY_SECS}" 2>/dev/null | head -1 || true)
+        fi
+        [ -n "$SLEEP_PID" ] && break
+        sleep 2
+        sp_elapsed=$((sp_elapsed + 2))
+    done
+    if [ -z "$SLEEP_PID" ]; then
+        fail "P5a: no live 'sleep ${BUSY_SECS}' process appeared within 180s, so the busy child was never observably mid-tool-call. This control CANNOT run without that precondition — asserting on a child we merely instructed to be busy would measure our prompt, not the reaper."
+        pgrep -af 'sleep|claude' >&2 || true
+        capture_pane "$SESSION" | tail -60 >&2
+        e2e_print_results
+        return 1
+    fi
+    pass "P5a: busy control is OBSERVABLY mid-tool-call (claude PID=$PID_BUSY, live sleep PID=$SLEEP_PID)"
 
     # Sleep past the threshold + a sweep, while the child is demonstrably in a
-    # turn. The reaper must observe InTurn and refuse.
+    # turn. The reaper must observe the turn and refuse.
     sleep $((IR_THRESHOLD_SECS + IR_SWEEP_SECS * 3))
 
+    # Decompose the two ways this can end badly, because they mean opposite
+    # things and conflating them is how the first version of this row reported a
+    # defect that was never established:
+    #
+    #   claude GONE          -> product failure. It was observably mid-tool-call
+    #                           when the window opened, so it was reaped at work.
+    #   claude alive, no sleep -> the control's precondition lapsed. No verdict is
+    #                           available in either direction; say so and fail
+    #                           rather than bank an unearned pass.
+    if ! kill -0 "$PID_BUSY" 2>/dev/null; then
+        fail "P5b: busy child PID $PID_BUSY was killed. It was OBSERVABLY mid-tool-call when this window opened (live sleep PID $SLEEP_PID), so the reaper tore down an agent that was doing work. The predicate's turn term is not blocking the reap."
+        cat "$STATE_BUSY" >&2 2>/dev/null || true
+        e2e_print_results
+        return 1
+    fi
+    local SLEEP_STILL
+    SLEEP_STILL=$(pgrep -P "$PID_BUSY" -f "sleep" 2>/dev/null | head -1 || true)
+    if [ -z "$SLEEP_STILL" ] && ! kill -0 "$SLEEP_PID" 2>/dev/null; then
+        fail "P5b: PRECONDITION LAPSED, not a product verdict. The child's claude PID $PID_BUSY is alive, but no 'sleep' remains in its process tree, so it was not observably busy for the whole ${IR_THRESHOLD_SECS}s+ window. A pass here would be unearned — the reaper may simply have had nothing to reap yet."
+        e2e_print_results
+        return 1
+    fi
+
     if kill -0 "$PID_BUSY" 2>/dev/null; then
-        pass "P5b: busy child PID $PID_BUSY still alive after $((IR_THRESHOLD_SECS + IR_SWEEP_SECS * 3))s (> the ${IR_THRESHOLD_SECS}s threshold) — the reaper did not cut off a running turn"
+        pass "P5b: busy child PID $PID_BUSY still alive after $((IR_THRESHOLD_SECS + IR_SWEEP_SECS * 3))s (> the ${IR_THRESHOLD_SECS}s threshold), with its sleep PID $SLEEP_PID still in flight — the reaper did not cut off a running turn"
     else
         fail "P5b: busy child PID $PID_BUSY was killed while mid-turn. The predicate's InTurn term is not blocking the reap, and work is being destroyed."
         cat "$STATE_BUSY" >&2 2>/dev/null || true

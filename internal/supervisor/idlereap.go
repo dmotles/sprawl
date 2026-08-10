@@ -292,13 +292,38 @@ func (r *Real) maybeReclaimIdle(sweepCtx context.Context, rt *AgentRuntime) {
 		return
 	}
 
-	// Phase B. StopAfterTurn, never Stop: its subscribe-before-check ordering
-	// is the existing closer for the "a turn began between the check and the
-	// teardown" race, and stopReasonIdleReclaim is what rests the agent at
-	// StatusIdle rather than suspended.
+	// Phase B. StopAfterTurnIf, never Stop and never the unguarded
+	// StopAfterTurn. Two distinct protections, and both are needed:
+	//
+	//   - subscribe-before-check DEFERS the teardown past a turn that began
+	//     after phase A;
+	//   - the guard ABANDONS it. Every StopAfterTurn arm stops, including the
+	//     runaway timer, so deferral alone still kills an agent that acquired
+	//     real work during the wait — one turn later, silently. A stop that can
+	//     only be deferred is not enough when the agent never consented to it.
+	//
+	// The guard holds the reclaim gate ACROSS the re-check and the stop, so
+	// "still idle" and "stopped" are one step against Real.SendMessage rather
+	// than two. Releasing before the stop would only re-check, which is a
+	// narrower window, not a closed one.
+	guard := func() (bool, func()) {
+		gate.Lock()
+		if a := assessIdle(r.idleInputsFor(rt)); !a.Reap {
+			gate.Unlock()
+			return false, nil
+		}
+		return true, gate.Unlock
+	}
 	ctx, cancel := context.WithTimeout(context.Background(), idleReclaimStopBudget)
 	defer cancel()
-	stopErr := rt.StopAfterTurn(ctx, idleReclaimStopBudget, stopReasonIdleReclaim)
+	stopped, stopErr := rt.StopAfterTurnIf(ctx, idleReclaimStopBudget, stopReasonIdleReclaim, guard)
+	if !stopped && stopErr == nil {
+		// Abandoned: the agent became active while we waited. Nothing was torn
+		// down and nothing needs waking — the next sweep reconsiders. A ticker
+		// that runs forever can afford to lose a race; it cannot afford to win
+		// one wrongly.
+		return
+	}
 	// ctx is deliberately NOT derived from sweepCtx. A teardown already under
 	// way must run to completion, and the backstop below must be able to wake
 	// an agent whose mail arrived mid-reap even if the supervisor is shutting
@@ -308,18 +333,27 @@ func (r *Real) maybeReclaimIdle(sweepCtx context.Context, rt *AgentRuntime) {
 	// Phase C.
 	gate.Lock()
 	defer gate.Unlock()
+	if stopErr != nil {
+		// A failed StopWithReason leaves the handle attached and the process
+		// alive — there is nothing to revive, and Wake would return
+		// ErrWakeNotNeeded. So this is a WARN, not a re-wake: an earlier draft
+		// re-woke here, and the test critic's measurement showed the branch was
+		// unobservable in every direction. An unobservable arm that reads as
+		// live logic is the stranded-conditional shape this slice keeps paying
+		// for, so it is gone rather than left in with a comment.
+		slog.Default().Warn("idle reclaim: teardown failed; agent left as-is for the next sweep",
+			slog.String("agent", name), slog.Any("err", stopErr))
+	}
 	pending, listErr := agentloop.ListPending(r.sprawlRoot, name)
 	// An unreadable queue re-wakes on purpose: unknown is not empty, the same
-	// D1a rule the predicate follows. A failed stop re-wakes for the same
-	// reason — we do not know what state the agent was left in.
-	if stopErr == nil && listErr == nil && len(pending) == 0 {
+	// D1a rule the predicate follows.
+	if listErr == nil && len(pending) == 0 {
 		return
 	}
 	if _, wErr := r.Wake(ctx, name, agentpkg.WakeReasonSendMessage, ""); wErr != nil {
 		slog.Default().Warn("idle reclaim: agent had queued mail after teardown but could not be re-woken",
 			slog.String("agent", name),
 			slog.Any("err", wErr),
-			slog.Any("stop_err", stopErr),
 			slog.Any("list_err", listErr),
 		)
 	}

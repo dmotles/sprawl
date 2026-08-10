@@ -502,3 +502,48 @@ func TestAgentRuntime_InTurnObserved_CountsARuntimePhaseTurn(t *testing.T) {
 			"The reaper would tear this agent down mid-work — this is exactly what the e2e busy-agent control caught.")
 	}
 }
+
+// turnProbeOnlyHandle implements turnProbe but exposes NO UnifiedRuntime — so
+// the only turn signal available is the weaker, sprawl-initiated-turns-only
+// one.
+type turnProbeOnlyHandle struct {
+	*runtimeTestSession
+	inTurn bool
+}
+
+func (h *turnProbeOnlyHandle) InTurn() bool { return h.inTurn }
+
+// TestAgentRuntime_InTurnObserved_RequiresThePhaseAuthority is the true-D1a
+// pin. A union that accepted the session probe's "not in turn" when the phase
+// machine is absent would still be deriving a NEGATIVE answer from an
+// UNAVAILABLE observation — the same defect, wearing a union's clothes. Where
+// the authority cannot be read, the term is unavailable and the agent is never
+// reaped; the weaker probe may only ADD busy-ness.
+func TestAgentRuntime_InTurnObserved_RequiresThePhaseAuthority(t *testing.T) {
+	t.Run("no phase authority, probe says idle -> unavailable", func(t *testing.T) {
+		rt := newIdleTestRuntime(t, &turnProbeOnlyHandle{
+			runtimeTestSession: &runtimeTestSession{sessionID: "s"},
+			inTurn:             false,
+		})
+		inTurn, observed := rt.InTurnObserved()
+		if observed {
+			t.Error("observed = true with no UnifiedRuntime to read the phase machine from; " +
+				"accepting the session probe's 'idle' here is a negative answer built on an unavailable observation")
+		}
+		if inTurn {
+			t.Error("inTurn = true, want false alongside observed=false")
+		}
+	})
+	t.Run("no phase authority, probe says busy -> still blocks", func(t *testing.T) {
+		rt := newIdleTestRuntime(t, &turnProbeOnlyHandle{
+			runtimeTestSession: &runtimeTestSession{sessionID: "s"},
+			inTurn:             true,
+		})
+		// Either answer blocks the reap; what must NOT happen is obsIdle.
+		in := idleTestInputs(t)
+		in.Probe = rt
+		if got := assessIdle(in); got.Reap {
+			t.Error("assessIdle().Reap = true for a handle with no phase authority")
+		}
+	})
+}

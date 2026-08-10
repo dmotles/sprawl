@@ -20,6 +20,7 @@ import (
 
 	"github.com/dmotles/sprawl/internal/agentloop"
 	backendpkg "github.com/dmotles/sprawl/internal/backend"
+	"github.com/dmotles/sprawl/internal/config"
 	"github.com/dmotles/sprawl/internal/protocol"
 	runtimepkg "github.com/dmotles/sprawl/internal/runtime"
 	"github.com/dmotles/sprawl/internal/state"
@@ -37,6 +38,10 @@ type reclaimTestHandle struct {
 	lastAct  atomic.Int64
 	onStop   func()
 	stopOnce sync.Once
+	// stopErr, when set, is what Stop returns — so a test can drive the
+	// reaper's failed-teardown arm without faulting the whole session.
+	stopErr error
+	starter *runtimeTestStarter
 
 	// inTurnReads counts InTurn() probes. flipInTurnAfter, when > 0, makes the
 	// handle report in-turn from that read onward — the only way to place a
@@ -65,7 +70,10 @@ func (h *reclaimTestHandle) Stop(ctx context.Context) error {
 	if h.onStop != nil {
 		h.stopOnce.Do(h.onStop)
 	}
-	return h.runtimeTestSession.Stop(ctx)
+	if err := h.runtimeTestSession.Stop(ctx); err != nil {
+		return err
+	}
+	return h.stopErr
 }
 
 // newReclaimFixture builds a Real with "alice" registered, started, and idle on
@@ -84,10 +92,23 @@ func newReclaimFixture(t *testing.T) (*Real, string, *AgentRuntime, *reclaimTest
 		},
 		urt: runtimepkg.New(runtimepkg.RuntimeConfig{Name: "alice"}),
 	}
-	// An hour of quiet: comfortably past the 15m threshold.
-	handle.lastAct.Store(time.Now().Add(-time.Hour).UnixNano())
+	// Derived from the production default rather than hardcoded, so raising the
+	// default cannot silently make this fixture stop being reapable.
+	handle.lastAct.Store(time.Now().Add(-2 * config.DefaultIdleReclaimAfter).UnixNano())
 
-	rt := ensureRuntimeWithStarter(t, r, tmpDir, agentState, &runtimeTestStarter{session: handle})
+	// NewReal starts a LIVE reaper on this same registry. Left running it would
+	// (a) sweep and tear down these fixtures' handles on its own schedule —
+	// a destructive action against a t.TempDir() that is about to be removed —
+	// and (b) add uncontrolled InTurn() reads, which the flipInTurnAfter counter
+	// below is sensitive to. Quiesce it: these tests drive maybeReclaimIdle
+	// directly. TestNewReal_StartsAndStopsIdleReaper is what covers the live one.
+	if r.idleReaper != nil {
+		r.idleReaper.Stop()
+	}
+	t.Cleanup(func() { _ = r.Shutdown(context.Background()) })
+
+	handle.starter = &runtimeTestStarter{session: handle}
+	rt := ensureRuntimeWithStarter(t, r, tmpDir, agentState, handle.starter)
 	if err := rt.Start(); err != nil {
 		t.Fatalf("runtime start: %v", err)
 	}
@@ -196,11 +217,24 @@ func TestReclaim_TurnStartsAfterAssessment_DefersTeardownToTurnEnd(t *testing.T)
 	done := make(chan struct{})
 	go func() { defer close(done); r.maybeReclaimIdle(context.Background(), rt) }()
 
-	time.Sleep(200 * time.Millisecond)
+	// select, not a bare sleep: a bare sleep turns "the reap was slow" into a
+	// silent pass on a loaded host, which is the failure mode a negative
+	// assertion is most prone to.
+	select {
+	case <-done:
+		t.Fatalf("reclaim COMPLETED while a turn is running (stopCalls=%d); teardown must defer to turn-end (StopAfterTurn), not fire immediately", handle.stopCalls.Load())
+	case <-time.After(200 * time.Millisecond):
+	}
 	if got := handle.stopCalls.Load(); got != 0 {
-		t.Fatalf("stopCalls = %d while a turn is running, want 0; teardown must defer to turn-end (StopAfterTurn), not fire immediately", got)
+		t.Fatalf("stopCalls = %d while a turn is running, want 0", got)
 	}
 
+	// The turn genuinely ends: subsequent probes report idle again, so the
+	// guard's re-read agrees the teardown is still wanted and it proceeds.
+	// Without this reset the handle would keep reporting in-turn forever and
+	// the guard would (correctly) abandon — which would make this test measure
+	// abandonment rather than deferral.
+	handle.flipInTurnAfter.Store(1 << 30)
 	handle.urt.EventBus().Publish(runtimepkg.RuntimeEvent{Type: runtimepkg.EventTurnCompleted})
 	select {
 	case <-done:
@@ -261,7 +295,13 @@ func TestReclaim_ListPendingErrorAfterStop_AlsoRewakes(t *testing.T) {
 		t.Fatalf("LoadAgent: %v", err)
 	}
 	if got.Status == state.StatusIdle {
-		t.Error("agent rests idle after an UNREADABLE queue check; unknown is not empty")
+		t.Fatal("agent rests idle after an UNREADABLE queue check; unknown is not empty")
+	}
+	// "Not idle" alone would also be satisfied by a wake that started and
+	// faulted. serveHealthFrames exists precisely so the wake can SUCCEED, so
+	// assert that it did.
+	if !rt.SubprocessAlive() {
+		t.Error("SubprocessAlive() = false after the backstop re-wake; the agent must be back up")
 	}
 }
 
@@ -296,7 +336,12 @@ func TestReclaim_WaitsForTheSendGate(t *testing.T) {
 	done := make(chan struct{})
 	go func() { defer close(done); r.maybeReclaimIdle(context.Background(), rt) }()
 
-	time.Sleep(200 * time.Millisecond)
+	select {
+	case <-done:
+		gate.Unlock()
+		t.Fatalf("reclaim COMPLETED while the reclaim gate was held (stopCalls=%d)", handle.stopCalls.Load())
+	case <-time.After(200 * time.Millisecond):
+	}
 	if got := handle.stopCalls.Load(); got != 0 {
 		t.Fatalf("stopCalls = %d while the reclaim gate is held, want 0", got)
 	}
@@ -342,30 +387,48 @@ func TestSendMessage_WaitsForTheSendGate(t *testing.T) {
 	}
 }
 
-// TestReclaim_ConcurrentSends_NeverStrandAMessage is the invariant test, run
-// under -race by make validate: after any interleaving of sends and reaps, an
-// agent must never be resting idle with mail still in its queue.
-func TestReclaim_ConcurrentSends_NeverStrandAMessage(t *testing.T) {
+// TestReclaim_ConcurrentSends_IsARaceExerciser is deliberately NOT named for an
+// invariant, because it cannot establish one. Measured, not assumed: over 30
+// runs the 8 senders always win the reclaim gate before phase A, so Pending is
+// obsBusy, no reap ever happens, and a "did the reap strand mail" assertion is
+// unreachable by construction. The deterministic version of that claim is
+// TestReclaim_MessageEnqueuedDuringStop_IsBackstoppedByRewake, which forces the
+// interleaving with handle.onStop.
+//
+// What this one is for: driving SendMessage and maybeReclaimIdle concurrently
+// under -race. Its assertions are that every send SUCCEEDED and that the end
+// state is self-consistent — neither is a silent skip.
+func TestReclaim_ConcurrentSends_IsARaceExerciser(t *testing.T) {
 	r, tmpDir, rt, _ := newReclaimFixture(t)
 
+	const senders = 8
+	errs := make(chan error, senders)
 	var wg sync.WaitGroup
-	for i := 0; i < 8; i++ {
+	for i := 0; i < senders; i++ {
 		wg.Add(1)
-		go func(i int) {
+		go func() {
 			defer wg.Done()
-			_, _ = r.SendMessage(context.Background(), "alice", "ping", false, false)
-		}(i)
+			_, err := r.SendMessage(context.Background(), "alice", "ping", false, false)
+			errs <- err
+		}()
 	}
 	wg.Add(1)
 	go func() { defer wg.Done(); r.maybeReclaimIdle(context.Background(), rt) }()
 	wg.Wait()
+	close(errs)
+
+	for err := range errs {
+		if err != nil {
+			t.Errorf("SendMessage raced with a reclaim and failed: %v", err)
+		}
+	}
 
 	got, err := state.LoadAgent(tmpDir, "alice")
 	if err != nil {
 		t.Fatalf("LoadAgent: %v", err)
 	}
 	if got.Status != state.StatusIdle {
-		return // never reaped, or re-woken: both fine
+		return // not reaped: the overwhelmingly common outcome, and fine
 	}
 	pending, err := agentloop.ListPending(tmpDir, "alice")
 	if err != nil {
@@ -373,5 +436,139 @@ func TestReclaim_ConcurrentSends_NeverStrandAMessage(t *testing.T) {
 	}
 	if len(pending) > 0 {
 		t.Fatalf("agent rests idle with %d entries still pending; a send was stranded by a concurrent reap", len(pending))
+	}
+}
+
+// --- the four mutations the test critic measured as surviving ---------------
+
+// TestReclaim_RootIsNeverReaped_AtTheReclaimCallSite is the one that matters
+// most. TestAssessIdle_RootIsNeverReaped passes RootName in by hand, so it pins
+// the PREDICATE and nothing else: mutating idleInputsFor's `RootName:
+// r.callerName` to `""` left the whole package green while the production
+// reaper would tear down the root agent and take the operator's console with
+// it. This test is the wiring half.
+func TestReclaim_RootIsNeverReaped_AtTheReclaimCallSite(t *testing.T) {
+	r, tmpDir := newFakeReal(t)
+	if r.idleReaper != nil {
+		r.idleReaper.Stop()
+	}
+	t.Cleanup(func() { _ = r.Shutdown(context.Background()) })
+
+	// "weave" is newFakeReal's CallerName — i.e. the root.
+	rootState := testAgentState("weave")
+	saveTestAgent(t, tmpDir, rootState)
+	handle := &reclaimTestHandle{
+		runtimeTestSession: &runtimeTestSession{sessionID: "sess-weave"},
+		urt:                runtimepkg.New(runtimepkg.RuntimeConfig{Name: "weave"}),
+	}
+	handle.lastAct.Store(time.Now().Add(-2 * config.DefaultIdleReclaimAfter).UnixNano())
+	rt := ensureRuntimeWithStarter(t, r, tmpDir, rootState, &runtimeTestStarter{session: handle})
+	if err := rt.Start(); err != nil {
+		t.Fatalf("runtime start: %v", err)
+	}
+
+	r.maybeReclaimIdle(context.Background(), rt)
+
+	if got := handle.stopCalls.Load(); got != 0 {
+		t.Fatalf("stopCalls = %d for the ROOT agent, want 0. The reaper just took the operator's console down", got)
+	}
+	if !rt.SubprocessAlive() {
+		t.Error("SubprocessAlive() = false for the root agent")
+	}
+}
+
+// TestReclaim_AgentBecomesBusyDuringTheWait_IsAbandoned is the window
+// StopAfterTurn cannot close on its own: the reaper's decision is taken BEFORE
+// the wait, and every StopAfterTurn arm — including the runaway timer — stops
+// unconditionally. So a message that lands while the reaper is waiting reaches
+// an agent that is then torn down anyway, one turn later, mid-work.
+//
+// Here the agent is NOT in a turn by the time the teardown arm fires, so the
+// only thing that can save it is the guard re-reading the predicate and finding
+// the queued mail. Mutation that proves it fires: pass a nil guard to
+// StopAfterTurnIf in maybeReclaimIdle.
+func TestReclaim_AgentBecomesBusyDuringTheWait_IsAbandoned(t *testing.T) {
+	r, tmpDir, rt, handle := newReclaimFixture(t)
+
+	// Idle for the predicate's read, in-turn for StopAfterTurn's re-check, so
+	// the reclaim parks in the turn-wait rather than stopping immediately.
+	handle.flipInTurnAfter.Store(1)
+
+	done := make(chan struct{})
+	go func() { defer close(done); r.maybeReclaimIdle(context.Background(), rt) }()
+
+	select {
+	case <-done:
+		t.Fatalf("precondition: reclaim completed before the turn ended (stopCalls=%d)", handle.stopCalls.Load())
+	case <-time.After(150 * time.Millisecond):
+	}
+
+	// Mail lands inside the window. This is the whole point: the decision to
+	// reap is already made and cannot be revised by ordering alone.
+	if _, err := agentloop.Enqueue(tmpDir, "alice", agentloop.Entry{
+		ShortID: "m-window", Class: agentloop.ClassAsync, From: "weave", Body: "new work",
+	}); err != nil {
+		t.Fatalf("Enqueue: %v", err)
+	}
+
+	// The turn ends and the agent is genuinely idle again — so "still in turn"
+	// is NOT what declines this teardown. Only the re-read predicate can.
+	handle.flipInTurnAfter.Store(1 << 30)
+	handle.urt.EventBus().Publish(runtimepkg.RuntimeEvent{Type: runtimepkg.EventTurnCompleted})
+
+	select {
+	case <-done:
+	case <-time.After(20 * time.Second):
+		t.Fatal("maybeReclaimIdle did not return after the turn ended")
+	}
+
+	if got := handle.stopCalls.Load(); got != 0 {
+		t.Fatalf("stopCalls = %d — the agent was torn down even though work arrived while the reaper was waiting. "+
+			"A stop that can only be DEFERRED is not enough; it has to be ABANDONABLE", got)
+	}
+	got, err := state.LoadAgent(tmpDir, "alice")
+	if err != nil {
+		t.Fatalf("LoadAgent: %v", err)
+	}
+	if got.Status == state.StatusIdle {
+		t.Errorf("agent rests idle after an abandoned reclaim, want it left active")
+	}
+	if !rt.SubprocessAlive() {
+		t.Error("SubprocessAlive() = false after an abandoned reclaim")
+	}
+}
+
+// TestNewReal_IdleReaperUsesTheConfiguredSweepInterval is the wiring half of the
+// sweep knob. TestIdleReaper_Loop_SweepsOnEveryTick asserts the interval against
+// a hand-built deps struct, so it proves loop() reads ITS seam — not that
+// NewReal supplies one. Both `Interval: nil` and a changed fallback constant
+// survived the whole package before this.
+func TestNewReal_IdleReaperUsesTheConfiguredSweepInterval(t *testing.T) {
+	root := t.TempDir()
+	dir := filepath.Join(root, ".sprawl")
+	if err := os.MkdirAll(dir, 0o755); err != nil {
+		t.Fatalf("mkdir: %v", err)
+	}
+	if err := os.WriteFile(filepath.Join(dir, "config.yaml"),
+		[]byte("idle_reclaim.after: \"20m\"\nidle_reclaim.sweep: \"17s\"\n"), 0o644); err != nil {
+		t.Fatalf("write config: %v", err)
+	}
+	r, err := NewReal(Config{SprawlRoot: root, CallerName: "weave"})
+	if err != nil {
+		t.Fatalf("NewReal: %v", err)
+	}
+	t.Cleanup(func() { _ = r.Shutdown(context.Background()) })
+
+	if r.idleReaper == nil {
+		t.Fatal("idleReaper = nil with a positive threshold")
+	}
+	if r.idleReaper.deps.Interval == nil {
+		t.Fatal("NewReal wired no Interval seam, so the ticker falls back to a constant and idle_reclaim.sweep is a knob that does nothing")
+	}
+	if got := r.idleReaper.deps.Interval(); got != 17*time.Second {
+		t.Errorf("wired sweep interval = %v, want the configured 17s", got)
+	}
+	if got := r.idleReclaimAfter.get(); got != 20*time.Minute {
+		t.Errorf("wired idle threshold = %v, want the configured 20m", got)
 	}
 }
