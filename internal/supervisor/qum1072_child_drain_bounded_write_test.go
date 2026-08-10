@@ -416,7 +416,7 @@ func TestQUM1072_ChildDrain_TimedOutWrite_WarnsWithEntryIDsAndDeadline(t *testin
 // QUM-1186 AC 7: this test now carries TWO claims, not one. The sender must
 // return BOUNDED (QUM-1072, unchanged) *and* must be TOLD the injection was not
 // confirmed (new). The err-is-nil assertion was inverted for the second claim;
-// see the block below and MUTATION LOG entry M7. Returning promptly with a nil
+// see the block below and MUTATION LOG entry R1. Returning promptly with a nil
 // error is no longer a pass — it is the precise shape of the defect, because it
 // reports a delivery that did not happen.
 func TestQUM1072_SenderMCPCallReturns_WhileRecipientWedged(t *testing.T) {
@@ -490,6 +490,11 @@ func TestQUM1072_SenderMCPCallReturns_WhileRecipientWedged(t *testing.T) {
 		// delivery nor a loss.
 		msg := got.err.Error()
 		lower := strings.ToLower(msg)
+		// "not confirmed" is LOAD-BEARING here, not decoration. It is the only one
+		// of these three that discriminates: SendMessage's body-cap error also
+		// contains "queued" ("Nothing was queued") and "Next action:", so dropping
+		// this needle would let a fast early return satisfy the whole check — the
+		// very thing the pre-inversion `err != nil → Fatalf` existed to prevent.
 		for _, want := range []string{"not confirmed", "queued", "next action:"} {
 			if !strings.Contains(lower, want) {
 				t.Errorf("error %q does not contain %q — AC 7 requires it to say delivery is NOT CONFIRMED and the message REMAINS QUEUED, with a next action", msg, want)

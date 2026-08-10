@@ -288,7 +288,7 @@ func formatToolSearch(input map[string]any) (string, []KVPair) {
 // header for a tool we don't know about.
 func formatMCP(input map[string]any) (string, []KVPair) {
 	priorityMain := []string{"to", "agent", "name", "id", "query", "url"}
-	priorityKV := []string{"subject", "interrupt", "state", "summary", "title", "body"}
+	priorityKV := []string{"subject", "now", "state", "summary", "title", "body"}
 	main := ""
 	for _, k := range priorityMain {
 		if v, ok := input[k].(string); ok && v != "" {
@@ -301,7 +301,7 @@ func formatMCP(input map[string]any) (string, []KVPair) {
 		if _, ok := input[k]; !ok {
 			continue
 		}
-		// Skip default-false booleans — they're noise (e.g. `interrupt=false`
+		// Skip default-false booleans — they're noise (e.g. `now=false`
 		// on every send_message). Other falses (rare) get the same treatment;
 		// the caller can read the full payload via Ctrl+O if they care.
 		if b, ok := input[k].(bool); ok && !b {

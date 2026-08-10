@@ -174,6 +174,48 @@ func TestToolSendMessage_LegacyInterruptKey_HardErrors(t *testing.T) {
 	}
 }
 
+// TestToolSendMessage_LegacyInterruptKey_NonBool_AlsoHardErrors closes the hole
+// a *bool-typed guard leaves open.
+//
+// Decoding `interrupt` into a *bool FAILS on `"interrupt": "true"` or
+// `"interrupt": 1`, so a type-checking guard sees err != nil and skips — while
+// the primary unmarshal succeeded (unknown keys are dropped) and the send
+// proceeds with now==false. That is the same silent urgency downgrade the guard
+// exists to prevent, reached through a type mismatch instead of a name mismatch.
+// Agents do emit weakly-typed payloads.
+func TestToolSendMessage_LegacyInterruptKey_NonBool_AlsoHardErrors(t *testing.T) {
+	for _, tc := range []struct {
+		name  string
+		value any
+	}{
+		{"string", "true"},
+		{"number", 1},
+		{"null", nil},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			mock := &mockSupervisorSendMessage{}
+			srv := New(mock)
+
+			msg := makeJSONRPCRequest(94, "tools/call", map[string]any{
+				"name":      "send_message",
+				"arguments": map[string]any{"to": "alice", "body": "stop", "interrupt": tc.value},
+			})
+			resp, err := srv.HandleMessage(context.Background(), msg)
+			if err != nil {
+				t.Fatalf("HandleMessage: %v", err)
+			}
+			parsed := parseJSONRPCResponse(t, resp)
+			result, _ := parsed["result"].(map[string]any)
+			if isErr, _ := result["isError"].(bool); !isErr {
+				t.Errorf("legacy `interrupt` with a %s value was accepted; result: %v", tc.name, result)
+			}
+			if mock.sendMessageCalls != 0 {
+				t.Errorf("SendMessage called %d times for a legacy `interrupt` key of type %s, want 0 — a non-bool must not slip past the guard and downgrade the send", mock.sendMessageCalls, tc.name)
+			}
+		})
+	}
+}
+
 // TestToolSendMessage_NoNowKey_DefaultsToCooperative is the negative control for
 // the legacy-key test: a normal call without `now` must still succeed. Without
 // it, an over-strict rejection (e.g. refusing any request lacking `now`) would

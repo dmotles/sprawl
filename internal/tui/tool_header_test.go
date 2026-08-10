@@ -171,11 +171,24 @@ func TestFormatToolHeader(t *testing.T) {
 			wantKV:   []KVPair{{Key: "cell_id", Value: "abc"}},
 		},
 		{
-			name:     "MCP sprawl send_message",
+			// QUM-1186: the urgency flag is `now`, not `interrupt`. Default-false
+			// is still suppressed as noise.
+			name:     "MCP sprawl send_message cooperative",
 			tool:     "mcp__sprawl__send_message",
-			input:    `{"to":"weave","body":"hi","interrupt":false}`,
+			input:    `{"to":"weave","body":"hi","now":false}`,
 			wantMain: "weave",
 			wantKV:   []KVPair{{Key: "body", Value: "hi"}},
+		},
+		{
+			// QUM-1186 H1: now=true MUST reach the header. The rename silently
+			// dropped the urgency flag out of priorityKV, so a preemptive send
+			// rendered identically to a cooperative one — the single thing an
+			// operator watching the chat list most needs to see.
+			name:     "MCP sprawl send_message now=true surfaces",
+			tool:     "mcp__sprawl__send_message",
+			input:    `{"to":"weave","body":"hi","now":true}`,
+			wantMain: "weave",
+			wantKV:   []KVPair{{Key: "now", Value: "true"}, {Key: "body", Value: "hi"}},
 		},
 		{
 			name:     "MCP linear save_issue",

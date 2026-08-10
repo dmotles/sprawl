@@ -560,13 +560,18 @@ func (s *Server) toolSendMessage(ctx context.Context, args json.RawMessage) (str
 	// nobody is told. That is the same silent-false-claim defect this slice
 	// exists to remove, and it would be introduced by the fix for it. Same
 	// reasoning as the agent_name shim below.
-	var legacy struct {
-		Interrupt *bool `json:"interrupt"`
-	}
-	if err := json.Unmarshal(args, &legacy); err == nil && legacy.Interrupt != nil {
-		return "", fmt.Errorf("send_message: the `interrupt` parameter was renamed to `now` (same semantics). "+
-			"Passing `interrupt` is rejected rather than ignored, because an ignored urgency flag would silently "+
-			"downgrade this message to cooperative delivery. Next action: retry with `now: %v`", *legacy.Interrupt)
+	// PRESENCE-checked, not type-checked. Decoding into a *bool would FAIL on
+	// `"interrupt": "true"` or `"interrupt": 1`, leaving err != nil, skipping the
+	// guard, and letting the send proceed with now==false — reintroducing the
+	// silent urgency downgrade through a type mismatch instead of a name
+	// mismatch. Agents do emit weakly-typed payloads.
+	var legacy map[string]json.RawMessage
+	if err := json.Unmarshal(args, &legacy); err == nil {
+		if raw, present := legacy["interrupt"]; present {
+			return "", fmt.Errorf("send_message: the `interrupt` parameter was renamed to `now` (same semantics), and you passed `interrupt: %s`. "+
+				"It is rejected rather than ignored, because an ignored urgency flag would silently "+
+				"downgrade this message to cooperative delivery. Next action: retry with `now` instead", string(raw))
+		}
 	}
 	result, err := s.sup.SendMessage(ctx, p.To, p.Body, p.Now, p.WakeIfOffline)
 	if err != nil {

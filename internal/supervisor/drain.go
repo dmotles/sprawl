@@ -385,7 +385,7 @@ func writeInjection(rt *runtimepkg.UnifiedRuntime, name string, frames []systemF
 			}
 			attrs = append(attrs, slog.Any("err", err))
 			slog.Default().Warn(msg, attrs...)
-			errs = append(errs, fmt.Errorf("%s [%s]: %w", frameLabelOrDefault(f.label), strings.Join(f.entryIDs, ","), err))
+			errs = append(errs, fmt.Errorf("%s [%s]: %w", frameLabelOrDefault(f.label, pol.coalesceInterrupts), strings.Join(f.entryIDs, ","), err))
 			continue // invariant 2
 		}
 
@@ -400,24 +400,38 @@ func writeInjection(rt *runtimepkg.UnifiedRuntime, name string, frames []systemF
 	return errors.Join(errs...)
 }
 
-// frameLabelOrDefault names a frame in a joined error. The async frame carries
-// an empty label (it is the unlabelled default in the WARN too), which would
-// otherwise produce a nameless entry in the joined text. The labelled frame
-// already reads "interrupt batch", so the caller must not append "batch" again.
-func frameLabelOrDefault(label string) string {
-	if label == "" {
-		return "async batch"
+// frameLabelOrDefault names a frame in a joined error. The unlabelled frame is
+// the default in the WARN too, and would otherwise produce a nameless entry in
+// the joined text. The labelled frame already reads "interrupt batch", so the
+// caller must not append "batch" again.
+//
+// The unlabelled frame is NOT always async. Under pol.coalesceInterrupts
+// (weave's policy) buildInjection emits a SINGLE unlabelled frame carrying
+// interrupt bodies first and async bodies after, so naming it "async batch"
+// would positively assert something false about which mail failed — in a slice
+// whose entire subject is not making false claims in error text. The WARN gets
+// away with saying nothing; a named error does not.
+func frameLabelOrDefault(label string, coalesced bool) string {
+	if label != "" {
+		return label
 	}
-	return label
+	if coalesced {
+		return "coalesced batch"
+	}
+	return "async batch"
 }
 
 // runDrain is the whole drain: read, build, write, under the policy's lock.
 //
-// The returned error covers the WRITE only. readInboxSnapshot still swallows a
-// ListPending failure into a WARN and returns an empty snapshot, so a nil return
-// means "every frame we built was written", not "the inbox was read completely".
+// The returned error covers the WRITE only. readInboxSnapshot swallows a
+// ListPending failure into a DEBUG line and returns an empty snapshot, so a nil
+// return means "every frame we built was written", not "the inbox was read
+// completely" — an unreadable inbox is indistinguishable from an empty one, and
+// at debug level it is invisible by default.
+//
 // Declared rather than fixed here: widening it changes the empty-inbox vs
-// unreadable-inbox distinction, which is outside D5.
+// unreadable-inbox distinction, which is outside D5's scope. Recorded so the
+// nil return is not over-read.
 func runDrain(rt *runtimepkg.UnifiedRuntime, sprawlRoot, name string, pol drainPolicy) error {
 	if pol.mu != nil {
 		pol.mu.Lock()

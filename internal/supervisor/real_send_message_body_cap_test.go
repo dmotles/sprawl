@@ -239,6 +239,29 @@ func TestReal_SendMessage_DeadTargetWrapperMayExceedCap(t *testing.T) {
 	}
 }
 
+// TestReal_SendMessage_OverCapToNonexistentAgent_ReportsTheCap pins the ordering
+// claim the cap's own comment makes: it fires before ValidateName/LoadAgent
+// resolve anything.
+//
+// Every other test here uses a recipient that exists, so a future reorder that
+// moved the cap below LoadAgent would break the claim while the whole file
+// stayed green. The discriminator is WHICH error comes back, not that one does.
+func TestReal_SendMessage_OverCapToNonexistentAgent_ReportsTheCap(t *testing.T) {
+	r, _ := newFakeReal(t)
+
+	body := strings.Repeat("a", 400)
+	_, err := r.SendMessage(context.Background(), "nosuchagent", body, false, false)
+	if err == nil {
+		t.Fatalf("SendMessage(400 runes, unknown recipient) = nil, want an error")
+	}
+	if !strings.Contains(err.Error(), "300") {
+		t.Errorf("error %q is not the cap error — the cap must be evaluated before the recipient is resolved, so a caller learns the real problem with its payload rather than a downstream symptom", err.Error())
+	}
+	if strings.Contains(err.Error(), "not found") {
+		t.Errorf("error %q reports the recipient lookup instead of the cap; the cap is checked first by design", err.Error())
+	}
+}
+
 // TestReal_SendMessage_OverCapToDeadTarget_StillRejected closes the other half
 // of the cap-ordering question.
 //
