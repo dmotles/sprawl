@@ -17,10 +17,11 @@ import (
 // codebase should reference one of these constants so the set stays closed.
 const (
 	StatusActive = "active"
-	// StatusRunning is a legacy synonym for StatusActive, still readable from
-	// older state files. Every axis that inspects it treats the two the same —
-	// liveness.LivenessFromStatus projects both to Running, and merge
-	// precondition 4 accepts both. Prefer StatusActive at write-sites.
+	// StatusRunning is a legacy synonym for StatusActive: readable from older
+	// state files, and still written by RegisterRootRuntime's no-state-file
+	// fallback. liveness.LivenessFromStatus projects it and StatusActive to the
+	// same token, which is what lets callers treat them alike. Prefer
+	// StatusActive at write-sites.
 	StatusRunning      = "running"
 	StatusSuspended    = "suspended"
 	StatusKilled       = "killed"

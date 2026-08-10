@@ -63,8 +63,10 @@ var ErrMessageOverrideRetired = errors.New("the merge engine no longer creates a
 // Merge fast-forwards agentName's branch into the caller's current branch,
 // after rebasing and validating it in the agent's own worktree.
 //
-// salvagingTerminalAgent relaxes precondition 4 (the agent must be active or
-// have reported complete). It is named for what it PERMITS rather than for the
+// salvagingTerminalAgent relaxes precondition 4 (the agent's Status must be in
+// the mergeableStatus allow-set — QUM-1186 D4 replaced the old "active, or
+// reported complete" phrasing along with the deleted outcome axis). It is named
+// for what it PERMITS rather than for the
 // check it disables, deliberately: a parameter called skipPrecondition4 or
 // force invites being set to make an error go away, whereas this one can only
 // be passed by someone who means it. Set true ONLY by the retire path, where
@@ -293,7 +295,9 @@ func Merge(ctx context.Context, deps *MergeDeps, agentName, messageOverride stri
 func mergeableStatus(s string) bool {
 	switch s {
 	case state.StatusActive,
-		// StatusRunning is the on-disk legacy synonym for StatusActive.
+		// StatusRunning is the legacy synonym for StatusActive — readable from
+		// older state files and still written by RegisterRootRuntime's
+		// no-state-file fallback.
 		// liveness.LivenessFromStatus projects both to Running, and
 		// boot-resume eligibility follows that projection — so merge was the
 		// one axis treating them differently, by omission rather than by

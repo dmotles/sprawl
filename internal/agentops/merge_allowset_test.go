@@ -143,62 +143,100 @@ func TestMergePrecondition4_RunningIsTheLivenessTwinOfActive(t *testing.T) {
 	if running != active {
 		t.Fatalf("LivenessFromStatus(running) = %v, LivenessFromStatus(active) = %v; the merge allow-set entry for StatusRunning rests on these being equal", running, active)
 	}
+	// Equality alone would survive both being remapped to something else,
+	// while merge.go and the allow-set comment name Running specifically.
+	if running != liveness.Running {
+		t.Fatalf("LivenessFromStatus(running) = %v, want liveness.Running; the comments in merge.go and mergeAllowedStatuses name Running by value", running)
+	}
 }
 
-// mergeStatusesNamedInHint is the allow-set as the operator-facing error in
-// merge.go enumerates it. The hint is a hand-maintained duplicate of
-// mergeableStatus, so the two can drift silently; the test below pins the
-// divergence to exactly the one entry we chose not to surface.
-var mergeStatusesNamedInHint = []string{
-	state.StatusActive,
-	state.StatusIdle,
-	state.StatusSuspended,
-	state.StatusComplete,
+// mergeStatusesDeliberatelyOmittedFromHint are allow-set entries the
+// operator-facing error does NOT name, by decision rather than by drift.
+//
+// StatusRunning: nobody who is SHOWN that error has status "running" (they
+// would have merged), so naming a legacy synonym there is noise.
+var mergeStatusesDeliberatelyOmittedFromHint = []string{
+	state.StatusRunning,
+}
+
+// parseHintStatuses extracts the status names the precondition-4 error actually
+// enumerates. It parses the REAL error rather than a mirror copy of it: a mirror
+// is a third hand-maintained list, and a test that compares two of the three
+// copies is green exactly when the copy it never looked at is the one that drifted.
+func parseHintStatuses(t *testing.T, errMsg string) []string {
+	t.Helper()
+	const prefix = "Merge requires status "
+	i := strings.Index(errMsg, prefix)
+	if i < 0 {
+		t.Fatalf("precondition-4 error %q does not contain %q; this test can no longer see the hint it checks", errMsg, prefix)
+	}
+	rest := errMsg[i+len(prefix):]
+	j := strings.Index(rest, " — ")
+	if j < 0 {
+		t.Fatalf("precondition-4 error %q has no %q separator after the status list; cannot delimit the hint", errMsg, " — ")
+	}
+	list := rest[:j]
+
+	var out []string
+	for _, part := range strings.Split(list, ",") {
+		for _, word := range strings.Split(part, " or ") {
+			if w := strings.TrimSpace(word); w != "" {
+				out = append(out, w)
+			}
+		}
+	}
+	if len(out) == 0 {
+		t.Fatalf("parsed zero statuses out of hint %q", list)
+	}
+	return out
 }
 
 // TestMergePrecondition4_HintNamesEveryAllowedStatusExceptTheLegacySynonym
-// makes omitting a status from the operator-facing hint a decision. StatusRunning
-// is deliberately absent: nobody who is SHOWN that error has status "running"
-// (they would have merged), so naming a legacy synonym there is noise. Any
-// OTHER divergence is an accident, and this fails on it.
+// makes divergence between the operator-facing error and the allow-set a
+// decision instead of an accident, in BOTH directions: a status merge accepts
+// but does not advertise, and a status the error promises but merge rejects.
+//
+// It reads the enumeration out of a real rejection, so there is no mirror list
+// standing between the assertion and the string an operator sees.
 func TestMergePrecondition4_HintNamesEveryAllowedStatusExceptTheLegacySynonym(t *testing.T) {
-	named := map[string]bool{}
-	for _, s := range mergeStatusesNamedInHint {
-		named[s] = true
-	}
-
-	var unnamed []string
-	for _, s := range mergeAllowedStatuses {
-		if !named[s] {
-			unnamed = append(unnamed, s)
-		}
-	}
-	if len(unnamed) != 1 || unnamed[0] != state.StatusRunning {
-		t.Errorf("allow-set statuses missing from the hint = %v, want exactly [%s]. "+
-			"Add the status to the hint in merge.go, or to mergeStatusesNamedInHint if omitting it is deliberate.",
-			unnamed, state.StatusRunning)
-	}
-
-	// The other direction: the hint must not promise a status merge rejects.
-	allowed := map[string]bool{}
-	for _, s := range mergeAllowedStatuses {
-		allowed[s] = true
-	}
-	for _, s := range mergeStatusesNamedInHint {
-		if !allowed[s] {
-			t.Errorf("the merge hint names %q, which is not in the allow-set", s)
-		}
-	}
-
-	// And the hint list must describe the string operators actually see.
 	sprawlRoot, agentName := mergeableSetupRoot(t, state.StatusKilled)
 	_, err := Merge(context.Background(), mergeTestDeps(sprawlRoot), agentName, "", true, false, false)
 	if err == nil {
 		t.Fatal("Merge of a killed agent returned nil error; wanted the precondition-4 rejection that carries the hint")
 	}
-	for _, s := range mergeStatusesNamedInHint {
-		if !strings.Contains(err.Error(), s) {
-			t.Errorf("precondition-4 error %q does not name %q, but mergeStatusesNamedInHint claims it does", err.Error(), s)
+
+	named := map[string]bool{}
+	for _, s := range parseHintStatuses(t, err.Error()) {
+		named[s] = true
+	}
+	allowed := map[string]bool{}
+	for _, s := range mergeAllowedStatuses {
+		allowed[s] = true
+	}
+	omitted := map[string]bool{}
+	for _, s := range mergeStatusesDeliberatelyOmittedFromHint {
+		omitted[s] = true
+	}
+
+	// Direction 1: every allowed status is named, unless omitting it was a
+	// decision recorded above.
+	for _, s := range mergeAllowedStatuses {
+		if !named[s] && !omitted[s] {
+			t.Errorf("status %q is mergeable but the error does not name it. "+
+				"Add it to the hint in merge.go, or to mergeStatusesDeliberatelyOmittedFromHint if leaving it out is deliberate.", s)
+		}
+	}
+	// Direction 2: the error never promises a status merge would reject.
+	for s := range named {
+		if !allowed[s] {
+			t.Errorf("the precondition-4 error names %q, but merge rejects it — the hint promises something that cannot work", s)
+		}
+	}
+	// Direction 3: a recorded omission that is no longer omitted is a stale
+	// decision, not a silent success.
+	for _, s := range mergeStatusesDeliberatelyOmittedFromHint {
+		if named[s] {
+			t.Errorf("%q is recorded as deliberately omitted from the hint, but the error names it; drop it from mergeStatusesDeliberatelyOmittedFromHint", s)
 		}
 	}
 }
