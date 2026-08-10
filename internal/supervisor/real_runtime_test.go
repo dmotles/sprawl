@@ -8,6 +8,7 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
 
 	"github.com/dmotles/sprawl/internal/agentloop"
@@ -302,8 +303,24 @@ func TestRealSendMessage_SignalsWakeOnlyAfterPersistedSuccess(t *testing.T) {
 		}
 
 		ctx := backendpkg.WithCallerIdentity(context.Background(), "bob")
-		if _, err := r.SendMessage(ctx, "alice", "implement feature", true, false); err == nil {
+		_, err := r.SendMessage(ctx, "alice", "implement feature", true, false)
+		if err == nil {
 			t.Fatal("SendMessage() error = nil, want the §8.5 ancestor-gate rejection")
+		}
+		// WHERE it rejected is the whole reach claim above, so it is asserted
+		// rather than arranged and hoped for. Every other assertion in this
+		// subtest is satisfied by a rejection at ANY point, including the first
+		// state.LoadAgent — so a fixture slip that moves the rejection earlier
+		// silently shrinks the covered span to nothing while the body stays
+		// green. Two-cell mutation control, run: poke inserted after the first
+		// state.LoadAgent AND alice's saveTestAgent dropped -> this subtest
+		// PASSES without the assertion below and FAILS with it (`error = agent
+		// "alice" not found: ...`). A single-cell mutation does not show this.
+		const ancestorGateMsg = "is not an ancestor of"
+		if !strings.Contains(err.Error(), ancestorGateMsg) {
+			t.Fatalf("SendMessage() error = %v, want one containing %q — either the send was rejected EARLIER than the "+
+				"§8.5 gate (so this subtest's reach, and the WakeCount assertion below, no longer cover the span the "+
+				"docstring claims), or the gate's own wording changed in real.go and this pin needs updating", err, ancestorGateMsg)
 		}
 
 		// Both halves: nothing was persisted, and nothing was poked. Asserting

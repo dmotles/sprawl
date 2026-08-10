@@ -179,6 +179,33 @@ func TestMergePrecondition4_UnreachableStatusesAreRewrittenBeforeTheyAreSeen(t *
 				t.Fatalf("Status survived load as %q; it is reachable after all and must be classified as allowed or denied. "+
 					"If its rewrite is version-GATED rather than always-on, it does not belong in mergeUnreachableStatuses at all", loaded.Status)
 			}
+
+			// The rewrite is only half of "before they are SEEN". Being on this
+			// list excludes the status from AllowsEvery/RejectsEvery, so without
+			// a Merge call here it has NO merge-behaviour coverage at all and a
+			// rewrite that retargets it into the deny-set is a capability
+			// removal wearing a migration's clothes.
+			//
+			// A FRESH root deliberately: the LoadAgent above persists the
+			// migration back to disk, so reusing sprawlRoot would hand Merge an
+			// already-normalised file and leave the composition untested while
+			// looking tested. Same trap as
+			// TestMergePrecondition4_LegacyDoneAgentMergesAsComplete.
+			//
+			// Hardcoded "must succeed", NOT derived from where loaded.Status
+			// falls in the allow/deny lists. A derived expectation is satisfied
+			// by ANY rewrite target — retarget the always-on arm at
+			// StatusKilled and a derived form goes green while the capability
+			// is gone, which is the escape this assertion exists to close.
+			// Mutation control, run: migrate()'s stopped arm rewritten to
+			// StatusKilled -> fires HERE (`err = ... cannot be merged (status:
+			// "killed")`, want nil), while the probe above still passes.
+			mergeRoot, mergeName := mergeableSetupRoot(t, s)
+			if _, err := Merge(context.Background(), mergeTestDeps(mergeRoot), mergeName, "", true, false, false); err != nil {
+				t.Fatalf("Merge of an agent stored as %q: err = %v, want nil — the rewrite target must stay mergeable. "+
+					"If a legacy token ever legitimately migrates into the deny-set, rewrite this row to say so deliberately; "+
+					"do NOT widen mergeAllowedStatuses to make it green", s, err)
+			}
 		})
 	}
 }
@@ -213,7 +240,7 @@ func writeRawV0MergeableAgent(t *testing.T, sprawlRoot, name, status string) {
 // succeeds. The capability M12 shipped survives; only its representation moved.
 //
 // Deliberately NOT written as a "LoadAgent rewrites it before merge sees it"
-// probe in the style of TestMergePrecondition4_StoppedIsRewrittenBeforeItIsSeen.
+// probe in the style of TestMergePrecondition4_UnreachableStatusesAreRewrittenBeforeTheyAreSeen.
 // That probe would be aimed at the wrong gate: the "done" rewrite fires only
 // for SchemaVersion < 1, while the "stopped" rewrite is always-on. See
 // TestLoadAgent_LegacyTokenRewriteIsVersionGated_StoppedIsNot in internal/state.
@@ -307,7 +334,7 @@ func TestMergePrecondition4_RetiredAgentIsGoneNotDenied(t *testing.T) {
 
 // TestMergePrecondition4_RunningIsTheLivenessTwinOfActive checks the reason
 // StatusRunning is in the allow-set, rather than asserting it in a comment —
-// the same discipline as TestMergePrecondition4_StoppedIsRewrittenBeforeItIsSeen
+// the same discipline as TestMergePrecondition4_UnreachableStatusesAreRewrittenBeforeTheyAreSeen
 // above. If the "running" alias is ever dropped from the liveness projection,
 // the two statuses stop being twins and this row's justification evaporates;
 // this fails then instead of the comment quietly going stale.

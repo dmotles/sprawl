@@ -693,7 +693,7 @@ func TestRecoverAgentsPausedWithFullFixtureIsStillSkipped(t *testing.T) {
 		t.Errorf("RecoverAgents = (%d,%d,%v); want (0,0,nil)", resumed, failed, errs)
 	}
 	if len(starter.specs) != 0 {
-		t.Errorf("starter.specs len = %d, want 0 — paused+dirty-shutdown agent must not be auto-resumed; specs=%+v", len(starter.specs), starter.specs)
+		t.Errorf("starter.specs len = %d, want 0 — a paused agent must not be auto-resumed, however complete its fixture; specs=%+v", len(starter.specs), starter.specs)
 	}
 
 	loaded, err := state.LoadAgent(tmpDir, "snoozy")
