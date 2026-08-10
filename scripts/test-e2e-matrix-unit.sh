@@ -4200,7 +4200,10 @@ fi
 # gone. Deleting a row is itself a table edit, and the honest accounting lives
 # in the matrix table — which says the coverage re-homes onto `idle-reclaim`
 # and that until that row exists this is "a deliberate reduction in coverage,
-# not as coverage".
+# not as coverage". THAT INTERIM ENDED in lane 3: the row exists and passes, so
+# the pins below now hold the table to the CURRENT truth — where the coverage
+# landed, and why its busy half is skipped — rather than to a reduction that is
+# no longer real.
 #
 # That sentence is currently the ONLY thing standing between the hand-off and
 # silence, and prose does not fail. This arm makes it fail. Pinned as
@@ -4247,15 +4250,31 @@ if [ -r "$P19_SKILL" ]; then
 	_p19_pin 'idle-reclaim' \
 		"the matrix table names idle-reclaim as StopAfterTurn's successor row" \
 		"StopAfterTurn's e2e coverage was re-homed to a row nobody is now told to write"
-	_p19_pin 'deliberate reduction in coverage' \
-		"the matrix table records the interim as a deliberate reduction in coverage" \
-		"a reader would read the missing row as an oversight, or not at all"
+	# The INTERIM THIS ARM GUARDED IS OVER, so the phrase it used to pin is
+	# gone from the table on purpose. `idle-reclaim` exists, passes, and carries
+	# an enforced MIN_ASSERTIONS floor, so "a deliberate reduction in coverage"
+	# would now be a false record — the coverage is not reduced, it is landed.
+	#
+	# The arm is repointed rather than deleted, because the thing it protects
+	# has not gone away: the hand-off must still be non-silent. What must be
+	# discoverable from the table has simply changed from "this coverage is
+	# missing, deliberately" to "this coverage landed HERE, and its other half
+	# is blocked, for THIS reason". Deleting the arm would leave the second
+	# statement resting on prose again, which is what [19d] exists to prevent.
+	# QUM-1186 lane 3.
+	_p19_pin 'idle-reclaim-busy' \
+		"the matrix table names idle-reclaim-busy, so the half that could not land is discoverable" \
+		"the busy-agent control would look forgotten rather than deliberately skipped"
+	_p19_pin 'QUM-1197' \
+		"the matrix table names the hazard that blocks the busy half" \
+		"a reader could not tell whether the skipped row is safe to re-enable"
 	_p19_pin 'report-then-send' \
 		"the matrix table still names report-then-send, so the deletion is traceable from the table" \
 		"the row's removal is now untraceable from the table it was removed from"
 else
 	fail "19d: .claude/skills/e2e-matrix/SKILL.md is unreadable — the StopAfterTurn hand-off is unpinned"
-	fail "19d: the deliberate-reduction record is unpinned (skill unreadable)"
+	fail "19d: the idle-reclaim-busy record is unpinned (skill unreadable)"
+	fail "19d: the QUM-1197 hazard record is unpinned (skill unreadable)"
 	fail "19d: the report-then-send removal record is unpinned (skill unreadable)"
 fi
 if [ -e "$REPO_ROOT/scripts/e2e-tests/report-then-send.sh" ]; then

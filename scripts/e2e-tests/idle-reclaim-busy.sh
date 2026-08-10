@@ -43,9 +43,6 @@
 # every reader to skip past its failures.
 
 # QUM-1029: declared for the restored row (P5a, P5b, P5c, P6a, P6b). Never
-# reached today — e2e_skip_row exits before e2e_print_results — and that is
-# precisely why the passing assertions live in the sibling row instead.
-# QUM-1029: declared for the restored row (P5a, P5b, P5c, P6a, P6b). Never
 # reached while the skip is in place — e2e_skip_row exits before
 # e2e_print_results — which is exactly why the PASSING assertions live in the
 # sibling idle-reclaim row rather than behind this skip.
