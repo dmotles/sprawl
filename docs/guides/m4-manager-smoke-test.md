@@ -147,15 +147,22 @@ You should see JSON files for both the manager and any children it spawned. Each
 Watch child agent tmux windows. Each should:
 1. Receive its task prompt
 2. Work in its own worktree on its own branch
-3. Report done via `report_status({state: "complete", summary: "<summary>"})`
+3. Message the manager when its work is ready:
+   `send_message({to: "<manager-name>", body: "<what landed>", now: false})`
 
-**Verify child reports:**
+**Verify the hand-off landed.** Note what you are checking and what you are
+NOT: since QUM-1186 an agent makes no claim about its own state, so the
+evidence is the message the manager actually received plus the runtime's
+observation of the child — never a self-report field.
 
 ```bash
-cat .sprawl/agents/<child-name>.json | grep last_report
+ls .sprawl/messages/<manager-name>/new/ .sprawl/messages/<manager-name>/cur/
+cat .sprawl/agents/<child-name>.json | grep '"status"'
 ```
 
-Expected: `"last_report_type": "done"`, `"status": "done"`
+Expected: a message from the child in the manager's maildir, and the child's
+`"status"` one of `active` (still up) or `idle` (process reclaimed for
+inactivity — not complete, revives on the next message).
 
 ### Step 8: Observe manager verification and merge
 
@@ -190,18 +197,19 @@ document, that expectation now FAILS against a correct system.)
 After all children are merged and final validation passes, the manager should call:
 
 ```
-report_status({state: "complete", summary: "All subtasks completed and merged."})
+send_message({to: "<root-name>", body: "All subtasks completed and merged; integration branch green.", now: false})
 ```
 
 **Verify manager state:**
 
 ```bash
-cat .sprawl/agents/<manager-name>.json | grep -E '"status"|last_report'
+ls .sprawl/messages/<root-name>/new/ .sprawl/messages/<root-name>/cur/
+cat .sprawl/agents/<manager-name>.json | grep '"status"'
 ```
 
-Expected:
-- `"status": "done"`
-- `"last_report_type": "done"`
+Expected: the manager's message in root's maildir, and a `"status"` the
+supervisor observed (`active`, `idle`, or `suspended`). There is no
+`last_report_*` key — it was removed with the self-report tool in QUM-1186.
 
 ### Step 10: Root merges manager
 
@@ -241,15 +249,15 @@ root
       |
       |  [Children work independently in their worktrees]
       |
-      |  child-1: report_status({state: "complete", summary: "..."})
-      |  child-2: report_status({state: "complete", summary: "..."})
+      |  child-1: send_message({to: "manager", body: "...", now: false})
+      |  child-2: send_message({to: "manager", body: "...", now: false})
       |
       |  [Manager verifies each child's work]
       |  [Manager merges each child: merge({agent: "child-1"}), merge({agent: "child-2"})]
       |
       |  [Manager runs final validation on integration branch]
       |
-      |  manager: report_status({state: "complete", summary: "All work integrated and validated."})
+      |  manager: send_message({to: "root", body: "All work integrated and validated.", now: false})
       |
  root: sprawl merge manager
 ```

@@ -15,30 +15,42 @@ Authoritative rules for agent Status / `IsTerminal` / wake plumbing. If you
 touch `internal/state/state.go`, `internal/supervisor/{runtime,real}.go`,
 or any MCP verb that targets an agent by name, this is the contract.
 
-- `StatusComplete` ("complete") is the **resting state after `state:complete`**
-  — runtime torn down; `session_id` / `branch` / `worktree` preserved;
-  **revivable**. It is **not terminal**.
+- `StatusComplete` ("complete") is a **resting state** — runtime torn down;
+  `session_id` / `branch` / `worktree` preserved; **revivable**. It is **not
+  terminal**. Since QUM-1186 an agent cannot put itself here by reporting
+  complete; there is no self-report tool. It is set by the supervisor.
+- `StatusIdle` ("idle") is the resting state for an agent whose runtime was
+  reclaimed for **inactivity**, not because its work finished (QUM-1186 D2).
+  Session, worktree and branch are preserved and it revives **on demand**,
+  when someone messages it. It is deliberately NOT `StatusComplete`: complete
+  claims the agent finished, and an idle agent may be mid-task and merely
+  quiet. It projects onto `liveness.Suspended`, is in the merge allow-set and
+  the `send_message` auto-wake set, and is deliberately **excluded from the
+  boot auto-resume loop** in `RecoverAgents` — resuming reclaimed agents at
+  every `sprawl enter` would hand back the exact RSS the reaper freed.
 - `IsTerminal(status)` returns true **only for `{retired, retiring}`**.
   Permanent termination is a deliberate parent action (`retire`/`kill`),
-  never a side effect of the agent reporting complete. Everything else
-  (`complete`, `paused`, `faulted`, `died`, `killed`, `resume_failed`) is
-  revivable in spirit and the code must treat it that way.
+  never a side effect of anything the agent said about itself. Everything
+  else (`complete`, `idle`, `paused`, `faulted`, `died`, `killed`,
+  `resume_failed`) is revivable in spirit and the code must treat it that way.
 - `StatusStopped` is **retired as a write target**; it is parsed only for
-  legacy state files and migrated on load (`complete` if `LastReportState=
-  complete`, else `faulted`).
-- `delegate(complete-agent, task)` **auto-wakes** with no flag —
+  legacy state files and migrated to `StatusSuspended` on load.
+- **Liveness is observed, never asserted.** Every liveness answer sprawl gives
+  traces to an observation of a process — `ProcessAlive`, `SubprocessAlive`,
+  `EventbusSubscribed`, `InTurn` — and to nothing an agent claimed about
+  itself. An observation that is *unavailable* is not a negative observation:
+  an unknown `InTurn` must be treated as in-turn, never as idle.
+- `send_message(complete|idle agent, body)` **auto-wakes** with no flag —
   `wake_if_offline` is not required and not consulted.
-- `delegate(paused|faulted|died|killed|resume_failed agent, task)` requires
+- `send_message(paused|faulted|died|killed|resume_failed agent, body)` requires
   explicit `wake_if_offline=true` and surfaces the canonical
   `"is <state> ... wake_if_offline"` error otherwise.
-- `delegate(retired|retiring agent, task)` errors. The specific class
+- `send_message(retired|retiring agent, body)` errors. The specific class
   depends on whether `state.json` still exists: `TerminalAgentError`
   (`"… no longer running"`) during the brief `retiring` window or for
   legacy zombies; `"agent %q not found"` once `retire` has deleted the
   state file (`internal/agent/retire.go:82`). Both are valid terminal
-  signals — the contract is "delegate fails clearly," not a specific
-  error string.
-- `send_message` mirrors `delegate` for the gate logic.
+  signals — the contract is "it fails clearly," not a specific error string.
 - `wake` accepts everything **except `{retired, retiring}`**.
 
 Touched-file matrix-row mapping for these set-sites lives in the e2e matrix

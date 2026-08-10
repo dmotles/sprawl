@@ -120,7 +120,7 @@ This is what distinguishes Sprawl from Conway's Game of Life. Conway's system is
 
 ## Interface
 
-The user-facing surface is the `sprawl` CLI (`sprawl enter` launches the root agent into the TUI). The agent-facing surface — how agents spawn each other, message each other, report status, and merge work — is an in-process MCP server that exposes a set of tools to every running Claude Code instance. Agents call these tools by name (`spawn`, `delegate`, `send_message`, `peek`, `merge`, `retire`, `report_status`, `messages_list`, `messages_read`, `messages_peek`, `messages_archive`, `ask_user_question`, `kill`, `handoff`); the tool calls run in the same process as the sprawl host that launched them.
+The user-facing surface is the `sprawl` CLI (`sprawl enter` launches the root agent into the TUI). The agent-facing surface — how agents spawn each other, message each other, observe each other, and merge work — is an in-process MCP server that exposes a set of tools to every running Claude Code instance. Agents call these tools by name (`spawn`, `send_message`, `peek`, `merge`, `retire`, `messages_list`, `messages_read`, `messages_peek`, `messages_archive`, `ask_user_question`, `kill`, `handoff`); the tool calls run in the same process as the sprawl host that launched them.
 
 ### User CLI
 
@@ -137,7 +137,6 @@ Spawning & lifecycle:
 
 ```
 spawn({family, type, branch, prompt})    Create a new worktree-backed child agent
-delegate({agent, task})                  Queue a tracked task on an existing agent
 retire({agent, merge?, abandon?})        Shut down (and optionally merge or discard work)
 kill({agent})                            Emergency stop; preserves state and worktree
 ```
@@ -149,30 +148,31 @@ The calling agent's identity is inferred from `SPRAWL_AGENT_IDENTITY` — no par
 Agents communicate via a mailbox-style messaging system surfaced through MCP tools:
 
 ```
-send_message({to, body, interrupt?})     Durable message; lands in recipient's inbox
+send_message({to, body, now?})           Durable message; lands in recipient's inbox
 messages_peek({})                        Cheap "do I have mail?" probe
 messages_list({filter?, limit?})         List inbox (all, unread, read, archived)
 messages_read({id})                      Fetch a message body; auto-marks read
 messages_archive({id} | {all: true})     Archive one or all messages
 ```
 
-`interrupt: true` is reserved for rare urgent parent→descendant corrections; the default cooperative path enqueues the message at the recipient's next turn boundary.
+`send_message` is the ONLY way to make another agent receive text. There is no separate work-assignment tool: an assignment is a message. `now: true` is reserved for rare urgent parent→descendant corrections; the default cooperative path enqueues the message at the recipient's next turn boundary. `body` is capped at 300 characters, enforced by a hard error rather than truncation — the brief belongs in the project's issue tracker, and the message carries the key. The spawn prompt is not capped.
 
-### Reporting
+### Observing
 
-Agents report status to their parent (superior) in the network:
+Agents do not report what they are doing. Liveness is **observed** by the runtime — whether the process is alive, whether it is in a turn — and never asserted by the agent about itself:
 
 ```
-report_status({state, summary})          state ∈ {working, blocked, complete, failure}
-peek({agent, tail?})                     Inspect another agent's recent activity + last report
+peek({agent, tail?})                     Inspect another agent's recent observed activity
 status({})                               {runtime, agents}: agents with state/type/family/branch/age, plus a runtime verdict
 ```
 
-`report_status` is ephemeral state — it updates the agent's global state and pings the parent asynchronously, but is NOT a message and is not retrievable via `messages_read`. For anything substantive or retrievable, use `send_message` instead.
+An agent shown as `idle` had its process reclaimed for inactivity: it is not complete, its worktree and branch are intact, and it revives on the next message sent to it.
+
+The durable record of *what work is being done* lives in the project's issue tracker, not in sprawl. Sprawl is tracker-agnostic; each project's own `CLAUDE.md` names its tracker, if it has one.
 
 ### Signaling
 
-Underlying the messaging and reporting system is a signaling mechanism integrated with Claude Code hooks. When a message arrives or a child agent reports a status change, a hook fires to nudge the receiving agent — prompting it to check its inbox or handle the notification. This avoids polling and keeps agents responsive without building a custom communication protocol.
+Underlying the messaging and reporting system is a signaling mechanism integrated with Claude Code hooks. When a message arrives, a hook fires to nudge the receiving agent — prompting it to check its inbox or handle the notification. This avoids polling and keeps agents responsive without building a custom communication protocol.
 
 ## Name
 

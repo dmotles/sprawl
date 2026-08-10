@@ -228,9 +228,8 @@ The sandbox harness has a defense-in-depth lifecycle to prevent leaks (orphan
 `claude` processes, stale tmux sockets, leftover `/tmp/sprawl-*` dirs):
 
 1. **Agent responsibility.** Any agent running sandbox tests must call
-   `sprawl_sandbox_destroy` synchronously (and successfully) before reporting
-   done via the `report_status` MCP tool (state: "complete"). This is the
-   primary cleanup path.
+   `sprawl_sandbox_destroy` synchronously (and successfully) before it reports
+   its work done to its parent. This is the primary cleanup path.
 2. **Bash watchdog (Layer 1).** Each e2e driver script (`scripts/test-*-e2e.sh`,
    `scripts/sprawl-test-env.sh`) installs a `setsid`'d watchdog via
    `scripts/lib/sandbox-traps.sh`. If the driver dies abnormally (including

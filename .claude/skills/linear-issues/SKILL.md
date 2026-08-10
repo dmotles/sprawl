@@ -177,22 +177,23 @@ save_issue:
 - When closing an issue via code change, update its state to "Done" and leave a comment linking the commit/PR
 - When an issue is blocked, add a comment explaining what it's waiting on
 
-## Reporting Progress While Working an Issue
+## Recording Progress While Working an Issue
 
-When an agent is working an issue, it should report status to its parent at each
-meaningful step — not just at task end. The canonical status channel is the
-`report_status` MCP tool:
+**The issue is the work record.** There is no status-reporting tool: QUM-1186
+deleted `report_status`, and its habit was deliberately not moved onto
+`send_message`. Sprawl observes whether an agent is alive and in a turn; nobody
+needs to be told an agent is still working, and a parent's inbox is not a
+progress log.
 
-```
-report_status({
-  state: "working" | "blocked" | "complete" | "failure",
-  summary: "<=160 char one-liner>"
-})
-```
+So: comment on the Linear issue at each milestone — picked it up, tests red,
+tests green, `make validate` green, decisions taken, blockers hit — and close it
+out with a summary. That record outlives the session and the agent, and your
+parent (or the user) can read it without asking you.
 
-Fire one at each milestone: "In Progress set, picked up issue", "tests red",
-"tests green", "make validate green", "Linear Done set". The `summary` shows up
-in the TUI and in the parent's notification stream.
+Message your parent only when they have something to act on: your work is ready
+to merge, you are blocked on something only they can unblock, or you need a
+decision. Keep it short — `send_message` caps `body` at 300 characters by hard
+error — and put the detail on the issue, sending the issue key.
 
 ## Messaging Tools (when you need to talk to another agent)
 
@@ -200,9 +201,13 @@ The agent-facing messaging surface is MCP-only:
 
 - `send_message` — the channel for substantive agent-to-agent communication:
   questions, context-sharing, findings, hand-offs. Durable — it lands in the
-  recipient's inbox and can be retrieved later. Async by default; it can also
-  request preemption, which is **rare** and reserved for genuinely urgent
-  parent->descendant corrections ("I forgot to tell you: use the other API").
+  recipient's inbox and can be retrieved later. It is the ONLY way to make
+  another agent receive text — there is no separate work-assignment tool, so an
+  assignment is a message. `now: false` (the default) is cooperative;
+  `now: true` requests preemption, which is **rare** and reserved for genuinely
+  urgent parent->descendant corrections ("I forgot to tell you: use the other
+  API"). `body` is capped at 300 characters, enforced by a hard error rather
+  than truncation — put the detail on the issue and send the key.
   Consult the tool's own MCP schema for its current arguments and semantics.
 - `peek` — inspect a child/peer's recent activity and last report.
   **Use this before** sending a child "are you done?" — only `send_message`

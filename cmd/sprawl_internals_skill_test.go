@@ -5,6 +5,7 @@ import (
 	"encoding/hex"
 	"os"
 	"path/filepath"
+	"regexp"
 	"strings"
 	"testing"
 )
@@ -136,10 +137,28 @@ func TestSprawlInternalsSkillRelocatesSectionsVerbatim(t *testing.T) {
 	}
 }
 
-// The lifecycle section moves verbatim EXCEPT its closing cross-reference, which
-// must be repointed at the e2e-matrix skill. Both halves are asserted: without
-// the negative half, appending the new pointer while leaving the stale
-// "under **Validating Changes**" wording would pass.
+// The lifecycle section's closing cross-reference must be repointed at the
+// e2e-matrix skill. Both halves are asserted: without the negative half,
+// appending the new pointer while leaving the stale "under **Validating
+// Changes**" wording would pass.
+//
+// QUM-1186 removed this test's byte-equality arm on the CONTRACT text, and the
+// removal is the point rather than a concession. The arm required the skill's
+// lifecycle contract to stay byte-identical to `CLAUDE.md@c7093cc` — a fixture
+// frozen in 2026 — so it kept passing only while the contract never changed.
+// The moment the contract DID change, the fixture stopped being an oracle and
+// started being an anti-correctness gate: it demanded the shipped skill go on
+// documenting `delegate(<state>, task)` gates for a tool that no longer exists,
+// and it would have gone red at whoever fixed that. A test that fails BECAUSE
+// you corrected the documentation is describing the past, not guarding the
+// present.
+//
+// What replaces it has a live subject: TestSprawlInternalsSkillLifecycleNamesRealStatuses
+// below checks the section against `internal/state/state.go`, which is the
+// thing the contract is supposed to be true of. The relocation-fidelity
+// oracles that are still meaningful — the four whole-section copies, the
+// Build & Test block, the Code Patterns subset, and the digest pin on the
+// fixture itself — are untouched.
 func TestSprawlInternalsSkillRewritesLifecycleCrossReference(t *testing.T) {
 	const heading = "Lifecycle model (QUM-786)"
 	const crossRefMarker = "Touched-file matrix-row mapping"
@@ -148,21 +167,12 @@ func TestSprawlInternalsSkillRewritesLifecycleCrossReference(t *testing.T) {
 	claudeSection := mdSection(t, claudeMDOracleName, readClaudeMDOracle(t), heading)
 	skillSection := mdSection(t, sprawlInternalsSkill, readSprawlInternalsSkill(t), heading)
 
-	contract, _, ok := strings.Cut(claudeSection, crossRefMarker)
-	if !ok {
-		t.Fatalf("%s %q: cross-reference marker %q not found — the oracle is stale", claudeMDOracleName, heading, crossRefMarker)
-	}
 	// Positive control for the negative assertion below: the banned wording must
 	// be findable in the source, or its absence from the skill proves nothing.
 	// (It survives a line wrap in CLAUDE.md at "the table\nunder **Validating".)
 	if !strings.Contains(claudeSection, staleWording) {
 		t.Fatalf("%s %q: control failed — %q is not present in the source, so asserting its absence is vacuous",
 			claudeMDOracleName, heading, staleWording)
-	}
-
-	if !strings.HasPrefix(skillSection, contract) {
-		t.Errorf("%s: lifecycle contract text is not byte-identical to CLAUDE.md's\n--- want prefix ---\n%q\n--- got ---\n%q",
-			sprawlInternalsSkill, contract, skillSection)
 	}
 
 	_, skillCrossRef, ok := strings.Cut(skillSection, crossRefMarker)
@@ -181,6 +191,71 @@ func TestSprawlInternalsSkillRewritesLifecycleCrossReference(t *testing.T) {
 	}
 	if strings.Contains(skillSection, staleWording) {
 		t.Errorf("%s: stale cross-reference %q to CLAUDE.md's own table survives", sprawlInternalsSkill, staleWording)
+	}
+}
+
+// statusIdentRe matches a backticked Go status identifier as the lifecycle
+// section writes them, e.g. `StatusComplete`.
+var statusIdentRe = regexp.MustCompile("`(Status[A-Za-z]+)`")
+
+// TestSprawlInternalsSkillLifecycleNamesRealStatuses replaces the byte-equality
+// arm removed above with an assertion whose subject is the code, not a frozen
+// copy of a document. Every `StatusXxx` the lifecycle contract names must be a
+// real constant in internal/state/state.go, and the contract must cover the
+// statuses that exist — so both a stale name left behind by a deletion and a
+// newly added status nobody documented are caught.
+//
+// This is deliberately narrower than byte equality. It cannot detect a
+// paraphrase, which byte equality could; that trade is the price of a gate that
+// tracks the code instead of forbidding the code to change.
+func TestSprawlInternalsSkillLifecycleNamesRealStatuses(t *testing.T) {
+	const heading = "Lifecycle model (QUM-786)"
+
+	stateSrc := readRepoFile(t, filepath.FromSlash("internal/state/state.go"))
+	skillSection := mdSection(t, sprawlInternalsSkill, readSprawlInternalsSkill(t), heading)
+
+	// Control for the whole test: the oracle must actually contain status
+	// declarations, or every check below passes by finding nothing.
+	declared := regexp.MustCompile(`(?m)^\s*(Status[A-Za-z]+)\s*=`).FindAllStringSubmatch(stateSrc, -1)
+	if len(declared) < 5 {
+		t.Fatalf("control failed: internal/state/state.go declares %d Status constants, expected at least 5 — the oracle is stale or the regexp stopped matching", len(declared))
+	}
+	declaredSet := map[string]bool{}
+	for _, m := range declared {
+		declaredSet[m[1]] = true
+	}
+
+	named := statusIdentRe.FindAllStringSubmatch(skillSection, -1)
+	if len(named) < 3 {
+		t.Fatalf("control failed: the %q section names %d `StatusXxx` identifiers, expected at least 3 — the section was gutted or the regexp stopped matching", heading, len(named))
+	}
+	for _, m := range named {
+		if !declaredSet[m[1]] {
+			t.Errorf("%s %q: names %q, which is not declared in internal/state/state.go — the contract documents a status that does not exist",
+				sprawlInternalsSkill, heading, m[1])
+		}
+	}
+
+	// The statuses whose gate behaviour the contract exists to state. StatusIdle
+	// (QUM-1186 D2) is the one most likely to be missed: an undocumented resting
+	// state reads to an operator as "complete", which is the exact confusion the
+	// separate constant was added to prevent.
+	for _, must := range []string{"StatusComplete", "StatusIdle"} {
+		if !declaredSet[must] {
+			t.Fatalf("control failed: %q is not declared in internal/state/state.go, so requiring the skill to document it is vacuous", must)
+		}
+		if !strings.Contains(skillSection, "`"+must+"`") {
+			t.Errorf("%s %q: does not document %q, a resting state agents and operators must be able to tell apart",
+				sprawlInternalsSkill, heading, must)
+		}
+	}
+
+	// The contract must not describe the gate in terms of tools QUM-1186 deleted.
+	for _, banned := range []string{"delegate(", "report_status"} {
+		if strings.Contains(skillSection, banned) {
+			t.Errorf("%s %q: still describes the gate via the deleted tool %q; send_message is the only entry point",
+				sprawlInternalsSkill, heading, banned)
+		}
 	}
 }
 

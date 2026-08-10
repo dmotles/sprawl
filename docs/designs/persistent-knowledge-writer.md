@@ -271,7 +271,9 @@ already careful and already returned a true answer to the wrong question.
 
 Listed so the dependencies are visible.
 
-- **`report_status` tool description — approved, owned elsewhere.** No agent-facing
+- **`report_status` tool description — approved, owned elsewhere. SUPERSEDED: the
+  tool was deleted in QUM-1186, so this item has no subject matter left; it is
+  retired by deletion, not fixed.** No agent-facing
   surface states that terminal-report teardown is deferred to end of turn and that a
   follow-on message in the same turn survives. Three surfaces author the *ordering*
   (a report step whose own doc comment calls it the "final" step; a verification

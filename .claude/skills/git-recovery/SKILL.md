@@ -643,8 +643,9 @@ whose worktree HEAD is on `main` is refused at resume/wake
 (`agentops.AssertNotOnMain`, wired into `Real.RecoverAgents` and `Real.Wake`),
 and `worktree.Create` asserts a freshly created worktree's HEAD is its intended
 branch. A stale advertised `AgentState.Branch` is self-healed (warn-only) from
-the worktree's real HEAD on resume/wake — never a hard error, since
-delegate-reuse legitimately diverges it and `merge.go` already untrusts it.
+the worktree's real HEAD on resume/wake — never a hard error, since the
+advertised field records where the agent STARTED and any follow-up branch
+legitimately diverges it, and `merge.go` already untrusts it.
 
 ## See also
 

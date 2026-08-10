@@ -2020,7 +2020,7 @@ Build the binary:
 make build
 ```
 
-This produces a `./sprawl` binary. The interactive entrypoint is `sprawl enter` — there is no `sprawl init` (it was removed in QUM-346; see `cmd/init_removed_test.go` for the regression guard). The CLI surface is intentionally small: the agent-facing operations (spawn, delegate, retire, kill, send_message, report_status, status, peek, merge, handoff, messages_*) are all MCP tools driven from inside a `sprawl enter` weave session. The standalone CLI exposes only:
+This produces a `./sprawl` binary. The interactive entrypoint is `sprawl enter` — there is no `sprawl init` (it was removed in QUM-346; see `cmd/init_removed_test.go` for the regression guard). The CLI surface is intentionally small: the agent-facing operations (spawn, retire, kill, send_message, status, peek, merge, handoff, messages_*) are all MCP tools driven from inside a `sprawl enter` weave session. The standalone CLI exposes only:
 
 ```bash
 # Open the TUI / weave session (loads the same-process supervisor)
@@ -2054,7 +2054,8 @@ ls .sprawl/agents/
 cat .sprawl/agents/alice.json
 
 # Each JSON file contains: name, type, family, parent, prompt, branch,
-# worktree path, status, session id, cost fields, and last_report_*.
+# worktree path, status, session id, and cost fields. The last_report_*
+# keys were removed in QUM-1186 along with the self-report tool.
 # The full schema is internal/state/state.go::AgentState.
 ```
 

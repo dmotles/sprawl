@@ -39,12 +39,15 @@ validates the caller's identity and parentage, checks agent status, refuses
 subagents (no branch of their own), requires both worktrees clean, and —
 critically — **resolves the merge source from the agent worktree's actual
 HEAD branch**, refusing detached HEAD (QUM-511). The spawn-time
-`AgentState.Branch` field goes stale under delegate-reuse and must never be
-trusted as the merge source. **QUM-1088 (folded into QUM-1087) resolved the
-retire path**: it used to build its own merge config from the stale field and
-skip several of these preconditions, so once delegate reuse moved a worktree the
-merge reported success while the parent received none of the agent's current
-work. `Real.Retire(mergeFirst)` now calls `Real.merge`, inheriting the
+`AgentState.Branch` field can go stale — anything that moves an agent's
+worktree onto a follow-up branch diverges it — and must never be trusted as the
+merge source. (Until QUM-1186 the named trigger was `delegate` reusing an agent;
+that tool is gone, but the hazard is not: the field records where the agent
+STARTED, and nothing keeps it in step with where the worktree actually is.)
+**QUM-1088 (folded into QUM-1087) resolved the retire path**: it used to build
+its own merge config from the stale field and skip several of these
+preconditions, so once a reused worktree moved, the merge reported success while
+the parent received none of the agent's current work. `Real.Retire(mergeFirst)` now calls `Real.merge`, inheriting the
 resolution, the detached-HEAD refusal, preconditions 7/8 and `mergeSem` — which
 it previously bypassed. The fix was deleting the second call site, not copying
 the resolution into it.
