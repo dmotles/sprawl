@@ -116,37 +116,74 @@ Two things that look like fixes and are not:
 
 ## `TempDir RemoveAll cleanup: unlinkat ... directory not empty`
 
-Attributed to `testing.go`, on a test whose subject is duplicate-write
-prevention in the delivery path — **or on its neighbour
-`TestQUM1072_SenderMCPCallReturns_WhileRecipientWedged`**, whose subject is a
-sender's MCP call returning while the recipient is wedged. The neighbour is the
-instance actually observed here, in `internal/supervisor`:
+Attributed to `testing.go`, seen in `internal/supervisor`.
 
-```
---- FAIL: TestQUM1072_SenderMCPCallReturns_WhileRecipientWedged (0.18s)
-    testing.go:1464: TempDir RemoveAll cleanup: unlinkat /tmp/TestQUM1072_SenderMCPCallReturns_WhileRecipientWedged1704787535/001/.sprawl/agents: directory not empty
-FAIL	github.com/dmotles/sprawl/internal/supervisor	83.602s
-```
-
-**Read the failure for an actual assertion. There is none.** If the only failure
-text is the cleanup line, no expectation was violated and the product behaved.
-The run fails anyway.
-
-**The discriminator is mechanical — use it rather than eyeballing.** The failing
-frame is `testing.go:<n>`, never a `_test.go` line. So:
+**Run the discriminator before you look at WHICH test failed.** The failing
+frame is `testing.go:<n>`, never a `_test.go` line:
 
 ```bash
 grep -cE '_test\.go:[0-9]+:' <logfile>    # must be 0
 grep -nE 'testing\.go:[0-9]+:' <logfile>  # the cleanup line, and nothing else
 ```
 
-Zero `_test.go:` frames means no assertion was violated. The observed run had
-exactly one `testing.go:` frame and zero `_test.go:` frames.
+Zero `_test.go:` frames means **no assertion was violated** — no expectation
+failed and the product behaved. The run fails anyway.
 
-The trap is the subject matter: a FAIL on either test reads as a real regression
-in message delivery — the neighbour reads as a QUM-1072 delivery regression
-specifically — and has been misdiagnosed as one. An unnamed neighbour does not
-discharge that trap, which is why it is named above.
+**Do not diagnose this by test identity.** The instances observed so far are
+listed below as illustrations, *not* as a list to match against: **18 test files
+in `internal/supervisor` alone call `t.TempDir()`**, so this can surface on a
+test nobody has written down yet, and a name you do not recognise proves
+nothing either way. Three names is already enough to show the list is not
+exhaustive. The absent `_test.go:` frame is the diagnostic; the names are not.
+
+Observed instances, all in `internal/supervisor`:
+
+1. A test whose subject is **duplicate-write prevention in the delivery path** —
+   how the failure was originally described to us. Secondhand; no output captured.
+2. **`TestQUM1072_SenderMCPCallReturns_WhileRecipientWedged`** — subject is a
+   sender's MCP call returning while the recipient is wedged. Observed
+   2026-08-07 during `make validate` under 4-way host contention:
+
+   ```
+   --- FAIL: TestQUM1072_SenderMCPCallReturns_WhileRecipientWedged (0.18s)
+       testing.go:1464: TempDir RemoveAll cleanup: unlinkat /tmp/TestQUM1072_SenderMCPCallReturns_WhileRecipientWedged1704787535/001/.sprawl/agents: directory not empty
+   FAIL	github.com/dmotles/sprawl/internal/supervisor	83.602s
+   ```
+
+3. **`TestAgentRuntime_FaultChain_DoneClosesAndLivenessReachesFaulted`**
+   (`runtime_fault_chain_test.go`) — subject is fault-chain liveness. Observed
+   **twice on 2026-08-10, hours apart, by two different agents**, discriminator
+   applied both times: zero `_test.go:` frames, exactly one `testing.go:` frame.
+
+   ```
+   --- FAIL: TestAgentRuntime_FaultChain_DoneClosesAndLivenessReachesFaulted (0.00s)
+       testing.go:1464: TempDir RemoveAll cleanup: unlinkat /tmp/TestAgentRuntime_FaultChain_DoneClosesAndLivenessReachesFaulted1095510233/001/.sprawl/agents: directory not empty
+   FAIL	github.com/dmotles/sprawl/internal/supervisor	70.976s
+   ```
+
+   The second sighting was in a **pre-commit hook's** `make validate`, on the
+   commit that added this very paragraph — which is the "hurts you indirectly"
+   warning at the bottom of this entry, arriving on schedule. Same test, same
+   `testing.go:1464`, different tmp suffix (`1042376124`), 71.390s.
+
+   > *Circumstance, recorded and explicitly NOT a claimed cause:* the first
+   > sighting occurred with `/home/coder` **99% full, 233M free**. Nobody has
+   > connected the two, and a full disk is worth writing down because it breaks
+   > things that do not announce themselves as disk failures.
+   >
+   > **The second sighting constrains this, and is the reason to trust the
+   > constraint over the correlation:** it reproduced on the *same test* with
+   > **9.1G free (52% used)**. So a full disk is **not necessary** for this
+   > symptom. Do not diagnose by disk, in either direction — a full disk does not
+   > explain it and a healthy one does not rule it out. Instance 2 was likewise
+   > seen under CPU contention rather than disk exhaustion.
+
+**The trap is the subject matter, and it moves with the test.** Whichever test
+surfaces it, the FAIL reads as a real regression in *that test's* subject — a
+delivery regression for instance 2, a liveness regression for instance 3, which
+is exactly the area a messaging or lifecycle slice is touching when it hits
+this. All three have been or could be misdiagnosed that way. Matching on test
+identity is what produces the misdiagnosis; the grep above is what prevents it.
 
 Remedy: re-run. It is load-dependent, so a passing standalone re-run does **not**
 contradict this diagnosis — and equally does not confirm it, so check for the
@@ -159,12 +196,14 @@ Tracked as QUM-1070, unfixed.
 > being deleted. The symptom and the absent assertion are what you should key
 > on; the cause above is secondhand.
 
-> *Lead, explicitly unconfirmed:* immediately before the FAIL, the observed run
-> emitted two of these —
+> *Lead, explicitly unconfirmed, and specific to instance 2 only:* immediately
+> before that FAIL, instance 2's run emitted two of these —
 > `WARN unified-runtime: drainPendingToStdin write failed — maildir entries stay in pending/ ... err="context deadline exceeded"`.
 > That is *consistent with* the released-but-unwaited-goroutine theory above and
 > is **not** confirmation of it: nobody has traced the write to the deletion.
-> Do not repeat it as a cause.
+> Do not repeat it as a cause. Nothing equivalent was captured for instance 3,
+> so its absence there is not evidence either way — one run's log was kept and
+> the other's was not.
 
 **This entry is most likely to hurt you indirectly** — it can fail a pre-commit
 hook, which produces the next entry.
@@ -274,15 +313,18 @@ part — the mechanisms and issue states are not.**
 | `no space left on device` | **observed** — quoted in an incident report and in a delivered agent message describing most rows of a matrix run dying in `go build` | **verified** — the two filesystems measured as distinct devices; the build-cache misattribution is recorded in QUM-1118 itself |
 | `parallel golangci-lint is running` | **verified** — present in the installed `golangci-lint` binary; contention **observed** by two agents on this host | machine-wide scope **observed** (cross-worktree); both Makefile call sites read directly. What a parallel run does to shared state: **not established** |
 | `Not logged in` | **verified** — verbatim in a captured payload under `docs/research/` and in an e2e script | **verified** — stated in `scripts/run-claude`'s own header comment and CLAUDE.md; skip-flag inertness quoted verbatim from the harness |
-| `TempDir RemoveAll cleanup:` | **observed** — reproduced here 2026-08-07 on `TestQUM1072_SenderMCPCallReturns_WhileRecipientWedged` during a `make validate` under 4-way host contention; output quoted verbatim in the entry | **still reported only.** The named tests **are** present and unfixed in the tree (verified), and the absent-assertion discriminator is **verified** on the captured run (one `testing.go:` frame, zero `_test.go:` frames). The *cause* remains secondhand; the `drainPendingToStdin` correlation is an unconfirmed lead |
+| `TempDir RemoveAll cleanup:` | **observed three times, independently, by three agents** — 2026-08-07 on `TestQUM1072_SenderMCPCallReturns_WhileRecipientWedged` under 4-way host contention; 2026-08-10 on `TestAgentRuntime_FaultChain_DoneClosesAndLivenessReachesFaulted` at 99% disk; and again 2026-08-10 on that same test at 52% disk, in the pre-commit hook of the commit adding this row. All during `make validate`, all outputs quoted verbatim in the entry | **still reported only.** The named tests **are** present in the tree and do call `t.TempDir()` (verified: `qum1072_child_drain_bounded_write_test.go`, `runtime_fault_chain_test.go:118`), and the absent-assertion discriminator is **verified** on all three captured runs (one `testing.go:` frame, zero `_test.go:` frames each). The *cause* remains secondhand; the `drainPendingToStdin` correlation is an unconfirmed lead scoped to instance 2, and neither later sighting confirms or extends it. **One thing IS now established rather than reported:** the 99%-full disk is **not necessary** — the same test reproduced with 9.1G free. That is a falsified hypothesis, not a mechanism |
 | `has uncommitted changes in worktree` | **verified** — literal string in `internal/agentops/merge.go` | **verified** — the un-undone `reset --soft` is readable in `internal/merge/merge.go`; the incident is described in the fix commit's own message; recovery **observed** to work twice |
 
 **Closed gap (QUM-1161):** the `TempDir` entry used to be the only one resting
 entirely on a secondhand report. Its **symptom** is now firsthand — reproduced
-2026-08-07, output quoted in the entry, on the neighbouring test rather than the
-one originally described. Its **cause** is still secondhand, and the standing
-invitation still applies to that half: if you ever trace the cleanup race to an
-actual writer, correct this file.
+three times (2026-08-07 and twice on 2026-08-10), all outputs quoted in the
+entry, on two tests rather than the one originally described. Its **cause** is
+still secondhand, and the standing invitation still applies to that half: if you
+ever trace the cleanup race to an actual writer, correct this file. Three
+independent sightings raise confidence that the symptom is real and
+load-dependent, and the third **falsified one candidate condition** (a full disk
+is not necessary). Neither says anything about the reported mechanism.
 
 The distinction is the point. "Reproduced" upgraded the symptom and the
 discriminator; it did **not** upgrade the mechanism, and this table keeps the two
