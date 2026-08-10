@@ -400,6 +400,69 @@ wait_for_substring_fast() {
     return 1
 }
 
+# e2e_wait_maildir_substring TO NEEDLE [TIMEOUT] — poll agent TO's Maildir for
+# NEEDLE, as a literal substring. Returns 0 when it lands, 1 on timeout, and 2
+# when the CALL is malformed.
+#
+# QUM-1186. This is the suite's generic observability probe, and it replaces
+# one: rows used to drive an agent to self-report a TOKEN and then poll
+# `.sprawl/agents/<n>/state.json` for that token in the self-report field. The
+# tool and the field are both deleted, and the reason they are deleted applies
+# to the probe as much as to them — a self-report is an agent's claim about
+# itself, not evidence. What this reads instead is a file the DELIVERY PATH
+# wrote.
+#
+# The maildir and not the queue: send_message writes BOTH a Maildir entry under
+# .sprawl/messages/<to>/ and an agentloop queue entry under
+# .sprawl/agents/<to>/queue/pending/. The queue entry is consumed on delivery;
+# the maildir entry is durable and survives it. Searching new/ alone would make
+# the probe go red exactly when the recipient successfully drained its inbox.
+#
+# The three refusals are not defensive padding — each closes a way for this
+# probe to succeed without observing anything:
+#
+#   empty NEEDLE — `grep -rqF ""` matches EVERY file, so an empty sentinel
+#     succeeds against any non-empty maildir forever. Reachable, not
+#     theoretical: rows build sentinels with `head -c4 /dev/urandom | xxd -p`,
+#     which yields the empty string when xxd is missing.
+#   empty TO — collapses the path to .sprawl/messages/, i.e. every agent's
+#     mailbox, so any traffic between any two agents satisfies the row.
+#   unset SPRAWL_ROOT — makes the path relative, so a probe run from the repo
+#     searches the LIVE .sprawl/messages/ instead of the sandbox.
+#
+# Returning 2 rather than 1 for these matters: every caller uses this in an
+# `if`, where both read as failure, but a run that refused and a run that
+# genuinely waited out its timeout have different diagnoses.
+#
+# -F, never -E: sentinels are opaque tokens, and a regex match would let a row
+# pass on a token it never sent (`probe.a1b2` matching `probe-a1b2`).
+e2e_wait_maildir_substring() {
+    local to="$1" needle="$2" timeout="${3:-120}"
+    if [ -z "${SPRAWL_ROOT:-}" ]; then
+        echo "  e2e_wait_maildir_substring: SPRAWL_ROOT is unset — refusing to search a relative path (it would read the live .sprawl/, not the sandbox)" >&2
+        return 2
+    fi
+    if [ -z "$to" ]; then
+        echo "  e2e_wait_maildir_substring: empty recipient — refusing to search every agent's mailbox" >&2
+        return 2
+    fi
+    if [ -z "$needle" ]; then
+        echo "  e2e_wait_maildir_substring: empty needle — refusing, an empty sentinel matches every message ever sent" >&2
+        return 2
+    fi
+    local maildir="$SPRAWL_ROOT/.sprawl/messages/$to"
+    local elapsed=0
+    while [ "$elapsed" -lt "$timeout" ]; do
+        if [ -d "$maildir" ] && grep -rqF -- "$needle" "$maildir" 2>/dev/null; then
+            echo "WAIT_MAILDIR_ELAPSED ${elapsed}s to=${to}"
+            return 0
+        fi
+        sleep 2
+        elapsed=$((elapsed + 2))
+    done
+    return 1
+}
+
 # _e2e_weave_lock_diagnostic LOCK ATTEMPTS — explain who is still holding the
 # lock. The file body is the last PID that successfully ACQUIRED (rootinit
 # writes it after locking), which is not necessarily the current holder, so the

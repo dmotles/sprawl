@@ -69,18 +69,13 @@ wait_for_new_child() {
     return 1
 }
 
-wait_for_child_idle() {
-    local statefile="$1" marker="$2" timeout="$3"
-    local end=$((SECONDS + timeout)) summary
-    while [ "$SECONDS" -lt "$end" ]; do
-        summary=$(jq -r '.last_report_message // empty' "$statefile" 2>/dev/null || true)
-        if [ -n "$summary" ] && printf '%s' "$summary" | grep -qF "$marker"; then
-            return 0
-        fi
-        sleep 1
-    done
-    return 1
-}
+# QUM-1186: readiness used to be read from the child's state.json
+# self-reported summary field, which is deleted along with the tool that wrote
+# it. It is now observed as a message the child actually delivered to weave —
+# e2e_wait_maildir_substring, scripts/lib/e2e-common.sh. That is a strictly
+# better gate for THIS row in particular: the thing it needs to know before
+# sending an interrupt is that the child's delivery path is up, and the new
+# probe observes exactly that, where the old one observed only a self-claim.
 
 # count_now_writes counts now-priority stdin user-message frames written to a
 # child's raw NDJSON session log (the storm regression signal).
@@ -142,7 +137,7 @@ test_run() {
     echo ""
     echo "=== PHASE 1: spawn idle probe child ==="
     local P1_CHILD P1_SPAWN
-    P1_CHILD="You are an automated QUM-821 idle probe. STEP 1: IMMEDIATELY call mcp__sprawl__report_status with state=\"working\" and summary=\"phase1 probe ready\". STEP 2: Stop your turn and wait. STEP 3 (next turn, on an inbound system-notification): call mcp__sprawl__messages_read. If the body contains \"${PROBE}\", call mcp__sprawl__messages_send with to=\"weave\" and body=\"IDLE-PROBE-ACK: <copy the body you just read here>\", then call mcp__sprawl__report_status state=\"complete\" summary=\"probe acked\". Then stop. Do nothing else; do not read files; do not run commands."
+    P1_CHILD="You are an automated QUM-821 idle probe. STEP 1: IMMEDIATELY call mcp__sprawl__send_message with to=\"weave\" and body=\"PHASE1-PROBE-READY-${SUFFIX1}\". STEP 2: Stop your turn and wait. STEP 3 (next turn, on an inbound system-notification): call mcp__sprawl__messages_read. If the body contains \"${PROBE}\", call mcp__sprawl__send_message with to=\"weave\" and body=\"IDLE-PROBE-ACK: <copy the body you just read here>\". Then stop. Do nothing else; do not read files; do not run commands."
     P1_SPAWN="Call mcp__sprawl__spawn with family='engineering', type='engineer', branch='qum821-idle-${SUFFIX1}', and prompt set to exactly the following text (do not modify it): '${P1_CHILD}'"
     e2e_send_user_prompt "$SESSION" "$P1_SPAWN"
 
@@ -155,10 +150,10 @@ test_run() {
     CHILD1_NAME="${CHILD1%%|*}"; CHILD1_STATE="${CHILD1#*|}"
     pass "phase-1 child spawned (name=$CHILD1_NAME)"
 
-    if wait_for_child_idle "$CHILD1_STATE" "phase1 probe ready" 120; then
-        pass "phase-1 child reached idle"
+    if e2e_wait_maildir_substring weave "PHASE1-PROBE-READY-${SUFFIX1}" 120; then
+        pass "phase-1 child reached idle (its readiness message was delivered to weave)"
     else
-        fail "phase-1 child never reported ready within 120s"
+        fail "phase-1 child's readiness message never reached weave within 120s"
         sed 's/^/    /' "$CHILD1_STATE" >&2 2>/dev/null || true
         e2e_print_results; return 1
     fi
@@ -186,7 +181,7 @@ test_run() {
     echo "=== PHASE 2: spawn mid-turn probe child ==="
     local BUSY_SECS=40
     local P2_CHILD P2_SPAWN
-    P2_CHILD="You are an automated QUM-821 mid-turn probe. STEP 1: IMMEDIATELY call mcp__sprawl__report_status with state=\"working\" and summary=\"phase2 probe ready\". STEP 2: stop your turn. Whenever a system-notification about a new message arrives, call mcp__sprawl__messages_read. If the body contains \"GO-BUSY\", call the Bash tool to run exactly this foreground command: sleep ${BUSY_SECS}. If the body contains \"${NOW_PROBE}\", call mcp__sprawl__messages_send with to=\"weave\" and body=\"URGENT-NOW-ACK\". Do nothing else; do not read files."
+    P2_CHILD="You are an automated QUM-821 mid-turn probe. STEP 1: IMMEDIATELY call mcp__sprawl__send_message with to=\"weave\" and body=\"PHASE2-PROBE-READY-${SUFFIX2}\". STEP 2: stop your turn. Whenever a system-notification about a new message arrives, call mcp__sprawl__messages_read. If the body contains \"GO-BUSY\", call the Bash tool to run exactly this foreground command: sleep ${BUSY_SECS}. If the body contains \"${NOW_PROBE}\", call mcp__sprawl__send_message with to=\"weave\" and body=\"URGENT-NOW-ACK\". Do nothing else; do not read files."
     P2_SPAWN="Call mcp__sprawl__spawn with family='engineering', type='engineer', branch='qum821-midturn-${SUFFIX2}', and prompt set to exactly the following text (do not modify it): '${P2_CHILD}'"
     e2e_send_user_prompt "$SESSION" "$P2_SPAWN"
 
@@ -199,10 +194,10 @@ test_run() {
     CHILD2_NAME="${CHILD2%%|*}"; CHILD2_STATE="${CHILD2#*|}"
     pass "phase-2 child spawned (name=$CHILD2_NAME)"
 
-    if wait_for_child_idle "$CHILD2_STATE" "phase2 probe ready" 120; then
-        pass "phase-2 child reached idle"
+    if e2e_wait_maildir_substring weave "PHASE2-PROBE-READY-${SUFFIX2}" 120; then
+        pass "phase-2 child reached idle (its readiness message was delivered to weave)"
     else
-        fail "phase-2 child never reported ready within 120s"
+        fail "phase-2 child's readiness message never reached weave within 120s"
         sed 's/^/    /' "$CHILD2_STATE" >&2 2>/dev/null || true
         e2e_print_results; return 1
     fi

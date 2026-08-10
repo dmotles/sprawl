@@ -3,17 +3,30 @@
 # guards. Migrated from scripts/test-notify-tui-e2e.sh (which remains in place
 # until soak completes; do not edit the original — see QUM-616 Wave 2A).
 #
-# Test A: simulated MCP report_status → state-only write. Asserts the TUI
-#         badge does NOT rise, no inbox banner surfaces, and no drain
-#         notification appears (QUM-559 contract).
-# Test B: simulated MCP messages_send → direct maildir envelope write. Asserts
+# Test A: a state.json-only write. Asserts the TUI badge does NOT rise, no
+#         inbox banner surfaces, and no drain notification appears.
+#         QUM-1186 NOTE — this test's subject was "a self-report write";
+#         that tool and its state fields are deleted, so the fixture now just
+#         flips `status`. The surviving claim is the general one the QUM-559
+#         contract was a special case of: a state.json mutation is NOT a
+#         notification trigger, only the maildir is. Recorded as a DELIBERATE
+#         REDUCTION: the row no longer covers the self-report write shape,
+#         because that shape no longer exists.
+# Test B: a direct maildir envelope write (the shape send_message produces).
+#         Asserts
 #         the TUI picks up the maildir rise on its 2s tick and renders both
 #         (a) the 'inbox: N new message[s]' banner (QUM-473 §3) and
 #         (b) the '(1)' unread badge on the weave row.
 
 # QUM-1029: the number of assertions a COMPLETE, PASSING run of this row
-# makes. Fifteen pass sites, less one: the jq-vs-grep pair is a single assertion expressed as two mirrored arms.
-MIN_ASSERTIONS=14
+# makes. QUM-1186 lowered this from 14, deliberately and for a stated reason:
+# three green-path assertions were DELETED, not migrated. Two of them (Test A's
+# unconditional "wrote state.json" pass and its jq-vs-grep read-back pair, which
+# counted as one) asserted that `cat` and `jq` work; the third was Test C's
+# equivalent setup announcement. None had a sprawl-side subject. A floor left at
+# 14 would have been a floor no honest run could meet; a floor lowered without
+# this note would be indistinguishable from quietly dropping coverage.
+MIN_ASSERTIONS=11
 
 test_metadata() {
     echo "needs_claude=1 needs_tmux=1"
@@ -49,8 +62,10 @@ count_inbox_banners() {
 
 # QUM-555/QUM-556/QUM-557/QUM-562: count message-class drain rows surfaced in
 # weave's viewport, anchored on `mcp__sprawl__messages_read(id=<id>)` which is
-# present only on async / interrupt message lines (status_change lines do not
-# cite the read tool).
+# present only on async / interrupt message lines. (QUM-1186 deleted the
+# hidden ephemeral status-ping envelope class that used to be the other kind of
+# line here and did NOT cite the read tool; send_message envelopes are now the
+# only class, and all of them cite it.)
 count_drain_notifications() {
     local session="$1"
     local sender="$2"
@@ -147,24 +162,21 @@ test_run() {
 }
 JSON
 
-    # --- Test A: simulated MCP `report_status done` (state-only write) ---
+    # --- Test A: a state.json-only write ---
     #
-    # QUM-559: report_status no longer writes to maildir; the only on-disk
-    # side effect is updating the caller's state.json. The TUI's AgentTreeMsg
+    # QUM-559, generalised by QUM-1186: a state-only write has no maildir
+    # side effect at all. The TUI's AgentTreeMsg
     # poll reads state.json for display only — it does NOT use state-file
     # changes as a notification trigger. So this state-only write must NOT
     # raise the badge, must NOT surface an `inbox: N new message` banner, and
     # must NOT cause a drain notification citing
     # `mcp__sprawl__messages_read` to appear.
     echo ""
-    echo "=== Test A: simulated MCP report_status → state.last_report_message only (no maildir) ==="
+    echo "=== Test A: state.json-only write must not trigger any notification ==="
     local BANNERS_BEFORE_A DRAINS_BEFORE_A
     BANNERS_BEFORE_A=$(count_inbox_banners "$SESSION")
     DRAINS_BEFORE_A=$(count_drain_notifications "$SESSION" "$CHILD_NAME")
 
-    local REPORT_MSG_A="e2e tui notify test A"
-    local REPORT_AT_A
-    REPORT_AT_A="$(date -u +%Y-%m-%dT%H:%M:%SZ)"
     cat > "$CHILD_STATE_FILE" <<JSON
 {
   "name": "${CHILD_NAME}",
@@ -176,41 +188,22 @@ JSON
   "worktree": "${SPRAWL_ROOT}",
   "status": "done",
   "created_at": "$(date -u +%Y-%m-%dT%H:%M:%SZ)",
-  "tree_path": "weave├${CHILD_NAME}",
-  "last_report_type": "done",
-  "last_report_message": "${REPORT_MSG_A}",
-  "last_report_at": "${REPORT_AT_A}",
-  "last_report_state": "complete"
+  "tree_path": "weave├${CHILD_NAME}"
 }
 JSON
-    pass "simulated report_status: wrote state.json with status=done + last_report_message"
-
-    # QUM-559: child's state.last_report_message must be set.
-    local LAST_MSG
-    if command -v jq >/dev/null 2>&1; then
-        LAST_MSG=$(jq -r '.last_report_message // empty' "$CHILD_STATE_FILE" 2>/dev/null || echo "")
-        if [ "$LAST_MSG" = "$REPORT_MSG_A" ]; then
-            pass "QUM-559: child state.last_report_message persisted"
-        else
-            fail "QUM-559: child state.last_report_message NOT persisted (got: $LAST_MSG)"
-            echo "  child state file:" >&2
-            cat "$CHILD_STATE_FILE" >&2 || true
-        fi
-    else
-        if grep -qE "\"last_report_message\"[^,}]*$REPORT_MSG_A" "$CHILD_STATE_FILE"; then
-            pass "QUM-559: child state.last_report_message persisted"
-        else
-            fail "QUM-559: child state.last_report_message NOT persisted"
-            echo "  child state file:" >&2
-            cat "$CHILD_STATE_FILE" >&2 || true
-        fi
-    fi
+    # QUM-1186: two assertions used to sit here and both are DELETED, not
+    # migrated, because neither was ever a check of sprawl. One was an
+    # unconditional `pass` announcing that the `cat` above had run; the other
+    # read the file back with jq and asserted it contained what this script had
+    # just written to it. They tested `cat` and `jq`. MIN_ASSERTIONS drops with
+    # them — a floor left at 14 would have been satisfied by 12 real assertions
+    # plus nothing.
 
     # QUM-559: badge must NOT rise — state-only writes don't touch the maildir.
     if wait_for_no_badge_rise "$SESSION" 5; then
-        pass "QUM-559: weave row stayed at no unread badge after simulated report_status"
+        pass "QUM-559: weave row stayed at no unread badge after a state.json-only write"
     else
-        fail "QUM-559: weave row showed an unread badge after simulated report_status (maildir leak)"
+        fail "QUM-559: weave row showed an unread badge after a state.json-only write (maildir leak)"
         echo "  pane tail:" >&2
         capture_pane "$SESSION" | tail -30 >&2
     fi
@@ -221,7 +214,7 @@ JSON
     BANNERS_AFTER_A=$(count_inbox_banners "$SESSION")
     DELTA_A=$((BANNERS_AFTER_A - BANNERS_BEFORE_A))
     if [ "$DELTA_A" -eq 0 ]; then
-        pass "QUM-559: zero banner-count delta after simulated report_status (state-only)"
+        pass "QUM-559: zero banner-count delta after a state.json-only write"
     else
         fail "QUM-559: banner-count delta = $DELTA_A (before=$BANNERS_BEFORE_A, after=$BANNERS_AFTER_A); expected 0"
         echo "  pane tail:" >&2
@@ -234,19 +227,19 @@ JSON
     if [ "$DRAINS_AFTER_A" -eq "$DRAINS_BEFORE_A" ]; then
         pass "QUM-559: no maildir-drain notification from '$CHILD_NAME' (delta=0)"
     else
-        fail "QUM-559: maildir-drain notification from '$CHILD_NAME' appeared after simulated report_status (delta=$((DRAINS_AFTER_A - DRAINS_BEFORE_A)))"
+        fail "QUM-559: maildir-drain notification from '$CHILD_NAME' appeared after a state.json-only write (delta=$((DRAINS_AFTER_A - DRAINS_BEFORE_A)))"
         echo "  pane tail:" >&2
         capture_pane "$SESSION" | tail -40 >&2
     fi
 
-    # --- Test B: simulated MCP `messages_send` (direct maildir envelope write) ---
+    # --- Test B: a direct maildir envelope write (what send_message produces) ---
     #
     # QUM-565: schema mirrors internal/messages/messages.go Send(). Atomic
     # write: tmp/ then rename into new/. Also drop a sent/-copy under the
     # sender's mailbox and pre-create cur/+archive/ so downstream
     # MarkRead/Archive don't ENOENT during this run.
     echo ""
-    echo "=== Test B: simulated MCP messages_send weave → badge rises to (1) ==="
+    echo "=== Test B: simulated send_message to weave → badge rises to (1) ==="
     local BANNERS_BEFORE_B
     BANNERS_BEFORE_B=$(count_inbox_banners "$SESSION")
 
@@ -276,12 +269,12 @@ JSON
 JSON
     mv "$WEAVE_MBOX/tmp/$MSG_FILE" "$WEAVE_MBOX/new/$MSG_FILE"
     cp "$WEAVE_MBOX/new/$MSG_FILE" "$SENDER_MBOX/sent/$MSG_FILE"
-    pass "simulated messages_send: wrote maildir envelope (id=$SHORT_ID) atomically into weave/new/"
+    pass "simulated send_message: wrote maildir envelope (id=$SHORT_ID) atomically into weave/new/"
 
     if wait_for_pattern_fast "$SESSION" "weave[^│]*\\(1\\)" 15; then
         pass "QUM-559: weave row shows '(1)' unread badge after first real maildir delivery"
     else
-        fail "weave row did NOT rise to '(1)' after simulated messages_send"
+        fail "weave row did NOT rise to '(1)' after a simulated send_message"
         echo "  pane tail:" >&2
         capture_pane "$SESSION" | tail -30 >&2
     fi
@@ -334,10 +327,21 @@ JSON
     # but that path requires Status to expose in_autonomous_turn /
     # last_activity_at (QUM-665 surface) so isn't strictly cheaper.
     echo ""
-    echo "=== Test C: QUM-665 liveness-driven icon flip (paused → working → paused) ==="
+    echo "=== Test C: QUM-665 liveness-driven icon flip (idle → working → idle) ==="
 
-    # Rewrite child state to status=active, last_report_state=blocked so the
-    # baseline icon is blocked (not complete).
+    # QUM-1186 — FORCED REDUCTION, recorded rather than absorbed. The baseline
+    # used to be the "blocked" icon, seeded by writing a self-reported blocked
+    # state into the fixture. `DeriveIconState` (internal/tui/tree.go) no longer
+    # has any branch that can return "blocked": the fallback switch on the
+    # self-reported state was deleted with the field, so the ⏸ glyph is now
+    # unreachable and an assertion expecting it could never pass.
+    #
+    # The baseline is therefore idle (⏳), and what is LOST is real: the old row
+    # proved the glyph reverted to its PRIOR, non-idle state after
+    # RecentActivityWindow expired. Baseline and revert-target are now the same
+    # glyph, so the row proves the flip and the revert but can no longer
+    # distinguish "reverted to what it was" from "fell back to idle". Nothing
+    # can recover that half while "blocked" is underivable.
     cat > "$CHILD_STATE_FILE" <<JSON
 {
   "name": "${CHILD_NAME}",
@@ -349,14 +353,10 @@ JSON
   "worktree": "${SPRAWL_ROOT}",
   "status": "active",
   "created_at": "$(date -u +%Y-%m-%dT%H:%M:%SZ)",
-  "tree_path": "weave├${CHILD_NAME}",
-  "last_report_type": "status",
-  "last_report_message": "waiting on user",
-  "last_report_at": "$(date -u +%Y-%m-%dT%H:%M:%SZ)",
-  "last_report_state": "blocked"
+  "tree_path": "weave├${CHILD_NAME}"
 }
 JSON
-    pass "Test C setup: child state.last_report_state=blocked"
+    # No `pass` here: the deleted one asserted that the heredoc above had run.
 
     # Wait for the tree to pick up the state change (one 2s tick + margin).
     sleep 3
@@ -373,13 +373,13 @@ JSON
             | awk '{print $2}'
     }
 
-    # Baseline: assert blocked glyph (⏸) renders on the sandbox-child row.
-    local BLOCKED_GLYPH
-    BLOCKED_GLYPH=$(extract_child_glyph "$SESSION" "$CHILD_NAME")
-    if [ "$BLOCKED_GLYPH" = "⏸" ]; then
-        pass "QUM-665 baseline: sandbox-child renders blocked glyph (⏸)"
+    # Baseline: assert the idle glyph (⏳) renders on the sandbox-child row.
+    local BASELINE_GLYPH
+    BASELINE_GLYPH=$(extract_child_glyph "$SESSION" "$CHILD_NAME")
+    if [ "$BASELINE_GLYPH" = "⏳" ]; then
+        pass "QUM-665 baseline: sandbox-child renders the idle glyph (⏳)"
     else
-        fail "expected ⏸ glyph for blocked sandbox-child, got: $BLOCKED_GLYPH"
+        fail "expected ⏳ glyph for the freshly-seeded sandbox-child, got: $BASELINE_GLYPH"
         capture_pane "$SESSION" | tail -10 >&2
     fi
 
@@ -405,7 +405,7 @@ JSON
         sleep 0.2
     done
     if [ "$FLIPPED" -eq 1 ]; then
-        pass "QUM-665 flip: blocked → working glyph (⚙) within 3s of activity write"
+        pass "QUM-665 flip: idle → working glyph (⚙) within 3s of activity write"
     else
         fail "QUM-665 flip: glyph did not become ⚙ within 3s; last seen='$(extract_child_glyph "$SESSION" "$CHILD_NAME")'"
         capture_pane "$SESSION" | tail -10 >&2
@@ -414,21 +414,21 @@ JSON
     # Wait past the 30s RecentActivityWindow (QUM-692 widened from 2s).
     sleep 31
 
-    # Poll up to 5s for the glyph to revert to ⏸ (blocked).
+    # Poll up to 5s for the glyph to revert to ⏳ (idle).
     end=$((SECONDS + 5))
     local REVERTED=0
     while [ "$SECONDS" -lt "$end" ]; do
         g=$(extract_child_glyph "$SESSION" "$CHILD_NAME")
-        if [ "$g" = "⏸" ]; then
+        if [ "$g" = "⏳" ]; then
             REVERTED=1
             break
         fi
         sleep 0.2
     done
     if [ "$REVERTED" -eq 1 ]; then
-        pass "QUM-665 reverted: glyph back to ⏸ (blocked) after window expired"
+        pass "QUM-665 reverted: glyph back to ⏳ (idle) after window expired"
     else
-        fail "QUM-665 reverted: glyph did not revert to ⏸; last seen='$(extract_child_glyph "$SESSION" "$CHILD_NAME")'"
+        fail "QUM-665 reverted: glyph did not revert to ⏳; last seen='$(extract_child_glyph "$SESSION" "$CHILD_NAME")'"
         capture_pane "$SESSION" | tail -10 >&2
     fi
 

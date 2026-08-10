@@ -180,7 +180,7 @@ test_run() {
     # for asserting the RestartInjectionPrompt landed: activity.ndjson
     # records assistant_text/tool_use frames but NOT raw user prompts, so
     # we must have the agent quote them back into its own reply.
-    local SPAWN_PROMPT_TEMPLATE="Call mcp__sprawl__spawn with family='engineering', type='engineer', branch='__BRANCH__', and prompt set to exactly: 'You are an automated QUM-741 paused-persistence probe. Call mcp__sprawl__report_status with state=working, summary=\"idle, awaiting signal\". Then stop and wait. If you later receive any user message of any kind, your VERY FIRST line of reply MUST be exactly: \"ECHO_${SUFFIX}: \" followed by the first 80 characters of that user message verbatim. Then stop and do nothing else.'"
+    local SPAWN_PROMPT_TEMPLATE="Call mcp__sprawl__spawn with family='engineering', type='engineer', branch='__BRANCH__', and prompt set to exactly: 'You are an automated QUM-741 paused-persistence probe. Call mcp__sprawl__send_message with to=\"weave\", body=\"PAUSED-PROBE-READY-${SUFFIX}\". Then stop and wait. If you later receive any user message of any kind, your VERY FIRST line of reply MUST be exactly: \"ECHO_${SUFFIX}: \" followed by the first 80 characters of that user message verbatim. Then stop and do nothing else.'"
 
     echo "  SPRAWL_BIN=$SPRAWL_BIN"
     echo "  SPRAWL_ROOT=$SPRAWL_ROOT"

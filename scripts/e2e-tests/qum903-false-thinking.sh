@@ -52,20 +52,10 @@ wait_for_new_child() {
     return 1
 }
 
-# wait_for_child_report blocks until the child's last_report_message contains a
-# marker (or times out).
-wait_for_child_report() {
-    local statefile="$1" marker="$2" timeout="$3"
-    local end=$((SECONDS + timeout)) summary
-    while [ "$SECONDS" -lt "$end" ]; do
-        summary=$(jq -r '.last_report_message // empty' "$statefile" 2>/dev/null || true)
-        if [ -n "$summary" ] && printf '%s' "$summary" | grep -qF "$marker"; then
-            return 0
-        fi
-        sleep 1
-    done
-    return 1
-}
+# QUM-1186: this row's readiness gate used to poll the child's state.json for
+# the self-reported summary field, which is deleted along with the tool that
+# wrote it. Readiness is now observed as a message the child actually
+# delivered — see e2e_wait_maildir_substring in scripts/lib/e2e-common.sh.
 
 # state_events emits, one per line, every session_state_changed .state value seen
 # on the wire (dir=out, from claude) across all of the agent's NDJSON logs.
@@ -117,7 +107,7 @@ test_run() {
     echo ""
     echo "=== Spawning idle probe child ==="
     local PROBE CHILD_PROMPT SPAWN
-    PROBE="You are an automated QUM-903 probe. STEP 1: IMMEDIATELY call mcp__sprawl__report_status with state=\"working\" and summary=\"probe ready\". STEP 2: Stop your turn and wait. Whenever a system-notification about an inbound message arrives, call mcp__sprawl__messages_read; if its body contains \"PING\", call mcp__sprawl__messages_send with to=\"weave\" and body=\"PONG-${SUFFIX}\", then stop. On a resume/restart notification do NOT do any work — just call mcp__sprawl__report_status state=\"working\" summary=\"resumed idle\" and stop. Never read files, never run commands."
+    PROBE="You are an automated QUM-903 probe. STEP 1: IMMEDIATELY call mcp__sprawl__send_message with to=\"weave\" and body=\"PROBE-READY-${SUFFIX}\". STEP 2: Stop your turn and wait. Whenever a system-notification about an inbound message arrives, call mcp__sprawl__messages_read; if its body contains \"PING\", call mcp__sprawl__send_message with to=\"weave\" and body=\"PONG-${SUFFIX}\", then stop. On a resume/restart notification do NOT do any work — just call mcp__sprawl__send_message with to=\"weave\" and body=\"RESUMED-IDLE-${SUFFIX}\" and stop. Never read files, never run commands."
     SPAWN="Call mcp__sprawl__spawn with family='engineering', type='engineer', branch='qum903-probe-${SUFFIX}', and prompt set to exactly the following text (do not modify it): '${PROBE}'"
     e2e_send_user_prompt "$SESSION" "$SPAWN"
 
@@ -130,10 +120,10 @@ test_run() {
     CHILD_NAME="${CHILD%%|*}"; CHILD_STATE="${CHILD#*|}"
     pass "probe child spawned (name=$CHILD_NAME)"
 
-    if wait_for_child_report "$CHILD_STATE" "probe ready" 120; then
-        pass "probe child reached idle"
+    if e2e_wait_maildir_substring weave "PROBE-READY-${SUFFIX}" 120; then
+        pass "probe child reached idle (its readiness message was delivered to weave)"
     else
-        fail "probe child never reported ready within 120s"
+        fail "probe child's readiness message never reached weave within 120s"
         sed 's/^/    /' "$CHILD_STATE" >&2 2>/dev/null || true
         e2e_print_results; return 1
     fi
@@ -166,7 +156,11 @@ test_run() {
         fail "SCENARIO A: expected >=1 running AND >=1 idle wire frames (got running=$RUN_N idle=$IDLE_N)"
         e2e_print_results; return 1
     fi
-    if wait_for_child_report "$CHILD_STATE" "probe ready" 30 || true; then :; fi
+    # QUM-1186: a `wait_for_child_report … || true; then :; fi` used to sit
+    # here. Its result was discarded by the `|| true`, so it was a 30-second
+    # sleep wearing the shape of a gate — it could not fail and asserted
+    # nothing. Deleted rather than migrated; the `sleep 2` below is the settle
+    # this step actually needed.
     sleep 2
 
     # ---------------------------------------------------------------------

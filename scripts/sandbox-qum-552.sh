@@ -123,7 +123,7 @@ sleep 1
 echo ""
 echo "=== Driving weave to call _test_sleep directly ==="
 T_START=$(date +%s)
-PROMPT="Call mcp__sprawl___test_sleep with seconds=20. Then immediately call mcp__sprawl__report_status with state=working and summary='${PROBE}:sleep-returned:'+the response text. Do nothing else."
+PROMPT="Call mcp__sprawl___test_sleep with seconds=20. Then immediately reply with exactly '${PROBE}:sleep-returned:' followed by the response text. Do nothing else."
 _stmux send-keys -t "$SESSION" "$PROMPT"
 sleep 0.5
 _stmux send-keys -t "$SESSION" Enter
@@ -150,8 +150,8 @@ echo "=== Waiting up to 25s for sleep to complete naturally ==="
 if wait_for_pattern "$SESSION" "${PROBE}:sleep-returned" 25; then
     T_END=$(date +%s)
     echo "PASS: sleep completed (elapsed=$((T_END-T_START))s)"
-    echo "    weave state.last_report_message:"
-    jq -r '.last_report_message // "<unset>"' "$SPRAWL_ROOT/.sprawl/agents/weave.json" 2>/dev/null | sed 's/^/      /'
+    echo "    weave pane tail:"
+    capture_pane_dump \"$SESSION\" 8 2>&1 | sed 's/^/      /'
 else
     echo "FAIL: sleep did not complete within 25s"
     echo "    pane tail:"

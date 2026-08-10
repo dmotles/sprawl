@@ -152,7 +152,7 @@ test_run() {
     local SESSION="sprawl-wake-e2e-${SUFFIX}"
     local STDERR_LOG="$SPRAWL_ROOT/.sprawl/tui-stderr.log"
     local SPAWN_PROMPT_TEMPLATE
-    SPAWN_PROMPT_TEMPLATE="Call mcp__sprawl__spawn with family='engineering', type='engineer', branch='__BRANCH__', and prompt set to exactly: 'You are an automated QUM-744 wake-lifecycle probe. Call mcp__sprawl__report_status with state=working, summary=\"idle, awaiting signal\". Then stop and wait. Do nothing else until you receive a message.'"
+    SPAWN_PROMPT_TEMPLATE="Call mcp__sprawl__spawn with family='engineering', type='engineer', branch='__BRANCH__', and prompt set to exactly: 'You are an automated QUM-744 wake-lifecycle probe. Call mcp__sprawl__send_message with to=\"weave\", body=\"WAKE-PROBE-READY-${SUFFIX}\". Then stop and wait. Do nothing else until you receive a message.'"
 
     echo "  SPRAWL_BIN=$SPRAWL_BIN"
     echo "  SPRAWL_ROOT=$SPRAWL_ROOT"
@@ -273,7 +273,7 @@ test_run() {
 
     # Post-wake turn — sentinel must round-trip through activity.ndjson.
     local S1_PROBE="WAKE-S1-PROBE-${SUFFIX}"
-    local S1_TURN="Call mcp__sprawl__send_message with to='$S1_NAME', body='Echo ${S1_PROBE} verbatim in your next reply and then call report_status complete.', interrupt=false."
+    local S1_TURN="Call mcp__sprawl__send_message with to='$S1_NAME', body='Echo ${S1_PROBE} verbatim in your next reply and then stop.', interrupt=false."
     wake_send_one_line "$SESSION" "$S1_TURN"
     local S1_ACT="$SPRAWL_ROOT/.sprawl/agents/$S1_NAME/activity.ndjson"
     local act_end=$((SECONDS + 60)) act_seen=0

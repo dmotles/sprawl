@@ -47,6 +47,7 @@ test_run() {
     local SESSION="sprawl-auq-idle-$(head -c4 /dev/urandom | xxd -p)"
     local STDERR_LOG="$SPRAWL_ROOT/.sprawl/tui-stderr.log"
     local WEAVE_STATE="$SPRAWL_ROOT/.sprawl/agents/weave.json"
+    local WEAVE_ANSWER_FILE="$SPRAWL_ROOT/auq-idle-answer.txt"
 
     local PROBE="AUQ-IDLE-PROBE-$$-$(date +%s)"
     local PROBE_A="${PROBE}-aye"
@@ -58,15 +59,17 @@ test_run() {
     echo "  SESSION=$SESSION"
     echo "  SPRAWL_BACKEND_HANG_TIMEOUT=$HANG  IDLE_WAIT=${IDLE_WAIT}s"
 
-    wait_for_state_field_path() {
-        local state_path="$1" field="$2" needle="$3" timeout="$4"
-        local elapsed=0 value
+    # QUM-1186: this row used to poll weave's state.json for the self-reported
+    # summary field, which is deleted along with the tool that wrote it. weave
+    # is the ROOT here — it has no parent to message — so the replacement
+    # observable is a file only an agent holding the extracted label could have
+    # written. Same claim, observed instead of asserted.
+    wait_for_answer_file() {
+        local path="$1" needle="$2" timeout="$3"
+        local elapsed=0
         while [ "$elapsed" -lt "$timeout" ]; do
-            if [ -f "$state_path" ]; then
-                value=$(jq -r ".${field} // empty" "$state_path" 2>/dev/null || true)
-                if [ -n "$value" ] && [[ "$value" == *"$needle"* ]]; then
-                    return 0
-                fi
+            if [ -f "$path" ] && grep -qF -- "$needle" "$path" 2>/dev/null; then
+                return 0
             fi
             sleep 1
             elapsed=$((elapsed + 1))
@@ -103,7 +106,7 @@ test_run() {
 
     echo ""
     echo "=== Driving weave to call ask_user_question ==="
-    local WEAVE_PROMPT="Call mcp__sprawl__ask_user_question with questions=[{question:\"Idle-past-watchdog probe (${PROBE})\",multi_select:false,options:[{label:\"${PROBE_A}\"},{label:\"${PROBE_B}\"},{label:\"${PROBE_C}\"}]}]. Parse the QuestionResponse JSON, extract answers[0].selected[0], then call mcp__sprawl__report_status with state=working and summary set to that exact extracted label. Do nothing else."
+    local WEAVE_PROMPT="Call mcp__sprawl__ask_user_question with questions=[{question:\"Idle-past-watchdog probe (${PROBE})\",multi_select:false,options:[{label:\"${PROBE_A}\"},{label:\"${PROBE_B}\"},{label:\"${PROBE_C}\"}]}]. Parse the QuestionResponse JSON, extract answers[0].selected[0], then use the Write tool to create the file ${WEAVE_ANSWER_FILE} whose entire contents are that exact extracted label. Do nothing else."
     _stmux send-keys -t "$SESSION" "$WEAVE_PROMPT"
     sleep 0.5
     _stmux send-keys -t "$SESSION" Enter
@@ -152,12 +155,12 @@ test_run() {
     _stmux send-keys -t "$SESSION" Enter
 
     echo ""
-    echo "=== Waiting for weave to report the selected label (resume after re-seed) ==="
-    if wait_for_state_field_path "$WEAVE_STATE" "last_report_message" "$PROBE_B" 240; then
-        pass "weave reported '$PROBE_B' — answer round-tripped and the turn resumed cleanly post-idle"
+    echo "=== Waiting for weave to write the selected label (resume after re-seed) ==="
+    if wait_for_answer_file "$WEAVE_ANSWER_FILE" "$PROBE_B" 240; then
+        pass "weave wrote '$PROBE_B' — answer round-tripped and the turn resumed cleanly post-idle"
     else
-        fail "weave never reported '$PROBE_B' within 240s after answering"
-        jq -r '.last_report_message // "<unset>"' "$WEAVE_STATE" 2>/dev/null >&2 || true
+        fail "weave never wrote '$PROBE_B' within 240s after answering"
+        cat "$WEAVE_ANSWER_FILE" >&2 2>/dev/null || echo "    <answer file missing>" >&2
         capture_pane "$SESSION" | tail -40 >&2
     fi
 

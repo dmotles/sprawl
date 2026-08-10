@@ -68,14 +68,25 @@ FAIL=0
 # fake-tmux build) records a single fail in place of ~90 assertions, and the floor
 # is exactly what turns that into a red instead of a suspiciously small green.
 #
-# 401 currently EQUALS the observed count exactly, which is an invitation to
+# 454 once QUM-1186 lane 5 added section [19] (53 assertions: the e2e suite's
+# own observability probe, its corpus lint, and the accounting for the row this
+# lane deleted). Re-measured on a FULL GREEN run — 454 passed / 0 failed —
+# never derived by arithmetic on the red one, per the paragraph above. Section
+# [19] is pass/fail-invariant in the same way [17] and [18] are: every arm is a
+# symmetric if/else, and its two `while` loops iterate fixed literal lists. The
+# deliberate exceptions are the fixture guards ([19b]'s eight, [19c]'s six,
+# [19d]'s three, [19e]'s four), which each emit one `fail` PER LOST ARM rather
+# than one for the whole block, precisely so the count does not move when a
+# fixture cannot be built.
+#
+# 454 currently EQUALS the observed count exactly, which is an invitation to
 # "simplify" this into something derived. Do not. A floor computed from the corpus
 # it checks is satisfied by an empty corpus — the very defect — and a floor that
 # tracks coverage follows it DOWN, so deleting assertions would silently stop
 # being detectable. The equality is a coincidence of the last measurement, not a
 # rule: raise it deliberately when you add assertions, and if you remove some,
 # lower it deliberately and say why. Same treatment as QUM-1029's per-row floor.
-MIN_ASSERTIONS=401
+MIN_ASSERTIONS=454
 # A [16b] nested child deliberately does NOT re-run section [16] (recursing would
 # fork-bomb, and counting there would corrupt the parity comparison), so it asserts
 # strictly fewer things and needs its own floor. Measured at de22410: 237; 238 after
@@ -84,12 +95,15 @@ MIN_ASSERTIONS=401
 # than reusing the parent's is the point — a child floor derived from the parent's
 # count would be the parity check again, and parity is what `0 == 0` satisfies.
 # 275 once QUM-1029 added section [17], which the child DOES run; 279 with F1 and 17k.
+# 446 once QUM-1186 lane 5 added section [19], which the child DOES run.
+# Measured with UNIT_NESTED_SEAM_CHECK set: "446 passed / 1 failed", minus the
+# deliberate 16c fail, per the recipe below.
 # 393 once QUM-957 added section [18], which the child DOES run. Measured, not
 # derived by subtracting [16]'s size from the parent. To re-measure: run this file
 # with UNIT_NESTED_SEAM_CHECK set to any value and SUBTRACT ONE from the total —
 # without a live nonce 16c's deliberate fail fires, so a hand-driven child reads
 # exactly one higher than a real [16b] child ("393 passed / 1 failed" here).
-MIN_ASSERTIONS_NESTED=393
+MIN_ASSERTIONS_NESTED=446
 
 # Pin the temp root. This suite runs inside `make validate` and therefore inside
 # the pre-commit hook, so it must not inherit the committing agent's TMPDIR:
@@ -3571,6 +3585,878 @@ if [ -n "${UNIT_CAP_FIX:-}" ]; then
 		*) echo "  NOTE: refusing to remove unexpected fixture dir '$UNIT_CAP_FIX'" >&2 ;;
 	esac
 fi
+
+# ============================================================================
+# [19] QUM-1186 lane 5 — the e2e suite's own observability probe
+# ============================================================================
+# `report_status` was this suite's generic observability probe: a row drove an
+# agent to call it with a token, then polled `.sprawl/agents/<n>/state.json`'s
+# `last_report_message` for that token and concluded "the thing happened". That
+# subject is deleted, and the reason it is deleted — a self-report is not
+# evidence — applies to the probe as much as to the tool. The replacement is an
+# OBSERVED fact: the sentinel body landing in the recipient's Maildir, written
+# by the delivery path itself.
+#
+# Why these arms live HERE rather than in the rows they serve: a matrix row
+# needs a real claude and minutes of wall-clock, so its probe's ability to fail
+# would be established once, by hand, and thereafter inherited. These arms are
+# deterministic, sub-second, and run inside `make validate`, so the probe
+# re-earns its ability to fail on every commit. What they deliberately do NOT
+# cover is the plumbing that PRODUCES the sentinel — that is the rows' job, and
+# the gap is recorded on QUM-1186 rather than papered over here.
+#
+# NOTHING in this section may launch a sandbox, build a binary, or start tmux.
+# The first draft did (it executed six real e2e drivers), and the cost did not
+# land here: pre-existing [16] re-runs this whole suite under a 30s budget, so
+# [19] timed those children out and [16b] reported "the debug seam changed this
+# suite's verdict" — a false diagnosis on an arm this lane does not own. Every
+# execution below is gated behind a static precondition that proves the subject
+# is on its millisecond path first.
+#
+# EVERY arm below carries a planted control. Two earlier drafts of this section
+# shipped controls aimed at something ADJACENT to the mechanism they certified
+# — a scan whose unreadable-file counter was incremented inside `$( )` and
+# discarded on every real path while its control called it directly, and a
+# "pin" whose control asserted that `grep -v` removes what it is asked to
+# remove. Both were green. The rule that came out of it: a control must call
+# the SAME function, on the SAME channel, as the arm it certifies.
+
+echo "[19a] the shared maildir-sentinel probe exists"
+if grep -qE '^[[:space:]]*e2e_wait_maildir_substring[[:space:]]*\(\)' "$LIB"; then
+	pass "19a: scripts/lib/e2e-common.sh defines e2e_wait_maildir_substring"
+else
+	fail "19a: scripts/lib/e2e-common.sh does not define e2e_wait_maildir_substring — the rows migrated off last_report_message have no shared probe to migrate ONTO, so each would grow its own private copy (QUM-1186)"
+fi
+
+# --- 19b: the probe's controls, each with a stated direction ----------------
+# The probe's contract, which these arms pin exactly:
+#   0 — the sentinel is in the recipient's maildir
+#   1 — it is not (poll timed out)
+#   2 — the CALL is malformed: empty recipient, empty needle, or no sandbox
+#
+# Every arm asserts an EXACT rc, never merely non-zero. `!= 0` was the first
+# draft and it was not a check: with the function missing, all six positive
+# controls passed on 127 (command not found). Once the function exists, any
+# internal crash — an unbound variable under a caller's `set -u`, a missing
+# binary — returns non-zero too and would keep re-satisfying them. An exact rc
+# binds the verdict to the probe's own judgement.
+#
+# Separating 2 from 1 is what makes the no-sandbox arm meaningful: with
+# SPRAWL_ROOT unset a naive implementation searches $PWD/.sprawl/messages/,
+# which in this worktree is a real populated maildir. Such an implementation
+# returns 1 ("searched the wrong tree and missed"), not 2 ("refused"), and only
+# an exact-rc assertion can tell those apart.
+#
+# Run via `env` + `bash -c` rather than a subshell: e2e-common.sh defines its
+# own pass()/fail(), which would otherwise clobber this suite's counters. The
+# outer `timeout` is a real timeout(1) — the `1` passed to the function is its
+# poll budget, and if a future implementation mishandles that argument the
+# command substitution would block `make validate` forever with no diagnostic.
+_p19_probe() {
+	local root="$1" to="$2" needle="$3"
+	local envset
+	if [ "$root" = "__UNSET__" ]; then
+		envset="-u SPRAWL_ROOT"
+	else
+		envset="SPRAWL_ROOT=$root"
+	fi
+	# shellcheck disable=SC2086
+	timeout -k 2 10 env $envset bash -c '
+		. "$1" >/dev/null 2>&1 || exit 90
+		command -v e2e_wait_maildir_substring >/dev/null 2>&1 || exit 91
+		e2e_wait_maildir_substring "$2" "$3" 1
+	' _ "$LIB" "$to" "$needle" >/dev/null 2>&1 </dev/null
+	echo $?
+}
+
+# Distinguish "the probe judged" from "the probe never ran". Without this a
+# crash reads as a correct refusal.
+_p19_rc_label() {
+	case "$1" in
+		90) echo "rc=90 (scripts/lib/e2e-common.sh failed to source)" ;;
+		91) echo "rc=91 (e2e_wait_maildir_substring is not defined)" ;;
+		124 | 137) echo "rc=$1 (the probe HUNG and was killed — it never judged anything)" ;;
+		126 | 127) echo "rc=$1 (command not found — the probe never ran)" ;;
+		*) echo "rc=$1" ;;
+	esac
+}
+
+_p19_expect_rc() {
+	local want="$1" got="$2" what="$3" why="$4"
+	if [ "$got" = "$want" ]; then
+		pass "19b: $what"
+	else
+		fail "19b: $what — expected rc=$want, got $(_p19_rc_label "$got"). $why"
+	fi
+}
+
+echo "[19b] the maildir probe fires when the sentinel is absent and stays quiet when it is present"
+P19_FIX=""
+P19_FIX_OK=0
+if P19_FIX=$(mktemp -d "$UNIT_TMP_ROOT/e2e-matrix-unit-p19.XXXXXX" 2>/dev/null) && [ -d "$P19_FIX" ]; then
+	# Every fixture write is checked. Unchecked setup is the classic way an
+	# absence-shaped control goes green on nothing: with the fixture missing,
+	# all six positive controls below would pass against an empty directory and
+	# the run would read "6 of 8 controls green" for a fixture that never
+	# existed.
+	P19_FIX_OK=1
+	mkdir -p "$P19_FIX/.sprawl/messages/weave/new" \
+		"$P19_FIX/.sprawl/messages/weave/cur" \
+		"$P19_FIX/.sprawl/messages/other/new" 2>/dev/null || P19_FIX_OK=0
+	printf '{"body":"probe-a1b2 hello"}\n' >"$P19_FIX/.sprawl/messages/weave/new/1.json" 2>/dev/null || P19_FIX_OK=0
+	printf '{"body":"probe-delivered-c3d4"}\n' >"$P19_FIX/.sprawl/messages/weave/cur/2.json" 2>/dev/null || P19_FIX_OK=0
+	printf '{"body":"probe-wrongbox-e5f6"}\n' >"$P19_FIX/.sprawl/messages/other/new/3.json" 2>/dev/null || P19_FIX_OK=0
+	[ -s "$P19_FIX/.sprawl/messages/weave/new/1.json" ] || P19_FIX_OK=0
+fi
+if [ "$P19_FIX_OK" -eq 1 ]; then
+	# NEGATIVE control (subject known clean): the sentinel IS there, so the
+	# probe must stay quiet. Without this arm a probe hardwired to `return 1`
+	# would satisfy every positive control below and look rigorous.
+	_p19_expect_rc 0 "$(_p19_probe "$P19_FIX" weave probe-a1b2)" \
+		"probe returns 0 when the sentinel is in the recipient's new/ (negative control: it can still succeed)" \
+		"Every migrated row would hang to its full timeout and fail."
+
+	# NEGATIVE control: send_message writes to new/ and delivery moves the
+	# entry to cur/. A probe that only reads new/ would go red the moment the
+	# agent it is watching actually drained its inbox — i.e. it would fail
+	# precisely when the system worked.
+	_p19_expect_rc 0 "$(_p19_probe "$P19_FIX" weave probe-delivered-c3d4)" \
+		"probe still finds a sentinel after delivery moved it to cur/ (negative control: the maildir entry is the durable one)" \
+		"The probe would go red exactly when the recipient successfully consumed the message."
+
+	# POSITIVE control (defect planted: the send never happened).
+	_p19_expect_rc 1 "$(_p19_probe "$P19_FIX" weave probe-never-sent-9999)" \
+		"probe returns 1 when the sentinel was never delivered (positive control: absent sentinel)" \
+		"If it returned 0 it cannot fail, and every row using it is a vacuous green."
+
+	# POSITIVE control (defect planted: delivered to the wrong agent). A probe
+	# that grepped the whole messages/ tree would be satisfiable by any traffic
+	# between any two agents, which is not the claim any row is making.
+	_p19_expect_rc 1 "$(_p19_probe "$P19_FIX" weave probe-wrongbox-e5f6)" \
+		"probe returns 1 when the sentinel landed in another agent's maildir (positive control: wrong recipient)" \
+		"The recipient half of every row's claim would be unasserted."
+
+	# POSITIVE control (defect planted: recipient has no maildir at all).
+	_p19_expect_rc 1 "$(_p19_probe "$P19_FIX" nosuchagent probe-a1b2)" \
+		"probe returns 1 when the recipient's maildir does not exist (positive control: no such mailbox)" \
+		"A row could then pass against an agent that was never spawned."
+
+	# POSITIVE control (defect planted: the sentinel computation produced an
+	# empty string). This is the load-bearing one. `grep -rqF ""` matches EVERY
+	# file, so an empty needle makes the probe succeed against any non-empty
+	# maildir forever. It is reachable, not theoretical: the rows build their
+	# sentinels with `head -c4 /dev/urandom | xxd -p`, which yields the empty
+	# string if xxd is missing.
+	_p19_expect_rc 2 "$(_p19_probe "$P19_FIX" weave "")" \
+		"probe refuses an empty needle (positive control: an empty sentinel must not match everything)" \
+		"Every row whose sentinel silently came out empty would pass forever."
+
+	# POSITIVE control (defect planted: the row forgot to set up its sandbox).
+	# rc=2 and not 1: 1 here would mean the probe searched SOME maildir — under
+	# an unset SPRAWL_ROOT that is $PWD's, i.e. this repo's real one.
+	_p19_expect_rc 2 "$(_p19_probe __UNSET__ weave probe-a1b2)" \
+		"probe refuses to run with SPRAWL_ROOT unset (positive control: no sandbox)" \
+		"An rc of 1 would mean it searched a maildir anyway — under an unset SPRAWL_ROOT, the live repo's."
+
+	# POSITIVE control (defect planted: the probe matches as a REGEX). Sentinels
+	# are opaque tokens; a probe using `grep -q` rather than `grep -qF` would
+	# let `probe.a1b2` match the planted `probe-a1b2`, so a row could pass on a
+	# token it never sent.
+	_p19_expect_rc 1 "$(_p19_probe "$P19_FIX" weave 'probe.a1b2')" \
+		"probe matches the needle literally, not as a regex (positive control: 'probe.a1b2' must not match 'probe-a1b2')" \
+		"A row's sentinel could be matched by a token it never sent."
+else
+	# One fail per lost arm, so the count is preserved and the summary cannot
+	# read as a smaller-but-green run.
+	fail "19b: the probe fixture could not be built under $UNIT_TMP_ROOT — the sentinel-present negative control did not run"
+	fail "19b: fixture missing — the delivered-to-cur negative control did not run"
+	fail "19b: fixture missing — the absent-sentinel positive control did not run"
+	fail "19b: fixture missing — the wrong-recipient positive control did not run"
+	fail "19b: fixture missing — the no-such-mailbox positive control did not run"
+	fail "19b: fixture missing — the empty-needle positive control did not run"
+	fail "19b: fixture missing — the unset-SPRAWL_ROOT positive control did not run"
+	fail "19b: fixture missing — the literal-match positive control did not run"
+fi
+
+# --- 19c: the corpus lint --------------------------------------------------
+# The highest-value arm in this section, and the only control that covers 100%
+# of the corpus. Two distinct failure classes:
+#
+#   dead ASSERTION — a row reads `.last_report_message`. Loud: it times out.
+#   dead ADVERTISEMENT — a row's live agent PROMPT still names `report_status`.
+#     Quiet and much worse: the agent is told to call a tool that does not
+#     exist, improvises something else, and the row can still go green having
+#     exercised a different path. This is the shape tower named as "the
+#     deletion reaches the implementation but not the advertisement", and no
+#     live run detects it.
+#
+# The whitelist arm generalises it: any `mcp__sprawl__<name>` a script tells an
+# agent to call must be a tool that actually exists. It found
+# `mcp__sprawl__messages_send` — a tool that has NEVER existed — in four
+# scripts that had been passing on the model guessing the right name.
+#
+# The tokens are BARE, not `mcp__sprawl__`-prefixed. The prefixed form was the
+# first draft and it half-missed its own stated target: scripts/e2e-tests/
+# notify-tui.sh named `report_status` nine times and never once in prefixed
+# form, so it tripped the scan only by coincidence, through `last_report_`.
+# Bare tokens also catch the comment and header rot — a row whose prose still
+# describes the old probe is the same defect as one whose code does.
+#
+# THE EXEMPTION, and why it is a marker rather than a heuristic: the skip
+# rationales lane 1 wrote (`e2e_skip_row "…drove the wake gate through BOTH
+# delegate and send_message…"`) exist precisely to name the deleted tools.
+# They are the skip accounting; rewording them into compliance would destroy
+# the explanation. Same for a handful of historical phase labels. So two
+# exemptions, both explicit and greppable — a line calling `e2e_skip_row`, and
+# a line carrying a literal `P19-ALLOW` comment. A context heuristic ("is this
+# line prose?") was rejected: a future prose style drifts past it silently,
+# whereas adding a marker is a deliberate edit that shows up in review.
+P19_FORBIDDEN='report_status delegate messages_send last_report status_change'
+
+# Scripts deliberately outside the corpus, matched on REPO-RELATIVE PATH rather
+# than basename — a basename exclusion would silently drop a future matrix row
+# that happened to share a name. tower's ruling on the pre-matrix standalone
+# duplicates (QUM-1186 lane 5) is that they exit 77 at the top rather than
+# being migrated twice or deleted in this slice: a script that runs nothing
+# cannot drift and cannot false-green, so its residual tokens are inert. [19e]
+# is what keeps that true. This suite excludes itself because its own fixtures
+# must contain the forbidden tokens in order to control the scan.
+P19_EXCLUDE='scripts/test-ask-user-question-e2e.sh
+scripts/test-notify-tui-e2e.sh
+scripts/test-drain-row-inject-e2e.sh
+scripts/test-wake-live-e2e.sh
+scripts/test-bridge-lifecycle-e2e.sh
+scripts/test-merge-reuse-e2e.sh
+scripts/test-e2e-matrix-unit.sh'
+P19_EXCLUDE_N=7
+
+# Both scans report an unreadable file ON THE SAME CHANNEL as a violation,
+# rather than bumping a counter. The counter form was a defect: the scans are
+# called inside `$( )`, so every increment on a real path was discarded in the
+# subshell, while the control called the scan directly and the increment stuck.
+# A green control certifying a mechanism disabled on every path it guards.
+# A row that calls `e2e_skip_row` before its first assertion runs NOTHING: the
+# helper exits 77 and the rest of test_run is unreachable. Two such rows exist
+# (complete-lifecycle, wake-on-traffic — lane 1 skipped them because half their
+# subject is deleted), and their bodies are the blueprint for re-hosting them,
+# so rewording every mention of the deleted tools out of them would destroy the
+# thing that makes the re-host possible. They are exempt as WHOLE FILES, on the
+# same argument as the standalone drivers: an inert script cannot false-green.
+#
+# "before its first assertion" is the load-bearing part. A row that asserts and
+# THEN skips has already run, and must not be exempt — that is the near-miss
+# this predicate is written to reject, and it is controlled below.
+_p19_is_skipped_row() {
+	local f="$1" skip_ln assert_ln
+	[ -r "$f" ] || return 1
+	# Only a matrix ROW can be inert this way, and only a CALL counts. Without
+	# the first guard scripts/lib/e2e-common.sh — which DEFINES e2e_skip_row —
+	# exempted itself, taking the shared library out of the scan entirely.
+	# Without the second, any file defining or merely naming the helper would.
+	case "$f" in
+		*/scripts/e2e-tests/*.sh) ;;
+		*) return 1 ;;
+	esac
+	skip_ln=$(grep -nE '^[[:space:]]*e2e_skip_row[[:space:]]+["'"'"']' "$f" 2>/dev/null | head -1 | cut -d: -f1)
+	[ -n "$skip_ln" ] || return 1
+	assert_ln=$(grep -nE '^[[:space:]]*(pass|fail)[[:space:]]+"' "$f" 2>/dev/null | head -1 | cut -d: -f1)
+	[ -n "$assert_ln" ] || return 0
+	[ "$skip_ln" -lt "$assert_ln" ]
+}
+
+_p19_scan_forbidden() {
+	local f tok base line n body
+	for f in "$@"; do
+		if [ ! -r "$f" ]; then
+			printf '__UNREADABLE__:%s\n' "${f##*/}"
+			continue
+		fi
+		if _p19_is_skipped_row "$f"; then
+			printf '__EXEMPT__:%s:0:whole-file (row skips before it asserts)\n' "${f##*/}"
+			continue
+		fi
+		base="${f##*/}"
+		for tok in $P19_FORBIDDEN; do
+			while IFS= read -r line; do
+				[ -n "$line" ] || continue
+				n="${line%%:*}"
+				body="${line#*:}"
+				case "$body" in
+					*e2e_skip_row* | *P19-ALLOW*)
+						printf '__EXEMPT__:%s:%s:%s\n' "$base" "$n" "$tok"
+						continue
+						;;
+				esac
+				printf '%s:%s:%s\n' "$base" "$n" "$tok"
+			done <<FTOK
+$(grep -nF -- "$tok" "$f" 2>/dev/null)
+FTOK
+		done
+	done
+}
+
+_p19_scan_unknown_tools() {
+	local f base name
+	for f in "$@"; do
+		if [ ! -r "$f" ]; then
+			printf '__UNREADABLE__:%s\n' "${f##*/}"
+			continue
+		fi
+		# Same whole-file exemption as the forbidden-token scan. Applying it to
+		# only one of the two scans left the inert rows reported by the other,
+		# which reads as a live defect in a script that runs nothing.
+		if _p19_is_skipped_row "$f"; then
+			printf '__EXEMPT__:%s:unknown-tool scan (row skips before it asserts)\n' "${f##*/}"
+			continue
+		fi
+		base="${f##*/}"
+		while IFS= read -r name; do
+			[ -n "$name" ] || continue
+			case " $P19_CANONICAL " in
+				*" $name "*) ;;
+				*) printf '%s:%s\n' "$base" "$name" ;;
+			esac
+		done <<UNKTOOLS
+$(grep -oE 'mcp__sprawl__[a-z_][a-z_0-9]*' "$f" 2>/dev/null | sed 's/^mcp__sprawl__//' | sort -u)
+UNKTOOLS
+	done
+}
+
+_p19_unreadable_lines() { printf '%s\n' "$1" | grep -c '^__UNREADABLE__:' || true; }
+_p19_exempt_lines() { printf '%s\n' "$1" | grep -c '^__EXEMPT__:' || true; }
+_p19_violation_lines() { printf '%s\n' "$1" | grep -vE '^(__UNREADABLE__|__EXEMPT__):' | grep -c . || true; }
+
+# Derivation of the canonical tool set, factored out so the arms below can run
+# it against a planted input rather than asserting a property of the live tree
+# that nothing in this lane can move.
+_p19_derive_canonical() {
+	{
+		grep -hoE '"name":[[:space:]]*"[a-z_][a-z_0-9]*"' "$@" 2>/dev/null |
+			sed -E 's/.*"([a-z_][a-z_0-9]*)"$/\1/'
+		grep -hoE 'injectToolName[[:space:]]*=[[:space:]]*"[a-z_][a-z_0-9]*"' "$@" 2>/dev/null |
+			sed -E 's/.*"([a-z_][a-z_0-9]*)"$/\1/'
+	} | sort -u | tr '\n' ' '
+}
+# Echoes the names from $2... that are MISSING from the set in $1.
+_p19_canon_missing() {
+	local set=" $1 " t out=""
+	shift
+	for t in "$@"; do
+		case "$set" in
+			*" $t "*) ;;
+			*) out="$out $t" ;;
+		esac
+	done
+	printf '%s' "$out"
+}
+# Echoes the names from $2... that are PRESENT in the set in $1.
+_p19_canon_present() {
+	local set=" $1 " t out=""
+	shift
+	for t in "$@"; do
+		case "$set" in
+			*" $t "*) out="$out $t" ;;
+		esac
+	done
+	printf '%s' "$out"
+}
+
+echo "[19c] no e2e script advertises a deleted or non-existent sprawl tool"
+
+# The canonical tool set is derived from the Go source that DEFINES it, not
+# from the shell corpus being measured — a whitelist derived from the corpus it
+# checks accepts everything the corpus already does, which is the defect.
+#
+# NOTE this bounds the set from BELOW, not in shape: the `"name":` regex would
+# absorb a future input-schema property literally named "name". The absence arm
+# is what bounds the specific defect.
+P19_CANONICAL=$(_p19_derive_canonical \
+	"$REPO_ROOT/internal/sprawlmcp/tools.go" \
+	"$REPO_ROOT/internal/sprawlmcp/tools_inject_on.go")
+
+_p19_missing=$(_p19_canon_missing "$P19_CANONICAL" send_message spawn merge retire)
+if [ -z "$_p19_missing" ]; then
+	pass "19c: the canonical tool set was derived from internal/sprawlmcp/ (contains send_message, spawn, merge, retire)"
+else
+	fail "19c: could not derive the canonical MCP tool set from internal/sprawlmcp/tools.go — missing:$_p19_missing (got '$P19_CANONICAL')"
+fi
+# POSITIVE control (defect planted: the derivation reads nothing). Same
+# function, same arguments shape — a derivation that silently came back empty
+# would make the whitelist arm flag every tool in the tree, which is loud and
+# in the safe direction, but the diagnosis would be fifty lines instead of one.
+if [ -n "$(_p19_canon_missing "$(_p19_derive_canonical /dev/null)" send_message spawn merge retire)" ]; then
+	pass "19c: positive control — the derivation check fires when the tool source yields nothing"
+else
+	fail "19c: positive control FAILED — the derivation check passed against an empty tool source, so it cannot detect a broken derivation"
+fi
+
+# `report_status` and `delegate` must be ABSENT from the derived set. This is
+# the arm that BOUNDS the whitelist: if it were broken, the unknown-tool scan
+# would accept the deleted tools and [19c] would go green on an incomplete
+# deletion.
+_p19_present=$(_p19_canon_present "$P19_CANONICAL" report_status delegate)
+if [ -z "$_p19_present" ]; then
+	pass "19c: report_status and delegate are absent from the canonical tool set"
+else
+	fail "19c: the canonical tool set still contains:$_p19_present — the lane-1 deletion did not reach internal/sprawlmcp/tools.go, and the whitelist arm below would accept them"
+fi
+# POSITIVE control (defect planted: a tool source that still defines
+# report_status). Same function, same channel.
+if [ -n "$(_p19_canon_present "a b report_status c" report_status delegate)" ]; then
+	pass "19c: positive control — the absence check fires on a set that still contains report_status"
+else
+	fail "19c: positive control FAILED — the absence check stayed quiet on a set containing report_status, so it cannot bound the whitelist"
+fi
+
+P19_CORPUS=()
+_p19_excluded=0
+while IFS= read -r _f; do
+	[ -n "$_f" ] || continue
+	_rel="${_f#"$REPO_ROOT"/}"
+	case "
+$P19_EXCLUDE
+" in
+		*"
+$_rel
+"*)
+			_p19_excluded=$((_p19_excluded + 1))
+			continue
+			;;
+	esac
+	P19_CORPUS+=("$_f")
+done <<P19FILES
+$(find "$REPO_ROOT/scripts" -name '*.sh' -type f 2>/dev/null | sort)
+P19FILES
+# A corpus floor, for the same reason every row has an assertion floor: a `find`
+# that came back empty makes both scans below report zero violations, which is
+# indistinguishable from a clean tree. Hardcoded, never derived from the corpus,
+# and set just under the measured size (65 at the time of writing) rather than
+# at half of it — a floor of 30 would have let half the tree vanish unnoticed,
+# and the exclusion list is applied BEFORE the count, so growing that list
+# shrinks the measured corpus with no other signal.
+P19_CORPUS_FLOOR=60
+if [ "${#P19_CORPUS[@]}" -ge "$P19_CORPUS_FLOOR" ]; then
+	pass "19c: the scan corpus holds ${#P19_CORPUS[@]} scripts under scripts/ (floor $P19_CORPUS_FLOOR)"
+else
+	fail "19c: the scan corpus holds only ${#P19_CORPUS[@]} scripts — the scans below would report clean against an empty corpus"
+fi
+# POSITIVE control (defect planted: find returned nothing).
+if [ 0 -ge "$P19_CORPUS_FLOOR" ]; then
+	fail "19c: positive control FAILED — the corpus floor is satisfied by an empty corpus, which is the exact defect a floor exists to stop"
+else
+	pass "19c: positive control — the corpus floor is non-zero, so it is not satisfied by an empty corpus"
+fi
+# The path-based exclusion is easy to break silently: a REPO_ROOT with a
+# trailing slash, or a symlinked worktree, makes the prefix strip a no-op, no
+# entry matches, and the six standalone drivers quietly re-enter the corpus.
+if [ "$_p19_excluded" -eq "$P19_EXCLUDE_N" ]; then
+	pass "19c: the exclusion list matched all $P19_EXCLUDE_N of its entries (the repo-relative path strip works)"
+else
+	fail "19c: the exclusion list matched $_p19_excluded of $P19_EXCLUDE_N entries — the repo-relative path strip is not resolving, so the corpus is not the set this section believes it is"
+fi
+
+_p19_hits=$(_p19_scan_forbidden "${P19_CORPUS[@]}")
+_p19_hits_n=$(_p19_violation_lines "$_p19_hits")
+if [ "$_p19_hits_n" -eq 0 ]; then
+	pass "19c: no script under scripts/ names report_status, delegate, messages_send, last_report or status_change"
+else
+	fail "19c: $_p19_hits_n line(s) still advertise deleted or non-existent symbols — a live agent told to call a deleted tool improvises and the row can still go green:
+$(printf '%s\n' "$_p19_hits" | grep -vE '^(__UNREADABLE__|__EXEMPT__):' | sed 's/^/      /')"
+fi
+
+# The COUNT includes the names the forbidden scan also reports; only the
+# RENDERED list drops them. Deduping at count time made this arm print "every
+# mcp__sprawl__<tool> named in scripts/ is a tool that exists" while
+# `mcp__sprawl__messages_send` — a tool that has never existed — was in the
+# tree: a green whose truth was conditional on a different arm being red.
+_p19_unknown=$(_p19_scan_unknown_tools "${P19_CORPUS[@]}")
+_p19_unknown_n=$(_p19_violation_lines "$_p19_unknown")
+if [ "$_p19_unknown_n" -eq 0 ]; then
+	pass "19c: every mcp__sprawl__<tool> named in scripts/ is a tool that exists"
+else
+	_p19_unknown_shown=$(printf '%s\n' "$_p19_unknown" | grep -vE '^(__UNREADABLE__|__EXEMPT__):' | grep -vE ":($(printf '%s' "$P19_FORBIDDEN" | tr ' ' '|'))\$")
+	_p19_unknown_dropped=$((_p19_unknown_n - $(printf '%s\n' "$_p19_unknown_shown" | grep -c . || true)))
+	fail "19c: $_p19_unknown_n script/tool pair(s) instruct a live agent to call an MCP tool that does not exist ($_p19_unknown_dropped of them are prefixed spellings already listed above):
+$(printf '%s\n' "$_p19_unknown_shown" | sed 's/^/      /')"
+fi
+
+# The exemption is a marker anyone can add to a live agent prompt to silence a
+# genuine advertisement, so it needs a ceiling for the same reason every row
+# needs an assertion floor: without one, "adding a marker shows up in review"
+# is a hope rather than a check. Measured at the time of writing: zero
+# P19-ALLOW markers in the corpus, and two WHOLE-FILE exemptions — the two rows
+# lane 1 skipped with rc 77 (complete-lifecycle, wake-on-traffic), whose bodies
+# are the blueprint for re-hosting them. Each exempted row also appears by name
+# in the pass message, so growing this set is visible in the log, not just in
+# the diff.
+P19_EXEMPT_CEILING=7
+_p19_exempt_n=$(_p19_exempt_lines "$_p19_hits")
+if [ "$_p19_exempt_n" -le "$P19_EXEMPT_CEILING" ]; then
+	pass "19c: $_p19_exempt_n exemption(s) claimed (ceiling $P19_EXEMPT_CEILING):$(printf '%s\n' "$_p19_hits" | grep '^__EXEMPT__:' | cut -d: -f2 | sort -u | tr '\n' ' ')"
+else
+	fail "19c: $_p19_exempt_n line(s) claim the exemption, over the ceiling of $P19_EXEMPT_CEILING — the marker is being used to silence advertisements rather than to preserve skip rationales:
+$(printf '%s\n' "$_p19_hits" | grep '^__EXEMPT__:' | sed 's/^/      /')"
+fi
+
+_p19_unread_n=$(($(_p19_unreadable_lines "$_p19_hits") + $(_p19_unreadable_lines "$_p19_unknown")))
+if [ "$_p19_unread_n" -eq 0 ]; then
+	pass "19c: every script in the corpus was readable, so a clean verdict covers all of it"
+else
+	fail "19c: $_p19_unread_n corpus file(s) were unreadable — they contributed zero violations, which is indistinguishable from being clean"
+fi
+
+# The scans' own controls. Direction: the fixture is a subject where the defect
+# IS present, so each scan MUST fire. Every one of these calls the scan through
+# the SAME command substitution the real arms use.
+if [ "$P19_FIX_OK" -eq 1 ]; then
+	_p19_bad="$P19_FIX/planted-defect.sh"
+	{
+		echo '# planted: every forbidden token, one per line'
+		for _tok in $P19_FORBIDDEN; do echo "echo $_tok"; done
+		echo 'echo mcp__sprawl__no_such_tool'
+	} >"$_p19_bad"
+	_p19_ctl=$(_p19_scan_forbidden "$_p19_bad")
+	_p19_ctl_n=$(_p19_violation_lines "$_p19_ctl")
+	_p19_want=$(printf '%s\n' $P19_FORBIDDEN | grep -c . || true)
+	if [ "$_p19_ctl_n" = "$_p19_want" ]; then
+		pass "19c: positive control — the forbidden-token scan fires once per token ($_p19_ctl_n/$_p19_want) against a planted fixture"
+	else
+		fail "19c: positive control FAILED — the forbidden-token scan reported $_p19_ctl_n of $_p19_want planted tokens, so its clean verdict on the real corpus proves nothing"
+	fi
+	case "$(_p19_scan_unknown_tools "$_p19_bad")" in
+		*no_such_tool*)
+			pass "19c: positive control — the unknown-tool scan fires on a planted mcp__sprawl__no_such_tool"
+			;;
+		*)
+			fail "19c: positive control FAILED — the unknown-tool scan did not flag a planted mcp__sprawl__no_such_tool"
+			;;
+	esac
+	# Negative control for the whitelist: a live tool must NOT be flagged, or
+	# the arm would be firing on everything and its silence on the real corpus
+	# would be luck.
+	printf 'echo mcp__sprawl__send_message\n' >"$P19_FIX/clean-subject.sh"
+	if [ "$(_p19_violation_lines "$(_p19_scan_unknown_tools "$P19_FIX/clean-subject.sh")")" -eq 0 ]; then
+		pass "19c: negative control — the unknown-tool scan stays quiet on a real tool (mcp__sprawl__send_message)"
+	else
+		fail "19c: negative control FAILED — the unknown-tool scan flags mcp__sprawl__send_message, which exists"
+	fi
+	# Positive control for the unreadable-file accounting, through the same
+	# command substitution as the real call.
+	if [ "$(_p19_unreadable_lines "$(_p19_scan_forbidden "$P19_FIX/definitely-not-here.sh")")" -eq 1 ]; then
+		pass "19c: positive control — the scan reports an unreadable file instead of passing over it"
+	else
+		fail "19c: positive control FAILED — an unreadable file was skipped silently, so the corpus-coverage arm cannot fail"
+	fi
+	# Both directions of the exemption. Without the first, adding P19-ALLOW to
+	# a line would not actually exempt it and the skip rationales could not be
+	# kept; without the second, the exemption is a hole anyone can fall into.
+	printf 'e2e_skip_row "the delegate half is deleted; report_status is gone"\n# P19-ALLOW: historical phase label mentioning delegate\n' >"$P19_FIX/exempt-subject.sh"
+	if [ "$(_p19_violation_lines "$(_p19_scan_forbidden "$P19_FIX/exempt-subject.sh")")" -eq 0 ]; then
+		pass "19c: negative control — an e2e_skip_row rationale and a P19-ALLOW line are exempt from the token scan"
+	else
+		fail "19c: negative control FAILED — the exemption does not apply, so lane 1's skip rationales cannot name the tools they exist to explain"
+	fi
+	printf 'echo "a plain line naming report_status"\n' >"$P19_FIX/unexempt-subject.sh"
+	if [ "$(_p19_violation_lines "$(_p19_scan_forbidden "$P19_FIX/unexempt-subject.sh")")" -eq 1 ]; then
+		pass "19c: positive control — an ordinary line naming report_status is NOT exempt"
+	else
+		fail "19c: positive control FAILED — the exemption swallowed an ordinary line, so any script could evade the scan"
+	fi
+	# The whole-file exemption, both directions. The near-miss is the one that
+	# matters: a row that asserts and THEN skips has already run, so exempting
+	# it would hide live advertisements behind a skip that never applied to
+	# them.
+	mkdir -p "$P19_FIX/scripts/e2e-tests"
+	printf 'test_run() {\n    e2e_skip_row "subject deleted"\n    echo "blueprint still names report_status and delegate"\n    pass "unreachable"\n}\n' >"$P19_FIX/scripts/e2e-tests/inert-row.sh"
+	if [ "$(_p19_violation_lines "$(_p19_scan_forbidden "$P19_FIX/scripts/e2e-tests/inert-row.sh")")" -eq 0 ]; then
+		pass "19c: negative control — a row that skips before asserting is exempt as a whole file"
+	else
+		fail "19c: negative control FAILED — an inert skipped row is not exempt, so lane 1's skip rationale and re-host blueprint cannot survive"
+	fi
+	# The tokens sit on their OWN line, not on the e2e_skip_row line: that line
+	# is exempt anyway, so putting them there would have made this control pass
+	# for a reason unrelated to the whole-file rule.
+	mkdir -p "$P19_FIX/scripts/e2e-tests"
+	printf 'test_run() {\n    pass "this row really ran"\n    echo "still advertises report_status and delegate"\n    e2e_skip_row "late skip"\n}\n' >"$P19_FIX/scripts/e2e-tests/late-skip-row.sh"
+	if [ "$(_p19_violation_lines "$(_p19_scan_forbidden "$P19_FIX/scripts/e2e-tests/late-skip-row.sh")")" -eq 2 ]; then
+		pass "19c: positive control — a row that asserts BEFORE it skips is NOT exempt (near-miss)"
+	else
+		fail "19c: positive control FAILED — a row that already ran was treated as inert, so any row could evade the scan by skipping after its assertions"
+	fi
+else
+	fail "19c: no fixture dir — the forbidden-token scan ran with no positive control, so a clean verdict is not attributable"
+	fail "19c: no fixture dir — the unknown-tool scan ran with no positive control"
+	fail "19c: no fixture dir — the unknown-tool scan ran with no negative control"
+	fail "19c: no fixture dir — the unreadable-file reporting ran with no positive control"
+	fail "19c: no fixture dir — the exemption's negative control did not run"
+	fail "19c: no fixture dir — the exemption's positive control did not run"
+	fail "19c: no fixture dir — the whole-file skip exemption's negative control did not run"
+	fail "19c: no fixture dir — the whole-file skip exemption's near-miss positive control did not run"
+fi
+
+# --- 19d: the StopAfterTurn hand-off must not evaporate quietly -------------
+# scripts/e2e-tests/report-then-send.sh is DELETED by this lane: it existed
+# solely to pin Real.ReportStatus's StopAfterTurn call, and that caller is
+# gone. Deleting a row is itself a table edit, and the honest accounting lives
+# in the matrix table — which says the coverage re-homes onto `idle-reclaim`
+# and that until that row exists this is "a deliberate reduction in coverage,
+# not as coverage".
+#
+# That sentence is currently the ONLY thing standing between the hand-off and
+# silence, and prose does not fail. This arm makes it fail. Pinned as
+# SUBSTRINGS, never byte-equality against a frozen copy: this slice has already
+# produced one fake assertion of exactly that shape.
+#
+# Each pin gets a real pair, because none of them can go red from anything in
+# this lane — the text landed in lane 4 and is already at HEAD. `_p19_pin_check`
+# is the single mechanism; the arm runs it on the live file (must return 0) and
+# on a copy with the phrase stripped (must return 1). An earlier draft asserted
+# instead that `grep -v` had removed what it was asked to remove, which is a
+# property of grep and not of this pin.
+echo "[19d] the deleted report-then-send row's StopAfterTurn coverage is still handed off in writing"
+P19_SKILL="$REPO_ROOT/.claude/skills/e2e-matrix/SKILL.md"
+
+_p19_pin_check() {
+	grep -qF -- "$2" "$1" 2>/dev/null
+}
+
+_p19_pin() {
+	local phrase="$1" what="$2" why="$3" copy="$P19_FIX/skill-stripped.md"
+	if [ "$P19_FIX_OK" -ne 1 ]; then
+		fail "19d: $what could not be checked — no fixture dir, so the pin would have no control"
+		return
+	fi
+	grep -vF -- "$phrase" "$P19_SKILL" >"$copy" 2>/dev/null
+	# An unwritten copy makes `grep -qF` return 2 — non-zero, so the control
+	# below would fall through to a PASS having examined a file that does not
+	# exist. Same class as the unreadable-file defect, one layer in.
+	if [ ! -s "$copy" ]; then
+		fail "19d: $what could not be controlled — the stripped copy of the skill was not written, so the pin has no planted subject"
+		return
+	fi
+	if ! _p19_pin_check "$P19_SKILL" "$phrase"; then
+		fail "19d: $what — $why"
+	elif _p19_pin_check "$copy" "$phrase"; then
+		fail "19d: positive control FAILED — the pin for $what still returned 0 against a copy with the phrase removed, so it is not reading the file it is given"
+	else
+		pass "19d: $what (positive control: the same check returns non-zero on a copy with the phrase stripped)"
+	fi
+}
+
+if [ -r "$P19_SKILL" ]; then
+	_p19_pin 'idle-reclaim' \
+		"the matrix table names idle-reclaim as StopAfterTurn's successor row" \
+		"StopAfterTurn's e2e coverage was re-homed to a row nobody is now told to write"
+	_p19_pin 'deliberate reduction in coverage' \
+		"the matrix table records the interim as a deliberate reduction in coverage" \
+		"a reader would read the missing row as an oversight, or not at all"
+	_p19_pin 'report-then-send' \
+		"the matrix table still names report-then-send, so the deletion is traceable from the table" \
+		"the row's removal is now untraceable from the table it was removed from"
+else
+	fail "19d: .claude/skills/e2e-matrix/SKILL.md is unreadable — the StopAfterTurn hand-off is unpinned"
+	fail "19d: the deliberate-reduction record is unpinned (skill unreadable)"
+	fail "19d: the report-then-send removal record is unpinned (skill unreadable)"
+fi
+if [ -e "$REPO_ROOT/scripts/e2e-tests/report-then-send.sh" ]; then
+	fail "19d: scripts/e2e-tests/report-then-send.sh still exists — the driver globs scripts/e2e-tests/*.sh, so the row whose subject was deleted is still in the run list"
+else
+	pass "19d: scripts/e2e-tests/report-then-send.sh is gone from the driver's glob"
+fi
+
+# --- 19e: the pre-matrix standalone duplicates skip loudly ------------------
+# tower's ruling (QUM-1186 lane 5): the six pre-matrix standalone drivers are
+# not migrated twice and not deleted in this slice — they exit 77 at the top,
+# naming the matrix row that supersedes them. A script that runs nothing cannot
+# drift out of sync with the row it duplicates and cannot false-green.
+#
+# The skip message is pinned on a FIXED PHRASE plus the row name, never the row
+# name alone: `test-notify-tui-e2e.sh` contains the substring "notify-tui" in
+# its own banner, so the bare-name check PASSED against the unmigrated script.
+# Measured on the red run — an assertion that could not fail, in the section
+# written to eliminate assertions that cannot fail.
+#
+# Execution is gated behind the static pin. These six build a binary, allocate
+# a /tmp sandbox and start tmux if they are NOT skipping, so running one to
+# find out whether it skips is the wrong order: the static check proves the
+# subject is on its millisecond path, and only then is it executed.
+P19_SUPERSEDE_PHRASE='superseded by matrix row'
+
+# Does FILE advertise itself as superseded by matrix row $2? Factored out so
+# [19e]'s leak-resistance arm can be controlled with planted files instead of
+# waiting for a red moment during implementation that nobody would witness.
+_p19_declares_supersede() {
+	grep -qF "$P19_SUPERSEDE_PHRASE '$2'" "$1" 2>/dev/null
+}
+_p19_is_skipping_driver() {
+	grep -qF "$P19_SUPERSEDE_PHRASE" "$1" 2>/dev/null
+}
+
+echo "[19e] the pre-matrix standalone drivers exit 77 and name their successor row"
+_p19_standalones='test-ask-user-question-e2e.sh:ask-user-question
+test-notify-tui-e2e.sh:notify-tui
+test-drain-row-inject-e2e.sh:drain-row-inject
+test-wake-live-e2e.sh:wake-live
+test-bridge-lifecycle-e2e.sh:wake-live
+test-merge-reuse-e2e.sh:merge-reuse'
+while IFS=: read -r _s _row; do
+	[ -n "$_s" ] || continue
+	_sp="$REPO_ROOT/scripts/$_s"
+	if [ ! -r "$_sp" ]; then
+		fail "19e: $_s is missing — expected it present and skipping, per tower's ruling that deleting these is a separate issue"
+		fail "19e: $_s's skip is unverified (file missing)"
+		continue
+	fi
+	if _p19_declares_supersede "$_sp" "$_row"; then
+		pass "19e: $_s names the matrix row that supersedes it (\`$_row\`)"
+	else
+		fail "19e: $_s does not carry the phrase \"$P19_SUPERSEDE_PHRASE '$_row'\" — a reader told the coverage is gone is not told where it went"
+		fail "19e: $_s was NOT executed to confirm it exits 77 — without the skip header it would build a binary and allocate a sandbox from inside make validate"
+		continue
+	fi
+	# `-k 5`: these spawn tmux servers and a built binary that outlive a bare
+	# SIGTERM. `</dev/null` so a subject that grows a `read` cannot eat the
+	# remaining rows of this loop's here-doc and silently shorten it.
+	_out=$(timeout -k 5 20 bash "$_sp" 2>&1 </dev/null)
+	_rc=$?
+	case "$_rc" in
+		77)
+			pass "19e: $_s exits 77 (skip), so it cannot false-green and cannot drift from $_row"
+			;;
+		124 | 137)
+			fail "19e: $_s carries the skip header but did NOT exit within 20s (rc=$_rc) — it is doing real work despite advertising a skip"
+			;;
+		*)
+			fail "19e: $_s exited $_rc, not 77 — a floorless duplicate of $_row with no aggregator behind it, or a failure for an unrelated reason"
+			;;
+	esac
+done <<P19STANDALONES
+$_p19_standalones
+P19STANDALONES
+
+# The one place tower's option (b) can still produce a vacuous green:
+# scripts/test-leak-resistance-e2e.sh drives drivers as subjects and asserts an
+# ABSENCE about each (no orphan proc, no stale socket, no residual dir). An
+# absence is satisfied perfectly by a subject that never started — the script's
+# own SETUP_FAIL guard exists because that already happened once. A subject
+# that now exits 77 in milliseconds is exactly that shape.
+#
+# Scope of the claim, stated precisely: it detects a subject that skips FOR THE
+# REASON THIS LANE INTRODUCED — one carrying the supersede phrase. A subject
+# that exits 77 for some other unmet precondition carries no such phrase and
+# reads as clean here. That residue is leak-resistance's own SETUP_FAIL guard
+# to catch, and it does; this arm exists because a supersede-skip is silent,
+# instant, and introduced deliberately.
+echo "[19e] the leak-resistance harness does not drive a subject that skips"
+P19_LEAK="$REPO_ROOT/scripts/test-leak-resistance-e2e.sh"
+if [ -r "$P19_LEAK" ]; then
+	_p19_leak_bad=""
+	_p19_leak_missing=""
+	_p19_leak_n=0
+	while IFS= read -r _tgt; do
+		[ -n "$_tgt" ] || continue
+		_p19_leak_n=$((_p19_leak_n + 1))
+		if [ ! -r "$REPO_ROOT/scripts/$_tgt" ]; then
+			# An unresolvable subject path must not read as clean: grep would
+			# return non-zero and the subject would be recorded as fine.
+			_p19_leak_missing="$_p19_leak_missing $_tgt"
+		elif _p19_is_skipping_driver "$REPO_ROOT/scripts/$_tgt"; then
+			_p19_leak_bad="$_p19_leak_bad $_tgt"
+		fi
+	done <<P19LEAKTGT
+$(grep -oE '^run_case[[:space:]]+"[^"]+"' "$P19_LEAK" 2>/dev/null | sed -E 's/.*"([^"]+)"/\1/')
+P19LEAKTGT
+	_p19_expected=$(grep -oE '^EXPECTED_CASES=[0-9]+' "$P19_LEAK" 2>/dev/null | head -1 | sed 's/.*=//')
+	# Assert the extraction found something BEFORE trusting its emptiness: an
+	# indented run_case, an unquoted first argument or a rename would yield an
+	# empty list, the loop above would never execute, and the arms below would
+	# print PASS having examined nothing.
+	if [ -n "$_p19_expected" ] && [ "$_p19_leak_n" = "$_p19_expected" ]; then
+		pass "19e: extracted all $_p19_leak_n leak-resistance subjects (matches its own EXPECTED_CASES=$_p19_expected)"
+	else
+		fail "19e: extracted $_p19_leak_n leak-resistance subject(s) but EXPECTED_CASES='$_p19_expected' — the extraction examined a different set than the script runs, so its verdict is not attributable"
+	fi
+	if [ -z "$_p19_leak_missing" ]; then
+		pass "19e: every leak-resistance subject resolves to a readable script"
+	else
+		fail "19e: leak-resistance subject(s) do not resolve under scripts/:$_p19_leak_missing — they were examined as if clean"
+	fi
+	if [ -z "$_p19_leak_bad" ]; then
+		pass "19e: no leak-resistance subject is a driver superseded by a matrix row"
+	else
+		fail "19e: leak-resistance drives subject(s) that exit 77 in milliseconds:$_p19_leak_bad — every leak assertion about them is an absence satisfied by a scenario that never started"
+	fi
+	# EXPECTED_CASES is leak-resistance's own assertion floor. tower's third
+	# requirement: it moves with the truth, never toward it. Cross-checked with
+	# a looser regex than the extraction above, so a subject the extraction
+	# missed still shows up as a mismatch here.
+	_p19_cases=$(grep -cE '^run_case[[:space:]]' "$P19_LEAK" 2>/dev/null || true)
+	if [ -n "$_p19_expected" ] && [ "$_p19_cases" = "$_p19_expected" ]; then
+		pass "19e: leak-resistance's EXPECTED_CASES=$_p19_expected matches its $_p19_cases run_case call(s)"
+	else
+		fail "19e: leak-resistance declares EXPECTED_CASES='$_p19_expected' but makes $_p19_cases run_case call(s) — its floor no longer matches what it runs"
+	fi
+else
+	fail "19e: scripts/test-leak-resistance-e2e.sh is unreadable — cannot check whether it drives a skipping subject"
+	fail "19e: leak-resistance's subject resolution is unverified (file unreadable)"
+	fail "19e: leak-resistance's subject extraction is unverified (file unreadable)"
+	fail "19e: leak-resistance's EXPECTED_CASES floor is unchecked (file unreadable)"
+fi
+# Controls for the two detectors [19e] rests on, planted rather than waited
+# for. "I will watch it go red during implementation" is the mechanism this
+# section replaces: it depends on someone looking at one particular moment.
+if [ "$P19_FIX_OK" -eq 1 ]; then
+	{
+		echo '#!/usr/bin/env bash'
+		echo "# $P19_SUPERSEDE_PHRASE 'notify-tui'"
+		echo 'exit 77'
+	} >"$P19_FIX/skipping-driver.sh"
+	printf '#!/usr/bin/env bash\necho doing real work\n' >"$P19_FIX/working-driver.sh"
+	if _p19_is_skipping_driver "$P19_FIX/skipping-driver.sh"; then
+		pass "19e: positive control — the skipping-subject detector fires on a planted superseded driver"
+	else
+		fail "19e: positive control FAILED — the skipping-subject detector missed a planted superseded driver, so its clean verdict on leak-resistance proves nothing"
+	fi
+	if _p19_is_skipping_driver "$P19_FIX/working-driver.sh"; then
+		fail "19e: negative control FAILED — the skipping-subject detector fires on a driver that does real work"
+	else
+		pass "19e: negative control — the skipping-subject detector stays quiet on a driver that does real work"
+	fi
+	if _p19_declares_supersede "$P19_FIX/skipping-driver.sh" notify-tui; then
+		pass "19e: positive control — the successor-row check matches the row named in a planted skip header"
+	else
+		fail "19e: positive control FAILED — the successor-row check missed the row named in a planted skip header"
+	fi
+	# The NEAR-MISS control, aimed at the historical defect rather than a
+	# distant one: the original bare-name check passed on the unmigrated
+	# test-notify-tui-e2e.sh because its own banner contains "notify-tui". The
+	# planted subject reproduces that exactly — row name present, phrase absent.
+	printf '#!/usr/bin/env bash\n# this is the notify-tui driver\nexit 0\n' >"$P19_FIX/near-miss-driver.sh"
+	if _p19_declares_supersede "$P19_FIX/near-miss-driver.sh" notify-tui; then
+		fail "19e: negative control FAILED — the successor-row check matched a driver that merely CONTAINS the row name, which is the exact defect it replaced"
+	else
+		pass "19e: negative control — the successor-row check rejects a driver that merely contains the row name (near-miss)"
+	fi
+	if _p19_declares_supersede "$P19_FIX/skipping-driver.sh" some-other-row; then
+		fail "19e: negative control FAILED — the successor-row check matched a row the planted header does not name, so it is not checking the row at all"
+	else
+		pass "19e: negative control — the successor-row check rejects a row the header does not name"
+	fi
+else
+	fail "19e: no fixture dir — the skipping-subject detector ran with no positive control"
+	fail "19e: no fixture dir — the skipping-subject detector ran with no negative control"
+	fail "19e: no fixture dir — the successor-row check ran with no positive control"
+	fail "19e: no fixture dir — the successor-row check ran with no near-miss negative control"
+	fail "19e: no fixture dir — the successor-row check ran with no wrong-row negative control"
+fi
+
+if [ -n "$P19_FIX" ] && [ -d "$P19_FIX" ]; then
+	case "$P19_FIX" in
+		"$UNIT_TMP_ROOT"/e2e-matrix-unit-p19.*) rm -rf -- "$P19_FIX" ;;
+		*) echo "  NOTE: refusing to remove unexpected fixture dir '$P19_FIX'" >&2 ;;
+	esac
+fi
+
 # Summary
 # ----------------------------------------------------------------------------
 echo

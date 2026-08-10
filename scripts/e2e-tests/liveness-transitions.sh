@@ -97,7 +97,7 @@ test_run() {
     # --- Phase 1: spawn child, assert Status=active + process_alive=true (T1/T2) ---
     echo ""
     echo "=== Phase 1 (T1/T2): spawn an engineer child that idles ==="
-    local SPAWN_PROMPT="Call mcp__sprawl__spawn with family='engineering', type='engineer', branch='qum615-liveness-probe-${BRANCH_SUFFIX}', and prompt set to exactly: 'You are an automated QUM-615 liveness probe. Call mcp__sprawl__report_status with state=working, summary=\"idle, awaiting fault induction\". Then stop and wait. Do nothing else until you receive a message.'"
+    local SPAWN_PROMPT="Call mcp__sprawl__spawn with family='engineering', type='engineer', branch='qum615-liveness-probe-${BRANCH_SUFFIX}', and prompt set to exactly: 'You are an automated QUM-615 liveness probe. Call mcp__sprawl__send_message with to=\"weave\", body=\"LIVENESS-PROBE-READY-${BRANCH_SUFFIX}\". Then stop and wait. Do nothing else until you receive a message.'"
     _stmux send-keys -t "$SESSION" "$SPAWN_PROMPT"
     sleep 0.5
     _stmux send-keys -t "$SESSION" Enter

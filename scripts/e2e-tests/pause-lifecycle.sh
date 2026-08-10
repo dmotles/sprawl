@@ -166,7 +166,7 @@ test_run() {
     echo ""
     echo "=== Phase 1: clean-pause-idle ==="
     local P1_BRANCH="qum735-p1-idle-${SUFFIX}"
-    local SPAWN_PROMPT_TEMPLATE="Call mcp__sprawl__spawn with family='engineering', type='engineer', branch='__BRANCH__', and prompt set to exactly: 'You are an automated QUM-735 pause-lifecycle probe. Call mcp__sprawl__report_status with state=working, summary=\"idle, awaiting pause\". Then stop and wait. Do nothing else until you receive a message.'"
+    local SPAWN_PROMPT_TEMPLATE="Call mcp__sprawl__spawn with family='engineering', type='engineer', branch='__BRANCH__', and prompt set to exactly: 'You are an automated QUM-735 pause-lifecycle probe. Call mcp__sprawl__send_message with to=\"weave\", body=\"PAUSE-PROBE-READY-${SUFFIX}\". Then stop and wait. Do nothing else until you receive a message.'"
     local P1_PROMPT="${SPAWN_PROMPT_TEMPLATE/__BRANCH__/$P1_BRANCH}"
     _stmux send-keys -t "$SESSION" "$P1_PROMPT"
     sleep 0.5
@@ -529,8 +529,8 @@ test_run() {
     local P5_PARENT_BRANCH="qum735-p5-parent-${SUFFIX}"
     local P5_C1_BRANCH="qum735-p5-c1-${SUFFIX}"
     local P5_C2_BRANCH="qum735-p5-c2-${SUFFIX}"
-    local P5_KID_PROMPT_BODY="You are an automated QUM-735 cascade probe. Call mcp__sprawl__report_status with state=working, summary=\"idle\". Then stop and wait. Do nothing else until you receive a message."
-    local P5_MGR_PROMPT="Call mcp__sprawl__spawn with family='engineering', type='manager', branch='$P5_PARENT_BRANCH', and prompt set to exactly the following multi-line text (preserving the embedded newline): 'You are an automated QUM-735 cascade parent. First call mcp__sprawl__spawn with family=engineering, type=engineer, branch=$P5_C1_BRANCH, prompt=\"$P5_KID_PROMPT_BODY\". Then call mcp__sprawl__spawn with family=engineering, type=engineer, branch=$P5_C2_BRANCH, prompt=\"$P5_KID_PROMPT_BODY\". After both spawn calls return, call mcp__sprawl__report_status with state=working, summary=\"cascade parent idle\". Then stop and wait.'"
+    local P5_KID_PROMPT_BODY="You are an automated QUM-735 cascade probe. Call mcp__sprawl__send_message with to=\"weave\", body=\"CASCADE-KID-READY-${SUFFIX}\". Then stop and wait. Do nothing else until you receive a message."
+    local P5_MGR_PROMPT="Call mcp__sprawl__spawn with family='engineering', type='manager', branch='$P5_PARENT_BRANCH', and prompt set to exactly the following multi-line text (preserving the embedded newline): 'You are an automated QUM-735 cascade parent. First call mcp__sprawl__spawn with family=engineering, type=engineer, branch=$P5_C1_BRANCH, prompt=\"$P5_KID_PROMPT_BODY\". Then call mcp__sprawl__spawn with family=engineering, type=engineer, branch=$P5_C2_BRANCH, prompt=\"$P5_KID_PROMPT_BODY\". After both spawn calls return, call mcp__sprawl__send_message with to=\"weave\", body=\"CASCADE-PARENT-READY-${SUFFIX}\". Then stop and wait.'"
     _stmux send-keys -t "$SESSION" "$P5_MGR_PROMPT"
     sleep 0.5
     _stmux send-keys -t "$SESSION" Enter

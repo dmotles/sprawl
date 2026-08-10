@@ -1,4 +1,27 @@
 #!/usr/bin/env bash
+
+# QUM-1186 lane 5: THIS SCRIPT NO LONGER RUNS.
+#
+# It is a pre-matrix standalone duplicate, kept during the matrix soak as a
+# fallback. QUM-1186 deleted the `report_status` tool and the `last_report_*`
+# state fields this script probes with, so its assertions have lost their
+# subject. It is not migrated, because migrating it would mean maintaining a
+# second copy of every probe change forever; and it is not deleted here,
+# because deleting these six is separately tracked and dragging it into this
+# slice would put a Makefile and test-leak-resistance-e2e.sh rework inside an
+# already-wide diff.
+#
+# What it must NOT do is run. It has no `MIN_ASSERTIONS` floor, no aggregator
+# and no rc-77 path, so a partial run of it reports green — which is the exact
+# defect this slice exists to remove. A script that exits before doing anything
+# cannot drift out of sync with the row that replaced it and cannot false-green.
+#
+# Its prose describes a delegate-driven branch swap; the tool is deleted.
+echo "SKIP: ${0##*/} is superseded by matrix row 'merge-reuse' — its coverage lives there now." >&2
+echo "  Run instead:  make test-e2e-matrix-merge-reuse" >&2
+echo "  Deleting this file and its Makefile target is tracked separately (QUM-1186 lane 5 hand-off)." >&2
+exit 77
+
 # test-merge-reuse-e2e.sh — End-to-end regression guard for QUM-511 / QUM-489.
 #
 # QUM-511: After `delegate` reuses an agent on a NEW branch, `sprawl merge X`

@@ -34,8 +34,10 @@
 #
 # Why D is not flake-prone: every stdin `type:"user"` frame comes from
 # UnifiedRuntime.writeMessage. In this sandbox during the idle window there are no
-# keystrokes, no children (⇒ no maildir/status_change ⇒ drainPendingToStdin and
-# PostTurnSweep early-return), no delegated tasks (⇒ feedTasks writes nothing), and
+# keystrokes and no children (⇒ nothing in the maildir ⇒ drainPendingToStdin and
+# PostTurnSweep early-return). QUM-1186 removed the other two injectors this note
+# used to have to rule out — the hidden status-ping envelope class and the task
+# queue — by deleting them outright, so they are no longer conditions to check.
 # the supervisor heartbeat that used to be the remaining injector on this path was
 # deleted outright by QUM-1071, so nothing periodic can land inside this ~90s
 # window at all.

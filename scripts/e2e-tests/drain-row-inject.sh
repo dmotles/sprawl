@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 # scripts/e2e-tests/drain-row-inject.sh — QUM-569 regression guard.
 # Migrated from scripts/test-drain-row-inject-e2e.sh (which remains in place).
-# Drives a real claude child to call mcp__sprawl__messages_send so the
+# Drives a real claude child to call mcp__sprawl__send_message so the
 # Send → defaultNotifier → WakeForDelivery → claude prompt-inject →
 # drain-row citation pipeline is exercised end-to-end.
 
@@ -89,7 +89,7 @@ test_run() {
     echo ""
     echo "=== Driving weave to spawn the drain-probe child ==="
     local SPAWN_PROMPT
-    SPAWN_PROMPT="Call mcp__sprawl__spawn with family='engineering', type='engineer', branch='qum-569-drain-probe-${BRANCH_SUFFIX}', and prompt set to exactly: 'You are an automated QUM-569 probe. STEP 1: IMMEDIATELY call mcp__sprawl__messages_send with to=\"weave\", body=\"DRAIN-PROBE-SENTINEL: ${PROBE}\". STEP 2: call mcp__sprawl__report_status with state=complete, summary=\"drain probe sent\". STEP 3: Stop. Do nothing else. Do not read any files, do not run any commands.'"
+    SPAWN_PROMPT="Call mcp__sprawl__spawn with family='engineering', type='engineer', branch='qum-569-drain-probe-${BRANCH_SUFFIX}', and prompt set to exactly: 'You are an automated QUM-569 probe. STEP 1: IMMEDIATELY call mcp__sprawl__send_message with to=\"weave\", body=\"DRAIN-PROBE-SENTINEL: ${PROBE}\". STEP 2: Stop. Do nothing else. Do not read any files, do not run any commands.'"
     e2e_send_user_prompt "$SESSION" "$SPAWN_PROMPT"
 
     echo ""
@@ -138,7 +138,7 @@ test_run() {
     # change shortened, and failed while the primary assertion below still passed.
     #
     # It is still a real gate — it checks exactly what its failure message claims,
-    # that the child called messages_send — but against a DURABLE surface instead
+    # that the child called send_message — but against a DURABLE surface instead
     # of a transient one: messages.Send writes the envelope tmp/ -> new/ (an atomic
     # rename) and no path ever deletes it, only renames it within the mailbox root
     # (new/ -> cur/ on read, cur/ -> archive/ on messages_archive). So the
@@ -146,9 +146,9 @@ test_run() {
     # by fast delivery. Note this gate covers no sprawl DELIVERY code — that is the
     # primary assertion's job, immediately below.
     if wait_for_maildir_sentinel "$SPRAWL_ROOT/.sprawl/messages/weave" "$PROBE" 60; then
-        pass "child's messages_send envelope landed durably in weave's maildir (sentinel $PROBE)"
+        pass "child's send_message envelope landed durably in weave's maildir (sentinel $PROBE)"
     else
-        fail "no maildir envelope carrying $PROBE within 60s — child may not have called messages_send"
+        fail "no maildir envelope carrying $PROBE within 60s — child may not have called send_message"
         echo "  weave maildir:" >&2
         find "$SPRAWL_ROOT/.sprawl/messages/weave" -type f >&2 2>/dev/null || echo "    <missing>" >&2
         echo "  pane tail:" >&2

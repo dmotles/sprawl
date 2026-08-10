@@ -71,13 +71,19 @@ dump_diagnostics() {
     echo "-------------------" >&2
 }
 
+# run_case SCRIPT PREFIX LABEL [ARG...] — drive scripts/SCRIPT (with any extra
+# ARGs) far enough to create its /tmp/PREFIX* sandbox, SIGKILL it, and assert
+# nothing leaked. The trailing ARGs exist so a case can target a matrix ROW
+# (`e2e-matrix.sh notify-tui`) rather than a standalone driver; see the
+# notify-tui case below for why that matters.
 run_case() {
     local script="$1"
     local prefix="$2"
     local label="$3"
+    shift 3
 
     echo "=== $label ==="
-    bash "$REPO_ROOT/scripts/$script" >/tmp/leak-resistance-driver.log 2>&1 &
+    bash "$REPO_ROOT/scripts/$script" "$@" >/tmp/leak-resistance-driver.log 2>&1 &
     local driver=$!
 
     # Poll up to 60s for the sandbox dir to appear, then SIGKILL ASAP. On fast
@@ -144,7 +150,18 @@ run_case() {
 }
 
 run_case "test-handoff-e2e.sh"     "sprawl-handoff-e2e-"   "handoff-e2e"
-run_case "test-notify-tui-e2e.sh"  "sprawl-notify-e2e-"    "notify-tui-e2e"
+# QUM-1186 lane 5: repointed off scripts/test-notify-tui-e2e.sh, which now
+# exits 77 in milliseconds because a matrix row supersedes it. Left alone, this
+# case would have SIGKILL'd nothing, found no /tmp sandbox, and been recorded by
+# the SETUP_FAIL guard below as "never ran" — a case whose every leak assertion
+# is an absence satisfied by a scenario that never started. Deleting the case
+# instead would have dropped EXPECTED_CASES to 2, i.e. moved the floor to
+# accommodate the change rather than to the truth.
+#
+# The subject is now the matrix row itself, which is where the coverage went.
+# Note the sandbox prefix differs from the old driver's: the row calls
+# e2e_make_sandbox_root "sprawl-tui-notify-e2e", not "sprawl-notify-e2e".
+run_case "e2e-matrix.sh"           "sprawl-tui-notify-e2e-" "notify-tui-matrix-row" "notify-tui"
 run_case "test-tui-e2e.sh"         "sprawl-tui-e2e-"       "tui-e2e"
 
 echo ""

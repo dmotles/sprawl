@@ -17,8 +17,8 @@
 #                             engineer and the manager. From a sibling, send
 #                             to the dead engineer; assert the wrapper lands
 #                             in weave's queue enumerating both dead names.
-#   5. report-status-to-dead: Same multi-hop setup; sibling report_status
-#                             to dead engineer routes wrapped to weave.
+#   (A fifth phase, self-report-to-a-dead-parent, was DELETED by QUM-1186
+#    along with the tool it exercised. See the block where it stood.)
 #
 # Helper-level correctness for the wrapper + AgentDiedMsg dispatch is
 # covered by unit tests in:
@@ -27,7 +27,8 @@
 #   - internal/supervisor/real_dead_routing_test.go
 #   - internal/tui/death_toast_test.go
 # This row gates the live wiring: registry-subscriber → TUI toast and
-# SendMessage / ReportStatus dead-recipient detection through real MCP.
+# SendMessage dead-recipient detection through real MCP. (QUM-1186 deleted
+# the self-report half; send_message is now the route-up's only entry point.)
 #
 # KNOWN GAP (QUM-745 implementation discovery, 2026-06-10):
 # Phase 1's `SIGKILL claude PID → disk status=died` transition does not
@@ -57,8 +58,11 @@
 # 5 phases exercise exactly the validation §QUM-725 calls for.
 
 # QUM-1029: the number of assertions a COMPLETE, PASSING run of this row
-# makes. All twenty sites are on the green path (two unconditional, eighteen symmetric gates). The fail-only kill -0 probe and the PID-resolution loops add nothing.
-MIN_ASSERTIONS=20
+# makes. QUM-1186 lowered this from 20: Phase 5 was deleted outright (its
+# subject no longer exists), taking its two green-path gates with it. Eighteen
+# sites remain on the green path (two unconditional, sixteen symmetric gates).
+# The fail-only kill -0 probe and the PID-resolution loops add nothing.
+MIN_ASSERTIONS=18
 
 test_metadata() {
     echo "needs_claude=1 needs_tmux=1 needs_jq=1"
@@ -87,8 +91,8 @@ _dod_wait_for_status() {
 }
 
 _dod_wait_for_died() { _dod_wait_for_status "$1" "died" "${2:-60}"; }
-# "active" is the resting status stamped by runtime.start once the backend
-# session has initialized; we poll for it as a kill-readiness signal so
+# "active" is the resting status written at spawn (agentops/spawn.go) and
+# re-stamped on wake; we poll for it as a kill-readiness signal so
 # SIGKILL doesn't race claude's --init handshake (would classify as
 # Faulted rather than Died and AgentDiedMsg never fires).
 _dod_wait_for_active() { _dod_wait_for_status "$1" "active" "${2:-180}"; }
@@ -155,8 +159,8 @@ _dod_wait_for_inbox_body() {
 # Wait until any maildir envelope under <recipient>'s messages dir contains
 # <needle>. Status_change envelopes (QUM-614) are written by
 # messages.SendStatusChange to .sprawl/messages/<recipient>/new/ — the
-# route-up dead-parent path (real.go::ReportStatus) wraps the summary and
-# delivers via this maildir, NOT via the agentloop queue. Used for Phase 5.
+# route-up dead-parent path (real.go::SendMessage) wraps the body and
+# delivers via this maildir, NOT via the agentloop queue.
 _dod_wait_for_maildir_body() {
     local recipient="$1" needle="$2" timeout="${3:-90}"
     local mdir="$SPRAWL_ROOT/.sprawl/messages/$recipient"
@@ -239,7 +243,7 @@ test_run() {
     # -----------------------------------------------------------------
     echo ""
     echo "=== Phase 1: spawn engineer and SIGKILL its claude ==="
-    local SPAWN_PROMPT="Call mcp__sprawl__spawn with family='engineering', type='engineer', branch='qum-745-death-${BRANCH_SUFFIX}', and prompt set to exactly: 'You are an automated QUM-745 death probe. Call mcp__sprawl__report_status with state=working, summary=\"idle, awaiting SIGKILL\". Then stop and wait. Do nothing else until you receive a message.'"
+    local SPAWN_PROMPT="Call mcp__sprawl__spawn with family='engineering', type='engineer', branch='qum-745-death-${BRANCH_SUFFIX}', and prompt set to exactly: 'You are an automated QUM-745 death probe. Call mcp__sprawl__send_message with to=\"weave\", body=\"DEATH-PROBE-READY-${BRANCH_SUFFIX}\". Then stop and wait. Do nothing else until you receive a message.'"
     e2e_send_user_prompt "$SESSION" "$SPAWN_PROMPT"
 
     local ENGINEER
@@ -384,18 +388,15 @@ test_run() {
     fi
 
     # -----------------------------------------------------------------
-    # Phase 4 + 5: route-up multi-hop (send_message) + dead-parent
-    # report_status. Real.ReportStatus delivers status_change to the
-    # REPORTER'S parent (no explicit `to=`); the dead-parent route-up
-    # lives in real.go:1858-1874 (WalkDeadAncestors from parent). So the
-    # ordering is: build a weave→manager→engineer2 chain plus a sibling
-    # at the weave level, kill manager first, exercise Phase 5
-    # (engineer2.report_status → wraps to weave because parent dead),
-    # then kill engineer2 and exercise Phase 4 (sibling.send_message to
-    # dead engineer2 with two dead names in the chain).
+    # Phase 4: route-up multi-hop via send_message. Build a
+    # weave→manager→engineer2 chain plus a sibling at the weave level, kill
+    # the manager, then kill engineer2, then have the sibling send to the dead
+    # engineer2 — so the wrapper must enumerate two dead names in the chain.
+    # The kills stay in that order because the deleted phase between them
+    # needed a live child under a dead parent, and Phase 4 needs both dead.
     echo ""
     echo "=== Phase 4+5 setup: spawn manager + nested engineer + sibling ==="
-    local MGR_SPAWN="Call mcp__sprawl__spawn with family='engineering', type='manager', branch='qum-745-mgr-${BRANCH_SUFFIX}', and prompt set to exactly: 'You are an automated QUM-745 manager probe. Call mcp__sprawl__spawn with family=\"engineering\", type=\"engineer\", branch=\"qum-745-eng2-${BRANCH_SUFFIX}\", and prompt set to exactly: \"You are an automated QUM-745 nested engineer. Call mcp__sprawl__report_status with state=working, summary=idle. Then stop.\". Then stop and wait for messages.'"
+    local MGR_SPAWN="Call mcp__sprawl__spawn with family='engineering', type='manager', branch='qum-745-mgr-${BRANCH_SUFFIX}', and prompt set to exactly: 'You are an automated QUM-745 manager probe. Call mcp__sprawl__spawn with family=\"engineering\", type=\"engineer\", branch=\"qum-745-eng2-${BRANCH_SUFFIX}\", and prompt set to exactly: \"You are an automated QUM-745 nested engineer. Call mcp__sprawl__send_message with to=weave, body=NESTED-ENG-READY-${BRANCH_SUFFIX}. Then stop.\". Then stop and wait for messages.'"
     e2e_send_user_prompt "$SESSION" "$MGR_SPAWN"
 
     local MANAGER ENG2 SIBLING
@@ -415,7 +416,7 @@ test_run() {
     fi
     pass "nested engineer spawned: name=$ENG2"
 
-    local SIBLING_SPAWN="Call mcp__sprawl__spawn with family='engineering', type='engineer', branch='qum-745-sib-${BRANCH_SUFFIX}', and prompt set to exactly: 'You are an automated QUM-745 sibling probe. Call mcp__sprawl__report_status with state=working, summary=\"sibling idle\". Then stop and wait for messages.'"
+    local SIBLING_SPAWN="Call mcp__sprawl__spawn with family='engineering', type='engineer', branch='qum-745-sib-${BRANCH_SUFFIX}', and prompt set to exactly: 'You are an automated QUM-745 sibling probe. Call mcp__sprawl__send_message with to=\"weave\", body=\"SIBLING-READY-${BRANCH_SUFFIX}\". Then stop and wait for messages.'"
     e2e_send_user_prompt "$SESSION" "$SIBLING_SPAWN"
 
     if ! SIBLING=$(_dod_wait_for_child 240 engineer "${ENGINEER},${ENG2}"); then
@@ -445,8 +446,8 @@ test_run() {
     # Wait for both to be fully initialized before SIGKILL. We can't watch
     # weave's pane here — the nested engineer's status-change envelope
     # routes to its parent (manager), not to weave. Probe disk state
-    # directly: both reach status=active once their runtime start has
-    # completed and the first report_status has landed.
+    # directly: both reach status=active once spawn has written the record
+    # and their runtime start has completed.
     if _dod_wait_for_active "$MANAGER" 180 >/dev/null && \
        _dod_wait_for_active "$ENG2" 180 >/dev/null; then
         pass "manager + nested engineer both reached status=active"
@@ -475,44 +476,28 @@ test_run() {
     fi
 
     # -----------------------------------------------------------------
-    # Phase 5: report_status with dead parent routes wrapped to weave.
+    # Phase 5 DELETED by QUM-1186 — recorded, not absorbed.
     # -----------------------------------------------------------------
-    # Drive engineer2 (alive, child of dead manager) to report_status.
-    # Real.ReportStatus walks parent(=MANAGER, dead) → weave (live);
-    # WrapForDeadTarget wraps the summary; messages.SendStatusChange
-    # delivers a status_change envelope into weave's maildir. We assert
-    # by grepping weave's pending queue for the wrapper text + sentinel.
-    echo ""
-    echo "=== Phase 5: engineer2.report_status with dead manager → wraps to weave ==="
-    local PROBE_STATUS="QUM-745-STATUS-$$-$(date +%s)"
-    local DRIVE_STATUS="Call mcp__sprawl__send_message with to='${ENG2}', body='Call mcp__sprawl__report_status with state=\"working\", summary=\"${PROBE_STATUS}\". Then stop.', interrupt=false."
-    e2e_send_user_prompt "$SESSION" "$DRIVE_STATUS"
+    # It drove an alive child with a DEAD PARENT to make a self-report, and
+    # asserted that the self-report path's dead-parent route-up wrapped the
+    # summary and delivered it to weave as an ephemeral status-ping envelope.
+    # The tool, the route-up half that lived in it, and that envelope class
+    # are all deleted, so the phase has no subject — every line of it would
+    # have been asserting about code that no longer exists.
+    #
+    # WHAT IS LOST: the dead-parent route-up no longer has a report-shaped
+    # entry point at e2e level. WHAT SURVIVES: send_message is now that
+    # route-up's ONLY entry point, and Phase 4 immediately below exercises it
+    # through a two-dead-hop chain — the harder of the two cases. The matrix
+    # table's death-observability row already records this narrowing.
+    #
+    # The two assertions deleted here are why MIN_ASSERTIONS drops 20 -> 18.
 
-    # Real.ReportStatus dead-parent wrap clause for a single dead hop.
-    # status_change envelopes land in .sprawl/messages/<recipient>/new/, NOT
-    # in the agentloop queue — they're ephemeral state pings (QUM-559).
-    local WRAP_STATUS="This message was sent to ${MANAGER} but ${MANAGER} is dead."
-    if _dod_wait_for_maildir_body "weave" "$PROBE_STATUS" 180 >/dev/null; then
-        pass "report_status sentinel landed in weave maildir (dead-parent route-up fired)"
-    else
-        fail "report_status sentinel did not appear in weave maildir within 180s"
-        echo "  weave maildir tail:" >&2
-        find "$SPRAWL_ROOT/.sprawl/messages/weave" -type f 2>/dev/null \
-            | tail -10 | while read -r f; do echo "--- $f ---" >&2; cat "$f" >&2 2>/dev/null; done
-        capture_pane "$SESSION" | tail -40 >&2
-    fi
-    if _dod_wait_for_maildir_body "weave" "$WRAP_STATUS" 5 >/dev/null; then
-        pass "report_status wrapper enumerated dead parent"
-    else
-        fail "report_status wrapper missing dead-parent enumeration"
-    fi
-
-    # -----------------------------------------------------------------
     # Phase 4: SIGKILL engineer2; sibling sends → multi-hop wrap to weave.
     # -----------------------------------------------------------------
     echo ""
     echo "=== Phase 4 prep: SIGKILL engineer2 (manager already dead) ==="
-    # Re-resolve engineer2's PID — the prior report_status turn may have
+    # Re-resolve engineer2's PID — the prior turn may have
     # restarted/relaunched the runtime; pick the current claude subprocess.
     ENG2_PID=""
     for i in 1 2 3 4 5 6 7 8 9 10; do

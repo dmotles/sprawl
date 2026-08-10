@@ -41,25 +41,38 @@ test_run() {
     local WEAVE_PROBE_A="${WEAVE_PROBE}-aye"
     local WEAVE_PROBE_B="${WEAVE_PROBE}-bee"
     local WEAVE_PROBE_C="${WEAVE_PROBE}-cee"
-    local WEAVE_STATE="$SPRAWL_ROOT/.sprawl/agents/weave.json"
+    local WEAVE_ANSWER_FILE="$SPRAWL_ROOT/auq-weave-answer.txt"
 
     echo "  SPRAWL_BIN=$SPRAWL_BIN"
     echo "  SPRAWL_ROOT=$SPRAWL_ROOT"
     echo "  SESSION=$SESSION"
     echo "  PROBE=$PROBE"
 
-    # Local helper: poll a state file's jq field for a substring. Not in
-    # lib because wake-live does not need it (QUM-616 anti-goal:
-    # minimize cross-row conflict surface in lib/e2e-common.sh).
-    wait_for_state_field_path() {
-        local state_path="$1" field="$2" needle="$3" timeout="$4"
-        local elapsed=0 value
+    # QUM-1186: this row used to answer "did the caller receive the
+    # QuestionResponse?" by polling the caller's state.json for the
+    # self-reported summary field. That field is deleted along with the tool
+    # that wrote it, and the reason it is deleted applies here too: a
+    # self-report is the agent's claim about itself, not evidence that the
+    # JSON crossed back.
+    #
+    # Two replacements, because the two callers differ in what is observable:
+    #
+    #   phase 0, weave-as-caller — weave is the ROOT and has no parent to
+    #     message, and `send_message` to yourself is not a supported shape. So
+    #     weave WRITES the extracted label to a file in the sandbox. A file the
+    #     agent could only create by having the label in hand is a strictly
+    #     stronger observation than a self-report, and unlike a pane assertion
+    #     it cannot be broken by line wrapping.
+    #   phases 1 and 2, manager-as-caller — the manager's parent is weave, so
+    #     it sends the label and the row observes it landing in weave's
+    #     maildir. This claim is STRONGER than the one it replaces: the label
+    #     now has to traverse a real delivery path, not a self-write.
+    wait_for_answer_file() {
+        local path="$1" needle="$2" timeout="$3"
+        local elapsed=0
         while [ "$elapsed" -lt "$timeout" ]; do
-            if [ -f "$state_path" ]; then
-                value=$(jq -r ".${field} // empty" "$state_path" 2>/dev/null || true)
-                if [ -n "$value" ] && [[ "$value" == *"$needle"* ]]; then
-                    return 0
-                fi
+            if [ -f "$path" ] && grep -qF -- "$needle" "$path" 2>/dev/null; then
+                return 0
             fi
             sleep 1
             elapsed=$((elapsed + 1))
@@ -89,7 +102,7 @@ test_run() {
     echo ""
     echo "=== Phase 0: driving weave directly to call ask_user_question (QUM-535) ==="
 
-    local WEAVE_PROMPT="Call mcp__sprawl__ask_user_question with questions=[{question:\"Weave-as-caller probe (${WEAVE_PROBE})\",multi_select:false,options:[{label:\"${WEAVE_PROBE_A}\"},{label:\"${WEAVE_PROBE_B}\"},{label:\"${WEAVE_PROBE_C}\"}]}]. Parse the QuestionResponse JSON, extract answers[0].selected[0], then call mcp__sprawl__report_status with state=working and summary set to that exact extracted label. Do nothing else."
+    local WEAVE_PROMPT="Call mcp__sprawl__ask_user_question with questions=[{question:\"Weave-as-caller probe (${WEAVE_PROBE})\",multi_select:false,options:[{label:\"${WEAVE_PROBE_A}\"},{label:\"${WEAVE_PROBE_B}\"},{label:\"${WEAVE_PROBE_C}\"}]}]. Parse the QuestionResponse JSON, extract answers[0].selected[0], then use the Write tool to create the file ${WEAVE_ANSWER_FILE} whose entire contents are that exact extracted label. Do nothing else."
 
     _stmux send-keys -t "$SESSION" "$WEAVE_PROMPT"
     sleep 0.5
@@ -102,7 +115,7 @@ test_run() {
     else
         fail "modal indicator never appeared within 240s — weave-as-caller was rejected by eligibility gate (QUM-535 regression)"
         echo "  weave state on disk:" >&2
-        cat "$WEAVE_STATE" 2>/dev/null | sed 's/^/    /' >&2 || echo "    <missing>" >&2
+        sed 's/^/    /' "$SPRAWL_ROOT/.sprawl/agents/weave.json" >&2 2>/dev/null || echo "    <missing>" >&2
         echo "  pane tail:" >&2
         capture_pane "$SESSION" | tail -40 >&2
         e2e_print_results
@@ -118,13 +131,13 @@ test_run() {
     _stmux send-keys -t "$SESSION" Enter
 
     echo ""
-    echo "=== Waiting for weave to report the selected label ==="
-    if wait_for_state_field_path "$WEAVE_STATE" "last_report_message" "$WEAVE_PROBE_B" 240; then
-        pass "weave state.last_report_message contains '$WEAVE_PROBE_B' (round-trip via weave succeeded)"
+    echo "=== Waiting for weave to write the selected label to the answer file ==="
+    if wait_for_answer_file "$WEAVE_ANSWER_FILE" "$WEAVE_PROBE_B" 240; then
+        pass "weave wrote '$WEAVE_PROBE_B' to the answer file (round-trip via weave succeeded)"
     else
-        fail "weave state.last_report_message did not surface '$WEAVE_PROBE_B' within 240s"
-        echo "  current last_report_message:" >&2
-        jq -r '.last_report_message // "<unset>"' "$WEAVE_STATE" 2>/dev/null >&2 || true
+        fail "weave did not write '$WEAVE_PROBE_B' to $WEAVE_ANSWER_FILE within 240s"
+        echo "  answer file contents:" >&2
+        cat "$WEAVE_ANSWER_FILE" 2>/dev/null >&2 || echo "    <missing>" >&2
         echo "  pane tail:" >&2
         capture_pane "$SESSION" | tail -40 >&2
     fi
@@ -142,7 +155,7 @@ test_run() {
     echo ""
     echo "=== Phase 1: driving weave to spawn a manager (QUM-527) ==="
 
-    local SPAWN_PROMPT="Call mcp__sprawl__spawn with family='engineering', type='manager', branch='qum-527-auq-test', and prompt set to exactly: 'You are an automated QUM-527 probe. STEP 1: call mcp__sprawl__ask_user_question with questions=[{question:\"Pick a probe (${PROBE})\",multi_select:false,options:[{label:\"${PROBE_ALPHA}\"},{label:\"${PROBE_BETA}\"},{label:\"${PROBE_GAMMA}\"}]}]. STEP 2: parse the QuestionResponse JSON, extract answers[0].selected[0]. STEP 3: call mcp__sprawl__report_status with state=complete summary=<that exact extracted label>. STEP 4: Stop. Do nothing else.'"
+    local SPAWN_PROMPT="Call mcp__sprawl__spawn with family='engineering', type='manager', branch='qum-527-auq-test', and prompt set to exactly: 'You are an automated QUM-527 probe. STEP 1: call mcp__sprawl__ask_user_question with questions=[{question:\"Pick a probe (${PROBE})\",multi_select:false,options:[{label:\"${PROBE_ALPHA}\"},{label:\"${PROBE_BETA}\"},{label:\"${PROBE_GAMMA}\"}]}]. STEP 2: parse the QuestionResponse JSON, extract answers[0].selected[0]. STEP 3: call mcp__sprawl__send_message with to=\"weave\" and body=<that exact extracted label>. STEP 4: Stop. Do nothing else.'"
 
     _stmux send-keys -t "$SESSION" "$SPAWN_PROMPT"
     sleep 0.5
@@ -203,13 +216,13 @@ test_run() {
     _stmux send-keys -t "$SESSION" Enter
 
     echo ""
-    echo "=== Waiting for manager to report the selected label ==="
-    if wait_for_state_field_path "$MANAGER_STATE" "last_report_message" "$PROBE_BETA" 240; then
-        pass "manager state.last_report_message contains '$PROBE_BETA' (round-trip succeeded)"
+    echo "=== Waiting for the manager to deliver the selected label to weave ==="
+    if e2e_wait_maildir_substring weave "$PROBE_BETA" 240; then
+        pass "manager delivered '$PROBE_BETA' to weave's maildir (round-trip succeeded)"
     else
-        fail "manager state.last_report_message did not surface '$PROBE_BETA' within 240s"
-        echo "  current last_report_message:" >&2
-        jq -r '.last_report_message // "<unset>"' "$MANAGER_STATE" 2>/dev/null >&2 || true
+        fail "'$PROBE_BETA' did not reach weave's maildir within 240s"
+        echo "  weave maildir:" >&2
+        find "$SPRAWL_ROOT/.sprawl/messages/weave" -type f 2>/dev/null | tail -10 >&2 || echo "    <missing>" >&2
         echo "  pane tail:" >&2
         capture_pane "$SESSION" | tail -40 >&2
     fi
@@ -236,7 +249,7 @@ test_run() {
     local PROBE2_BETA="${PROBE2}-beta"
     local PROBE2_GAMMA="${PROBE2}-gamma"
 
-    local SPAWN_PROMPT2="Call mcp__sprawl__spawn with family='engineering', type='manager', branch='qum-611-auq-cancel-test', and prompt set to exactly: 'You are an automated QUM-611 probe. STEP 1: call mcp__sprawl__report_status with state=working summary=\"${PROBE2_PRE}\". STEP 2: call mcp__sprawl__ask_user_question with questions=[{question:\"Esc-cancel probe (${PROBE2})\",multi_select:false,options:[{label:\"${PROBE2_ALPHA}\"},{label:\"${PROBE2_BETA}\"},{label:\"${PROBE2_GAMMA}\"}]}]. STEP 3: regardless of the response value, call mcp__sprawl__report_status with state=complete summary=\"${PROBE2_POST}\". STEP 4: Stop. Do nothing else.'"
+    local SPAWN_PROMPT2="Call mcp__sprawl__spawn with family='engineering', type='manager', branch='qum-611-auq-cancel-test', and prompt set to exactly: 'You are an automated QUM-611 probe. STEP 1: call mcp__sprawl__send_message with to=\"weave\" and body=\"${PROBE2_PRE}\". STEP 2: call mcp__sprawl__ask_user_question with questions=[{question:\"Esc-cancel probe (${PROBE2})\",multi_select:false,options:[{label:\"${PROBE2_ALPHA}\"},{label:\"${PROBE2_BETA}\"},{label:\"${PROBE2_GAMMA}\"}]}]. STEP 3: regardless of the response value, call mcp__sprawl__send_message with to=\"weave\" and body=\"${PROBE2_POST}\". STEP 4: Stop. Do nothing else.'"
 
     _stmux send-keys -t "$SESSION" "$SPAWN_PROMPT2"
     sleep 0.5
@@ -275,11 +288,11 @@ test_run() {
     fi
 
     echo ""
-    echo "=== Waiting for phase 2 manager's pre-question baseline report ==="
-    if wait_for_state_field_path "$MANAGER2_STATE" "last_report_message" "$PROBE2_PRE" 120; then
+    echo "=== Waiting for phase 2 manager's pre-question baseline sentinel ==="
+    if e2e_wait_maildir_substring weave "$PROBE2_PRE" 120; then
         pass "phase 2 manager pre-question baseline observed"
     else
-        fail "phase 2 manager never reported pre-question baseline within 120s"
+        fail "phase 2 manager's pre-question baseline sentinel never reached weave within 120s"
         e2e_print_results
         return 1
     fi
@@ -324,12 +337,12 @@ test_run() {
 
     echo ""
     echo "=== Asserting manager's MCP call returned and next turn fired ==="
-    if wait_for_state_field_path "$MANAGER2_STATE" "last_report_message" "$PROBE2_POST" 30; then
-        pass "manager's last_report_message advanced to '$PROBE2_POST' within 30s (un-wedge confirmed)"
+    if e2e_wait_maildir_substring weave "$PROBE2_POST" 30; then
+        pass "manager delivered the post-cancel sentinel '$PROBE2_POST' within 30s (un-wedge confirmed)"
     else
-        fail "manager's last_report_message did NOT advance to post-sentinel within 30s — wedge persists (QUM-611 regression)"
-        echo "  current last_report_message:" >&2
-        jq -r '.last_report_message // "<unset>"' "$MANAGER2_STATE" 2>/dev/null >&2 || true
+        fail "the post-cancel sentinel did NOT reach weave within 30s — wedge persists (QUM-611 regression)"
+        echo "  weave maildir:" >&2
+        find "$SPRAWL_ROOT/.sprawl/messages/weave" -type f 2>/dev/null | tail -10 >&2 || echo "    <missing>" >&2
         echo "  pane tail:" >&2
         capture_pane "$SESSION" | tail -40 >&2
     fi

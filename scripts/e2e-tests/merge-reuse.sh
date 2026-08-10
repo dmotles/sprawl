@@ -121,11 +121,11 @@ EOF
     fi
 
     echo ""
-    echo "=== Step 4: simulate delegate reuse — engX checks out B2 with new commit ==="
+    echo "=== Step 4: simulate branch reuse — engX checks out B2 with new commit ==="
     git -C "$AGENT_WT" checkout -q -b B2
     echo "bar content" > "$AGENT_WT/bar.txt"
     git -C "$AGENT_WT" add bar.txt
-    git -C "$AGENT_WT" commit -q -m "engX adds bar on B2 (delegate reuse)"
+    git -C "$AGENT_WT" commit -q -m "engX adds bar on B2 (branch reuse)"
 
     local STATE_BRANCH
     STATE_BRANCH=$(grep '"branch"' "$SPRAWL_ROOT/.sprawl/agents/${AGENT_NAME}.json" | head -1 | sed 's/.*"branch": *"\([^"]*\)".*/\1/')
@@ -135,12 +135,12 @@ EOF
         fail "test setup broken — state branch is $STATE_BRANCH, expected B1"
         return 1
     fi
-    echo "  state.branch is still '$STATE_BRANCH' (stale, simulating delegate)"
+    echo "  state.branch is still '$STATE_BRANCH' (stale — the worktree moved without it)"
     echo "  agent worktree HEAD is now on:"
     git -C "$AGENT_WT" rev-parse --abbrev-ref HEAD | sed 's/^/    /'
 
     echo ""
-    echo "=== Step 5: sprawl merge engX (after delegate-style branch swap) ==="
+    echo "=== Step 5: sprawl merge engX (after the worktree branch swap) ==="
     # The rc is captured OUTSIDE the command substitution. It used to be
     # `MERGE_OUTPUT=$(... || { echo ...; return 1; })`, where the `return 1`
     # executes in the substitution's own subshell and merely ends it — so
@@ -149,7 +149,7 @@ EOF
     MERGE_OUTPUT=$("$SPRAWL_BIN" merge --no-validate "$AGENT_NAME" 2>&1) || MERGE2_RC=$?
     printf '%s\n' "$MERGE_OUTPUT" | sed 's/^/    /'
     if [ "$MERGE2_RC" -eq 0 ]; then
-        pass "second merge (after the delegate-style branch swap) returned zero"
+        pass "second merge (after the worktree branch swap) returned zero"
     else
         fail "second merge returned non-zero (rc=$MERGE2_RC)"
         return 1
@@ -160,9 +160,9 @@ EOF
     echo "  HEAD2=$HEAD2"
 
     if [ "$HEAD2" != "$HEAD1" ]; then
-        pass "integration HEAD advanced after the delegate-style branch swap (QUM-511)"
+        pass "integration HEAD advanced after the worktree branch swap (QUM-511)"
     else
-        fail "QUM-511 reproduced: integration HEAD did NOT advance after the delegate-style branch swap — merge no-op'd on the stale agentState.Branch=B1 instead of resolving the worktree's current branch (B2)"
+        fail "QUM-511 reproduced: integration HEAD did NOT advance after the worktree branch swap — merge no-op'd on the stale agentState.Branch=B1 instead of resolving the worktree's current branch (B2)"
         return 1
     fi
 

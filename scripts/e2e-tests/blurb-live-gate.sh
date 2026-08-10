@@ -94,7 +94,13 @@ test_run() {
     echo "=== Spawn researcher with a substantive task ==="
     local BRANCH="qum899-blurb-${SUFFIX}"
     # A concrete task so the generated blurb has real subject matter to capture.
-    local PROMPT_BODY="You are researching how Go's context.Context cancellation propagates through goroutines for issue QUM-899. First call mcp__sprawl__report_status with state=working and summary=\"investigating context cancellation\". Then use ToolSearch/available tools to think briefly about context.WithCancel and context.WithTimeout propagation, and write 2-3 sentences of findings as your report. Then call mcp__sprawl__report_status with state=complete and summary=\"context cancellation findings written\". Do not write files."
+    # QUM-1186: the two self-report calls that used to bracket this task are
+    # gone with the tool that made them. They were never part of this row's claim — it asserts
+    # on the generated `.blurb`, which is produced from the agent's turn
+    # content, not from anything it said about its own state. Nothing replaces
+    # them: adding a send_message here would add a tool call the blurb would
+    # then have to describe, changing the subject matter this row measures.
+    local PROMPT_BODY="You are researching how Go's context.Context cancellation propagates through goroutines for issue QUM-899. Use ToolSearch/available tools to think briefly about context.WithCancel and context.WithTimeout propagation, and write 2-3 sentences of findings as your report. Do not write files."
     local SPAWN_PROMPT="Call mcp__sprawl__spawn with family='product', type='researcher', branch='$BRANCH', and prompt set to exactly: '$PROMPT_BODY'. Then reply 'SPAWN_${SUFFIX} ok' and nothing else."
     _stmux send-keys -t "$SESSION" "$SPAWN_PROMPT"
     sleep 0.5
