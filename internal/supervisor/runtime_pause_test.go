@@ -56,13 +56,14 @@ func TestWatchHandleExit_DiedWhenUnexpectedExit(t *testing.T) {
 		}
 	}
 
-	cur, err := state.LoadAgent(tmp, "alice")
-	if err != nil {
-		t.Fatalf("LoadAgent after Died: %v", err)
-	}
-	if cur.Status != state.StatusDied {
-		t.Errorf("disk Status = %q, want %q (durable died marker)", cur.Status, state.StatusDied)
-	}
+	// Bounded poll, not an immediate read: watchHandleExit flips the snapshot
+	// under r.mu and persists OUTSIDE it, so the snapshot leads the disk. The
+	// poll above waits on the SNAPSHOT, so a single read here races that gap —
+	// this is the third instance of the shape in QUM-1198, and this one
+	// reproduces without load. See assertRestingStatus in
+	// runtime_stop_reason_test.go for the measurement and the positive control
+	// that proves the poll did not disarm the assertion.
+	waitDiskStatus(t, tmp, "alice", state.StatusDied)
 }
 
 // TestWatchHandleExit_StoppedWhenExpectingExit verifies that calling Stop

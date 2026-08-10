@@ -81,17 +81,66 @@ func newStopReasonRuntime(t *testing.T, name string) (*AgentRuntime, *stopReason
 // assertRestingStatus checks the in-memory snapshot AND the durable disk
 // record. Both matter: the snapshot drives the live TUI, and disk is what a
 // `sprawl enter` restart reads to decide whether to auto-resume the agent.
+// assertRestingStatus checks the snapshot immediately and the DISK with a
+// bounded poll. QUM-1198.
+//
+// The single immediate disk read this replaces failed under `make validate`'s
+// full-tree parallel -race — twice, in two sibling tests, both reading
+// "active": the durable write had not landed when the test looked. It is a
+// real window, not a missing write: watchHandleExit and stopWithFunc flip the
+// in-memory snapshot under r.mu and then persist OUTSIDE the lock, so the
+// snapshot leads the disk by design.
+//
+// Polling is justified by MEASUREMENT, not by making the red go away — that
+// distinction matters, because "poll longer" is green under both the
+// test-is-early hypothesis and the production-does-not-persist one. Measured
+// on this host, under 8 concurrent -race packages: 40/40 iterations converged,
+// worst case 291µs; a 60-iteration replica of the exact failing shape produced
+// 0 stale reads. So production persists, promptly and reliably, and the
+// assertion's subject is the VALUE written rather than the latency.
+//
+// The deadline stays SHORT for that reason. It is three orders of magnitude
+// above the measured worst case, so a genuine "never persists" regression
+// still fails this assertion rather than waiting it out. Positive control,
+// recorded: deleting the state.SaveAgent call in watchHandleExit's durable
+// block makes these tests fail with "on-disk Status never reached ... within
+// 2s" — the poll did not disarm the gate.
+//
+// NOT fixed here, and filed as QUM-1199: that persist is best-effort. A
+// LoadAgent/SaveAgent error is a WARN with no retry, so a transient I/O
+// failure leaves the resting status permanently stale on disk and
+// RecoverAgents misclassifies the agent at the next boot. This assertion
+// cannot catch that — it polls until the write lands, and a write that never
+// lands because it errored looks the same as one that never started.
 func assertRestingStatus(t *testing.T, rt *AgentRuntime, root, name, want string) {
 	t.Helper()
 	if got := rt.Snapshot().Status; got != want {
 		t.Errorf("snapshot.Status = %q, want %q", got, want)
 	}
-	loaded, err := state.LoadAgent(root, name)
-	if err != nil {
-		t.Fatalf("LoadAgent(%q): %v", name, err)
-	}
-	if loaded.Status != want {
-		t.Errorf("on-disk Status = %q, want %q", loaded.Status, want)
+	waitDiskStatus(t, root, name, want)
+}
+
+// waitDiskStatus polls the agent's on-disk Status until it equals want, with a
+// short bounded deadline. Shared by every assertion that checks the durable
+// resting status after waiting on the in-memory snapshot. QUM-1199.
+func waitDiskStatus(t *testing.T, root, name, want string) {
+	t.Helper()
+	deadline := time.Now().Add(2 * time.Second)
+	var last string
+	for {
+		loaded, err := state.LoadAgent(root, name)
+		if err != nil {
+			t.Fatalf("LoadAgent(%q): %v", name, err)
+		}
+		last = loaded.Status
+		if last == want {
+			return
+		}
+		if time.Now().After(deadline) {
+			t.Errorf("on-disk Status never reached %q within 2s (last = %q); the snapshot flipped but the durable write did not land", want, last)
+			return
+		}
+		time.Sleep(2 * time.Millisecond)
 	}
 }
 
