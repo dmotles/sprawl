@@ -355,9 +355,19 @@ func (r *Real) maybeReclaimIdle(sweepCtx context.Context, rt *AgentRuntime) {
 		in := r.idleInputsFor(rt)
 		a := assessIdle(in)
 		if !a.Reap {
-			// Namespaced "abandon:" so this — the rarest and most interesting
-			// refusal in the file — cannot be swallowed by a routine phase-A
-			// refusal on the same term, and vice versa.
+			// Namespaced "abandon:" so a later phase-A refusal on the same term
+			// is not demoted because an abandonment recorded that term first.
+			// Only that direction is live: forgetRefusal already ran on this
+			// pass (the reap branch above), so no phase-A key is outstanding
+			// here — the reverse direction cannot occur.
+			//
+			// BOUND, stated because it is not deduped: since forgetRefusal runs
+			// on every reapable pass, EVERY abandoned teardown logs at Info. An
+			// agent that is idle at phase A and starts a turn during the wait
+			// therefore costs one Info line per sweep for as long as that holds.
+			// Each abandonment is a real event, so that is chatter rather than a
+			// flood — but it is not covered by the one-line-per-agent bound
+			// above, and a reader must not assume it is.
 			logAssessment(r.refusalLevel(name, "abandon:"+a.Blocker),
 				"idle reclaim: teardown abandoned, agent became active", name, a, in)
 			gate.Unlock()
@@ -455,9 +465,18 @@ func logAssessment(level slog.Level, msg, name string, a idleAssessment, in idle
 // cannot complete promptly is abandoned rather than pinning the sweep.
 const idleReclaimStopBudget = 30 * time.Second
 
-// reclaimEntry is the per-agent reaper state. Two locks, deliberately not one:
-// gate is held ACROSS a whole teardown (up to idleReclaimStopBudget), and a
-// decision about a log level must never queue behind that.
+// reclaimEntry is the per-agent reaper state. Two locks, deliberately not one,
+// and the load-bearing reason is not latency: at the phase-B abandon site the
+// gate is ALREADY HELD BY THIS GOROUTINE when the refusal level is computed, so
+// a design that reused gate for the dedup state would self-deadlock on a
+// non-reentrant sync.Mutex. (It is also true that gate is held across a whole
+// teardown, up to idleReclaimStopBudget, and a log-level decision should not
+// queue behind that — but that is the weaker reason.) Do not collapse them.
+//
+// Full lock order, including the map lock a reader would worry about:
+// gate → reclaimMu → refusalMu. reclaimMu is taken and RELEASED inside
+// reclaimEntryFor, and no path takes a gate while holding reclaimMu, so the
+// inverse edge does not exist.
 type reclaimEntry struct {
 	// gate serialises a reap against a send. Per-agent, not global:
 	// StopAfterTurn can block for the full runaway budget, so one global gate
@@ -506,8 +525,16 @@ func (r *Real) reclaimGate(name string) *sync.Mutex { return &r.reclaimEntryFor(
 // genuinely alternates costs one Info per sweep; that is an agent changing
 // state, and each line is real news.
 //
-// It returns the level rather than logging, so no handler's I/O runs under a
-// supervisor mutex.
+// It returns the level rather than logging, so refusalMu is never held across a
+// log call. Note the narrower claim: the phase-B site logs with the reclaim gate
+// held (as the reap line already did), so this is not a promise that no
+// supervisor mutex is held during handler I/O.
+//
+// refusalMu is a GUARD, not a measured race: idleReaper.runOnce sweeps serially
+// from one goroutine today, so nothing in production drives two refusals for one
+// agent concurrently. The lock is what keeps that from becoming a race if a
+// future caller parallelises the sweep, and TestRefusalLevel_ConcurrentForOneAgent
+// is what makes its absence detectable under -race rather than merely intended.
 func (r *Real) refusalLevel(name, key string) slog.Level {
 	e := r.reclaimEntryFor(name)
 	e.refusalMu.Lock()

@@ -34,8 +34,10 @@ package supervisor
 
 import (
 	"context"
+	"fmt"
 	"log/slog"
 	"strings"
+	"sync"
 	"testing"
 	"time"
 
@@ -235,8 +237,8 @@ func TestReclaim_RefusalDedupIsPerAgent(t *testing.T) {
 
 // TestReclaim_ReapForgetsTheRefusalMemory pins the CALL SITE of forgetRefusal.
 // Without it, an agent that refused, then became reapable, and later refuses
-// again for the same reason is demoted to Debug forever — invisible again — and
-// the per-agent map never sheds an entry. Nothing else in this file constrains
+// again for the same reason is demoted to Debug forever — invisible again.
+// Nothing else in this file constrains
 // when production forgets, so this asserts through the helper deliberately: the
 // key string is the production one, and an implementation that never calls
 // forgetRefusal returns Debug here.
@@ -262,10 +264,12 @@ func TestReclaim_ReapForgetsTheRefusalMemory(t *testing.T) {
 	}
 }
 
-// TestReclaim_DisabledRefusalIsLoggedAtInfoOnce covers the arm that matters
-// most on a DEFAULT install: idle_reclaim.after ships at 0, so "disabled" is
-// the only refusal record most binaries will ever produce — and at Debug it
-// produces nothing. Same shape as the steady-state bound: one Info, the rest
+// TestReclaim_DisabledRefusalIsLoggedAtInfoOnce pins the third refusal site.
+// Read its direction narrowly: this arm is NOT what a default install exercises.
+// real.go only constructs the reaper when the knob is > 0, so on a default
+// install there is no sweep at all and the operator's record is NewReal's own
+// "idle reclaim: DISABLED (default)" line. This site is reached by a direct call
+// or a knob change. Same shape as the steady-state bound: one Info, the rest
 // demoted.
 func TestReclaim_DisabledRefusalIsLoggedAtInfoOnce(t *testing.T) {
 	r, _, rt, handle := newReclaimFixture(t)
@@ -332,6 +336,22 @@ func TestReclaim_AbandonedTeardownIsLoggedAtInfo(t *testing.T) {
 	if !strings.Contains(got[0], "blocker=pending_queue") {
 		t.Errorf("abandon record does not name the term that saved the agent; got: %s", got[0])
 	}
+
+	// The CALL-SITE half of the namespacing, which the white-box unit cannot
+	// reach because it passes keys by hand. The mail is still queued, so the next
+	// sweep refuses at phase A on the same term the abandonment named. Drop the
+	// "abandon:" prefix in production and this record collides with the
+	// abandonment's key and is demoted to Debug — i.e. an operator sees the
+	// reaper back off and then never sees why it keeps refusing.
+	r.maybeReclaimIdle(context.Background(), rt)
+	after := refusalRecordsAt(t, h, slog.LevelInfo, refusalMsg)
+	if len(after) != 1 {
+		t.Fatalf("INFO-level %q records = %d after an abandonment on the SAME term, want 1; the abandon and assess sites must not share a dedup key. all records:\n%s",
+			refusalMsg, len(after), h.String())
+	}
+	if !strings.Contains(after[0], "blocker=pending_queue") {
+		t.Errorf("post-abandon refusal record blocker, want pending_queue: %s", after[0])
+	}
 }
 
 // TestRefusalLevel_IsChangeKeyedAndPerAgent is the white-box unit on the helper
@@ -354,6 +374,18 @@ func TestRefusalLevel_IsChangeKeyedAndPerAgent(t *testing.T) {
 		t.Errorf("busy→unobservable on the same term logged at %v, want %v; D1a: losing the observation is news, not a repeat",
 			got, slog.LevelInfo)
 	}
+	// The live direction of the call-site namespacing: an abandonment recording a
+	// term must not demote a later phase-A refusal on that same term. The reverse
+	// direction cannot happen (forgetRefusal runs before phase B), so it is not
+	// asserted — an assertion for an unreachable direction is not a check.
+	r.forgetRefusal("alice")
+	if got := r.refusalLevel("alice", "abandon:in_turn"); got != slog.LevelInfo {
+		t.Errorf("first abandon refusal for alice logged at %v, want %v", got, slog.LevelInfo)
+	}
+	if got := r.refusalLevel("alice", "assess:in_turn"); got != slog.LevelInfo {
+		t.Errorf("phase-A refusal after an abandon on the SAME term logged at %v, want %v; the call-site namespace is what keeps one from swallowing the other",
+			got, slog.LevelInfo)
+	}
 	if got := r.refusalLevel("bob", "assess:in_turn"); got != slog.LevelInfo {
 		t.Errorf("FIRST refusal for bob logged at %v, want %v; the dedup state must be per-agent", got, slog.LevelInfo)
 	}
@@ -361,4 +393,25 @@ func TestRefusalLevel_IsChangeKeyedAndPerAgent(t *testing.T) {
 	if got := r.refusalLevel("alice", "assess:in_turn_unobservable"); got != slog.LevelInfo {
 		t.Errorf("refusal after forgetRefusal logged at %v, want %v; an agent that stopped refusing and starts again is news", got, slog.LevelInfo)
 	}
+}
+
+// TestRefusalLevel_ConcurrentForOneAgent makes refusalMu's absence DETECTABLE.
+// Production sweeps serially, so this is not a reproduction of a live race — it
+// is what turns "the lock is intended" into "the lock is checked": with
+// refusalMu removed, -race reports a write/write on lastRefusal here, and
+// without this arm that mutation leaves the whole suite green.
+func TestRefusalLevel_ConcurrentForOneAgent(t *testing.T) {
+	r, _ := newFakeReal(t)
+
+	var wg sync.WaitGroup
+	for g := 0; g < 2; g++ {
+		wg.Add(1)
+		go func(g int) {
+			defer wg.Done()
+			for i := 0; i < 200; i++ {
+				_ = r.refusalLevel("alice", fmt.Sprintf("assess:term-%d-%d", g, i))
+			}
+		}(g)
+	}
+	wg.Wait()
 }
