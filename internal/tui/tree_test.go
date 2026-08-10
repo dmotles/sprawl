@@ -661,11 +661,11 @@ func TestTheme_ReportDot_PausedAndDied(t *testing.T) {
 	}
 }
 
-// TestDeriveIconState_Mapping locks the precedence rules for the new icon
+// TestDeriveIconState_Mapping locks the precedence rules for the icon
 // derivation: process-alive=false → idle; else in_autonomous_turn → working;
-// else recent activity (within RecentActivityWindow) → working; else fall
-// back to last_report_state for blocked/complete/failure; else idle.
-// QUM-1186: the four self-report rows (blocked / complete / failure, plus the
+// else recent activity (within RecentActivityWindow) → working; else idle.
+// QUM-1186: the last_report_state fallback that used to sit before that final
+// idle is deleted, and the four self-report rows (blocked / complete / failure, plus the
 // nil-ProcessAlive-routes-through-report-state fallback) were removed from
 // this table. LastReportState is deleted; there is no longer any input that
 // could produce "blocked", "complete" or "failure" from this function, so rows
@@ -683,7 +683,7 @@ func TestDeriveIconState_Mapping(t *testing.T) {
 		want string
 	}{
 		{
-			name: "working: in_autonomous_turn beats stale blocked report",
+			name: "working: in_autonomous_turn wins with no activity timestamp",
 			node: TreeNode{
 				ProcessAlive:   boolPtr(true),
 				InTurn:         true,
@@ -691,21 +691,18 @@ func TestDeriveIconState_Mapping(t *testing.T) {
 			},
 			want: "working",
 		},
+		// QUM-1186: these were "recent activity beats stale blocked report
+		// (QUM-665 repro)" and "...beats stale working report". No report can
+		// be expressed any more, and the two fixtures differed only by 500ms of
+		// activity age — so one name claimed a contest and the other was its
+		// duplicate. Kept as a single row for the surviving claim: activity
+		// alone, with no in-turn signal, reads as working.
 		{
-			name: "working: recent activity beats stale blocked report (QUM-665 repro)",
+			name: "working: recent activity alone, no in_autonomous_turn",
 			node: TreeNode{
 				ProcessAlive:   boolPtr(true),
 				InTurn:         false,
 				LastActivityAt: now.Add(-1 * time.Second),
-			},
-			want: "working",
-		},
-		{
-			name: "working: recent activity beats stale working report",
-			node: TreeNode{
-				ProcessAlive:   boolPtr(true),
-				InTurn:         false,
-				LastActivityAt: now.Add(-500 * time.Millisecond),
 			},
 			want: "working",
 		},

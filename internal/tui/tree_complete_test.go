@@ -24,10 +24,13 @@ func TestDeriveIconState_DormantWhenStatusComplete(t *testing.T) {
 	}
 }
 
-// TestDeriveIconState_DormantBeatsProcessAliveAndReport: dormant projection
-// wins even when ProcessAlive=false and LastReportState is set, because the
-// disk Status is the durable terminal-but-revivable signal.
-func TestDeriveIconState_DormantBeatsProcessAliveAndReport(t *testing.T) {
+// TestDeriveIconState_DormantBeatsProcessAlive: dormant projection wins even
+// when ProcessAlive=false, because the disk Status is the durable
+// terminal-but-revivable signal.
+//
+// QUM-1186 dropped "...AndReport" from the name: TreeNode has no report field
+// any more, so the second half of the contest could not be staged.
+func TestDeriveIconState_DormantBeatsProcessAlive(t *testing.T) {
 	now := time.Date(2026, 6, 11, 12, 0, 0, 0, time.UTC)
 	alive := false
 	n := TreeNode{
@@ -35,7 +38,7 @@ func TestDeriveIconState_DormantBeatsProcessAliveAndReport(t *testing.T) {
 		ProcessAlive: &alive,
 	}
 	if got := DeriveIconState(n, now); got != "dormant" {
-		t.Errorf("DeriveIconState(Status=complete, ProcessAlive=false, report=complete) = %q, want %q",
+		t.Errorf("DeriveIconState(Status=complete, ProcessAlive=false) = %q, want %q",
 			got, "dormant")
 	}
 }

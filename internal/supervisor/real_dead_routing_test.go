@@ -5,9 +5,6 @@
 //   - send_message to a Died target routes to the first live ancestor, with
 //     the body wrapped via inboxprompt.WrapForDeadTarget.
 //   - multi-hop dead chain enumerates every dead name in the wrapper.
-//   - report_status from a child to a Died parent likewise routes up to a
-//     live grandparent — the SendStatusChange envelope's `summary` field is
-//     wrapped.
 //   - now=true sends against a dead descendant continue to enforce the
 //     §8.5 ancestor gate against the ORIGINAL `to` first. When the gate is
 //     satisfied, route-up still happens with the wrapped body landing in the

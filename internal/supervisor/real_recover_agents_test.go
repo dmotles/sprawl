@@ -665,12 +665,18 @@ func TestRecoverAgentsSkipsPaused(t *testing.T) {
 	}
 }
 
-// TestRecoverAgentsPausedSurvivesDirtyShutdown (QUM-723) — a paused agent
-// paused mid-turn without a clean
-// outcome flip) must STILL be skipped and remain Status=paused after
-// RecoverAgents. The pause persistence axis is independent of the
-// last-report-state crash-survivor logic.
-func TestRecoverAgentsPausedSurvivesDirtyShutdown(t *testing.T) {
+// TestRecoverAgentsPausedWithFullFixtureIsStillSkipped (QUM-723) — a paused
+// agent carrying a real worktree, branch and SessionID must still be skipped
+// and remain Status=paused after RecoverAgents.
+//
+// QUM-1186 renamed this from ...PausedSurvivesDirtyShutdown. The input that
+// made it a dirty shutdown was `LastReportState: "working"`, deleted with the
+// outcome axis; the old name and docstring survived the fixture and claimed a
+// scenario the body could no longer set up. With that input gone this differs
+// from TestRecoverAgentsSkipsPaused above only in fixture completeness, which
+// is thin but not nothing — decide whether to keep both when the settle pass
+// is next touched, rather than deleting coverage under a rename.
+func TestRecoverAgentsPausedWithFullFixtureIsStillSkipped(t *testing.T) {
 	r, tmpDir := newFakeReal(t)
 	starter := &recoverTestStarter{session: recoverTestSession("sess-x")}
 	installStarter(r, starter)
@@ -695,7 +701,7 @@ func TestRecoverAgentsPausedSurvivesDirtyShutdown(t *testing.T) {
 		t.Fatalf("LoadAgent: %v", err)
 	}
 	if loaded.Status != state.StatusPaused {
-		t.Errorf("post-recover Status = %q, want %q (paused must NOT be flipped by the settle pass or by resume)", loaded.Status, state.StatusPaused)
+		t.Errorf("post-recover Status = %q, want %q (paused must NOT be flipped by resume)", loaded.Status, state.StatusPaused)
 	}
 }
 

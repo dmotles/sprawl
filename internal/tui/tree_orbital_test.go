@@ -256,11 +256,17 @@ func TestTreeNodeAgentState_Classifier(t *testing.T) {
 		{"disk status complete → Dormant", TreeNode{Name: "a", Type: "engineer", Status: state.StatusComplete}, StateDormant},
 		{"disk status idle → Reclaimed", TreeNode{Name: "a", Type: "engineer", Status: state.StatusIdle}, StateReclaimed},
 		{"fault on idle (empty state) → Failure", TreeNode{Name: "a", Type: "engineer", FaultClass: "HangTimeout"}, StateFailure},
-		{"fault overrides working", TreeNode{Name: "a", Type: "engineer", FaultClass: "HangTimeout"}, StateFailure},
-		{"fault overrides complete", TreeNode{Name: "a", Type: "engineer", FaultClass: "HangTimeout"}, StateFailure},
+		// QUM-1186: these two were byte-identical to the row above and staged
+		// neither contest their names claimed. The competing signal is now
+		// actually present in each fixture.
+		{"fault overrides working", TreeNode{Name: "a", Type: "engineer", FaultClass: "HangTimeout", InTurn: true}, StateFailure},
+		{"fault overrides complete", TreeNode{Name: "a", Type: "engineer", FaultClass: "HangTimeout", Status: state.StatusComplete}, StateFailure},
 		{"in_autonomous_turn → Working", TreeNode{Name: "a", Type: "engineer", InTurn: true}, StateWorking},
 		{"recent activity → Working", TreeNode{Name: "a", Type: "engineer", LastActivityAt: now.Add(-1 * time.Second)}, StateWorking},
-		{"recent activity beats stale blocked report (QUM-665 repro)", TreeNode{Name: "a", Type: "engineer", LastActivityAt: now.Add(-1 * time.Second)}, StateWorking},
+		// QUM-1186: the QUM-665 "recent activity beats a stale blocked report"
+		// row was deleted here. It was byte-identical to the row above, and its
+		// contest cannot be expressed at all now that TreeNode carries no
+		// report field — there is no stale report left to beat.
 		{"process_alive=false stays Idle", TreeNode{Name: "a", Type: "engineer", ProcessAlive: ptr(false), InTurn: true}, StateIdle},
 	}
 	for _, tc := range cases {
