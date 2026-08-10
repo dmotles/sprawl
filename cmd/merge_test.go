@@ -255,17 +255,19 @@ func TestMerge_StatusOther_Rejected(t *testing.T) {
 	}
 }
 
-// TestMerge_CompleteViaLastReportState pins the QUM-625 (slice M4) merge
-// precondition-4 change. Once report.go stops writing Status=done/problem (the
-// status/report axis split), a finished agent is signaled by
-// LastReportState=="complete", not Status=="done". The merge precondition
-// therefore becomes: allow if Status=="active" OR LastReportState=="complete".
-// A suspended agent (Status="suspended") that has reported completion
-// (LastReportState="complete") must PASS precondition 4 and merge.
+// TestMerge_SuspendedAgentMerges pins the capability that a suspended agent
+// with a ready branch is mergeable.
 //
-// RED today: precondition 4 only accepts Status active/done, so a
-// suspended+complete agent is rejected with "cannot be merged".
-func TestMerge_CompleteViaLastReportState(t *testing.T) {
+// QUM-1186 (D4): this test was called TestMerge_CompleteViaLastReportState and
+// claimed to prove that LastReportState=="complete" satisfied precondition 4.
+// Precondition 4 is now a Status allow-set, so the case passes because
+// Status=="suspended" is in that set — a DIFFERENT reason than the old name
+// asserted. Left unrenamed it would have been a vacuous green: still passing,
+// no longer testing what it said.
+//
+// The underlying capability is the one worth keeping, and it is the specific
+// thing the allow-set was widened to preserve.
+func TestMerge_SuspendedAgentMerges(t *testing.T) {
 	deps, tmpDir := newTestMergeDeps(t)
 
 	createTestAgent(t, tmpDir, &state.AgentState{
@@ -276,8 +278,6 @@ func TestMerge_CompleteViaLastReportState(t *testing.T) {
 		Name: "target-agent", Status: "suspended", Branch: "feature-branch",
 		Worktree: "/worktree/target", Parent: "parent-agent",
 		Type: "engineer", Family: "engineering",
-		LastReportState:   "complete",
-		LastReportMessage: "Completed the task",
 	})
 
 	var mergeCalled bool
@@ -288,10 +288,10 @@ func TestMerge_CompleteViaLastReportState(t *testing.T) {
 
 	err := runMerge(context.Background(), deps, "target-agent", "", true, false)
 	if err != nil {
-		t.Fatalf("merge of suspended+complete agent: err = %v, want nil (LastReportState=complete must satisfy precondition 4)", err)
+		t.Fatalf("merge of suspended agent: err = %v, want nil (suspended is in the precondition-4 allow-set)", err)
 	}
 	if !mergeCalled {
-		t.Error("expected doMerge to be called for a suspended+complete agent")
+		t.Error("expected doMerge to be called for a suspended agent")
 	}
 }
 

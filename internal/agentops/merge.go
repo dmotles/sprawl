@@ -117,12 +117,19 @@ func Merge(ctx context.Context, deps *MergeDeps, agentName, messageOverride stri
 		return nil, fmt.Errorf("cannot merge %q: you are not its parent (parent is %q)", agentName, agentState.Parent)
 	}
 
-	// Precondition 4: Agent is mergeable — alive (Status=="active") OR has
-	// reported completion (LastReportState=="complete"). QUM-625 Q1: the old
-	// allow-set {active, done} is reproduced under the new axes — "done" is no
-	// longer a Status value; completion lives on the outcome axis.
-	if !salvagingTerminalAgent && agentState.Status != state.StatusActive && agentState.LastReportState != ReportStateComplete {
-		return nil, fmt.Errorf("agent %q cannot be merged (status: %q). Agent must be active or have reported complete", agentName, agentState.Status)
+	// Precondition 4: Agent's Status is in the mergeable allow-set.
+	//
+	// QUM-1186 (D4): the outcome axis (LastReportState) is deleted, so
+	// mergeability is a pure Status question. This precondition's job is to
+	// stop you merging a retired, killed or dead agent — NOT to require a live
+	// process. A stopped agent's worktree is more quiescent than a running
+	// one's, not less.
+	//
+	// Deliberately an allow-set rather than a deny-set: a deny-set fails OPEN
+	// for any status added later. There is deliberately no quiescence gate
+	// here — that is QUM-1187.
+	if !salvagingTerminalAgent && !mergeableStatus(agentState.Status) {
+		return nil, fmt.Errorf("agent %q cannot be merged (status: %q). Merge requires status active, idle, suspended or complete — wake it first if it is retired, killed or dead", agentName, agentState.Status)
 	}
 
 	// Precondition 5: No active children
@@ -145,9 +152,14 @@ func Merge(ctx context.Context, deps *MergeDeps, agentName, messageOverride stri
 	}
 
 	// QUM-511: resolve the agent's actual current branch from its worktree
-	// HEAD. The spawn-time agentState.Branch field goes stale once delegate
-	// reuses the agent on a follow-up branch, so we cannot trust it as the
-	// merge source.
+	// HEAD. agentState.Branch records the branch the agent was SPAWNED on; an
+	// agent that checks out or creates a branch inside its own worktree —
+	// which any agent may do, and which multi-branch work requires — leaves
+	// that field stale, so it cannot be trusted as the merge source.
+	//
+	// QUM-1186: this comment previously cited delegate reusing an agent on a
+	// follow-up branch. That mechanism is deleted; the field still goes stale
+	// for the more general reason above, so the resolution below stays.
 	resolvedBranch, err := deps.CurrentBranch(agentState.Worktree)
 	if err != nil {
 		return nil, fmt.Errorf("resolving agent %q current branch: %w", agentName, err)
@@ -253,4 +265,23 @@ func Merge(ctx context.Context, deps *MergeDeps, agentName, messageOverride stri
 	}
 
 	return &MergeOutcome{NoOp: false, ResolvedBranch: resolvedBranch}, nil
+}
+
+// mergeableStatus is the closed allow-set for merge precondition 4.
+// QUM-1186 (D4). See the precondition for why it is an allow-set.
+func mergeableStatus(s string) bool {
+	switch s {
+	case state.StatusActive,
+		// An idle-reclaimed agent's branch is as merge-ready as a live
+		// one's; reclamation is a runtime memory decision, not a statement
+		// about the work.
+		state.StatusIdle,
+		// Suspended and Complete are mergeable TODAY via the deleted
+		// LastReportState arm. Dropping them would be a capability
+		// regression smuggled in under a deletion.
+		state.StatusSuspended,
+		state.StatusComplete:
+		return true
+	}
+	return false
 }
