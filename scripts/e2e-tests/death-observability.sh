@@ -11,12 +11,12 @@
 #                             assert toast remains visible in the pane.
 #   3. route-up-single-hop:   Engineer dies (parent=weave); weave's
 #                             send_message to the dead engineer wraps and
-#                             lands in weave's own pending queue with the
+#                             lands in weave's own maildir with the
 #                             "This message was sent to … is dead" prefix.
 #   4. route-up-multi-hop:    Spawn manager+engineer chain. Kill BOTH the
 #                             engineer and the manager. From a sibling, send
 #                             to the dead engineer; assert the wrapper lands
-#                             in weave's queue enumerating both dead names.
+#                             in weave's maildir enumerating both dead names.
 #   (A fifth phase, self-report-to-a-dead-parent, was DELETED by QUM-1186
 #    along with the tool it exercised. See the block where it stood.)
 #
@@ -30,32 +30,17 @@
 # SendMessage dead-recipient detection through real MCP. (QUM-1186 deleted
 # the self-report half; send_message is now the route-up's only entry point.)
 #
-# KNOWN GAP (QUM-745 implementation discovery, 2026-06-10):
-# Phase 1's `SIGKILL claude PID → disk status=died` transition does not
-# currently fire end-to-end for an idle agent. Tracing the impl:
+# CLOSED GAP (QUM-1186 lane 5, 2026-08-10). This header used to carry a long
+# KNOWN GAP note stating that Phase 1's `SIGKILL claude PID -> disk status=died`
+# transition "does not currently fire end-to-end for an idle agent", that
+# phases 2-5 transitively depend on it, and that "this row is therefore
+# currently expected to fail Phase 1".
 #
-#   1. SIGKILL of the claude subprocess triggers transport.Recv EOF in
-#      session.runReader (backend/session.go:579).
-#   2. runReader sets s.fatalErr (NOT s.terminalErr) and returns;
-#      s.readerDone closes.
-#   3. session.SetTerminalErrorHandler (the only path that cancels the
-#      runtime ctx so loopWG completes and rt.done closes — see
-#      runtime/unified.go:99-137) is wired to setTerminalErr, NOT
-#      setFatalErr. setTerminalErr is invoked only from the
-#      SubscriberWedged / HangTimeout / InduceTerminalFault paths, not
-#      from the plain EOF path.
-#   4. The turn loop's outer Run loop (runtime/turnloop.go:112-144) only
-#      exits on ctx.Done() or queue signal — never on session EOF — so
-#      an idle SIGKILL leaves rt.loopWG blocked, rt.done open, and
-#      supervisor.watchHandleExit (the only thing that stamps disk
-#      Status=died) structurally unable to fire.
-#
-# Phases 2-5 transitively depend on Phase 1 (they need a Died target).
-# This row is therefore currently expected to fail Phase 1 until the
-# underlying "EOF → terminal-fault" gap in backend/session.runReader is
-# closed (filed as a follow-up — see ratz's report on QUM-745).
-# The script remains structurally correct: once the gap is closed the
-# 5 phases exercise exactly the validation §QUM-725 calls for.
+# That is no longer true and it was dangerous to leave: a header telling the
+# reader the row is expected to fail turns any real failure into something to
+# skip past. Measured on a full live run at this commit — Phase 1 passes
+# ("engineer disk state transitioned to status=died", "TUI death toast
+# surfaced"), as do phases 2, 3 and 4.
 
 # QUM-1029: the number of assertions a COMPLETE, PASSING run of this row
 # makes. QUM-1186 lowered this from 20: Phase 5 was deleted outright (its
@@ -133,55 +118,18 @@ _dod_wait_for_child() {
     return 1
 }
 
-# Wait until any pending/*.json under <recipient>'s queue contains <needle> in
-# its body. Returns 0 on success; 1 on timeout. Echoes the matching file path.
-# Used for send_message route-up wrappers (real.go path persists via
-# agentloop.Enqueue → .sprawl/agents/<n>/queue/pending/).
-_dod_wait_for_inbox_body() {
-    local recipient="$1" needle="$2" timeout="${3:-90}"
-    local qdir="$SPRAWL_ROOT/.sprawl/agents/$recipient/queue/pending"
-    local end=$((SECONDS + timeout))
-    while [ "$SECONDS" -lt "$end" ]; do
-        if [ -d "$qdir" ]; then
-            while IFS= read -r f; do
-                [ -z "$f" ] && continue
-                if jq -r '.body // empty' "$f" 2>/dev/null | grep -qF "$needle"; then
-                    echo "$f"
-                    return 0
-                fi
-            done < <(find "$qdir" -maxdepth 1 -name '*.json' 2>/dev/null)
-        fi
-        sleep 0.5
-    done
-    return 1
-}
+# QUM-1186: a queue-polling wait helper used to live here. It polled
+# `.sprawl/agents/<n>/queue/pending`. That surface is TRANSIENT — the queue
+# entry is consumed on delivery, while the Maildir envelope is durable and only
+# ever moves within the mailbox root (new/ -> cur/ on read, cur/ -> archive/ on
+# messages_archive). Polling the queue makes the assertion a race against the
+# drain, and it lost: Phase 3's recipient is weave itself, which is mid-turn and
+# drains immediately, so the entry was gone before the next 0.5s poll. Phase 4
+# was asserting the same way and passing only because it happened to win.
+#
+# Both now use the shared, controlled e2e_wait_maildir_substring. A probe that
+# passes by winning a race is the same defect class as one that cannot fail.
 
-# Wait until any maildir envelope under <recipient>'s messages dir contains
-# <needle>. Status_change envelopes (QUM-614) are written by
-# messages.SendStatusChange to .sprawl/messages/<recipient>/new/ — the
-# route-up dead-parent path (real.go::SendMessage) wraps the body and
-# delivers via this maildir, NOT via the agentloop queue.
-_dod_wait_for_maildir_body() {
-    local recipient="$1" needle="$2" timeout="${3:-90}"
-    local mdir="$SPRAWL_ROOT/.sprawl/messages/$recipient"
-    local end=$((SECONDS + timeout))
-    while [ "$SECONDS" -lt "$end" ]; do
-        local sub
-        for sub in new cur archive; do
-            local d="$mdir/$sub"
-            [ -d "$d" ] || continue
-            while IFS= read -r f; do
-                [ -z "$f" ] && continue
-                if grep -qF "$needle" "$f" 2>/dev/null; then
-                    echo "$f"
-                    return 0
-                fi
-            done < <(find "$d" -maxdepth 1 -type f 2>/dev/null)
-        done
-        sleep 0.5
-    done
-    return 1
-}
 
 test_run() {
     if ! command -v pgrep >/dev/null 2>&1; then
@@ -256,17 +204,26 @@ test_run() {
     pass "engineer spawned: name=$ENGINEER"
 
     # CRITICAL: wait for the spawn MCP tool to fully complete before we
-    # SIGKILL. status=active stamps as soon as the child reports_status,
-    # but the spawn handshake (initialize control_request → control_response
-    # round-trip on the parent's side) may still be in flight at that point;
-    # killing mid-handshake causes the supervisor to surface a spawn error
-    # rather than the AgentDiedMsg path. We anchor on the engineer's
-    # status-change frame "<name> changed status to working", which both
-    # claude (parent) and the supervisor have already observed by the time
-    # it's rendered into weave's pane.
-    if wait_for_substring_fast "$SESSION" "${ENGINEER} changed status to working" 120 || \
-       wait_for_substring_fast "$SESSION" "Spawned engineer" 5; then
-        pass "engineer spawn completed (status-change / spawn ack observed)"
+    # SIGKILL. The spawn handshake (initialize control_request →
+    # control_response round-trip on the parent's side) may still be in flight
+    # when the state record appears; killing mid-handshake makes the supervisor
+    # surface a spawn error rather than the AgentDiedMsg path this row is about.
+    #
+    # QUM-1186: this gate used to anchor on the pane rendering
+    # "<name> changed status to working" — the ephemeral status-ping envelope,
+    # whose producer is deleted. NOTE THE SHAPE: that string contains none of
+    # the deleted identifiers, so the corpus lint in test-e2e-matrix-unit.sh
+    # section [19c] could not see it, and neither could any identifier grep.
+    # It was found by RUNNING the row. A probe can lose its subject without
+    # ever mentioning it.
+    #
+    # The replacement is the child's own readiness message reaching weave's
+    # maildir. It is a strictly stronger barrier for what this gate needs: the
+    # old string proved the parent had observed a frame, whereas this proves
+    # the CHILD booted, completed a turn, and its delivery path is up — which
+    # is what makes the imminent SIGKILL safe to attribute.
+    if e2e_wait_maildir_substring weave "DEATH-PROBE-READY-${BRANCH_SUFFIX}" 120; then
+        pass "engineer spawn completed (child's readiness message delivered to weave)"
     else
         fail "engineer spawn ack did not appear within 120s"
         capture_pane "$SESSION" | tail -40 >&2
@@ -369,19 +326,18 @@ test_run() {
 
     # WrapForDeadTarget prefix: "This message was sent to <T> but <T> is dead."
     local WRAP_SINGLE="This message was sent to ${ENGINEER} but ${ENGINEER} is dead."
-    if _dod_wait_for_inbox_body "weave" "$WRAP_SINGLE" 90 >/dev/null; then
-        pass "single-hop wrapper landed in weave's pending queue"
+    if e2e_wait_maildir_substring weave "$WRAP_SINGLE" 90; then
+        pass "single-hop wrapper landed in weave's maildir"
     else
-        fail "single-hop wrapper did NOT land in weave queue within 90s"
-        echo "  weave queue tail:" >&2
-        find "$SPRAWL_ROOT/.sprawl/agents/weave/queue" -name '*.json' 2>/dev/null \
-            | head -10 | while read -r f; do echo "--- $f ---" >&2; jq . "$f" >&2 2>/dev/null || cat "$f" >&2; done
+        fail "single-hop wrapper did NOT land in weave's maildir within 90s"
+        echo "  weave maildir tail:" >&2
+        find "$SPRAWL_ROOT/.sprawl/messages/weave" -type f 2>/dev/null | tail -10 >&2 || true
         capture_pane "$SESSION" | tail -40 >&2
     fi
     # Additionally assert the original body survived verbatim through the
     # wrapper (defense-in-depth — the unit test guarantees the format, this
     # confirms the live wiring didn't strip the body somewhere upstream).
-    if _dod_wait_for_inbox_body "weave" "$PROBE_SINGLE" 5 >/dev/null; then
+    if e2e_wait_maildir_substring weave "$PROBE_SINGLE" 6; then
         pass "single-hop wrapper preserved original body sentinel"
     else
         fail "single-hop wrapper missing original body sentinel"
@@ -528,7 +484,7 @@ test_run() {
     e2e_send_user_prompt "$SESSION" "$DRIVE_MULTI"
 
     local WRAP_MULTI="This message was sent to ${ENG2} but ${ENG2}, ${MANAGER} are dead."
-    if _dod_wait_for_inbox_body "weave" "$WRAP_MULTI" 180 >/dev/null; then
+    if e2e_wait_maildir_substring weave "$WRAP_MULTI" 180; then
         pass "multi-hop wrapper landed in weave queue (both dead names)"
     else
         fail "multi-hop wrapper did NOT land in weave queue within 180s"
@@ -537,7 +493,7 @@ test_run() {
             | tail -10 | while read -r f; do echo "--- $f ---" >&2; jq . "$f" >&2 2>/dev/null || cat "$f" >&2; done
         capture_pane "$SESSION" | tail -40 >&2
     fi
-    if _dod_wait_for_inbox_body "weave" "$PROBE_MULTI" 5 >/dev/null; then
+    if e2e_wait_maildir_substring weave "$PROBE_MULTI" 6; then
         pass "multi-hop wrapper preserved original body sentinel"
     else
         fail "multi-hop wrapper missing original body sentinel"
