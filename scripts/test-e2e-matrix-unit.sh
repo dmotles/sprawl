@@ -126,7 +126,12 @@ FAIL=0
 # rather than the three that over-match) and the unreadable-member false green (one
 # chmod 000 ahead of the rows in sort order used to abort a single awk and green the
 # arm with six real violators present). Re-measured on a FULL GREEN run.
-MIN_ASSERTIONS=498
+#
+# 499 with the maildir/queue scan's own unreadable-member control — the mutation that
+# proved the fix above showed that sibling silently tolerating the same defect, so it
+# was swept in the same diff rather than left as a known instance. Re-measured on a
+# FULL GREEN run.
+MIN_ASSERTIONS=499
 # A [16b] nested child deliberately does NOT re-run section [16] (recursing would
 # fork-bomb, and counting there would corrupt the parity comparison), so it asserts
 # strictly fewer things and needs its own floor. Measured at de22410: 237; 238 after
@@ -159,7 +164,9 @@ MIN_ASSERTIONS=498
 # 490 with the anchor-boundary and unreadable-member controls (+2; the child DOES
 # run [19]). Measured with UNIT_NESTED_SEAM_CHECK set: "490 passed / 1 failed", the
 # one fail being 16c's deliberate one.
-MIN_ASSERTIONS_NESTED=490
+# 491 with the maildir/queue unreadable control (+1). Measured with
+# UNIT_NESTED_SEAM_CHECK set: "491 passed / 1 failed", the one fail being 16c's.
+MIN_ASSERTIONS_NESTED=491
 
 # Pin the temp root. This suite runs inside `make validate` and therefore inside
 # the pre-commit hook, so it must not inherit the committing agent's TMPDIR:
@@ -4437,8 +4444,24 @@ fi
 # on the word "queue". A corpus-wide "queue" ban would flag ~25 legitimate
 # assertions about the TUI prompt queue and the pending queue — the same
 # mistake as a lint that flags every legitimate mention of a deleted tool.
+#
+# PER FILE with `__UNREADABLE__` on the violation channel, for the reason recorded
+# at the decline-to-judge predicate below: the single-awk form this used to have is
+# aborted by gawk on the first unreadable operand, and the `2>/dev/null` plus `$( )`
+# threw away both the diagnosis and the status, so one chmod 000 ahead of the rows in
+# sort order made this arm report clean over the whole corpus. Measured by mutation
+# on 2026-08-10: `chmod 000 scripts/always-loaded-budget.sh` reddened the two token
+# scans and the decline-to-judge arm, and this one stayed SILENT — the sibling I had
+# copied the single-awk shape from carried the same hole.
 _p19_maildir_says_queue() {
-	awk '/e2e_wait_maildir_substring/{w=3; next} w>0 {w--; if ($0 ~ /^[[:space:]]*(pass|fail) "/ && tolower($0) ~ /queue/) print FILENAME":"FNR}' "$@" 2>/dev/null
+	local _f
+	for _f in "$@"; do
+		if [ ! -r "$_f" ]; then
+			printf '__UNREADABLE__:%s\n' "${_f##*/}"
+			continue
+		fi
+		awk '/e2e_wait_maildir_substring/{w=3; next} w>0 {w--; if ($0 ~ /^[[:space:]]*(pass|fail) "/ && tolower($0) ~ /queue/) print FILENAME":"FNR}' "$_f" </dev/null
+	done
 }
 _p19_mq=$(_p19_maildir_says_queue "${P19_CORPUS[@]}")
 _p19_mq_n=$(printf '%s\n' "$_p19_mq" | grep -c . || true)
@@ -4800,6 +4823,18 @@ if [ "$P19_FIX_OK" -eq 1 ]; then
 	else
 		fail "19c: negative control FAILED — the scan flags any 'queue' assertion, so it would red the ~25 legitimate ones in the corpus"
 	fi
+	# POSITIVE control for THIS scan's unreadable handling, added when the mutation
+	# that proved the decline-to-judge fix showed this sibling silently tolerating
+	# the same defect. Unreadable file FIRST — the order that used to lose.
+	printf 'if e2e_wait_maildir_substring weave "$W" 30; then\n    pass "landed in queue"\nfi\n' \
+		>"$P19_FIX/scripts/e2e-tests/unreadable-mq.sh"
+	chmod 000 "$P19_FIX/scripts/e2e-tests/unreadable-mq.sh"
+	if [ "$(_p19_maildir_says_queue "$P19_FIX/scripts/e2e-tests/unreadable-mq.sh" "$P19_FIX/scripts/e2e-tests/maildir-says-queue.sh" | grep -c .)" -eq 2 ]; then
+		pass "19c: positive control — the maildir/queue scan reports an unreadable member and still scans the violator after it"
+	else
+		fail "19c: positive control FAILED — one unreadable corpus member aborts or silences the maildir/queue scan, so a chmod 000 would green it over the whole corpus"
+	fi
+	chmod 644 "$P19_FIX/scripts/e2e-tests/unreadable-mq.sh"
 
 	# --- controls for the inert-row floor annotation, both directions -------
 	# Both call `_p19_floor_unannotated`, the SAME predicate the arm above uses.
@@ -4936,6 +4971,7 @@ else
 	fail "19c: no fixture dir — the whole-file exemption leak negative control did not run"
 	fail "19c: no fixture dir — the maildir/queue mismatch positive control did not run"
 	fail "19c: no fixture dir — the maildir/queue mismatch negative control did not run"
+	fail "19c: no fixture dir — the maildir/queue unreadable-member positive control did not run"
 	fail "19c: no fixture dir — the inert-row bare-floor positive control did not run"
 	fail "19c: no fixture dir — the inert-row annotated-floor negative control did not run"
 	fail "19c: no fixture dir — the wrapped-annotation negative control did not run"
