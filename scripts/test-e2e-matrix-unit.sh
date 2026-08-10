@@ -4262,12 +4262,20 @@ if [ -r "$P19_SKILL" ]; then
 	# is blocked, for THIS reason". Deleting the arm would leave the second
 	# statement resting on prose again, which is what [19d] exists to prevent.
 	# QUM-1186 lane 3.
+	# NOTE the failure texts below name their own successor. Both of these pins
+	# have an EXPIRY DATE: they assert a state of the world that ends when
+	# QUM-1197 lands and the busy row is un-skipped. A gate that asserts "X is
+	# blocked" fails when the project SUCCEEDS — the most confusing direction to
+	# fail in — so it is only acceptable if it tells the next person what to do
+	# when it expires. This arm cost one line of diagnosis instead of an
+	# archaeology session because its message quoted the phrase it pinned; these
+	# go one better and say what to do about it.
 	_p19_pin 'idle-reclaim-busy' \
 		"the matrix table names idle-reclaim-busy, so the half that could not land is discoverable" \
-		"the busy-agent control would look forgotten rather than deliberately skipped"
+		"the busy-agent control would look forgotten rather than deliberately skipped. IF QUM-1197 HAS LANDED and the busy row is live, this pin has expired: repoint it at the restored row (assert the row file exists and declares a positive MIN_ASSERTIONS, as [18t] does) rather than re-inserting the phrase"
 	_p19_pin 'QUM-1197' \
 		"the matrix table names the hazard that blocks the busy half" \
-		"a reader could not tell whether the skipped row is safe to re-enable"
+		"a reader could not tell whether the skipped row is safe to re-enable. IF QUM-1197 HAS LANDED, this pin has expired: delete it together with the skip in scripts/e2e-tests/idle-reclaim-busy.sh — do NOT keep the table naming a hazard that is fixed"
 	_p19_pin 'report-then-send' \
 		"the matrix table still names report-then-send, so the deletion is traceable from the table" \
 		"the row's removal is now untraceable from the table it was removed from"
