@@ -1,0 +1,157 @@
+// QUM-1186 lane 3: the idle-reaper config knobs.
+//
+// These are duration-STRING keys, not int keys, and that is the load-bearing
+// design decision here. Load deliberately never prefills (config.go's struct
+// doc), so an absent int key decodes to 0 — and the spec wants 0 to mean
+// DISABLED. An int knob would therefore ship the reaper switched off for every
+// user who has never edited their config, silently, which is exactly the
+// guard-evaporation class this repo keeps paying for. With a string key,
+// absent ("") and an explicit "0s" are distinguishable, so "absent → default"
+// and "0 → disabled" can both be true at once.
+package config
+
+import (
+	"os"
+	"path/filepath"
+	"strings"
+	"testing"
+	"time"
+)
+
+// writeIdleConfig writes a .sprawl/config.yaml under a fresh root and returns
+// the root.
+func writeIdleConfig(t *testing.T, body string) string {
+	t.Helper()
+	root := t.TempDir()
+	dir := filepath.Join(root, ".sprawl")
+	if err := os.MkdirAll(dir, 0o755); err != nil {
+		t.Fatalf("mkdir: %v", err)
+	}
+	if err := os.WriteFile(filepath.Join(dir, "config.yaml"), []byte(body), 0o644); err != nil {
+		t.Fatalf("write config: %v", err)
+	}
+	return root
+}
+
+func TestIdleReclaimAfter_DefaultWhenUnset(t *testing.T) {
+	c := &Config{}
+	got, err := c.IdleReclaimAfterDuration()
+	if err != nil {
+		t.Fatalf("IdleReclaimAfterDuration() error = %v, want nil for an unset key", err)
+	}
+	if got != DefaultIdleReclaimAfter {
+		t.Errorf("IdleReclaimAfterDuration() = %v, want the built-in default %v", got, DefaultIdleReclaimAfter)
+	}
+	if got == 0 {
+		t.Error("IdleReclaimAfterDuration() = 0 for an unset key; an absent key must NOT disable the reaper")
+	}
+}
+
+// TestIdleReclaimAfter_LoadDoesNotPrefill is the other half of the design: if
+// Load prefilled the default, Save would freeze today's default into the user's
+// file and "absent" would stop being distinguishable from "explicitly set".
+func TestIdleReclaimAfter_LoadDoesNotPrefill(t *testing.T) {
+	root := writeIdleConfig(t, "validate: make validate\n")
+	c, err := Load(root)
+	if err != nil {
+		t.Fatalf("Load: %v", err)
+	}
+	if c.IdleReclaimAfter != "" {
+		t.Errorf("Load prefilled idle_reclaim.after = %q, want \"\" (Load must never prefill defaults)", c.IdleReclaimAfter)
+	}
+	if c.IdleReclaimSweep != "" {
+		t.Errorf("Load prefilled idle_reclaim.sweep = %q, want \"\"", c.IdleReclaimSweep)
+	}
+}
+
+func TestIdleReclaimAfter_ExplicitZeroDisables(t *testing.T) {
+	for _, raw := range []string{"0", "0s", "0m"} {
+		c := &Config{IdleReclaimAfter: raw}
+		got, err := c.IdleReclaimAfterDuration()
+		if err != nil {
+			t.Fatalf("IdleReclaimAfter(%q) error = %v, want nil", raw, err)
+		}
+		if got != 0 {
+			t.Errorf("IdleReclaimAfter(%q) = %v, want 0 (explicit zero disables the reaper)", raw, got)
+		}
+	}
+}
+
+func TestIdleReclaimAfter_ParsesExplicitValue(t *testing.T) {
+	c := &Config{IdleReclaimAfter: "90s"}
+	got, err := c.IdleReclaimAfterDuration()
+	if err != nil {
+		t.Fatalf("IdleReclaimAfterDuration() error = %v", err)
+	}
+	if got != 90*time.Second {
+		t.Errorf("IdleReclaimAfterDuration() = %v, want 90s", got)
+	}
+}
+
+// TestIdleReclaimAfter_UnparseableIsNotSilentlyDisabled is the trap
+// ValidateTimeoutDuration falls into (config.go returns 0 on a parse error).
+// Copying that arm here would make a typo — "15min" — silently switch off a
+// memory reclaimer with no error anywhere. The accessor must return the default
+// AND a non-nil error, never 0.
+func TestIdleReclaimAfter_UnparseableIsNotSilentlyDisabled(t *testing.T) {
+	c := &Config{IdleReclaimAfter: "15min"}
+	got, err := c.IdleReclaimAfterDuration()
+	if err == nil {
+		t.Fatal("IdleReclaimAfter(\"15min\") error = nil, want a parse error; a typo must not pass silently")
+	}
+	if got == 0 {
+		t.Error("IdleReclaimAfter(\"15min\") = 0; an unparseable value must NOT disable the reaper")
+	}
+	if got != DefaultIdleReclaimAfter {
+		t.Errorf("IdleReclaimAfter(\"15min\") = %v, want the default %v alongside the error", got, DefaultIdleReclaimAfter)
+	}
+	if !strings.Contains(err.Error(), "idle_reclaim.after") {
+		t.Errorf("error %q does not name the key it came from", err)
+	}
+}
+
+func TestIdleReclaimSweep_DefaultWhenUnset(t *testing.T) {
+	c := &Config{}
+	got, err := c.IdleReclaimSweepDuration()
+	if err != nil {
+		t.Fatalf("IdleReclaimSweepDuration() error = %v, want nil", err)
+	}
+	if got != DefaultIdleReclaimSweep {
+		t.Errorf("IdleReclaimSweepDuration() = %v, want %v", got, DefaultIdleReclaimSweep)
+	}
+}
+
+func TestIdleReclaimSweep_UnparseableIsNotSilentlyDisabled(t *testing.T) {
+	c := &Config{IdleReclaimSweep: "banana"}
+	got, err := c.IdleReclaimSweepDuration()
+	if err == nil {
+		t.Fatal("IdleReclaimSweep(\"banana\") error = nil, want a parse error")
+	}
+	if got != DefaultIdleReclaimSweep {
+		t.Errorf("IdleReclaimSweep(\"banana\") = %v, want the default %v", got, DefaultIdleReclaimSweep)
+	}
+}
+
+// TestIdleReclaimKeys_AreSettableAndReferenced pins the keys through the
+// reflected registry: `sprawl config` must be able to set them, and
+// Reference() must advertise them with a default and a purpose. Without this
+// the fields could exist while being unreachable from the CLI.
+func TestIdleReclaimKeys_AreSettableAndReferenced(t *testing.T) {
+	c := &Config{}
+	if err := c.Set("idle_reclaim.after", "20m"); err != nil {
+		t.Fatalf("Set(idle_reclaim.after): %v", err)
+	}
+	if got, _ := c.Get("idle_reclaim.after"); got != "20m" {
+		t.Errorf("Get(idle_reclaim.after) = %q, want %q", got, "20m")
+	}
+	if err := c.Set("idle_reclaim.sweep", "30s"); err != nil {
+		t.Fatalf("Set(idle_reclaim.sweep): %v", err)
+	}
+
+	ref := Reference()
+	for _, want := range []string{"idle_reclaim.after", "idle_reclaim.sweep", "15m", "1m"} {
+		if !strings.Contains(ref, want) {
+			t.Errorf("Reference() is missing %q; got:\n%s", want, ref)
+		}
+	}
+}

@@ -75,6 +75,17 @@ type Config struct {
 	// WorktreeTeardown is bash run in an agent worktree before removal on
 	// retire.
 	WorktreeTeardown string `yaml:"worktree.teardown,omitempty" sprawl:"purpose=Bash run in an agent worktree before removal on retire"`
+	// IdleReclaimAfter / IdleReclaimSweep are the QUM-1186 idle reaper's two
+	// knobs, read once by NewReal.
+	//
+	// They are duration STRINGS rather than int seconds, and that is deliberate.
+	// Load never prefills, so an absent int key decodes to 0 — and 0 here means
+	// DISABLED. An int knob would therefore ship the reaper switched off for
+	// every user who has never edited their config, silently. With a string,
+	// absent ("") and an explicit "0" are distinguishable, so "absent → default"
+	// and "0 → disabled" are both true at once.
+	IdleReclaimAfter string `yaml:"idle_reclaim.after,omitempty" sprawl:"default=15m,purpose=Idle time before an agent's subprocess is reclaimed as a Go duration; 0 disables the reaper"`
+	IdleReclaimSweep string `yaml:"idle_reclaim.sweep,omitempty" sprawl:"default=1m,purpose=How often the idle reaper sweeps the runtime registry as a Go duration"`
 
 	// sprawlRoot is not a config key. Unexported, so yaml ignores it on both
 	// unmarshal and marshal.
@@ -121,6 +132,51 @@ func (c *Config) ValidateTimeoutDuration() time.Duration {
 		return 0
 	}
 	return d
+}
+
+// DefaultIdleReclaimAfter is how long an agent must be observably idle before
+// the reaper reclaims its subprocess. 15 minutes matches the blurb refresher's
+// own staleness floor and is long enough that an agent between operator
+// messages is not churned, while still bounding a parked agent's ~280MB RSS to
+// a quarter of an hour. QUM-1186.
+const DefaultIdleReclaimAfter = 15 * time.Minute
+
+// DefaultIdleReclaimSweep is how often the registry is swept. One minute: the
+// sweep is a handful of cheap local observations per agent, and a cadence much
+// coarser than this would make the threshold's effective resolution the sweep
+// interval rather than the threshold. QUM-1186.
+const DefaultIdleReclaimSweep = time.Minute
+
+// IdleReclaimAfterDuration returns the idle-reclaim threshold. Unset returns
+// the default; an explicit "0"/"0s" returns 0, which disables the reaper.
+//
+// Unlike ValidateTimeoutDuration, an UNPARSEABLE value does not return 0: it
+// returns the default alongside a non-nil error. A typo ("15min") silently
+// switching off a memory reclaimer is the failure mode this repo keeps paying
+// for — the caller must be able to tell "the user turned it off" from "the
+// user mistyped it".
+func (c *Config) IdleReclaimAfterDuration() (time.Duration, error) {
+	return parseDurationKey("idle_reclaim.after", c.IdleReclaimAfter, DefaultIdleReclaimAfter)
+}
+
+// IdleReclaimSweepDuration returns the reaper's sweep interval, with the same
+// unset/zero/unparseable contract as IdleReclaimAfterDuration.
+func (c *Config) IdleReclaimSweepDuration() (time.Duration, error) {
+	return parseDurationKey("idle_reclaim.sweep", c.IdleReclaimSweep, DefaultIdleReclaimSweep)
+}
+
+// parseDurationKey resolves a duration-string key: empty → def, parseable →
+// the parsed value (including an explicit zero), unparseable → (def, error).
+func parseDurationKey(key, raw string, def time.Duration) (time.Duration, error) {
+	v := strings.TrimSpace(raw)
+	if v == "" {
+		return def, nil
+	}
+	d, err := time.ParseDuration(v)
+	if err != nil {
+		return def, fmt.Errorf("config: %s = %q is not a Go duration (e.g. 15m, 90s, or 0 to disable): %w", key, raw, err)
+	}
+	return d, nil
 }
 
 // ---------------------------------------------------------------------------

@@ -287,6 +287,39 @@ func (r *AgentRuntime) InTurn() bool {
 	return probe.InTurn()
 }
 
+// InTurnObserved is InTurn with the "could not observe" case separated out.
+// InTurn() returns false for a nil handle and for a handle that is not a
+// turnProbe, which makes its false ambiguous — the same value means "this
+// agent is between turns" and "nobody could tell". Callers taking a
+// DESTRUCTIVE action on the answer (QUM-1186's idle reaper) must be able to
+// tell those apart; observed=false means treat the agent as in-turn.
+//
+// InTurn() is deliberately left alone: its many existing callers only ever
+// read it as a hint. QUM-1186 D1a.
+func (r *AgentRuntime) InTurnObserved() (inTurn bool, observed bool) {
+	h := r.currentHandle()
+	if h == nil {
+		return false, false
+	}
+	probe, ok := h.(turnProbe)
+	if !ok {
+		return false, false
+	}
+	return probe.InTurn(), true
+}
+
+// InFlightSystemObserved reports how many durable entry IDs the runtime is
+// currently carrying in flight, and whether that could be observed at all. An
+// absent UnifiedRuntime yields observed=false — "no runtime to ask" is not the
+// same answer as "asked, and nothing is in flight". QUM-1186 D1a.
+func (r *AgentRuntime) InFlightSystemObserved() (n int, observed bool) {
+	urt := r.UnifiedRuntime()
+	if urt == nil {
+		return 0, false
+	}
+	return len(urt.InFlightSystemEntryIDs()), true
+}
+
 // LastActivityAt returns the timestamp of the most recently recorded
 // activity-ring entry on the live RuntimeHandle. Zero time when the
 // runtime is not started, has been stopped, or the handle does not
@@ -771,11 +804,12 @@ func (r *AgentRuntime) Pause(ctx context.Context, timeout time.Duration) (clean 
 // bookkeeping — i.e. the runaway guard, whose whole job is a reliable
 // teardown, would degrade. (QUM-866)
 //
-// NO PRODUCTION CALLER TODAY (QUM-1186). Its only one went with the deleted
-// report_status(complete/failure) self-teardown path. It is kept deliberately,
-// not overlooked: lane 3's idle reaper is the intended next caller. Coverage
-// is runtime_stopafterturn_test.go — read that file's trailer before deleting
-// this.
+// SOLE PRODUCTION CALLER: (*Real).maybeReclaimIdle, the QUM-1186 lane-3 idle
+// reaper (idlereap.go). Its previous one went with the deleted
+// report_status(complete/failure) self-teardown path. The reaper passes
+// stopReasonIdleReclaim, which is what rests the agent at StatusIdle. Coverage
+// is runtime_stopafterturn_test.go plus idlereap_race_test.go — read both
+// before deleting this.
 func (r *AgentRuntime) StopAfterTurn(ctx context.Context, timeout time.Duration, reason stopReason) error {
 	stop := func() error {
 		stopCtx, cancel := context.WithTimeout(context.Background(), runtimeStopTimeout)

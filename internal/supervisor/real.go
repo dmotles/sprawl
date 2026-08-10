@@ -176,6 +176,26 @@ type Real struct {
 	// extracted out of the (since-deleted) QUM-730 heartbeat. Started by
 	// NewReal, stopped by Shutdown.
 	blurbTicker *blurbTicker
+
+	// idleReaper is the QUM-1186 lane-3 idle-reclaim loop: the replacement for
+	// the teardown trigger that died with report_status. nil when the
+	// idle_reclaim.after knob is 0 (disabled). Started by NewReal, stopped by
+	// Shutdown.
+	idleReaper *idleReaper
+	// idleReclaimAfter / idleReclaimSweep hold the resolved knobs.
+	// atomicDuration per the repo-wide convention: production reads
+	// idleReclaimAfter from the reaper goroutine and tests override it, so a
+	// plain time.Duration would be a live race under -race.
+	idleReclaimAfter *atomicDuration
+	idleReclaimSweep *atomicDuration
+
+	// reclaimMu guards reclaimGates only; reclaimGates holds the PER-AGENT
+	// mutex that linearises Real.SendMessage's liveness decision + Enqueue
+	// against an idle reclaim. Per-agent rather than one global gate because a
+	// reclaim can block for the whole StopAfterTurn budget, and a global gate
+	// would stall every send in the fleet behind one reaping agent.
+	reclaimMu    sync.Mutex
+	reclaimGates map[string]*sync.Mutex
 }
 
 // realGitRevParseHEAD shells out to `git -C <dir> rev-parse HEAD`. stdio is
@@ -385,6 +405,37 @@ func NewReal(cfg Config) (*Real, error) {
 		RefreshBlurb: r.maybeRefreshBlurb,
 	})
 	r.blurbTicker.Start()
+
+	// QUM-1186 lane 3: the idle reaper. Config is read ONCE here — an
+	// unparseable value falls back to the built-in default and WARNs rather
+	// than disabling, because a typo must not silently switch off the only
+	// thing reclaiming subprocess RSS. An explicit 0 does disable it, and then
+	// the goroutine is never started at all rather than started and made inert.
+	r.idleReclaimAfter = newAtomicDuration(config.DefaultIdleReclaimAfter)
+	r.idleReclaimSweep = newAtomicDuration(config.DefaultIdleReclaimSweep)
+	if c, err := config.Load(cfg.SprawlRoot); err != nil {
+		slog.Default().Warn("idle reclaim: config could not be read; using built-in defaults",
+			slog.Any("err", err))
+	} else {
+		after, aErr := c.IdleReclaimAfterDuration()
+		if aErr != nil {
+			slog.Default().Warn("idle reclaim: using the default threshold", slog.Any("err", aErr))
+		}
+		sweep, sErr := c.IdleReclaimSweepDuration()
+		if sErr != nil {
+			slog.Default().Warn("idle reclaim: using the default sweep interval", slog.Any("err", sErr))
+		}
+		r.idleReclaimAfter.set(after)
+		r.idleReclaimSweep.set(sweep)
+	}
+	if r.idleReclaimAfter.get() > 0 {
+		r.idleReaper = newIdleReaper(idleReaperDeps{
+			Registry: r.runtimeRegistry,
+			Reclaim:  r.maybeReclaimIdle,
+			Interval: r.idleReclaimSweep.get,
+		})
+		r.idleReaper.Start()
+	}
 	return r, nil
 }
 
@@ -1387,6 +1438,12 @@ func bfsByParent(eligible []*state.AgentState, root string) []*state.AgentState 
 }
 
 func (r *Real) Shutdown(ctx context.Context) error {
+	// QUM-1186: stop the idle reaper before anything else. A reap racing the
+	// shutdown teardown loop below would have two callers stopping the same
+	// handle.
+	if r.idleReaper != nil {
+		r.idleReaper.Stop()
+	}
 	// QUM-1071: stop the blurb ticker first — don't refresh a blurb for a
 	// runtime that's about to be torn down.
 	if r.blurbTicker != nil {
@@ -1818,6 +1875,22 @@ func (r *Real) SendMessage(ctx context.Context, to, body string, now, wakeIfOffl
 	if err := agentpkg.ValidateName(to); err != nil {
 		return nil, err
 	}
+	// QUM-1186 lane 3: everything from the liveness decision through the
+	// Enqueue and the poke runs under the recipient's reclaim gate. Without it
+	// there is a TOCTOU: the status read below sees `active`, so the StatusIdle
+	// auto-wake arm does not fire; the idle reaper then reclaims the agent; and
+	// by the time we reach startedRuntime the runtime is gone, so the entry is
+	// durably queued with the poke silently dropped. Nothing would pick it up —
+	// child handles have no redrain ticker.
+	//
+	// The gate is held across r.Wake in the auto-wake arms. That is deliberate
+	// and per-agent: Wake has its own fail-fast wakeMu, and holding the gate is
+	// what makes "decided to wake" and "enqueued" a single step from the
+	// reaper's point of view. Note the ancestor/dead-routing walks below do
+	// disk I/O under the gate.
+	gate := r.reclaimGate(to)
+	gate.Lock()
+	defer gate.Unlock()
 	agentState, err := state.LoadAgent(r.sprawlRoot, to)
 	if err != nil {
 		return nil, fmt.Errorf("agent %q not found: %w", to, err)

@@ -72,6 +72,8 @@ hub_token_file: .sprawl/secrets/hub-token
 memory_model: sonnet
 worktree.setup: 'echo setup && ln -sf a b'
 worktree.teardown: echo teardown
+idle_reclaim.after: 20m
+idle_reclaim.sweep: 45s
 `
 
 // TestLoad_RepoConfigLoadsClean guards the worst possible outcome of making the

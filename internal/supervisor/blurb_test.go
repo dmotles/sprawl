@@ -179,9 +179,10 @@ func TestGenerateAndPersistBlurb_EmptyResultKeepsPrevious(t *testing.T) {
 // regeneration never fires. blurb.TriggerInitial (real.go, on spawn) and
 // TriggerRefresh (maybeRefreshBlurb) are unaffected and still covered below.
 //
-// Re-homing TriggerCompletion is NOT done here: the natural new trigger is
-// the idle reaper reclaiming an agent, which is lane 3's work. Reported to
-// the manager rather than silently left dead.
+// RESOLVED by lane 3: TriggerCompletion is NOT re-homed onto the idle reaper,
+// deliberately. An idle reclaim is not a completion — see the decision record
+// on blurb.TriggerCompletion itself (internal/blurb/blurb.go). This is a
+// closed decision, not an open action item.
 
 func TestMaybeRefreshBlurb_DispatchesWhenDirtyAndFloorElapsed(t *testing.T) {
 	sup, tmp := newTestSupervisor(t)

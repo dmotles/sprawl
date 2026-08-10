@@ -4,7 +4,9 @@
 // an immediate drainInflight teardown. The mechanism is generic (a later issue
 // reuses it for handoff), so these tests pin the state machine directly on
 // AgentRuntime. QUM-1186 deleted the Real.ReportStatus wiring that was its
-// only production caller; lane 3's idle reaper is the intended next one.
+// only production caller; the idle reaper ((*Real).maybeReclaimIdle) is now
+// its sole production caller, and the reclaim-path wiring is pinned in
+// idlereap_race_test.go.
 
 package supervisor
 
@@ -225,8 +227,9 @@ func TestStopAfterTurn_NoUnifiedRuntimeStopsImmediately(t *testing.T) {
 // event, immediate stop when idle, the runaway timeout bound, and the
 // no-UnifiedRuntime fast path.
 //
-// NOTE for lane 3: StopAfterTurn now has NO production caller until the idle
-// reaper wires one up. It is deliberately kept (with a new stopReason
-// parameter) rather than deleted. scripts/e2e-tests/report-then-send.sh and
-// the matrix row that pinned its only production call are flagged to the
-// manager for re-homing onto idle-reclaim, not silently left green.
+// RESOLVED by lane 3: StopAfterTurn's production caller is now
+// (*Real).maybeReclaimIdle, which passes stopReasonIdleReclaim. The
+// reclaim-path wiring — StopAfterTurn rather than Stop, deferral when a turn
+// begins after the idle decision, and the StatusIdle resting stamp — is pinned
+// in idlereap_race_test.go. The e2e coverage that report-then-send.sh used to
+// carry re-homes onto scripts/e2e-tests/idle-reclaim.sh and its matrix row.

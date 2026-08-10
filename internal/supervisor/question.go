@@ -318,6 +318,21 @@ func (q *questionQueue) peek() (int, *PendingQuestion) {
 	return len(q.entries), &copyPQ
 }
 
+// hasPendingFrom reports whether the named agent has an unresolved question
+// outstanding. Used by the QUM-1186 idle reaper: reclaiming an agent that is
+// blocked in ask_user_question would deliver the operator's answer to a
+// process that no longer exists.
+func (q *questionQueue) hasPendingFrom(name string) bool {
+	q.mu.Lock()
+	defer q.mu.Unlock()
+	for _, e := range q.entries {
+		if !e.done && e.pq.Req.From == name {
+			return true
+		}
+	}
+	return false
+}
+
 // closeAll marks the queue closed and resolves every pending entry with the
 // supplied outcome+reason. After closeAll, ask() returns OutcomeSessionEnded
 // immediately.

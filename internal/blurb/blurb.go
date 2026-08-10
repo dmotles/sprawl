@@ -65,6 +65,19 @@ const (
 	// TriggerCompletion is the one-shot regeneration when an agent transitions
 	// to a terminal "complete" state — the highest-value moment for the reuse
 	// use-case, since the resting blurb should describe finished expertise.
+	//
+	// NO PRODUCTION CALLER since QUM-1186 deleted Real.ReportStatus, which was
+	// its only one. Lane 3 considered re-homing it onto the idle reaper and
+	// deliberately did NOT: an idle reclaim means "nobody has talked to this
+	// agent for a while", which is not the same event as "this agent finished
+	// its work". Writing a finished-expertise blurb for an agent whose work is
+	// unfinished would be a claim the system cannot support — the exact defect
+	// class QUM-1185 exists to remove — and it would spawn a Claude subprocess
+	// at the precise moment the reaper is freeing that agent's ~280MB.
+	//
+	// Kept rather than deleted because the concept is still correct and a
+	// genuine completion signal is a plausible future slice. It is dead on
+	// purpose, and this comment is the record of that choice.
 	TriggerCompletion
 )
 
