@@ -485,11 +485,18 @@ test_run() {
 
     local WRAP_MULTI="This message was sent to ${ENG2} but ${ENG2}, ${MANAGER} are dead."
     if e2e_wait_maildir_substring weave "$WRAP_MULTI" 180; then
-        pass "multi-hop wrapper landed in weave queue (both dead names)"
+        # "weave queue" was left over from the queue-polling helper deleted
+        # above: this arm calls e2e_wait_maildir_substring and touches no queue.
+        # The commit whose whole subject was queue-is-transient/maildir-is-
+        # durable rewrote the mechanism here and missed these two strings and
+        # the diagnostic below — which dumped a directory that is no longer the
+        # surface under test, so a real failure printed nothing useful.
+        pass "multi-hop wrapper landed durably in weave's maildir (both dead names)"
     else
-        fail "multi-hop wrapper did NOT land in weave queue within 180s"
-        echo "  weave queue tail:" >&2
-        find "$SPRAWL_ROOT/.sprawl/agents/weave/queue" -name '*.json' 2>/dev/null \
+        fail "multi-hop wrapper did NOT land in weave's maildir within 180s"
+        echo "  weave maildir tail:" >&2
+        find "$SPRAWL_ROOT/.sprawl/messages/weave/new" "$SPRAWL_ROOT/.sprawl/messages/weave/cur" \
+            -type f 2>/dev/null \
             | tail -10 | while read -r f; do echo "--- $f ---" >&2; jq . "$f" >&2 2>/dev/null || cat "$f" >&2; done
         capture_pane "$SESSION" | tail -40 >&2
     fi

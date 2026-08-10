@@ -317,24 +317,34 @@ JSON
         capture_pane "$SESSION" | tail -40 >&2
     fi
 
-    # --- Test C: QUM-665 liveness-driven icon flip from paused to working ---
+    # --- Test C: QUM-665 liveness-driven icon flip from idle to working ---
     #
-    # Reuses sandbox-child but flips its self-reported state to "blocked".
-    # Expectation:
-    #   1) Initial render shows the blocked dot color on the sandbox-child row.
+    # This header described the BLOCKED-state flow — seeding a self-reported
+    # "blocked" state, asserting a blocked dot, asserting a revert to blocked —
+    # for ten lines, immediately above the note recording that QUM-1186 made
+    # "blocked" underivable. The mechanism changed and its advertisement did
+    # not; read in isolation it describes assertions this row cannot make.
+    #
+    # What the row actually does. Reuses sandbox-child at the IDLE baseline
+    # (⏳), the only baseline `DeriveIconState` can still produce:
+    #   1) Initial render shows the idle dot color on the sandbox-child row.
     #   2) After writing a single activity.ndjson entry with TS=now, the row's
     #      dot flips to the working color within ~3s (one 2s tree-rebuild tick
     #      plus margin).
     #   3) After ~3s with no further activity (>2s past last activity, the
-    #      RecentActivityWindow), the dot reverts to the blocked color.
+    #      RecentActivityWindow), the dot reverts to the idle color.
     #
-    # We grep for the ReportDotWorking / ReportDotBlocked ANSI escape sequences
-    # around the "●" glyph on the sandbox-child row. NewTheme builds these from
-    # the dark palette's Success (working/green) and Busy (blocked/amber)
-    # colors. If the ANSI grep approach proves too fragile in CI, the fallback
-    # documented in the spec is to invoke `sprawl status` and assert via JSON —
-    # but that path requires Status to expose in_autonomous_turn /
-    # last_activity_at (QUM-665 surface) so isn't strictly cheaper.
+    # Step 3 is WEAKER than it looks, and the note below says why: baseline and
+    # revert-target are now the same glyph, so this cannot distinguish
+    # "reverted to what it was" from "fell back to idle". Do not cite it as
+    # evidence for the former.
+    #
+    # We grep for the ANSI escape sequences around the "●" glyph on the
+    # sandbox-child row. NewTheme builds these from the dark palette. If the
+    # ANSI grep approach proves too fragile in CI, the fallback documented in
+    # the spec is to invoke `sprawl status` and assert via JSON — but that path
+    # requires Status to expose in_autonomous_turn / last_activity_at (QUM-665
+    # surface) so isn't strictly cheaper.
     echo ""
     echo "=== Test C: QUM-665 liveness-driven icon flip (idle → working → idle) ==="
 
@@ -373,7 +383,11 @@ JSON
     # Extract the first orbital-state glyph appearing on the sandbox-child row.
     # capture_pane (lib/e2e-common.sh) strips color via tmux `-p`. The orbital
     # pill renderer (internal/tui/tree_orbital.go) emits one of the glyphs
-    # below per state: ⚙=working, ⏳=idle, ⏸=blocked, ✓=done, ✗=failure.
+    # below per state: ⚙=working, ⏳=idle, ✓=done, ✗=failure. ⏸ (blocked) stays
+    # in the character class deliberately: `DeriveIconState` can no longer
+    # return it (QUM-1186, see Test C), so matching it here is how an
+    # unexpected resurrection would show up as a glyph mismatch rather than as
+    # a row that silently fails to match anything.
     extract_child_glyph() {
         local session="$1" child="$2"
         capture_pane "$session" \

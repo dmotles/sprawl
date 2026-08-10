@@ -17,8 +17,16 @@
 #   PHASE 2 — mid-turn recipient (QUM-821 urgency + storm regression gate):
 #     The child is driven into a long single turn (foreground `sleep`). While
 #     mid-turn, weave sends an urgent send_message(now=true). Assertions:
-#       (a) the child's urgent ACK reaches weave (now-priority preempts the
-#           in-flight turn — empirically it ACKs well before the sleep ends).
+#       (a) the child's urgent ACK reaches weave DURABLY (a maildir envelope).
+#           This does NOT establish preemption: measured on a clean host the
+#           ACK is BIMODAL — 9s (turn abandoned) on one run, 43s (only after the
+#           sleep ended) on the next — because whether the CLI abandons an
+#           in-flight foreground tool is upstream of sprawl. The half sprawl
+#           owns, and the half this row gates, is that the now-priority stdin
+#           write is ISSUED promptly while the turn is in flight (PHASE 2a(i)).
+#           This header used to say "now-priority preempts the in-flight turn —
+#           empirically it ACKs well before the sleep ends", which the
+#           measurements below contradict.
 #       (b) STORM REGRESSION GATE: the child's raw NDJSON shows a BOUNDED number
 #           of now-priority stdin writes for that single urgent send. A now
 #           message's isReplay ack is NOT GUARANTEED (QUM-1068 measured 51 of 54
@@ -348,7 +356,11 @@ test_run() {
     # Unique body, for the reason recorded at the phase-1 gate above.
     if e2e_wait_maildir_substring weave "URGENT-NOW-ACK" 120; then
         local ACK_AT=$SECONDS
-        pass "mid-turn recipient delivered the now-priority urgent message (ACK rendered)"
+        # "ACK rendered" was wrong: this checks a DURABLE maildir envelope, and
+        # touches no rendering path at all. The render half — that weave's pane
+        # shows the drain-row citation — genuinely re-homed to
+        # drain-row-inject:167 and is asserted there, not here.
+        pass "mid-turn recipient delivered the now-priority urgent message (its ACK envelope landed durably in weave's maildir)"
         echo "  EMPIRICAL: time-to-ACK from urgent-send=$((ACK_AT - URGENT_SENT))s, from busy-start≈$((ACK_AT - BUSY_START))s (sleep=${BUSY_SECS}s)"
         # QUM-1186 lane 5. This was an asymmetric if/else whose BOTH arms only
         # echoed — one saying "'now' PREEMPTED the in-flight turn", the other
@@ -356,18 +368,20 @@ test_run() {
         # assertions and could not fail, which means THE PRIMARY
         # INTERRUPT-SEMANTICS ROW NEVER ASSERTED THAT PREEMPTION HAPPENED.
         #
-        # That matters more after QUM-1186 than before. The ACK-rendered gate
-        # above passes whether the message preempted the turn or merely queued
-        # behind the ${BUSY_SECS}s sleep, so with the preemption arm inert the
-        # row is green under both "now preempts" and "now does nothing but
-        # eventually arrive" — including the specific degradation this slice
-        # could have introduced, where a stale legacy urgency key left in the
-        # prompt makes the agent's send fail and it silently retries without
-        # urgency.
+        # That matters more after QUM-1186 than before. The ACK gate above
+        # passes whether the message preempted the turn or merely queued behind
+        # the ${BUSY_SECS}s sleep, so the row is green under both "now preempts"
+        # and "now does nothing but eventually arrive" — including the specific
+        # degradation this slice could have introduced, where a stale legacy
+        # urgency key left in the prompt makes the agent's send fail and it
+        # silently retries without urgency.
         #
-        # The threshold is the same one the echo used, now load-bearing: an ACK
-        # landing more than 8s before the sleep could have ended cannot be
-        # explained by waiting the turn out.
+        # THAT GAP IS COVERED, but not here and not by timing: PHASE 2a(i)
+        # gates the now-priority write being ISSUED mid-turn, which the silent
+        # non-urgent retry would not produce. The 8s threshold below was briefly
+        # made "load-bearing" and had to be withdrawn — the sentence claiming so
+        # is struck, because the two lines under it already say the opposite.
+        #
         # DIAGNOSTIC, deliberately not a gate — see PHASE 2a(i) above for why.
         # Both outcomes are legitimate: sprawl's now-write is prompt either way
         # (asserted there), and whether the CLI abandons an in-flight foreground

@@ -110,7 +110,11 @@ FAIL=0
 # its corpus floor (+2), and four controls for it (bare floor flagged;
 # annotated not flagged; annotation WRAPPED across lines not flagged; a live
 # row's reachable floor not flagged). Re-measured on a FULL GREEN run.
-MIN_ASSERTIONS=486
+#
+# 489 with the maildir/queue mismatch arm and its two controls (a planted
+# mismatch flagged; a genuine queue assertion with no maildir call NOT flagged,
+# which is what keeps it from becoming a corpus-wide "queue" ban).
+MIN_ASSERTIONS=489
 # A [16b] nested child deliberately does NOT re-run section [16] (recursing would
 # fork-bomb, and counting there would corrupt the parity comparison), so it asserts
 # strictly fewer things and needs its own floor. Measured at de22410: 237; 238 after
@@ -133,8 +137,10 @@ MIN_ASSERTIONS=486
 # run [19]). Measured with UNIT_NESTED_SEAM_CHECK set: "472 passed / 1 failed",
 # the one fail being 16c's deliberate one, per the recipe above.
 # 478 once the inert-row floor-annotation arm landed (+6; the child DOES run
-# [19]). Measured with UNIT_NESTED_SEAM_CHECK set: "478 passed / 1 failed".
-MIN_ASSERTIONS_NESTED=478
+# [19]), then 481 with the maildir/queue mismatch arm and its two controls.
+# Measured with UNIT_NESTED_SEAM_CHECK set: "481 passed / 1 failed", the one
+# fail being 16c's deliberate one.
+MIN_ASSERTIONS_NESTED=481
 
 # Pin the temp root. This suite runs inside `make validate` and therefore inside
 # the pre-commit hook, so it must not inherit the committing agent's TMPDIR:
@@ -4399,6 +4405,31 @@ else
 	fail "19c: positive control FAILED — the exemption counter cannot distinguish a line-level claim from a whole-file inert row, so its zero proves nothing"
 fi
 
+# --- a maildir gate must not describe itself as a queue ----------------------
+# `e2e_wait_maildir_substring` checks a DURABLE maildir envelope. The queue is
+# the TRANSIENT surface it replaced — consumed on delivery, which is why polling
+# it made assertions a race against the drain. A gate that calls the maildir
+# helper and then says "queue" in its verdict tells the next reader the row is
+# still racing, and (as happened in death-observability's phase 4) leaves the
+# failure diagnostic dumping a directory that is no longer under test, so a real
+# red prints nothing useful.
+#
+# Deliberately NARROW: only a pass/fail within 3 lines of a maildir call, only
+# on the word "queue". A corpus-wide "queue" ban would flag ~25 legitimate
+# assertions about the TUI prompt queue and the pending queue — the same
+# mistake as a lint that flags every legitimate mention of a deleted tool.
+_p19_maildir_says_queue() {
+	awk '/e2e_wait_maildir_substring/{w=3; next} w>0 {w--; if ($0 ~ /^[[:space:]]*(pass|fail) "/ && tolower($0) ~ /queue/) print FILENAME":"FNR}' "$@" 2>/dev/null
+}
+_p19_mq=$(_p19_maildir_says_queue "${P19_CORPUS[@]}")
+_p19_mq_n=$(printf '%s\n' "$_p19_mq" | grep -c . || true)
+if [ "$_p19_mq_n" -eq 0 ]; then
+	pass "19c: no maildir-backed gate describes its verdict as a queue"
+else
+	fail "19c: $_p19_mq_n gate(s) call e2e_wait_maildir_substring but report on a 'queue' — the durable surface described as the transient one it replaced:
+$(printf '%s\n' "$_p19_mq" | sed 's/^/      /')"
+fi
+
 # --- an inert row's MIN_ASSERTIONS floor must SAY it is unreachable ----------
 _p19_inert_seen=0
 _p19_floor_bad=""
@@ -4606,6 +4637,25 @@ if [ "$P19_FIX_OK" -eq 1 ]; then
 		fail "19c: negative control FAILED — the whole-file row exemption leaked outside scripts/e2e-tests/, so any tracked file could evade the never-existed scan"
 	fi
 
+	# --- controls for the maildir/queue mismatch, both directions -----------
+	# POSITIVE (defect planted: death-observability's phase-4 shape verbatim).
+	printf 'if e2e_wait_maildir_substring weave "$WRAP" 180; then\n    pass "wrapper landed in weave queue"\nfi\n' \
+		>"$P19_FIX/scripts/e2e-tests/maildir-says-queue.sh"
+	if [ -n "$(_p19_maildir_says_queue "$P19_FIX/scripts/e2e-tests/maildir-says-queue.sh")" ]; then
+		pass "19c: positive control — a maildir gate reporting on a 'queue' is flagged"
+	else
+		fail "19c: positive control FAILED — the maildir/queue mismatch scan stayed quiet on a planted mismatch"
+	fi
+	# NEGATIVE: a legitimate queue assertion with no maildir call nearby must NOT
+	# be flagged, or the scan is a corpus-wide "queue" ban by accident.
+	printf 'if wait_for_pattern "$S" "x" 30; then\n    pass "both queued prompts executed after the Esc abort (queue survived)"\nfi\n' \
+		>"$P19_FIX/scripts/e2e-tests/legit-queue.sh"
+	if [ -z "$(_p19_maildir_says_queue "$P19_FIX/scripts/e2e-tests/legit-queue.sh")" ]; then
+		pass "19c: negative control — a genuine queue assertion with no maildir call is not flagged"
+	else
+		fail "19c: negative control FAILED — the scan flags any 'queue' assertion, so it would red the ~25 legitimate ones in the corpus"
+	fi
+
 	# --- controls for the inert-row floor annotation, both directions -------
 	# Both call `_p19_floor_unannotated`, the SAME predicate the arm above uses.
 	_p19_inert_body='test_run() {\n    e2e_skip_row "subject deleted"\n    pass "unreachable"\n}\n'
@@ -4665,6 +4715,8 @@ else
 	fail "19c: no fixture dir — the empty-token-list positive control did not run"
 	fail "19c: no fixture dir — the canonical-absence positive control did not run"
 	fail "19c: no fixture dir — the whole-file exemption leak negative control did not run"
+	fail "19c: no fixture dir — the maildir/queue mismatch positive control did not run"
+	fail "19c: no fixture dir — the maildir/queue mismatch negative control did not run"
 	fail "19c: no fixture dir — the inert-row bare-floor positive control did not run"
 	fail "19c: no fixture dir — the inert-row annotated-floor negative control did not run"
 	fail "19c: no fixture dir — the wrapped-annotation negative control did not run"
