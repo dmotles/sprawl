@@ -149,6 +149,30 @@ because an unrecorded departure makes the provenance claim above a lie:
    when a mechanism and a fail-safe direction disagree, take the direction that
    fails safely.
 
+   > **THIS TABLE IS KNOWN-INCOMPLETE. Do not read a short union as a small
+   > obligation.** Six rows the driver can run appear nowhere in the files
+   > column below: `ask-user-question-idle`, `attach-blocks`,
+   > `blurb-live-gate`, `capture-pane-liveness`, `liveness-transitions`,
+   > `qum903-false-thinking`. The skill copy is pinned at `c7093cc` and the
+   > tree has moved since.
+   >
+   > A file whose only coverage is one of those six therefore **owes nothing
+   > when you derive the union** — the derivation comes back short, you will
+   > have followed the documented procedure correctly, and the run will
+   > record a discharged obligation that was never raised. There is no error
+   > and no skip; it fails silently in the permissive direction, which is the
+   > one direction this table is supposed to fail away from.
+   >
+   > Until this is fixed, after deriving the union also check those six rows
+   > by hand against your diff: read each script's header and decide whether
+   > it exercises anything you touched.
+   >
+   > Tracked as **QUM-1192**, which owns re-deriving the missing files
+   > columns. **This note is a hazard marker, not the fix** — it makes the
+   > incompleteness discoverable; it does not make any file gated. Deleting
+   > it is part of QUM-1192's acceptance criteria, so do not treat its
+   > presence as evidence the gap has been accounted for.
+
    | files touched | matrix row | guards |
    |---|---|---|
    | `cmd/enter.go`, `cmd/enter_notify.go`, `internal/tui/app.go`, `internal/tui/messages.go`, or `internal/tui/tree.go` | `notify-tui` | QUM-311/QUM-312 |
