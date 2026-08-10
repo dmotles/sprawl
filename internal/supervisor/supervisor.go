@@ -289,8 +289,10 @@ type Supervisor interface {
 	// to wake and deliver." error.
 	SendMessage(ctx context.Context, to, body string, now, wakeIfOffline bool) (*SendMessageResult, error)
 
-	// Peek returns an agent's status, last report, and the tail of its
-	// activity ring in one call. See §4.2.4.
+	// Peek returns an agent's status, blurb, liveness, in-turn flag and the
+	// tail of its activity ring in one call. QUM-1186: the last-report block
+	// went with report_status — the live answer to "what is this agent doing?"
+	// is now the blurb plus the newest activity entries. See §4.2.4.
 	Peek(ctx context.Context, agentName string, tail int) (*PeekResult, error)
 
 	// MessagesList returns a listing of messages in the caller's mailbox.
@@ -330,7 +332,7 @@ type Supervisor interface {
 	// RegisterRootRuntime attaches a pre-built RuntimeHandle to the in-memory
 	// runtime registry under the given name, marking it Started. Used by
 	// cmd/enter.go (QUM-399) to register weave's UnifiedRuntime so children's
-	// report_status / send_message WakeForDelivery calls reach the root via the
+	// send_message WakeForDelivery calls reach the root via the
 	// same registry mechanism that child runtimes use.
 	//
 	// agentState is best-effort: when nil, implementations may load from disk

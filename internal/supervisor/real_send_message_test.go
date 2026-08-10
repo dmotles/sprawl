@@ -191,11 +191,12 @@ func TestReal_SendMessage_NowTrue_RequiresAncestor(t *testing.T) {
 }
 
 // TestReal_SendMessage_TerminalStatus_ReturnsClearerError pins QUM-680: when
-// the recipient is persisted with a terminal lifecycle status (stopped /
-// retired) AND no live runtime is registered for it, SendMessage must surface
-// a clear "no longer running" error referencing the last reported state and
-// timestamp — rather than silently enqueueing into a dead agent's pending
-// queue. Note: faulted/killed/died/paused now fall under the QUM-726
+// the recipient is persisted with a terminal lifecycle status (retired /
+// retiring) AND no live runtime is registered for it, SendMessage must surface
+// a clear "no longer running" error referencing the agent's OBSERVED status —
+// rather than silently enqueueing into a dead agent's pending queue. QUM-1186:
+// the message used to quote the last reported state and timestamp; both fields
+// died with report_status. Note: faulted/killed/died/paused now fall under the QUM-726
 // wake-on-traffic gate which returns a different canonical error.
 func TestReal_SendMessage_TerminalStatus_ReturnsClearerError(t *testing.T) {
 	r, tmpDir := newFakeReal(t)

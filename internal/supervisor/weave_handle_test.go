@@ -20,7 +20,7 @@ import (
 
 // QUM-925 Slice A: weave's system-notification delivery is event-driven and
 // UNCONDITIONAL. WakeForDelivery (fired by the producer pokes in real.go on every
-// child report_status / send_message) drains the inbox straight to the CLI stdin
+// child send_message) drains the inbox straight to the CLI stdin
 // as a kind:system, priority-`next` frame — regardless of weave's turn state.
 //
 // This REPLACES TestWeaveRuntimeHandle_WakeForDelivery_DoesNotEnqueue_LeavesPendingForPeekAndDrain
@@ -394,7 +394,7 @@ func TestWeaveRuntimeHandle_WakeForDelivery_EmptyInbox_NoWrite(t *testing.T) {
 // highest-probability new defect in this slice, and it is SEQUENTIAL, not
 // concurrent. An agentloop pending entry stays in pending/ until its isReplay
 // echo drives OnDelivered -> MarkDelivered. QUM-925 makes a poke fire on EVERY
-// child report_status / send_message, so a second poke arriving inside that
+// child send_message, so a second poke arriving inside that
 // window re-runs ListPending, sees the same entry, and writes it again.
 //
 // The child path has the identical shape and the empirically-measured
@@ -592,7 +592,7 @@ func TestWeaveRuntimeHandle_Stop_BoundsWedgedActivityClose(t *testing.T) {
 //   - still returned by agentloop.ListPending (the rename has not happened).
 //
 // So a poke arriving there re-drains and writes the SAME notification to weave's
-// stdin twice. Pokes now fire on every child report_status / send_message and
+// stdin twice. Pokes now fire on every child send_message and
 // bursts are correlated (a fleet finishing a phase), so the window is reachable.
 //
 // The test holds OnDelivered open to make the window deterministic rather than

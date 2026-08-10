@@ -102,7 +102,8 @@ type drainPolicy struct {
 func weaveDrainPolicy(mu *sync.Mutex) drainPolicy {
 	return drainPolicy{
 		// SERIALISED. Pokes arrive on independent MCP handler goroutines (one per
-		// child report_status / send_message). Both inbox reads are unsafe
+		// child send_message), and the QUM-925 inbox-redrain ticker is a second
+		// concurrent caller on the same mutex. Both inbox reads are unsafe
 		// concurrently: messages.DrainStatusChange is an unlocked
 		// read-dir/read-file/remove sequence, and ListPending is a peek whose ack
 		// lands much later. Overlapping drains write the same notification twice.

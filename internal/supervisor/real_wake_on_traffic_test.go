@@ -1,14 +1,16 @@
 // QUM-726: wake-on-traffic supervisor-level tests.
 //
-// These tests pin the new offline-target handling for Real.SendMessage and
-// Real.SendMessage when wake_if_offline is false vs true. They also pin the
-// bare Real.Wake path's RestartInjection plumbing (WakeReasonBare).
+// These tests pin the offline-target handling for Real.SendMessage when
+// wake_if_offline is false vs true. They also pin the bare Real.Wake path's
+// RestartInjection plumbing (WakeReasonBare).
 //
-// RED phase: the canonical "Delivery failed: …" error is not surfaced yet,
-// and the runtime starter never sees a non-empty RestartInjection from a
-// wake-on-traffic invocation. These tests fail until the implementation in
-// real.go (SendMessage/Delegate offline-handling + Wake injection) and
-// runtime.go (Wake threads restartInjection into both specs) is wired.
+// Written RED against QUM-726: the canonical "Delivery failed: …" error was
+// not surfaced yet, and the runtime starter never saw a non-empty
+// RestartInjection from a wake-on-traffic invocation. The implementation
+// landed in real.go (SendMessage offline-handling + Wake injection) and
+// runtime.go (Wake threads restartInjection into both specs). QUM-1186 deleted
+// the Delegate arm of both the tests and that implementation — see the removal
+// note further down this file.
 package supervisor
 
 import (

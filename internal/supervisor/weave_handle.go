@@ -45,7 +45,8 @@ type WeaveRuntimeHandle struct {
 	ring *agentloop.ActivityRing
 
 	// drainMu serialises drainPendingToStdin. Pokes arrive on independent MCP
-	// handler goroutines (one per child report_status / send_message), and the
+	// handler goroutines (one per child send_message), the QUM-925 inbox-redrain
+	// ticker is a second concurrent caller, and the
 	// inbox read — agentloop.ListPending — is a non-destructive peek whose
 	// MarkDelivered ack lands only after the write. Two overlapping drains
 	// therefore both see the same entry as not-yet-in-flight and both write it,

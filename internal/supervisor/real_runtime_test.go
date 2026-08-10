@@ -256,9 +256,45 @@ func TestRealSpawn_FailedSpawnDoesNotRegisterRuntime(t *testing.T) {
 // task subsystem; nothing else about these cases was delegate-specific.
 
 // TestRealSendMessage_SignalsWakeOnlyAfterPersistedSuccess pins that a
-// cooperative send wakes the recipient WITHOUT interrupting it. The
-// wake-not-interrupt distinction is the whole cooperative-delivery contract.
+// cooperative send wakes the recipient EXACTLY ONCE and never interrupts it.
+// The wake-not-interrupt distinction is the whole cooperative-delivery
+// contract; the exactly-once half is deliberately stricter than the `>= 1`
+// assertions in TestRealSendMessage_DoesNotInterruptRecipientSession, which a
+// double-poke satisfies. QUM-1186: the WakeCount assertion was dropped in the
+// re-host off Real.Delegate, which left this body unable to fail even if
+// Real.SendMessage stopped poking altogether.
+//
+// The "only after persisted success" half is the failed-persist subtest below:
+// a runtime that IS started (so the poke gate is open) plus a send that fails
+// before it persists must leave WakeCount at 0. Without the started runtime
+// that arm proves nothing, which is why
+// TestRealSendMessage_FailedPersistLeavesRuntimeUnchanged — whose runtime is
+// never started — does not cover it.
 func TestRealSendMessage_SignalsWakeOnlyAfterPersistedSuccess(t *testing.T) {
+	t.Run("failed persist pokes nothing", func(t *testing.T) {
+		r, tmpDir := newFakeReal(t)
+		agentState := testAgentState("alice")
+		// Deliberately NO saveTestAgent: the state load inside SendMessage
+		// fails, so the send errors before it persists anything.
+		rt := ensureRuntimeWithStarter(t, r, tmpDir, agentState, &runtimeTestStarter{
+			session: &runtimeTestSession{
+				sessionID: "sess-alice",
+				caps:      backendpkg.Capabilities{SupportsInterrupt: true, SupportsResume: true},
+			},
+		})
+		if err := rt.Start(); err != nil {
+			t.Fatalf("runtime start: %v", err)
+		}
+
+		if _, err := r.SendMessage(context.Background(), "alice", "implement feature", false, false); err == nil {
+			t.Fatal("SendMessage() error = nil, want failure when the state file is missing")
+		}
+
+		if got := rt.Snapshot().WakeCount; got != 0 {
+			t.Errorf("WakeCount = %d, want 0 — a send that never persisted must not poke the recipient", got)
+		}
+	})
+
 	r, tmpDir := newFakeReal(t)
 	agentState := testAgentState("alice")
 	saveTestAgent(t, tmpDir, agentState)
@@ -278,7 +314,10 @@ func TestRealSendMessage_SignalsWakeOnlyAfterPersistedSuccess(t *testing.T) {
 
 	snap := rt.Snapshot()
 	if snap.InterruptCount != 0 {
-		t.Fatalf("InterruptCount = %d, want 0 for cooperative send (wake-only, never interrupt)", snap.InterruptCount)
+		t.Errorf("InterruptCount = %d, want 0 for cooperative send (wake-only, never interrupt)", snap.InterruptCount)
+	}
+	if snap.WakeCount != 1 {
+		t.Errorf("WakeCount = %d, want exactly 1 — a cooperative send pokes WakeForDelivery once and only once", snap.WakeCount)
 	}
 }
 

@@ -1823,7 +1823,7 @@ func (m AppModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		}
 		// QUM-925: the 2s backstop drain (peekAndDrainCmd, gated on TurnIdle) used
 		// to run here. Deleted — the supervisor pokes WakeForDelivery on every
-		// child report_status / send_message, so delivery is event-driven and
+		// child send_message, so delivery is event-driven and
 		// unconditional. Keeping a second drainer would double-consume: the
 		// agentloop peek is non-destructive until its much-later ack, and
 		// messages.DrainStatusChange is an unlocked read/remove. Startup and
