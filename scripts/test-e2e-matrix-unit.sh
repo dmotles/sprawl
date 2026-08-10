@@ -120,7 +120,13 @@ FAIL=0
 # marker not flagged; an ordinary fail not flagged; the same language in a COMMENT
 # not flagged; the marker counter distinguishing a marked site from an unmarked
 # one). Re-measured on a FULL GREEN run — 496 passed / 0 failed.
-MIN_ASSERTIONS=496
+#
+# 498 with the two controls code review's findings asked for: the anchor's lower
+# boundary (an `else fail "` site must be flagged, the direction that loses coverage
+# rather than the three that over-match) and the unreadable-member false green (one
+# chmod 000 ahead of the rows in sort order used to abort a single awk and green the
+# arm with six real violators present). Re-measured on a FULL GREEN run.
+MIN_ASSERTIONS=498
 # A [16b] nested child deliberately does NOT re-run section [16] (recursing would
 # fork-bomb, and counting there would corrupt the parity comparison), so it asserts
 # strictly fewer things and needs its own floor. Measured at de22410: 237; 238 after
@@ -150,7 +156,10 @@ MIN_ASSERTIONS=496
 # gains all seven of the parent's new assertions). Measured with
 # UNIT_NESTED_SEAM_CHECK set: "488 passed / 1 failed", the one fail being 16c's
 # deliberate one.
-MIN_ASSERTIONS_NESTED=488
+# 490 with the anchor-boundary and unreadable-member controls (+2; the child DOES
+# run [19]). Measured with UNIT_NESTED_SEAM_CHECK set: "490 passed / 1 failed", the
+# one fail being 16c's deliberate one.
+MIN_ASSERTIONS_NESTED=490
 
 # Pin the temp root. This suite runs inside `make validate` and therefore inside
 # the pre-commit hook, so it must not inherit the committing agent's TMPDIR:
@@ -4478,14 +4487,33 @@ fi
 # broken. So: decline-to-judge language in a `fail` message requires the literal
 # marker `HARD FAIL BY DESIGN` in the same message.
 #
-# Deliberately NARROW on both axes. Only lines that INVOKE `fail "` — including
-# the `|| fail "` and `then fail "` spellings, which are the idiomatic precondition
-# guard — and never a comment line, because a comment may discuss lapsed
-# preconditions freely (two in idle-reclaim-busy.sh do, and flagging prose would
-# make this a ban on explaining yourself). And only a fixed phrase set: the loose
-# form (refus|premise|verdict|precondition|skip) was measured at 24 hits including
-# legitimate ones — "no refusal text within 90s", "wire assertions skipped",
-# "refusing to use SHUTDOWN_ROOT outside /tmp".
+# Deliberately NARROW on both axes. Only lines that INVOKE `fail "` — every
+# spelling in the corpus: line-start, `|| fail "`, `&& fail "`, `then fail "`,
+# `else fail "`, `; fail "` and a case arm's `) fail "`. The first draft covered
+# only the first three and code review probed the gap: `[ -z "$PID" ] && fail "…"`
+# is the same precondition idiom one operator over, and `else fail "` occurs 13
+# times under scripts/. A comment line is never matched, because a comment may
+# discuss lapsed preconditions freely (two in idle-reclaim-busy.sh do, and flagging
+# prose would make this a ban on explaining yourself).
+#
+# And only a fixed phrase set. The loose form (refus|premise|verdict|precondition|
+# skip) was measured at 24 hits including legitimate ones — "no refusal text within
+# 90s", "wire assertions skipped", "refusing to use SHUTDOWN_ROOT outside /tmp".
+#
+# KNOWINGLY OUT OF SCOPE, measured and rejected rather than overlooked. A
+# `vacuous|aborting|cannot assert|could not establish` family exists — six sites,
+# among them idle-continuation.sh:241 and :252, recall-sendnow.sh:187,
+# pause-lifecycle.sh:468 — and adding it was tried: it also flags messages that
+# report a REAL defect using the same words, e.g. capture-pane-liveness.sh:191,
+# whose positive control fires with "the QUM-957 swallow is back, and every
+# negative pane assertion in the harness is vacuous again". That is a verdict, not
+# a refusal to render one, and demanding HARD FAIL BY DESIGN there would be wrong.
+# So this arm does NOT close that family: it is a spelling check over messages that
+# deny a verdict in one of the listed ways. Anyone widening it must re-measure the
+# false positives, not just the new true ones. `not an AC-1 violation` IS included:
+# it is a verbatim synonym of `not a product verdict`, which was already in the set,
+# and it appears five times in notif-stacked-restart.sh — four of them within 20
+# lines of a site this arm already flagged.
 #
 # SAME-LINE BY CONSTRUCTION: the scan is line-based, so a message whose phrase and
 # marker land on different physical lines would be a false positive with no way to
@@ -4497,18 +4525,36 @@ fi
 # the scan blind while the site count still read 3 — a floor certifying its own
 # copy of what it floors, one position over from the control-copies-production
 # defect QA found in this file this week. Mode "unmarked" filters, it does not
-# re-derive. </dev/null: with an empty corpus awk would otherwise read inherited
-# stdin, which inside the pre-commit hook is a hang rather than a red.
-_P19_DECLINE_RE='refusal to render a verdict|no verdict|not a product verdict|premise is unestablished|precondition lapsed|lapsed precondition|precondition does not hold|cannot run without'
+# re-derive.
+#
+# PER FILE, and an unreadable member is reported ON THE SAME CHANNEL as a
+# violation — the shape the two scans above document, and which the first draft of
+# this one regressed away from. It handed all ~65 corpus paths to a SINGLE awk with
+# `2>/dev/null`: gawk is fatal on an unreadable operand and never opens the rest,
+# stderr was discarded and the status thrown away by `$( )`, so one unreadable file
+# sorted ahead of the rows returned an empty violation list and the arm PASSED with
+# six real violators in the corpus. Code review measured it: unreadable-first gave
+# `[]`, unreadable-last gave `[violator.sh:2]`. </dev/null keeps awk off inherited
+# stdin (a hang inside the pre-commit hook rather than a red), and stderr is NOT
+# suppressed any more, so a broken regex prints its diagnosis instead of reading
+# clean.
+_P19_DECLINE_RE='refusal to render a verdict|no verdict|not a product verdict|premise is unestablished|precondition lapsed|lapsed precondition|precondition does not hold|cannot run without|not an ac-1 violation'
 _p19_decline_scan() {
 	local mode="$1"; shift
-	awk -v re="$_P19_DECLINE_RE" -v mode="$mode" '
-		/^[[:space:]]*#/ { next }
-		$0 !~ /(^[[:space:]]*|\|\|[[:space:]]*|then[[:space:]]+)fail "/ { next }
-		tolower($0) !~ re { next }
-		mode == "unmarked" && $0 ~ /HARD FAIL BY DESIGN/ { next }
-		{ print FILENAME":"FNR }
-	' "$@" </dev/null 2>/dev/null
+	local _f
+	for _f in "$@"; do
+		if [ ! -r "$_f" ]; then
+			printf '__UNREADABLE__:%s\n' "${_f##*/}"
+			continue
+		fi
+		awk -v re="$_P19_DECLINE_RE" -v mode="$mode" '
+			/^[[:space:]]*#/ { next }
+			$0 !~ /(^[[:space:]]*|\|\|[[:space:]]*|&&[[:space:]]*|;[[:space:]]*|\)[[:space:]]*|then[[:space:]]+|else[[:space:]]+)fail "/ { next }
+			tolower($0) !~ re { next }
+			mode == "unmarked" && $0 ~ /HARD FAIL BY DESIGN/ { next }
+			{ print FILENAME":"FNR }
+		' "$_f" </dev/null
+	done
 }
 _p19_decline_unmarked() { _p19_decline_scan unmarked "$@"; }
 _p19_decline_marked_n() {
@@ -4526,22 +4572,25 @@ _p19_decline_marked_n() {
 # elsewhere would mask the phrase set rotting for this file's two. Rot is caught
 # instead by the POSITIVE CONTROL below, which plants an unmarked site of the real
 # shape and must be flagged, through this same predicate; the file set itself is
-# floored by P19_CORPUS's own corpus floor above, and unreadable members are
-# reported by the readability arm below.
+# floored by P19_CORPUS's own corpus floor above, and an unreadable member is
+# reported by the scan itself as `__UNREADABLE__:<base>`, which fails the arm rather
+# than shrinking its coverage silently. (That sentence used to claim "the
+# readability arm below" — there is no such arm for this scan, and the claim was
+# covering the false green described at the predicate.)
 #
 # The marker gets a CEILING for the same reason the P19-ALLOW exemption does: it is
 # a literal anyone can append, so without one "adding a marker shows up in review"
-# is a hope. Measured at this commit: six marked sites — idle-interrupt-inject.sh's
+# is a hope. Measured at this commit: eleven marked sites — idle-interrupt-inject.sh's
 # two lapsed-premise gates, idle-reclaim-busy.sh's P5a and P5b, and
-# notif-stacked-restart.sh's two idle-precondition gates. idle-reclaim-busy is an
-# inert row and is NOT exempted: this arm is about message honesty, not assertion
-# reachability, and its body is the blueprint for the re-host, so exempting it would
-# let the class return silently the day it comes back.
+# notif-stacked-restart.sh's seven idle-precondition and broken-measurement gates.
+# idle-reclaim-busy is an inert row and is NOT exempted: this arm is about message
+# honesty, not assertion reachability, and its body is the blueprint for the
+# re-host, so exempting it would let the class return silently the day it comes back.
 _p19_dec_marked_n=$(_p19_decline_marked_n "${P19_CORPUS[@]}")
-if [ "$_p19_dec_marked_n" -le 6 ]; then
-	pass "19c: $_p19_dec_marked_n fail site(s) claim HARD FAIL BY DESIGN (ceiling 6)"
+if [ "$_p19_dec_marked_n" -le 11 ]; then
+	pass "19c: $_p19_dec_marked_n fail site(s) claim HARD FAIL BY DESIGN (ceiling 11)"
 else
-	fail "19c: $_p19_dec_marked_n fail site(s) claim HARD FAIL BY DESIGN, above the measured ceiling of 6 — a new hard-fail-on-unmet-premise gate was added. That may be right, but raise the ceiling in the same diff so it is visible in review rather than only in the log"
+	fail "19c: $_p19_dec_marked_n fail site(s) claim HARD FAIL BY DESIGN, above the measured ceiling of 11 — a new hard-fail-on-unmet-premise gate was added. That may be right, but raise the ceiling in the same diff so it is visible in review rather than only in the log"
 fi
 _p19_dec_bad=$(_p19_decline_unmarked "${P19_CORPUS[@]}")
 if [ -z "$_p19_dec_bad" ]; then
@@ -4835,6 +4884,31 @@ if [ "$P19_FIX_OK" -eq 1 ]; then
 	else
 		fail "19c: near-miss control FAILED — the scan flags prose, so explaining a lapsed precondition in a comment would become a violation"
 	fi
+	# POSITIVE control for the ANCHOR's lower boundary. The three near-miss
+	# controls above all probe over-matching; this one probes the direction that
+	# actually loses coverage — a spelling the anchor does not know silently
+	# stops being scanned. `else fail "` was missed by the first draft and occurs
+	# 13 times under scripts/, so it is the one worth pinning.
+	printf 'if [ -n "$PID" ]; then\n    pass "busy"\nelse fail "the idle precondition does not hold, so no verdict is possible"\nfi\n' \
+		>"$P19_FIX/scripts/e2e-tests/declines-else-arm.sh"
+	if [ -n "$(_p19_decline_unmarked "$P19_FIX/scripts/e2e-tests/declines-else-arm.sh")" ]; then
+		pass "19c: positive control — an unmarked site spelled 'else fail \"' is flagged, so the anchor covers more than line-start"
+	else
+		fail "19c: positive control FAILED — 'else fail \"' is not matched, so any site reformatted onto an else arm leaves the scan without a red"
+	fi
+	# POSITIVE control for the UNREADABLE case, which is the false green code
+	# review measured: one unreadable member handed to a single awk aborted the
+	# whole scan, and the arm passed with real violators in the corpus. The
+	# unreadable file is placed FIRST, which is the losing order.
+	printf 'fail "the premise is unestablished, so no verdict"\n' \
+		>"$P19_FIX/scripts/e2e-tests/unreadable-probe.sh"
+	chmod 000 "$P19_FIX/scripts/e2e-tests/unreadable-probe.sh"
+	if [ "$(_p19_decline_unmarked "$P19_FIX/scripts/e2e-tests/unreadable-probe.sh" "$P19_FIX/scripts/e2e-tests/declines-unmarked.sh" | grep -c .)" -eq 2 ]; then
+		pass "19c: positive control — an unreadable corpus member is reported on the violation channel AND the readable violator after it is still scanned"
+	else
+		fail "19c: positive control FAILED — an unreadable member either goes unreported or aborts the scan of the files after it, so one chmod 000 in the corpus would turn this arm green with real violators present"
+	fi
+	chmod 644 "$P19_FIX/scripts/e2e-tests/unreadable-probe.sh"
 	# POSITIVE control for the CEILING's counter, which is otherwise a number
 	# nobody has watched move: it must count the marked fixture and not the
 	# unmarked one. Without this, a counter stuck at 0 would satisfy the ceiling
@@ -4870,6 +4944,8 @@ else
 	fail "19c: no fixture dir — the decline-to-judge marked negative control did not run"
 	fail "19c: no fixture dir — the ordinary-fail near-miss control did not run"
 	fail "19c: no fixture dir — the comment-only near-miss control did not run"
+	fail "19c: no fixture dir — the else-arm anchor positive control did not run"
+	fail "19c: no fixture dir — the unreadable-member positive control did not run"
 	fail "19c: no fixture dir — the HARD FAIL BY DESIGN counter's positive control did not run"
 fi
 

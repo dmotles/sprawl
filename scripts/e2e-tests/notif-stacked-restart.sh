@@ -218,7 +218,7 @@ test_run() {
     # non-zero later in the row. Path-exists now + same-counter-non-zero later is
     # what makes this zero meaningful rather than vacuous.
     if [ ! -f "$WEAVE_ACTIVITY" ]; then
-        fail "L0 SETUP: weave's activity.ndjson does not exist — wrong path or weave's runtime handle was never constructed, so L0's zero and L2's count would both be vacuous. This is a setup/plumbing failure, NOT an AC-1 violation."
+        fail "L0 SETUP: weave's activity.ndjson does not exist — wrong path or weave's runtime handle was never constructed, so L0's zero and L2's count would both be vacuous. This is a setup/plumbing failure, NOT an AC-1 violation. HARD FAIL BY DESIGN: reported as a red rather than e2e_skip_row, so this row's MIN_ASSERTIONS floor stays enforceable — a skip exits 77 before e2e_print_results. Re-run before investigating notification delivery."
         echo "  expected path: $WEAVE_ACTIVITY" >&2
         ls -la "$SPRAWL_ROOT/.sprawl/agents/weave/" >&2 2>/dev/null || true
         e2e_print_results
@@ -230,7 +230,7 @@ test_run() {
     RESULTS_BEFORE="$(count_results_after "$WEAVE_ACTIVITY" 0)"
     case "$RESULTS_BEFORE" in
         ''|*[!0-9]*)
-            fail "L0 SETUP: could not count completed turns (got '$RESULTS_BEFORE') — measurement broken, not an AC-1 violation"
+            fail "L0 SETUP: could not count completed turns (got '$RESULTS_BEFORE') — measurement broken, not an AC-1 violation. HARD FAIL BY DESIGN: reported as a red rather than e2e_skip_row, so this row's MIN_ASSERTIONS floor stays enforceable — a skip exits 77 before e2e_print_results. Re-run before investigating notification delivery."
             e2e_print_results
             return 1
             ;;
@@ -284,7 +284,7 @@ test_run() {
     # silently credited to the notification.
     RESULTS_AT_OFFSET="$(count_results_after "$WEAVE_ACTIVITY" 0)"
     if [ "$RESULTS_AT_OFFSET" != "0" ]; then
-        fail "L1 SETUP: $RESULTS_AT_OFFSET completed turn(s) exist at the injection offset (keystrokes sent: $TRUST_KEYS) — a turn from another source would be miscredited to the notification, so L2 cannot attribute. NOT an AC-1 violation."
+        fail "L1 SETUP: $RESULTS_AT_OFFSET completed turn(s) exist at the injection offset (keystrokes sent: $TRUST_KEYS) — a turn from another source would be miscredited to the notification, so L2 cannot attribute. NOT an AC-1 violation. HARD FAIL BY DESIGN: reported as a red rather than e2e_skip_row, so this row's MIN_ASSERTIONS floor stays enforceable — a skip exits 77 before e2e_print_results. Re-run before investigating notification delivery."
         e2e_print_results
         return 1
     fi
@@ -353,7 +353,7 @@ test_run() {
             pass "L2: a turn completed AFTER the injection (offset ${ACTIVITY_OFFSET}, completed turns before injection: $RESULTS_BEFORE, keystrokes: $TRUST_KEYS) — AC-1: idle weave + system frame => turn"
             ;;
         2)
-            fail "L2 SETUP: the turn-counting measurement broke mid-run (activity.ndjson unreadable) — NOT an AC-1 violation"
+            fail "L2 SETUP: the turn-counting measurement broke mid-run (activity.ndjson unreadable) — NOT an AC-1 violation. HARD FAIL BY DESIGN: reported as a red rather than e2e_skip_row, so this row's MIN_ASSERTIONS floor stays enforceable — a skip exits 77 before e2e_print_results. Re-run before investigating notification delivery."
             e2e_print_results
             return 1
             ;;
@@ -361,7 +361,7 @@ test_run() {
             # A file that vanished mid-run counts as 0, which would otherwise be
             # reported as a product regression. Separate the two before blaming AC-1.
             if [ ! -f "$WEAVE_ACTIVITY" ]; then
-                fail "L2 SETUP: activity.ndjson disappeared mid-run — measurement gone, NOT an AC-1 violation"
+                fail "L2 SETUP: activity.ndjson disappeared mid-run — measurement gone, NOT an AC-1 violation. HARD FAIL BY DESIGN: reported as a red rather than e2e_skip_row, so this row's MIN_ASSERTIONS floor stays enforceable — a skip exits 77 before e2e_print_results. Re-run before investigating notification delivery."
                 e2e_print_results
                 return 1
             fi

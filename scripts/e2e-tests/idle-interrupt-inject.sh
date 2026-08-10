@@ -346,7 +346,7 @@ test_run() {
     if [ "$NW_EARLY" -eq 1 ] && [ "$NW_STILL_BUSY" -eq 1 ]; then
         pass "sprawl issued the now-priority stdin write $((SECONDS - URGENT_SENT))s after the urgent send, with the child still inside its ${BUSY_SECS}s turn (sleep PID $SLEEP_PID still live at observation)"
     elif [ "$NW_EARLY" -eq 1 ]; then
-        fail "the now-priority write landed, but the child's 'sleep ${BUSY_SECS}' had already exited by the time it was observed, so 'while the turn was in flight' is NOT established. This is a lapsed precondition — NO VERDICT on sprawl's urgency path in either direction. HARD FAIL BY DESIGN, for the same reason as the gate above: skipping would exit 77 before e2e_print_results and leave this row's MIN_ASSERTIONS floor unenforceable, so a lapsed premise is reported as a red. Re-run; if it repeats, the ${BUSY_SECS}s window is too short for this host."
+        fail "the now-priority write landed, but the child's 'sleep ${BUSY_SECS}' had already exited by the time it was observed, so 'while the turn was in flight' is NOT established. This is a lapsed precondition — NO VERDICT on sprawl's urgency path in either direction. HARD FAIL BY DESIGN, and for a stronger reason than the gate above: this site cannot skip AT ALL. It does not return — the row continues into PHASE 2a and keeps asserting — so e2e_skip_row here would abandon the rest of the row mid-flight rather than merely leaving the floor unenforced. A lapsed premise is therefore reported as a red. Re-run; if it repeats, the ${BUSY_SECS}s window is too short for this host."
     else
         fail "no now-priority write reached $CHILD2_NAME's wire log within 15s of the urgent send — sprawl deferred an urgent delivery instead of injecting it mid-turn (QUM-821)"
     fi
