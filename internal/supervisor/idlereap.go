@@ -269,7 +269,7 @@ func (r *Real) idleInputsFor(rt *AgentRuntime) idleInputs {
 //
 // The gate alone closes the before-A and after-C cases; only the backstop
 // closes the during-B case. Both are required. Do not simplify this to one.
-func (r *Real) maybeReclaimIdle(rt *AgentRuntime) {
+func (r *Real) maybeReclaimIdle(sweepCtx context.Context, rt *AgentRuntime) {
 	if rt == nil {
 		return
 	}
@@ -286,6 +286,11 @@ func (r *Real) maybeReclaimIdle(rt *AgentRuntime) {
 	if !assessment.Reap {
 		return
 	}
+	// Declining here rather than mid-teardown is what keeps Shutdown from
+	// waiting out a full stop budget for a reap it never needed to start.
+	if sweepCtx != nil && sweepCtx.Err() != nil {
+		return
+	}
 
 	// Phase B. StopAfterTurn, never Stop: its subscribe-before-check ordering
 	// is the existing closer for the "a turn began between the check and the
@@ -294,6 +299,11 @@ func (r *Real) maybeReclaimIdle(rt *AgentRuntime) {
 	ctx, cancel := context.WithTimeout(context.Background(), idleReclaimStopBudget)
 	defer cancel()
 	stopErr := rt.StopAfterTurn(ctx, idleReclaimStopBudget, stopReasonIdleReclaim)
+	// ctx is deliberately NOT derived from sweepCtx. A teardown already under
+	// way must run to completion, and the backstop below must be able to wake
+	// an agent whose mail arrived mid-reap even if the supervisor is shutting
+	// down — otherwise the entry sits in pending/ behind a StatusIdle agent
+	// that boot does not resume.
 
 	// Phase C.
 	gate.Lock()

@@ -14,6 +14,7 @@
 package supervisor
 
 import (
+	"context"
 	"sync"
 	"sync/atomic"
 	"time"
@@ -32,8 +33,10 @@ type idleReaperDeps struct {
 	Registry idleRuntimeLister
 	// Reclaim is invoked once per tick per runtime, outside any mutex. The
 	// predicate and the teardown both live behind it ((*Real).maybeReclaimIdle),
-	// so this file holds only the loop.
-	Reclaim func(rt *AgentRuntime)
+	// so this file holds only the loop. The ctx is cancelled by Stop, so a
+	// sweep in progress when the supervisor shuts down declines to start new
+	// teardowns rather than making Shutdown wait out a full stop budget.
+	Reclaim func(ctx context.Context, rt *AgentRuntime)
 	// Interval supplies the sweep cadence, read once when the loop installs
 	// its ticker. A mid-run config change is NOT picked up until restart.
 	Interval  func() time.Duration
@@ -45,6 +48,8 @@ type idleReaper struct {
 	deps   idleReaperDeps
 	stopCh chan struct{}
 	doneCh chan struct{}
+	ctx    context.Context
+	cancel context.CancelFunc
 
 	startOnce sync.Once
 	stopOnce  sync.Once
@@ -71,10 +76,13 @@ func newIdleReaper(deps idleReaperDeps) *idleReaper {
 			return t.C, t.Stop
 		}
 	}
+	ctx, cancel := context.WithCancel(context.Background())
 	return &idleReaper{
 		deps:   deps,
 		stopCh: make(chan struct{}),
 		doneCh: make(chan struct{}),
+		ctx:    ctx,
+		cancel: cancel,
 	}
 }
 
@@ -95,7 +103,10 @@ func (i *idleReaper) Start() {
 // Stop signals the goroutine to exit and blocks until it has. Safe without
 // Start, and safe concurrently.
 func (i *idleReaper) Stop() {
-	i.stopOnce.Do(func() { close(i.stopCh) })
+	i.stopOnce.Do(func() {
+		close(i.stopCh)
+		i.cancel()
+	})
 
 	i.mu.Lock()
 	i.stopRequested = true
@@ -153,7 +164,7 @@ func (i *idleReaper) runOnce() {
 		if rt == nil {
 			continue
 		}
-		i.deps.Reclaim(rt)
+		i.deps.Reclaim(i.ctx, rt)
 	}
 }
 

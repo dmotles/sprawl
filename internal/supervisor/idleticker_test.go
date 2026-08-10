@@ -22,8 +22,8 @@ type reclaimRecorder struct {
 	names []string
 }
 
-func (r *reclaimRecorder) fn() func(rt *AgentRuntime) {
-	return func(rt *AgentRuntime) {
+func (r *reclaimRecorder) fn() func(ctx context.Context, rt *AgentRuntime) {
+	return func(_ context.Context, rt *AgentRuntime) {
 		r.mu.Lock()
 		defer r.mu.Unlock()
 		r.names = append(r.names, rt.Name())
@@ -104,7 +104,7 @@ func TestIdleReaper_StartedIsSetInsideTheGoroutine(t *testing.T) {
 	t.Parallel()
 	ir := newIdleReaper(idleReaperDeps{
 		Registry:  &fakeIdleLister{},
-		Reclaim:   func(*AgentRuntime) {},
+		Reclaim:   func(context.Context, *AgentRuntime) {},
 		Interval:  func() time.Duration { return time.Hour },
 		NewTicker: func(time.Duration) (<-chan time.Time, func()) { return make(chan time.Time), func() {} },
 	})

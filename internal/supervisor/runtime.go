@@ -296,16 +296,36 @@ func (r *AgentRuntime) InTurn() bool {
 //
 // InTurn() is deliberately left alone: its many existing callers only ever
 // read it as a hint. QUM-1186 D1a.
+// It is the UNION of the two independent turn signals, because neither alone
+// is complete and the reaper must fail toward "busy":
+//
+//   - turnProbe → backend Session.InTurn() tracks SPRAWL-INITIATED turns. A
+//     child executing its spawn prompt is driven by the CLI's own argv, so this
+//     reads false for that entire turn.
+//   - UnifiedRuntime's phase machine is "the sole in_turn authority"
+//     (internal/runtime/unified.go on the `phase` field) and does see those
+//     turns — but it is absent on non-unified handles.
+//
+// Observed is true when EITHER source could answer. The union is not a
+// belt-and-braces flourish: reading only the session probe reclaimed a child
+// mid-Bash in the idle-reclaim e2e row's busy-agent control, because with no
+// frames arriving during a long tool call LastActivityAt goes stale too and
+// every other term agreed the agent was idle.
 func (r *AgentRuntime) InTurnObserved() (inTurn bool, observed bool) {
 	h := r.currentHandle()
 	if h == nil {
 		return false, false
 	}
-	probe, ok := h.(turnProbe)
-	if !ok {
-		return false, false
+	if probe, ok := h.(turnProbe); ok {
+		inTurn, observed = probe.InTurn(), true
 	}
-	return probe.InTurn(), true
+	if p, ok := h.(unifiedRuntimeProvider); ok {
+		if urt := p.UnifiedRuntime(); urt != nil {
+			inTurn = inTurn || urt.State().InTurn
+			observed = true
+		}
+	}
+	return inTurn, observed
 }
 
 // InFlightSystemObserved reports how many durable entry IDs the runtime is

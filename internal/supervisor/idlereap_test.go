@@ -17,6 +17,7 @@ import (
 	"time"
 
 	"github.com/dmotles/sprawl/internal/agentloop"
+	"github.com/dmotles/sprawl/internal/protocol"
 	runtimepkg "github.com/dmotles/sprawl/internal/runtime"
 )
 
@@ -434,4 +435,70 @@ func waitFor(t *testing.T, cond func() bool, what string) {
 		time.Sleep(5 * time.Millisecond)
 	}
 	t.Fatalf("timed out after 2s waiting for %s", what)
+}
+
+// --- the defect the e2e busy-agent control found ----------------------------
+
+// phaseSessionHandle is a minimal runtime.SessionHandle so a test can drive a
+// real UnifiedRuntime's turn-phase machine.
+type phaseSessionHandle struct{}
+
+func (phaseSessionHandle) WriteUserMessage(context.Context, protocol.UserMessage) error { return nil }
+func (phaseSessionHandle) Interrupt(context.Context) error                              { return nil }
+func (phaseSessionHandle) CancelAsyncMessage(context.Context, string) (bool, error) {
+	return false, nil
+}
+
+// TestAgentRuntime_InTurnObserved_CountsARuntimePhaseTurn is the regression for
+// the defect the e2e row's busy-agent control caught on its first live run: a
+// child running a 90-second Bash tool call was reclaimed mid-turn.
+//
+// Cause: unifiedHandle.InTurn() forwards to backend Session.InTurn(), which
+// tracks SPRAWL-INITIATED turns only. A child executing its spawn prompt is
+// driven by the CLI's own argv, so that probe reads false for the entire turn,
+// and with no frames arriving during a long tool call LastActivityAt goes stale
+// too — every predicate term said "idle" while the agent was working.
+//
+// UnifiedRuntime's phase machine is the authority (unified.go: "the sole
+// in_turn authority: State().InTurn == (phase != phaseIdle)"), so the
+// observation must be the UNION of the two signals. Neither alone is complete:
+// the phase machine is absent on non-unified handles, and the session probe is
+// what the rest of the tree already reads.
+func TestAgentRuntime_InTurnObserved_CountsARuntimePhaseTurn(t *testing.T) {
+	urt := runtimepkg.New(runtimepkg.RuntimeConfig{
+		Name:    "alice",
+		Session: phaseSessionHandle{},
+	})
+	if err := urt.Start(context.Background()); err != nil {
+		t.Fatalf("urt.Start: %v", err)
+	}
+	t.Cleanup(func() { _ = urt.Stop(context.Background()) })
+
+	// The handle's own turn probe stays FALSE for the whole test — that is the
+	// trap. Only the runtime phase moves.
+	rt := newIdleTestRuntime(t, &observableTurnHandle{
+		runtimeTestSession: &runtimeTestSession{sessionID: "s"},
+		urt:                urt,
+		inTurn:             false,
+	})
+
+	if inTurn, observed := rt.InTurnObserved(); !observed || inTurn {
+		t.Fatalf("precondition: InTurnObserved() = (%v, %v) before any turn, want (false, true)", inTurn, observed)
+	}
+
+	if _, err := urt.WriteUserPrompt(context.Background(), "do a long thing", "next"); err != nil {
+		t.Fatalf("WriteUserPrompt: %v", err)
+	}
+	if !urt.State().InTurn {
+		t.Fatal("precondition: the runtime's phase machine did not enter a turn, so this test cannot measure what it claims")
+	}
+
+	inTurn, observed := rt.InTurnObserved()
+	if !observed {
+		t.Fatal("observed = false with a live UnifiedRuntime, want true")
+	}
+	if !inTurn {
+		t.Error("InTurnObserved() = false while the runtime's phase machine reports a turn in progress. " +
+			"The reaper would tear this agent down mid-work — this is exactly what the e2e busy-agent control caught.")
+	}
 }

@@ -126,7 +126,7 @@ func serveHealthFrames(t *testing.T, handle *reclaimTestHandle) {
 func TestReclaim_IdleAgent_IsTornDownAndRestsIdle(t *testing.T) {
 	r, tmpDir, rt, handle := newReclaimFixture(t)
 
-	r.maybeReclaimIdle(rt)
+	r.maybeReclaimIdle(context.Background(), rt)
 
 	if got := handle.stopCalls.Load(); got != 1 {
 		t.Fatalf("stopCalls = %d after reclaiming an idle agent, want 1", got)
@@ -147,13 +147,34 @@ func TestReclaim_BusyAgent_IsNotTornDown(t *testing.T) {
 	r, _, rt, handle := newReclaimFixture(t)
 	handle.inTurn.Store(true)
 
-	r.maybeReclaimIdle(rt)
+	r.maybeReclaimIdle(context.Background(), rt)
 
 	if got := handle.stopCalls.Load(); got != 0 {
 		t.Fatalf("stopCalls = %d for an in-turn agent, want 0", got)
 	}
 	if !rt.SubprocessAlive() {
 		t.Error("SubprocessAlive() = false for an in-turn agent; it was torn down anyway")
+	}
+}
+
+// TestReclaim_CancelledSweepCtx_DoesNotStartATeardown: Shutdown stops the
+// reaper before tearing down runtimes, and Stop blocks on the loop goroutine.
+// Without this check a sweep that had just decided to reap would make Shutdown
+// wait out the whole stop budget for a teardown Shutdown was about to perform
+// itself. The agent here is fully reapable — only the cancelled ctx stops it,
+// which is what makes this distinguishable from the busy-agent case.
+func TestReclaim_CancelledSweepCtx_DoesNotStartATeardown(t *testing.T) {
+	r, _, rt, handle := newReclaimFixture(t)
+
+	ctx, cancel := context.WithCancel(context.Background())
+	cancel()
+	r.maybeReclaimIdle(ctx, rt)
+
+	if got := handle.stopCalls.Load(); got != 0 {
+		t.Fatalf("stopCalls = %d for a cancelled sweep, want 0", got)
+	}
+	if !rt.SubprocessAlive() {
+		t.Error("SubprocessAlive() = false after a cancelled sweep; the teardown started anyway")
 	}
 }
 
@@ -173,7 +194,7 @@ func TestReclaim_TurnStartsAfterAssessment_DefersTeardownToTurnEnd(t *testing.T)
 	handle.flipInTurnAfter.Store(1)
 
 	done := make(chan struct{})
-	go func() { defer close(done); r.maybeReclaimIdle(rt) }()
+	go func() { defer close(done); r.maybeReclaimIdle(context.Background(), rt) }()
 
 	time.Sleep(200 * time.Millisecond)
 	if got := handle.stopCalls.Load(); got != 0 {
@@ -210,7 +231,7 @@ func TestReclaim_MessageEnqueuedDuringStop_IsBackstoppedByRewake(t *testing.T) {
 		}
 	}
 
-	r.maybeReclaimIdle(rt)
+	r.maybeReclaimIdle(context.Background(), rt)
 
 	got, err := state.LoadAgent(tmpDir, "alice")
 	if err != nil {
@@ -233,7 +254,7 @@ func TestReclaim_ListPendingErrorAfterStop_AlsoRewakes(t *testing.T) {
 
 	handle.onStop = func() { breakPendingDir(t, tmpDir, "alice") }
 
-	r.maybeReclaimIdle(rt)
+	r.maybeReclaimIdle(context.Background(), rt)
 
 	got, err := state.LoadAgent(tmpDir, "alice")
 	if err != nil {
@@ -273,7 +294,7 @@ func TestReclaim_WaitsForTheSendGate(t *testing.T) {
 	gate.Lock()
 
 	done := make(chan struct{})
-	go func() { defer close(done); r.maybeReclaimIdle(rt) }()
+	go func() { defer close(done); r.maybeReclaimIdle(context.Background(), rt) }()
 
 	time.Sleep(200 * time.Millisecond)
 	if got := handle.stopCalls.Load(); got != 0 {
@@ -336,7 +357,7 @@ func TestReclaim_ConcurrentSends_NeverStrandAMessage(t *testing.T) {
 		}(i)
 	}
 	wg.Add(1)
-	go func() { defer wg.Done(); r.maybeReclaimIdle(rt) }()
+	go func() { defer wg.Done(); r.maybeReclaimIdle(context.Background(), rt) }()
 	wg.Wait()
 
 	got, err := state.LoadAgent(tmpDir, "alice")
