@@ -75,6 +75,12 @@ rts_wait_maildir_substring() {
 }
 
 test_run() {
+    # QUM-1186: this row's subject was deleted. It must NOT sit here passing
+    # vacuously — a row that goes quiet and green is the exact failure this
+    # slice exists to hunt — so it skips LOUDLY with a recorded reason (rc 77),
+    # which the matrix driver classifies as SKIP and which discharges nothing.
+    e2e_skip_row "report-then-send: subject deleted by QUM-1186. This row (QUM-866) existed solely to pin Real.ReportStatus's StopAfterTurn call — a terminal self-report must defer teardown until turn end so a follow-on send_message is not cut off. report_status is deleted and StopAfterTurn now has NO production caller until the QUM-1186 idle reaper wires one up. The PRIMITIVE survives and is fully unit-covered (internal/supervisor/runtime_stopafterturn_test.go: in-turn deferral, terminal events, immediate-stop-when-idle, runaway timeout, no-UnifiedRuntime path). Its e2e coverage should re-home onto the idle-reclaim row. Owner: the idle-reaper lane."
+
     e2e_recover_oauth_token
     unset SPRAWL_AGENT_IDENTITY
     e2e_setup_tmux_socket "sprawl-report-then-send-e2e"

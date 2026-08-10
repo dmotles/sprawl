@@ -6,6 +6,23 @@ not strictly semver while we are pre-1.0.
 
 ## [Unreleased]
 
+### Removed
+
+- **`delegate` and `report_status` are deleted; `send_message` is the only way to reach another agent** (QUM-1186, slice 1 of QUM-1185) — sprawl had three overlapping ways to make an agent receive text, and `delegate` and `send_message` shared **zero code**: two persisted data structures, two consumers, two failure modes, for one concept. Worse, `delegate` — the tool used to assign all work — produced no unread badge, no banner and no queue view, so **the operator could not see the thing land**. Calling either tool over MCP now returns an unknown-tool error.
+
+  Gone with them: the entire task subsystem (`internal/state/tasks.go`, `feedTasks`, the `queued → in-progress` flip, the `tasks/` directory, queued-task counters), the hidden `status_change` envelope class (`SendStatusChange`, `DrainStatusChange`, the `filter: "status"` mode on `messages_list`), and the `last_report_*` fields on agent state along with every consumer. The work-item record is not rebuilt in-tree — a tracker issue already is that record, it outlives the session, and it is visible without a TUI panel.
+
+  **Action required — `status` and `peek` response shapes changed.** `last_report_state`, `last_report_message`, `last_report_at` and `last_report_age` are gone from `status`, and `peek` drops its `last_report` block. **A shape-dependent parse breaks silently**, which is why the removal is pinned by an explicit absence assertion rather than left to a field quietly vanishing. The live answer to "what is this agent doing?" is now the agent's **blurb** plus the observed `last_activity_at` / `last_activity_age` pair. The TUI tree row makes the same substitution: it showed the agent's self-reported summary and now shows the blurb.
+
+  **Self-reported work state is deleted; liveness is now derived, never asserted.** Agents no longer claim what they are doing — the runtime observes that a process is alive and in a turn. Every liveness answer sprawl gives traces to a process probe, a projection, or an activity timestamp.
+
+  A new resting state `idle` marks an agent whose runtime was reclaimed for **inactivity** rather than because its work finished, and it renders distinctly in the TUI (a hollow diamond, not the "dormant" glyph that means finished and not the generic idle dot). It is deliberately inside the auto-resume accept-set, so a reclaimed agent comes back after a `sprawl enter` restart.
+
+  Two consequences worth knowing if you have old state files. Agent state schema is bumped to **v4**, and the `last_report_*` JSON keys are dropped from every file on its next save — one-way and intended, since nothing reads them. And the legacy `stopped` status now migrates to `suspended` rather than `faulted`: a clean exit nobody labelled is not a fault, and `faulted` sits outside the auto-resume accept-set, so the old mapping cost you the agent on the next restart. Because `suspended` is not a "resolved orphan" while `faulted` was, **a legacy `stopped` child now blocks its parent's retire/merge cascade** where it previously did not; retire it explicitly or cascade.
+
+  Merge's mergeability precondition is now a closed Status allow-set — `{active, idle, suspended, complete}` — rather than a check that also consulted the deleted report axis. It deliberately still permits merging a stopped agent: a stopped worktree is *more* quiescent than a running one, not less.
+
+
 ## [v0.5.5] - 2026-08-08
 
 ### Changed

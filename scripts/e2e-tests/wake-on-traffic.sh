@@ -25,6 +25,12 @@ test_metadata() {
 }
 
 test_run() {
+    # QUM-1186: this row's subject was deleted. It must NOT sit here passing
+    # vacuously — a row that goes quiet and green is the exact failure this
+    # slice exists to hunt — so it skips LOUDLY with a recorded reason (rc 77),
+    # which the matrix driver classifies as SKIP and which discharges nothing.
+    e2e_skip_row "wake-on-traffic: partially deleted subject (QUM-1186). This row drove the offline-class wake gate through BOTH delegate and send_message; the delegate half is deleted. The send_message half is real and still worth running, but the row asserts across both and would under-report if run as-is. SKIPPED pending re-host onto send_message only. Unit coverage for the surviving half is live and named: internal/supervisor/real_wake_on_traffic_test.go (TestSendMessage_OfflineTarget_NoFlag_ReturnsCanonicalError / _WakeIfOffline_WakesAndInjectsPrompt, driving the same offlineStatuses() table and byte-pinned canonical error)."
+
     e2e_recover_oauth_token
     unset SPRAWL_AGENT_IDENTITY
     e2e_setup_tmux_socket "sprawl-wake-on-traffic-e2e"

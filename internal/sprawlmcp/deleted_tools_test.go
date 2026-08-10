@@ -17,10 +17,7 @@ import (
 // deletedToolNames is deliberately a literal list, not derived from the
 // catalog: deriving it from the same source it checks would make the
 // assertion true by construction.
-//
-// report_status joins this list in the commit that deletes it; at this commit
-// it is still live, and including it early would make the suite red.
-var deletedToolNames = []string{"delegate"}
+var deletedToolNames = []string{"delegate", "report_status"}
 
 func TestDeletedTools_AbsentFromCatalog(t *testing.T) {
 	srv := New(&mockSupervisor{})

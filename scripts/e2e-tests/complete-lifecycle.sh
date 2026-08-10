@@ -104,6 +104,12 @@ complete_find_child_by_branch() {
 }
 
 test_run() {
+    # QUM-1186: this row's subject was deleted. It must NOT sit here passing
+    # vacuously — a row that goes quiet and green is the exact failure this
+    # slice exists to hunt — so it skips LOUDLY with a recorded reason (rc 77),
+    # which the matrix driver classifies as SKIP and which discharges nothing.
+    e2e_skip_row "complete-lifecycle: subject deleted by QUM-1186 (slice 1 of QUM-1185). This row drove an agent to StatusComplete via report_status(state=complete) and then revived it with delegate. BOTH tools are deleted, and nothing writes StatusComplete any more, so every phase of this row is unreachable. It is SKIPPED rather than deleted or left to pass vacuously: the lifecycle arc it guards (revive a resting agent, preserve session_id/branch/worktree, refuse after retire) is still real and needs re-hosting onto send_message + the QUM-1186 idle-reclaim resting state. Owner: the e2e re-host lane. Recipe: .sprawl/agents/finn/findings/e2e-probe-substitution.md"
+
     e2e_recover_oauth_token
     unset SPRAWL_AGENT_IDENTITY
     e2e_setup_tmux_socket "sprawl-complete-lifecycle-e2e"
