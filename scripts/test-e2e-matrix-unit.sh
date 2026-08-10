@@ -114,7 +114,13 @@ FAIL=0
 # 489 with the maildir/queue mismatch arm and its two controls (a planted
 # mismatch flagged; a genuine queue assertion with no maildir call NOT flagged,
 # which is what keeps it from becoming a corpus-wide "queue" ban).
-MIN_ASSERTIONS=489
+#
+# 496 with the decline-to-judge arm: the clean-corpus verdict, the marker's
+# ceiling, and five controls (an unmarked site flagged; the same message with the
+# marker not flagged; an ordinary fail not flagged; the same language in a COMMENT
+# not flagged; the marker counter distinguishing a marked site from an unmarked
+# one). Re-measured on a FULL GREEN run — 496 passed / 0 failed.
+MIN_ASSERTIONS=496
 # A [16b] nested child deliberately does NOT re-run section [16] (recursing would
 # fork-bomb, and counting there would corrupt the parity comparison), so it asserts
 # strictly fewer things and needs its own floor. Measured at de22410: 237; 238 after
@@ -140,7 +146,11 @@ MIN_ASSERTIONS=489
 # [19]), then 481 with the maildir/queue mismatch arm and its two controls.
 # Measured with UNIT_NESTED_SEAM_CHECK set: "481 passed / 1 failed", the one
 # fail being 16c's deliberate one.
-MIN_ASSERTIONS_NESTED=481
+# 488 once the decline-to-judge arm landed (+7; the child DOES run [19], so it
+# gains all seven of the parent's new assertions). Measured with
+# UNIT_NESTED_SEAM_CHECK set: "488 passed / 1 failed", the one fail being 16c's
+# deliberate one.
+MIN_ASSERTIONS_NESTED=488
 
 # Pin the temp root. This suite runs inside `make validate` and therefore inside
 # the pre-commit hook, so it must not inherit the committing agent's TMPDIR:
@@ -4455,6 +4465,92 @@ else
 	fail "19c: inert row(s) declare a MIN_ASSERTIONS floor that reads as an enforced gate but can never be reached ($_p19_floor_bad) — e2e_skip_row exits before e2e_print_results, so every assertion in those bodies could be deleted unnoticed. Say so at the declaration, as idle-reclaim-busy.sh does"
 fi
 
+# --- a `fail` that declines to judge must say the hard fail is deliberate ----
+# QA found this on idle-interrupt-inject's /proc precondition: the message said
+# "this is a refusal to render a verdict", which is the DEFINITION of a skip,
+# while the mechanism was `fail` + `e2e_print_results; return 1` — a hard red.
+# Both choices are defensible and the row keeps `fail` on purpose: `e2e_skip_row`
+# exits 77 BEFORE `e2e_print_results`, so skipping would make that row's
+# MIN_ASSERTIONS floor unenforceable — the exact hazard annotated on
+# complete-lifecycle and wake-on-traffic. What is NOT defensible is leaving the
+# choice unstated, because the next person to meet the red reads a message that
+# says "no verdict" from a mechanism that rendered one, and concludes the row is
+# broken. So: decline-to-judge language in a `fail` message requires the literal
+# marker `HARD FAIL BY DESIGN` in the same message.
+#
+# Deliberately NARROW on both axes. Only lines that INVOKE `fail "` — including
+# the `|| fail "` and `then fail "` spellings, which are the idiomatic precondition
+# guard — and never a comment line, because a comment may discuss lapsed
+# preconditions freely (two in idle-reclaim-busy.sh do, and flagging prose would
+# make this a ban on explaining yourself). And only a fixed phrase set: the loose
+# form (refus|premise|verdict|precondition|skip) was measured at 24 hits including
+# legitimate ones — "no refusal text within 90s", "wire assertions skipped",
+# "refusing to use SHUTDOWN_ROOT outside /tmp".
+#
+# SAME-LINE BY CONSTRUCTION: the scan is line-based, so a message whose phrase and
+# marker land on different physical lines would be a false positive with no way to
+# satisfy the arm except unwrapping. Zero `fail "` openings in the corpus wrap
+# today (measured: no odd-quote-count openings). Do not wrap these messages.
+#
+# ONE predicate, two modes. The first draft had two awks that each re-spelled the
+# anchor and the phrase match; tightening one and not the other would have made
+# the scan blind while the site count still read 3 — a floor certifying its own
+# copy of what it floors, one position over from the control-copies-production
+# defect QA found in this file this week. Mode "unmarked" filters, it does not
+# re-derive. </dev/null: with an empty corpus awk would otherwise read inherited
+# stdin, which inside the pre-commit hook is a hang rather than a red.
+_P19_DECLINE_RE='refusal to render a verdict|no verdict|not a product verdict|premise is unestablished|precondition lapsed|lapsed precondition|precondition does not hold|cannot run without'
+_p19_decline_scan() {
+	local mode="$1"; shift
+	awk -v re="$_P19_DECLINE_RE" -v mode="$mode" '
+		/^[[:space:]]*#/ { next }
+		$0 !~ /(^[[:space:]]*|\|\|[[:space:]]*|then[[:space:]]+)fail "/ { next }
+		tolower($0) !~ re { next }
+		mode == "unmarked" && $0 ~ /HARD FAIL BY DESIGN/ { next }
+		{ print FILENAME":"FNR }
+	' "$@" </dev/null 2>/dev/null
+}
+_p19_decline_unmarked() { _p19_decline_scan unmarked "$@"; }
+_p19_decline_marked_n() {
+	local _all _unm
+	_all=$(_p19_decline_scan all "$@" | grep -c . || true)
+	_unm=$(_p19_decline_scan unmarked "$@" | grep -c . || true)
+	echo $((_all - _unm))
+}
+# NO floor on the number of candidate sites in the live corpus, deliberately, and
+# this is the one design note worth reading. A floor on "how many messages use
+# decline-to-judge language" counts exactly the population the arm asks authors to
+# fix: convert one site to `e2e_skip_row`, or reword a message so it stops claiming
+# no-verdict, and the floor reds with the false diagnosis "the phrase set stopped
+# matching". It would also be an aggregate — three unrelated sites appearing
+# elsewhere would mask the phrase set rotting for this file's two. Rot is caught
+# instead by the POSITIVE CONTROL below, which plants an unmarked site of the real
+# shape and must be flagged, through this same predicate; the file set itself is
+# floored by P19_CORPUS's own corpus floor above, and unreadable members are
+# reported by the readability arm below.
+#
+# The marker gets a CEILING for the same reason the P19-ALLOW exemption does: it is
+# a literal anyone can append, so without one "adding a marker shows up in review"
+# is a hope. Measured at this commit: six marked sites — idle-interrupt-inject.sh's
+# two lapsed-premise gates, idle-reclaim-busy.sh's P5a and P5b, and
+# notif-stacked-restart.sh's two idle-precondition gates. idle-reclaim-busy is an
+# inert row and is NOT exempted: this arm is about message honesty, not assertion
+# reachability, and its body is the blueprint for the re-host, so exempting it would
+# let the class return silently the day it comes back.
+_p19_dec_marked_n=$(_p19_decline_marked_n "${P19_CORPUS[@]}")
+if [ "$_p19_dec_marked_n" -le 6 ]; then
+	pass "19c: $_p19_dec_marked_n fail site(s) claim HARD FAIL BY DESIGN (ceiling 6)"
+else
+	fail "19c: $_p19_dec_marked_n fail site(s) claim HARD FAIL BY DESIGN, above the measured ceiling of 6 — a new hard-fail-on-unmet-premise gate was added. That may be right, but raise the ceiling in the same diff so it is visible in review rather than only in the log"
+fi
+_p19_dec_bad=$(_p19_decline_unmarked "${P19_CORPUS[@]}")
+if [ -z "$_p19_dec_bad" ]; then
+	pass "19c: every fail message that declines to render a verdict states that the hard fail is deliberate"
+else
+	fail "19c: fail message(s) describe themselves as declining to judge but hard-fail the row, with no statement that this was chosen — a reader of the red cannot tell an unmet premise from a product defect. Add 'HARD FAIL BY DESIGN' and say why (keeping the floor enforceable), or convert the site to e2e_skip_row and annotate the floor:
+$(printf '%s\n' "$_p19_dec_bad" | sed 's/^/      /')"
+fi
+
 # The exemption is a marker anyone can add to a live agent prompt to silence a
 # genuine advertisement, so it needs a ceiling for the same reason every row
 # needs an assertion floor: without one, "adding a marker shows up in review"
@@ -4699,6 +4795,55 @@ if [ "$P19_FIX_OK" -eq 1 ]; then
 	else
 		pass "19c: near-miss control — a live row's reachable MIN_ASSERTIONS floor is not flagged"
 	fi
+
+	# --- controls for the decline-to-judge marker, all four directions -------
+	# All four call `_p19_decline_unmarked`, the SAME predicate the arm uses.
+	# POSITIVE (defect planted: idle-interrupt-inject.sh:296's shape, unmarked).
+	printf 'if [ -z "$SLEEP_PID" ]; then\n    fail "no live sleep appeared, so the premise is unestablished — this is a refusal to render a verdict, not evidence that urgency is broken"\nfi\n' \
+		>"$P19_FIX/scripts/e2e-tests/declines-unmarked.sh"
+	if [ -n "$(_p19_decline_unmarked "$P19_FIX/scripts/e2e-tests/declines-unmarked.sh")" ]; then
+		pass "19c: positive control — a fail that calls itself a refusal to render a verdict, with no deliberate-fail statement, is flagged"
+	else
+		fail "19c: positive control FAILED — the decline-to-judge scan stayed quiet on a planted unmarked site, so its clean verdict proves nothing"
+	fi
+	# NEGATIVE: the same message plus the marker must NOT be flagged, or the
+	# requirement is unsatisfiable and the arm's silence would be luck.
+	printf 'if [ -z "$SLEEP_PID" ]; then\n    fail "no live sleep appeared, so the premise is unestablished — this is a refusal to render a verdict. HARD FAIL BY DESIGN: failing rather than skipping keeps this row assertion floor enforceable"\nfi\n' \
+		>"$P19_FIX/scripts/e2e-tests/declines-marked.sh"
+	if [ -z "$(_p19_decline_unmarked "$P19_FIX/scripts/e2e-tests/declines-marked.sh")" ]; then
+		pass "19c: negative control — the same message carrying HARD FAIL BY DESIGN is not flagged"
+	else
+		fail "19c: negative control FAILED — a marked site is still flagged, so the marker cannot satisfy the arm and the requirement is unmeetable"
+	fi
+	# NEAR-MISS: an ordinary fail must NOT be flagged, or this is a corpus-wide
+	# ban on the word `fail` rather than a check on decline-to-judge language.
+	printf 'fail "the pane never rendered the prompt within 30s"\n' \
+		>"$P19_FIX/scripts/e2e-tests/ordinary-fail.sh"
+	if [ -z "$(_p19_decline_unmarked "$P19_FIX/scripts/e2e-tests/ordinary-fail.sh")" ]; then
+		pass "19c: near-miss control — an ordinary fail message is not flagged"
+	else
+		fail "19c: near-miss control FAILED — the scan keys on the fail call itself rather than on decline-to-judge language, so it would red most of the corpus"
+	fi
+	# NEAR-MISS the other way: the same language in a COMMENT must not be
+	# flagged. This is the case that would red idle-reclaim-busy.sh's two
+	# explanatory comments today, i.e. the check punishing the file that
+	# documented the class.
+	printf '# P5b: PRECONDITION LAPSED, not a product verdict. Explained here on purpose.\npass "phase ran"\n' \
+		>"$P19_FIX/scripts/e2e-tests/decline-in-comment.sh"
+	if [ -z "$(_p19_decline_unmarked "$P19_FIX/scripts/e2e-tests/decline-in-comment.sh")" ]; then
+		pass "19c: near-miss control — decline-to-judge language in a comment is not flagged"
+	else
+		fail "19c: near-miss control FAILED — the scan flags prose, so explaining a lapsed precondition in a comment would become a violation"
+	fi
+	# POSITIVE control for the CEILING's counter, which is otherwise a number
+	# nobody has watched move: it must count the marked fixture and not the
+	# unmarked one. Without this, a counter stuck at 0 would satisfy the ceiling
+	# on every run — the `0 <= 6` form of the `0 == 0` false green.
+	if [ "$(_p19_decline_marked_n "$P19_FIX/scripts/e2e-tests/declines-marked.sh" "$P19_FIX/scripts/e2e-tests/declines-unmarked.sh")" -eq 1 ]; then
+		pass "19c: positive control — the HARD FAIL BY DESIGN counter counts a marked site and not an unmarked one"
+	else
+		fail "19c: positive control FAILED — the marker counter cannot distinguish a marked site from an unmarked one, so its ceiling proves nothing"
+	fi
 else
 	fail "19c: no fixture dir — the forbidden-token scan ran with no positive control, so a clean verdict is not attributable"
 	fail "19c: no fixture dir — the unknown-tool scan ran with no positive control"
@@ -4721,6 +4866,11 @@ else
 	fail "19c: no fixture dir — the inert-row annotated-floor negative control did not run"
 	fail "19c: no fixture dir — the wrapped-annotation negative control did not run"
 	fail "19c: no fixture dir — the live-row floor near-miss control did not run"
+	fail "19c: no fixture dir — the decline-to-judge positive control did not run"
+	fail "19c: no fixture dir — the decline-to-judge marked negative control did not run"
+	fail "19c: no fixture dir — the ordinary-fail near-miss control did not run"
+	fail "19c: no fixture dir — the comment-only near-miss control did not run"
+	fail "19c: no fixture dir — the HARD FAIL BY DESIGN counter's positive control did not run"
 fi
 
 # --- 19d: the StopAfterTurn hand-off must not evaporate quietly -------------

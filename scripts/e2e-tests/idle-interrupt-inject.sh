@@ -293,7 +293,7 @@ test_run() {
         bp_elapsed=$((bp_elapsed + 2))
     done
     if [ -z "$SLEEP_PID" ]; then
-        fail "no live 'sleep ${BUSY_SECS}' process appeared under $CHILD2_NAME within 90s, so the child was never observably mid-turn. PHASE 2's premise is unestablished and its assertions below would be measuring our own prompt rather than sprawl's urgency path — this is a refusal to render a verdict, not evidence that urgency is broken. (If pgrep is absent or /proc unreadable on this host, that is the cause; both are required to observe this at the OS level.)"
+        fail "no live 'sleep ${BUSY_SECS}' process appeared under $CHILD2_NAME within 90s, so the child was never observably mid-turn. PHASE 2's premise is unestablished and its assertions below would be measuring our own prompt rather than sprawl's urgency path — this is a refusal to render a verdict, not evidence that urgency is broken. HARD FAIL BY DESIGN: this row hard-fails rather than calling e2e_skip_row, chosen so its MIN_ASSERTIONS floor stays enforceable — a skip exits 77 before e2e_print_results, so every assertion in this body could then be deleted unnoticed. The cost is that host or model timing arrives as a red, and that is the likelier cause here than a sprawl defect: the child reaching idle without ever running the sleep is model-dependent. Re-run before investigating sprawl. (If pgrep is absent or /proc unreadable on this host, that is the cause; both are required to observe this at the OS level.)"
         pgrep -af 'sleep|claude' >&2 || true
         capture_pane "$SESSION" | tail -60 >&2
         e2e_print_results; return 1
@@ -346,7 +346,7 @@ test_run() {
     if [ "$NW_EARLY" -eq 1 ] && [ "$NW_STILL_BUSY" -eq 1 ]; then
         pass "sprawl issued the now-priority stdin write $((SECONDS - URGENT_SENT))s after the urgent send, with the child still inside its ${BUSY_SECS}s turn (sleep PID $SLEEP_PID still live at observation)"
     elif [ "$NW_EARLY" -eq 1 ]; then
-        fail "the now-priority write landed, but the child's 'sleep ${BUSY_SECS}' had already exited by the time it was observed, so 'while the turn was in flight' is NOT established. This is a lapsed precondition — NO VERDICT on sprawl's urgency path in either direction. Re-run; if it repeats, the ${BUSY_SECS}s window is too short for this host."
+        fail "the now-priority write landed, but the child's 'sleep ${BUSY_SECS}' had already exited by the time it was observed, so 'while the turn was in flight' is NOT established. This is a lapsed precondition — NO VERDICT on sprawl's urgency path in either direction. HARD FAIL BY DESIGN, for the same reason as the gate above: skipping would exit 77 before e2e_print_results and leave this row's MIN_ASSERTIONS floor unenforceable, so a lapsed premise is reported as a red. Re-run; if it repeats, the ${BUSY_SECS}s window is too short for this host."
     else
         fail "no now-priority write reached $CHILD2_NAME's wire log within 15s of the urgent send — sprawl deferred an urgent delivery instead of injecting it mid-turn (QUM-821)"
     fi

@@ -236,7 +236,7 @@ test_run() {
             ;;
     esac
     if [ "$RESULTS_BEFORE" -ne 0 ]; then
-        fail "L0: weave had already completed $RESULTS_BEFORE turn(s) before injection — the idle precondition does not hold, so this row cannot carry AC-1"
+        fail "L0: weave had already completed $RESULTS_BEFORE turn(s) before injection — the idle precondition does not hold, so this row cannot carry AC-1. HARD FAIL BY DESIGN: a red rather than e2e_skip_row, chosen so this row's MIN_ASSERTIONS floor stays enforceable — a skip exits 77 before e2e_print_results. The cost is that a lapsed premise looks like a product failure here; it usually is not, so re-run before investigating notification delivery"
         e2e_print_results
         return 1
     fi
@@ -259,7 +259,7 @@ test_run() {
     local s
     for s in 1 2 3 4; do
         if capture_pane "$SESSION" | grep -qiE "$BUSY_RE"; then
-            fail "L0: weave is mid-turn before injection (busy indicator present on sample $s) — idle precondition does not hold"
+            fail "L0: weave is mid-turn before injection (busy indicator present on sample $s) — idle precondition does not hold. HARD FAIL BY DESIGN, as at the gate above: a red rather than a 77, so this row's MIN_ASSERTIONS floor stays enforceable. Re-run before investigating notification delivery"
             capture_pane "$SESSION" | tail -20 >&2
             e2e_print_results
             return 1

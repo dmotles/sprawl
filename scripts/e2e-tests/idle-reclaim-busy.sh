@@ -265,7 +265,7 @@ test_run() {
         sp_elapsed=$((sp_elapsed + 2))
     done
     if [ -z "$SLEEP_PID" ]; then
-        fail "P5a: no live 'sleep ${BUSY_SECS}' process appeared within 180s, so the busy child was never observably mid-tool-call. This control CANNOT run without that precondition — asserting on a child we merely instructed to be busy would measure our prompt, not the reaper."
+        fail "P5a: no live 'sleep ${BUSY_SECS}' process appeared within 180s, so the busy child was never observably mid-tool-call. This control CANNOT run without that precondition — asserting on a child we merely instructed to be busy would measure our prompt, not the reaper. HARD FAIL BY DESIGN: reported as a red rather than a skip so that this gate is still a gate when the row is re-hosted — e2e_skip_row exits 77 before e2e_print_results, which would leave the restored row's MIN_ASSERTIONS floor unenforced. An unmet premise here is host or model timing, not a reaper defect."
         pgrep -af 'sleep|claude' >&2 || true
         capture_pane "$SESSION" | tail -60 >&2
         e2e_print_results
@@ -295,7 +295,7 @@ test_run() {
     local SLEEP_STILL
     SLEEP_STILL=$(pgrep -P "$PID_BUSY" -f "sleep" 2>/dev/null | head -1 || true)
     if [ -z "$SLEEP_STILL" ] && ! kill -0 "$SLEEP_PID" 2>/dev/null; then
-        fail "P5b: PRECONDITION LAPSED, not a product verdict. The child's claude PID $PID_BUSY is alive, but no 'sleep' remains in its process tree, so it was not observably busy for the whole ${IR_THRESHOLD_SECS}s+ window. A pass here would be unearned — the reaper may simply have had nothing to reap yet."
+        fail "P5b: PRECONDITION LAPSED, not a product verdict. The child's claude PID $PID_BUSY is alive, but no 'sleep' remains in its process tree, so it was not observably busy for the whole ${IR_THRESHOLD_SECS}s+ window. A pass here would be unearned — the reaper may simply have had nothing to reap yet. HARD FAIL BY DESIGN, as at P5a: a red rather than a 77, so the floor of the re-hosted row stays enforceable. Host or model timing is the likelier cause than the reaper."
         e2e_print_results
         return 1
     fi
