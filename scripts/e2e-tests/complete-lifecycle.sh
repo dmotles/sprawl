@@ -1,4 +1,9 @@
 #!/usr/bin/env bash
+# P19-INERT-ROW — this row calls e2e_skip_row unconditionally at the top of
+# test_run, so it executes nothing. That is what exempts its body from section
+# [19c]'s deleted-token scan in scripts/test-e2e-matrix-unit.sh: an inert row
+# cannot advertise a deleted tool to a live agent, and its body is the blueprint
+# for re-hosting it. Delete this marker in the same commit that deletes the skip.
 # scripts/e2e-tests/complete-lifecycle.sh — QUM-786 lifecycle arc
 # complete→delegate→revive→retire regression guard.
 #

@@ -450,17 +450,34 @@ e2e_wait_maildir_substring() {
         echo "  e2e_wait_maildir_substring: empty needle — refusing, an empty sentinel matches every message ever sent" >&2
         return 2
     fi
-    local maildir="$SPRAWL_ROOT/.sprawl/messages/$to"
-    local elapsed=0
-    while [ "$elapsed" -lt "$timeout" ]; do
-        if [ -d "$maildir" ] && grep -rqF -- "$needle" "$maildir" 2>/dev/null; then
-            echo "WAIT_MAILDIR_ELAPSED ${elapsed}s to=${to}"
-            return 0
-        fi
-        sleep 2
+    # Only new/ cur/ archive/ — deliberately NOT the whole mailbox root.
+    # internal/messages/messages.go drops a copy of every SENT message under
+    # messages/<from>/sent/, so a recursive grep over the root can be satisfied
+    # by a message the recipient ITSELF sent. Where `to` is also the sender —
+    # weave asserting on its own mailbox, which several rows do — that turns
+    # "the delivery path wrote this" into "the asserting side minted this",
+    # which is the exact class of claim this probe replaced. `tmp/` is excluded
+    # for a second reason: it is the pre-rename staging dir, so matching there
+    # would assert on a message that had not landed yet.
+    local elapsed=0 sub found
+    while :; do
+        for sub in new cur archive; do
+            if [ -d "$SPRAWL_ROOT/.sprawl/messages/$to/$sub" ] &&
+                grep -rqF -- "$needle" "$SPRAWL_ROOT/.sprawl/messages/$to/$sub" 2>/dev/null; then
+                echo "WAIT_MAILDIR_ELAPSED ${elapsed}s to=${to}"
+                return 0
+            fi
+        done
+        # Budget-check BEFORE sleeping, not after. The naive form slept its full
+        # poll interval past the deadline, so a `timeout 1` call took 2s. That
+        # is not cosmetic: [19b] makes four not-found calls, every one of which
+        # a [16] nested child inherits, and it cost ~32s of `make validate` —
+        # shrinking [16b]'s documented 25x child-timeout margin to ~2.2x and
+        # putting that arm one loaded host away from a spurious rc 124.
         elapsed=$((elapsed + 2))
+        [ "$elapsed" -lt "$timeout" ] || return 1
+        sleep 2
     done
-    return 1
 }
 
 # _e2e_weave_lock_diagnostic LOCK ATTEMPTS — explain who is still holding the

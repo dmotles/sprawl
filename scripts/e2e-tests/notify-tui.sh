@@ -19,13 +19,22 @@
 #         (b) the '(1)' unread badge on the weave row.
 
 # QUM-1029: the number of assertions a COMPLETE, PASSING run of this row
-# makes. QUM-1186 lowered this from 14, deliberately and for a stated reason:
-# three green-path assertions were DELETED, not migrated. Two of them (Test A's
-# unconditional "wrote state.json" pass and its jq-vs-grep read-back pair, which
-# counted as one) asserted that `cat` and `jq` work; the third was Test C's
-# equivalent setup announcement. None had a sprawl-side subject. A floor left at
-# 14 would have been a floor no honest run could meet; a floor lowered without
-# this note would be indistinguishable from quietly dropping coverage.
+# makes. QUM-1186 lowered this from 14, deliberately: three green-path
+# assertions were DELETED, not migrated. Test A's unconditional "wrote
+# state.json" pass, and its jq-vs-grep read-back pair (which counted as one),
+# together formed a CIRCLE — the script wrote a file and then asserted the file
+# contained what it had just written. Test C's setup announcement was the third.
+#
+# Two announcements of a similar shape SURVIVE inside this floor (`:272` the
+# maildir envelope write, `:394` the activity.ndjson write) and the distinction
+# is deliberate rather than an oversight: each is immediately followed by an
+# assertion about how the TUI REACTED to that write, so a failed write fails the
+# next gate. The deleted ones were followed only by a read-back of themselves.
+# Circular, not merely unconditional, is the property that made them worthless.
+#
+# A floor left at 14 would have been one no honest run could meet; a floor
+# lowered without this note would be indistinguishable from quietly dropping
+# coverage.
 MIN_ASSERTIONS=11
 
 test_metadata() {

@@ -2,7 +2,7 @@
 # scripts/e2e-tests/idle-reclaim.sh — QUM-1186 lane 3 idle-reaper gate.
 #
 # Re-homes the coverage that died with `report-then-send` (QUM-866). That row
-# existed solely to pin Real.ReportStatus's StopAfterTurn call; report_status is
+# existed solely to pin the deleted self-report tool's StopAfterTurn call, which is
 # deleted and (*Real).maybeReclaimIdle is now the only production caller of the
 # defer-teardown-to-turn-end primitive (StopAfterTurnIf), so the e2e coverage follows the call rather than evaporating.
 #

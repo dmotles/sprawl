@@ -132,7 +132,7 @@ echo "T+0s    prompt sent (epoch=$T_START)"
 # Wait for the call to be visible in the call-log activity.
 sleep 4
 echo "T+~4s   activity pane after prompt:"
-capture_pane_dump \"$SESSION\" 8 2>&1 | sed 's/^/    /'
+capture_pane_dump "$SESSION" 8 2>&1 | sed 's/^/    /'
 
 # Fire the interrupt from outside the session via a second sprawl process
 # acting as weave. Actually — we don't have an interrupt CLI; the
@@ -151,11 +151,11 @@ if wait_for_pattern "$SESSION" "${PROBE}:sleep-returned" 25; then
     T_END=$(date +%s)
     echo "PASS: sleep completed (elapsed=$((T_END-T_START))s)"
     echo "    weave pane tail:"
-    capture_pane_dump \"$SESSION\" 8 2>&1 | sed 's/^/      /'
+    capture_pane_dump "$SESSION" 8 2>&1 | sed 's/^/      /'
 else
     echo "FAIL: sleep did not complete within 25s"
     echo "    pane tail:"
-    capture_pane_dump \"$SESSION\" 20 2>&1 | sed 's/^/      /'
+    capture_pane_dump "$SESSION" 20 2>&1 | sed 's/^/      /'
 fi
 
 echo ""
