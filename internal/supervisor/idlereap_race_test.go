@@ -92,9 +92,11 @@ func newReclaimFixture(t *testing.T) (*Real, string, *AgentRuntime, *reclaimTest
 		},
 		urt: runtimepkg.New(runtimepkg.RuntimeConfig{Name: "alice"}),
 	}
-	// Derived from the production default rather than hardcoded, so raising the
-	// default cannot silently make this fixture stop being reapable.
-	handle.lastAct.Store(time.Now().Add(-2 * config.DefaultIdleReclaimAfter).UnixNano())
+	// The production DEFAULT is now 0 (disabled, QUM-1197), so these tests must
+	// enable the reaper explicitly — which is honest: they are testing the
+	// enabled behaviour. Both the threshold and the fixture's idle age derive
+	// from SuggestedIdleReclaimAfter so they cannot drift apart.
+	handle.lastAct.Store(time.Now().Add(-2 * config.SuggestedIdleReclaimAfter).UnixNano())
 
 	// NewReal starts a LIVE reaper on this same registry. Left running it would
 	// (a) sweep and tear down these fixtures' handles on its own schedule —
@@ -105,6 +107,7 @@ func newReclaimFixture(t *testing.T) (*Real, string, *AgentRuntime, *reclaimTest
 	if r.idleReaper != nil {
 		r.idleReaper.Stop()
 	}
+	r.idleReclaimAfter.set(config.SuggestedIdleReclaimAfter)
 	t.Cleanup(func() { _ = r.Shutdown(context.Background()) })
 
 	handle.starter = &runtimeTestStarter{session: handle}
@@ -399,7 +402,15 @@ func TestSendMessage_WaitsForTheSendGate(t *testing.T) {
 // under -race. Its assertions are that every send SUCCEEDED and that the end
 // state is self-consistent — neither is a silent skip.
 func TestReclaim_ConcurrentSends_IsARaceExerciser(t *testing.T) {
-	r, tmpDir, rt, _ := newReclaimFixture(t)
+	r, tmpDir, rt, handle := newReclaimFixture(t)
+	// Required, and the reason is the point of the test: when the reaper DOES
+	// win the race the agent rests idle, and the next send auto-wakes it. With
+	// no frames on the bus that wake fails its health probe, the agent lands in
+	// resume_failed, and every later send returns "Delivery failed". Measured
+	// at -count=5: without this the test fails ~1 run in 3, and it fails with a
+	// message that reads like a product defect rather than a fixture that
+	// cannot revive anything.
+	serveHealthFrames(t, handle)
 
 	const senders = 8
 	errs := make(chan error, senders)
@@ -461,7 +472,8 @@ func TestReclaim_RootIsNeverReaped_AtTheReclaimCallSite(t *testing.T) {
 		runtimeTestSession: &runtimeTestSession{sessionID: "sess-weave"},
 		urt:                runtimepkg.New(runtimepkg.RuntimeConfig{Name: "weave"}),
 	}
-	handle.lastAct.Store(time.Now().Add(-2 * config.DefaultIdleReclaimAfter).UnixNano())
+	handle.lastAct.Store(time.Now().Add(-2 * config.SuggestedIdleReclaimAfter).UnixNano())
+	r.idleReclaimAfter.set(config.SuggestedIdleReclaimAfter)
 	rt := ensureRuntimeWithStarter(t, r, tmpDir, rootState, &runtimeTestStarter{session: handle})
 	if err := rt.Start(); err != nil {
 		t.Fatalf("runtime start: %v", err)

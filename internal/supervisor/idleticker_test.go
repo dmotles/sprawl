@@ -142,9 +142,24 @@ func TestIdleReaper_StopWithoutStartDoesNotDeadlock(t *testing.T) {
 // symptom is RSS growth nobody is watching.
 func TestNewReal_StartsAndStopsIdleReaper(t *testing.T) {
 	t.Parallel()
-	r, _ := newFakeReal(t)
+	// The reaper is DISABLED by default (QUM-1197), so this test opts in via
+	// config — which is also what makes it the paired positive for
+	// TestNewReal_IdleReaperDisabledWhenThresholdZero: same code path, same
+	// polling loop, opposite knob, opposite expected observable.
+	root := t.TempDir()
+	dir := filepath.Join(root, ".sprawl")
+	if err := os.MkdirAll(dir, 0o755); err != nil {
+		t.Fatalf("mkdir: %v", err)
+	}
+	if err := os.WriteFile(filepath.Join(dir, "config.yaml"), []byte("idle_reclaim.after: \"15m\"\n"), 0o644); err != nil {
+		t.Fatalf("write config: %v", err)
+	}
+	r, err := NewReal(Config{SprawlRoot: root, CallerName: "weave"})
+	if err != nil {
+		t.Fatalf("NewReal: %v", err)
+	}
 	if r.idleReaper == nil {
-		t.Fatal("Real.idleReaper = nil after NewReal; want a started idle reaper")
+		t.Fatal("Real.idleReaper = nil after NewReal with idle_reclaim.after=15m; want a started idle reaper")
 	}
 
 	deadline := time.Now().Add(2 * time.Second)
@@ -184,6 +199,8 @@ func TestNewReal_IdleReaperDisabledWhenThresholdZero(t *testing.T) {
 	if err := os.WriteFile(filepath.Join(dir, "config.yaml"), []byte("idle_reclaim.after: \"0\"\n"), 0o644); err != nil {
 		t.Fatalf("write config: %v", err)
 	}
+	// Written explicitly rather than relying on the absent-key default, so this
+	// test keeps testing the KNOB rather than the default if the default moves.
 	r, err := NewReal(Config{SprawlRoot: root, CallerName: "weave"})
 	if err != nil {
 		t.Fatalf("NewReal: %v", err)

@@ -84,7 +84,7 @@ type Config struct {
 	// every user who has never edited their config, silently. With a string,
 	// absent ("") and an explicit "0" are distinguishable, so "absent → default"
 	// and "0 → disabled" are both true at once.
-	IdleReclaimAfter string `yaml:"idle_reclaim.after,omitempty" sprawl:"default=15m,purpose=Idle time before an agent's subprocess is reclaimed as a Go duration; 0 disables the reaper"`
+	IdleReclaimAfter string `yaml:"idle_reclaim.after,omitempty" sprawl:"default=0 (DISABLED),purpose=Idle time before an agent's subprocess is reclaimed as a Go duration. DEFAULT 0 = OFF: the reaper reaps agents that are mid-tool-call (QUM-1197). Do not enable until that is fixed"`
 	IdleReclaimSweep string `yaml:"idle_reclaim.sweep,omitempty" sprawl:"default=1m,purpose=How often the idle reaper sweeps the runtime registry as a Go duration"`
 
 	// sprawlRoot is not a config key. Unexported, so yaml ignores it on both
@@ -134,12 +134,24 @@ func (c *Config) ValidateTimeoutDuration() time.Duration {
 	return d
 }
 
-// DefaultIdleReclaimAfter is how long an agent must be observably idle before
-// the reaper reclaims its subprocess. 15 minutes matches the blurb refresher's
-// own staleness floor and is long enough that an agent between operator
-// messages is not churned, while still bounding a parked agent's ~280MB RSS to
-// a quarter of an hour. QUM-1186.
-const DefaultIdleReclaimAfter = 15 * time.Minute
+// DefaultIdleReclaimAfter is 0, meaning the idle reaper is OFF unless a
+// project opts in. That is a deliberate reversal of the original 15-minute
+// default, made on evidence rather than caution: scripts/e2e-tests/idle-reclaim.sh's
+// busy-agent control reproduced, twice on a clean host, a child being torn down
+// while a `sleep` it had started was still live in its process tree. The
+// predicate cannot currently see a child that is mid-tool-call — the in_turn
+// authority reads idle — which is QUM-1197, and it blocks QUM-1187 too.
+//
+// The machinery ships and is covered; only the switch is off. Turning it on
+// before QUM-1197 lands means destroying work to save memory, which is not a
+// trade this project wants. QUM-1186.
+const DefaultIdleReclaimAfter = 0
+
+// SuggestedIdleReclaimAfter is what the threshold should be once QUM-1197 makes
+// the predicate safe to enable: long enough that an agent between operator
+// messages is not churned, short enough to bound a parked agent's ~280MB RSS.
+// Kept as a named constant so the intended value is not lost with the default.
+const SuggestedIdleReclaimAfter = 15 * time.Minute
 
 // DefaultIdleReclaimSweep is how often the registry is swept. One minute: the
 // sweep is a handful of cheap local observations per agent, and a cadence much

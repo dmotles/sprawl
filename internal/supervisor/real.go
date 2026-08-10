@@ -428,13 +428,27 @@ func NewReal(cfg Config) (*Real, error) {
 		r.idleReclaimAfter.set(after)
 		r.idleReclaimSweep.set(sweep)
 	}
-	if r.idleReclaimAfter.get() > 0 {
+	// Announce the state on BOTH arms. A feature that is off by default and
+	// silent about it is indistinguishable from one that is broken, and an
+	// operator reading logs a month from now must be able to tell that reclaim
+	// is off DELIBERATELY rather than wonder why nothing is being reclaimed.
+	if after := r.idleReclaimAfter.get(); after > 0 {
 		r.idleReaper = newIdleReaper(idleReaperDeps{
 			Registry: r.runtimeRegistry,
 			Reclaim:  r.maybeReclaimIdle,
 			Interval: r.idleReclaimSweep.get,
 		})
 		r.idleReaper.Start()
+		slog.Default().Info("idle reclaim: ENABLED",
+			slog.Duration("idle_reclaim.after", after),
+			slog.Duration("idle_reclaim.sweep", r.idleReclaimSweep.get()),
+			slog.String("hazard", "QUM-1197: the predicate can reap an agent that is mid-tool-call"),
+		)
+	} else {
+		slog.Default().Info("idle reclaim: DISABLED (default)",
+			slog.String("why", "QUM-1197: the in_turn authority reads idle during a live tool call, so the reaper can tear down an agent that is working"),
+			slog.String("enable_with", "sprawl config set idle_reclaim.after 15m"),
+		)
 	}
 	return r, nil
 }

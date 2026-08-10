@@ -281,9 +281,17 @@ func (r *Real) maybeReclaimIdle(sweepCtx context.Context, rt *AgentRuntime) {
 
 	// Phase A.
 	gate.Lock()
-	assessment := assessIdle(r.idleInputsFor(rt))
+	inputs := r.idleInputsFor(rt)
+	assessment := assessIdle(inputs)
 	gate.Unlock()
 	if !assessment.Reap {
+		// Debug, not Info: this fires once per agent per sweep forever, and an
+		// Info-level line at that cadence is a log nobody can read. The level
+		// is the only concession — the CONTENT is identical to the reap line,
+		// because "why was this agent NOT reaped" is the question people will
+		// actually be asking once the reaper ships disabled by default, and a
+		// record that only explains reaps cannot answer it.
+		logAssessment(slog.LevelDebug, "idle reclaim: agent not reclaimed", name, assessment, inputs)
 		return
 	}
 	// Declining here rather than mid-teardown is what keeps Shutdown from
@@ -308,10 +316,14 @@ func (r *Real) maybeReclaimIdle(sweepCtx context.Context, rt *AgentRuntime) {
 	// narrower window, not a closed one.
 	guard := func() (bool, func()) {
 		gate.Lock()
-		if a := assessIdle(r.idleInputsFor(rt)); !a.Reap {
+		in := r.idleInputsFor(rt)
+		a := assessIdle(in)
+		if !a.Reap {
+			logAssessment(slog.LevelDebug, "idle reclaim: teardown abandoned, agent became active", name, a, in)
 			gate.Unlock()
 			return false, nil
 		}
+		logAssessment(slog.LevelInfo, "idle reclaim: reaping agent", name, a, r.idleInputsFor(rt))
 		return true, gate.Unlock
 	}
 	ctx, cancel := context.WithTimeout(context.Background(), idleReclaimStopBudget)
@@ -357,6 +369,27 @@ func (r *Real) maybeReclaimIdle(sweepCtx context.Context, rt *AgentRuntime) {
 			slog.Any("list_err", listErr),
 		)
 	}
+}
+
+// logAssessment emits the full six-term decision record. Every term is logged,
+// not just the deciding one, and each renders as idle/busy/UNAVAILABLE rather
+// than as a bool — flattening "unavailable" to "false" here would mislead the
+// next reader in exactly the direction D1a exists to prevent, and this line is
+// the only artifact a reap leaves behind.
+func logAssessment(level slog.Level, msg, name string, a idleAssessment, in idleInputs) {
+	slog.Default().Log(context.Background(), level, msg,
+		slog.String("agent", name),
+		slog.Bool("reap", a.Reap),
+		slog.String("blocker", a.Blocker),
+		slog.String("in_turn", a.InTurn.String()),
+		slog.String("pending_queue", a.Pending.String()),
+		slog.String("in_flight_system", a.InFlight.String()),
+		slog.String("question", a.Question.String()),
+		slog.String("quiescent", a.Quiescent.String()),
+		slog.String("not_root", a.NotRoot.String()),
+		slog.Time("last_activity_at", probeLastActivity(in.Probe)),
+		slog.Duration("threshold", in.Threshold),
+	)
 }
 
 // idleReclaimStopBudget bounds the teardown, including StopAfterTurn's wait

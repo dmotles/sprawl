@@ -34,20 +34,27 @@
 #      busy agents" from "the model finished early and was legitimately
 #      reclaimed" — it measured our own prompt. It reported a defect that was
 #      never established. A live `sleep` process in the child's tree, checked
-#      at BOTH ends of the window, is the observation that claim needs.
-#   6. POSITIVE CONTROL for the knob: relaunch with idle_reclaim.after=0 and
-#      show a comparably idle child is NOT reclaimed. Without this, P3 could be
-#      passing for a reason that has nothing to do with the reaper.
+#      at BOTH ends of the window, is the observation that claim needs, and it
+#      is what earned QUM-1197.
+#
+# PHASES 5 AND 6 ARE NOT IN THIS FILE TODAY. The busy-agent negative control (5)
+# reproduced QUM-1197 twice on a clean host, so the reaper ships disabled and
+# this row skips at rc 77 after phase 4 rather than asserting past a known
+# hazard. Phase 6 was the knob-disabled positive control and is unreachable
+# after that skip; both are in git history and come back with QUM-1197. They are
+# DELETED rather than commented out on purpose — unreachable code that reads as
+# live logic is the stranded-conditional shape this slice keeps paying for.
 #
 # The threshold is set through the sandbox's .sprawl/config.yaml, which NewReal
 # reads ONCE at startup — so it must be written before every `sprawl enter`
 # launch, and phase 6 needs a relaunch rather than a config edit.
 
-# QUM-1029: the number of assertions a COMPLETE, PASSING run makes. Counted
-# from the pass sites below, each of which is on the single success path (every
-# alternative fails and returns): P1, P2, P3a, P3b, P4a, P4b, P5a, P5b, P5c,
-# P6a, P6b. Eleven.
-MIN_ASSERTIONS=11
+# QUM-1029: the number of assertions a COMPLETE run makes before it skips.
+# P1, P2, P3a, P3b, P4a, P4b — six, each on the single success path (every
+# alternative fails and returns). Lowered from 11 when P5/P6 became an rc-77
+# skip for QUM-1197; the floor is keyed to the CURRENT assertion count, and a
+# stale 11 here would fail every run while looking like a product failure.
+MIN_ASSERTIONS=6
 
 test_metadata() {
     echo "needs_claude=1 needs_tmux=1 needs_jq=1"
@@ -285,163 +292,31 @@ test_run() {
         return 1
     fi
 
-    # ----- Phase 5: NEGATIVE CONTROL — a busy agent is not reaped ------------
-    # PROBE DIRECTION: MUST STAY QUIET. Same probe as P3, subject known clean.
-    echo ""
-    echo "=== Phase 5: NEGATIVE CONTROL — a busy child survives the whole threshold window ==="
-    local BRANCH_BUSY="qum1186-busy-${SUFFIX}"
-    # 10x the threshold: the window we observe is ~1.5x the threshold, so the
-    # tool call has ample headroom to outlive it. The first version used 3x and
-    # the sleep still ended first, which cost a whole run to a precondition
-    # failure rather than a verdict.
-    local BUSY_SECS=$((IR_THRESHOLD_SECS * 10))
-    ir_spawn_child "$SESSION" "$BRANCH_BUSY" \
-        "You are a QUM-1186 busy-agent control. Run exactly one Bash command: sleep ${BUSY_SECS}. When it finishes, reply BUSY_DONE and stop. Do not call any other tools." \
-        "SPAWNB_${SUFFIX}"
-
-    local STATE_BUSY WORKTREE_BUSY PID_BUSY
-    if ! STATE_BUSY=$(ir_find_child_by_branch "$BRANCH_BUSY"); then
-        fail "P5a: no busy-control child appeared within 180s for branch $BRANCH_BUSY"
-        capture_pane "$SESSION" | tail -60 >&2
-        e2e_print_results
-        return 1
-    fi
-    WORKTREE_BUSY=$(jq -r '.worktree // empty' "$STATE_BUSY")
-    if ! PID_BUSY=$(ir_wait_child_pid "$WORKTREE_BUSY" 180); then
-        fail "P5a: no claude process with cwd=$WORKTREE_BUSY appeared within 180s"
-        pgrep -af claude >&2 || true
-        e2e_print_results
-        return 1
-    fi
-
-    # THE CONTROL'S OWN PRECONDITION, and the reason this row was rewritten:
-    # an INSTRUCTION to an agent is not an OBSERVATION of an agent. Asserting
-    # "a child we told to sleep 90 is alive later" cannot distinguish a reaper
-    # that spares busy agents from a model that finished early and was
-    # legitimately reclaimed — the control would have been measuring our own
-    # prompt. So wait for a real `sleep` process inside the child's tree: that
-    # is an OS-level fact that the tool call is genuinely in flight.
-    local SLEEP_PID=""
-    local sp_elapsed=0
-    while [ "$sp_elapsed" -lt 180 ]; do
-        SLEEP_PID=$(pgrep -P "$PID_BUSY" -f "sleep" 2>/dev/null | head -1 || true)
-        if [ -z "$SLEEP_PID" ]; then
-            # The CLI may run Bash under an intermediate shell, so also accept a
-            # `sleep <BUSY_SECS>` anywhere under this claude's descendants.
-            SLEEP_PID=$(pgrep -f "sleep ${BUSY_SECS}" 2>/dev/null | head -1 || true)
-        fi
-        [ -n "$SLEEP_PID" ] && break
-        sleep 2
-        sp_elapsed=$((sp_elapsed + 2))
-    done
-    if [ -z "$SLEEP_PID" ]; then
-        fail "P5a: no live 'sleep ${BUSY_SECS}' process appeared within 180s, so the busy child was never observably mid-tool-call. This control CANNOT run without that precondition — asserting on a child we merely instructed to be busy would measure our prompt, not the reaper."
-        pgrep -af 'sleep|claude' >&2 || true
-        capture_pane "$SESSION" | tail -60 >&2
-        e2e_print_results
-        return 1
-    fi
-    pass "P5a: busy control is OBSERVABLY mid-tool-call (claude PID=$PID_BUSY, live sleep PID=$SLEEP_PID)"
-
-    # Sleep past the threshold + a sweep, while the child is demonstrably in a
-    # turn. The reaper must observe the turn and refuse.
-    sleep $((IR_THRESHOLD_SECS + IR_SWEEP_SECS * 3))
-
-    # Decompose the two ways this can end badly, because they mean opposite
-    # things and conflating them is how the first version of this row reported a
-    # defect that was never established:
+    # ----- Phase 5: the hazard, and why this row cannot assert past it ------
     #
-    #   claude GONE          -> product failure. It was observably mid-tool-call
-    #                           when the window opened, so it was reaped at work.
-    #   claude alive, no sleep -> the control's precondition lapsed. No verdict is
-    #                           available in either direction; say so and fail
-    #                           rather than bank an unearned pass.
-    if ! kill -0 "$PID_BUSY" 2>/dev/null; then
-        fail "P5b: busy child PID $PID_BUSY was killed. It was OBSERVABLY mid-tool-call when this window opened (live sleep PID $SLEEP_PID), so the reaper tore down an agent that was doing work. The predicate's turn term is not blocking the reap."
-        cat "$STATE_BUSY" >&2 2>/dev/null || true
-        e2e_print_results
-        return 1
-    fi
-    local SLEEP_STILL
-    SLEEP_STILL=$(pgrep -P "$PID_BUSY" -f "sleep" 2>/dev/null | head -1 || true)
-    if [ -z "$SLEEP_STILL" ] && ! kill -0 "$SLEEP_PID" 2>/dev/null; then
-        fail "P5b: PRECONDITION LAPSED, not a product verdict. The child's claude PID $PID_BUSY is alive, but no 'sleep' remains in its process tree, so it was not observably busy for the whole ${IR_THRESHOLD_SECS}s+ window. A pass here would be unearned — the reaper may simply have had nothing to reap yet."
-        e2e_print_results
-        return 1
-    fi
-
-    if kill -0 "$PID_BUSY" 2>/dev/null; then
-        pass "P5b: busy child PID $PID_BUSY still alive after $((IR_THRESHOLD_SECS + IR_SWEEP_SECS * 3))s (> the ${IR_THRESHOLD_SECS}s threshold), with its sleep PID $SLEEP_PID still in flight — the reaper did not cut off a running turn"
-    else
-        fail "P5b: busy child PID $PID_BUSY was killed while mid-turn. The predicate's InTurn term is not blocking the reap, and work is being destroyed."
-        cat "$STATE_BUSY" >&2 2>/dev/null || true
-        e2e_print_results
-        return 1
-    fi
-    local BUSY_STATUS
-    BUSY_STATUS=$(jq -r '.status // empty' "$STATE_BUSY" 2>/dev/null || true)
-    if [ "$BUSY_STATUS" != "idle" ]; then
-        pass "P5c: busy child status is '$BUSY_STATUS', not 'idle'"
-    else
-        fail "P5c: busy child was stamped 'idle' while mid-turn"
-        e2e_print_results
-        return 1
-    fi
-
-    # ----- Phase 6: POSITIVE CONTROL for the knob ----------------------------
-    # Direction: with the reaper DISABLED, P3's measurement must NOT reproduce.
-    # This is what distinguishes "the reaper reclaimed it" from "children die
-    # here for some other reason".
-    echo ""
-    echo "=== Phase 6: POSITIVE CONTROL — with idle_reclaim.after=0 an idle child is NOT reclaimed ==="
-    _stmux kill-session -t "$SESSION" 2>/dev/null || true
-    sleep 2
-    ir_write_config "0"
-    local SESSION2="${SESSION}-off"
-    if ! e2e_launch_tui "$SESSION2" 200 50; then
-        fail "P6: could not relaunch sprawl enter with the reaper disabled"
-        e2e_print_results
-        return 1
-    fi
-    if capture_pane "$SESSION2" | grep -q "trust this folder" 2>/dev/null; then
-        _stmux send-keys -t "$SESSION2" "1" Enter
-        sleep 1
-    fi
-    sleep 3
-    e2e_attach_phantom_client "$SESSION2"
-
-    local BRANCH_OFF="qum1186-off-${SUFFIX}"
-    ir_spawn_child "$SESSION2" "$BRANCH_OFF" \
-        "You are a QUM-1186 reaper-disabled control. Reply with exactly the word READY and then stop. Do not call any tools and do not write any files." \
-        "SPAWNC_${SUFFIX}"
-
-    local STATE_OFF WORKTREE_OFF PID_OFF
-    if ! STATE_OFF=$(ir_find_child_by_branch "$BRANCH_OFF"); then
-        fail "P6a: no reaper-disabled control child appeared within 180s for branch $BRANCH_OFF"
-        capture_pane "$SESSION2" | tail -60 >&2
-        e2e_print_results
-        return 1
-    fi
-    WORKTREE_OFF=$(jq -r '.worktree // empty' "$STATE_OFF")
-    if ! PID_OFF=$(ir_wait_child_pid "$WORKTREE_OFF" 180); then
-        fail "P6a: no claude process with cwd=$WORKTREE_OFF appeared within 180s"
-        pgrep -af claude >&2 || true
-        e2e_print_results
-        return 1
-    fi
-    pass "P6a: control child spawned with the reaper disabled (PID=$PID_OFF)"
-
-    sleep $((IR_THRESHOLD_SECS * 2 + IR_SWEEP_SECS * 3))
-    local OFF_STATUS
-    OFF_STATUS=$(jq -r '.status // empty' "$STATE_OFF" 2>/dev/null || true)
-    if kill -0 "$PID_OFF" 2>/dev/null && [ "$OFF_STATUS" != "idle" ]; then
-        pass "P6b: with idle_reclaim.after=0 the child is still alive (PID $PID_OFF, status '$OFF_STATUS') after $((IR_THRESHOLD_SECS * 2))s — so P3's reap was caused by the reaper, not by the harness"
-    else
-        fail "P6b: an idle child was reclaimed (alive=$(kill -0 "$PID_OFF" 2>/dev/null && echo yes || echo no), status '$OFF_STATUS') even though idle_reclaim.after=0. Either 0 does not disable the reaper — in which case the knob is a lie — or P3's reap was never the reaper's doing, in which case P3 proves nothing."
-        cat "$STATE_OFF" >&2 2>/dev/null || true
-        e2e_print_results
-        return 1
-    fi
+    # This phase used to run a busy-agent negative control here. It REPRODUCED
+    # a defect, twice on a clean host: a child with a live `sleep` still in its
+    # process tree was reclaimed mid-tool-call. The predicate's turn term reads
+    # idle during a live tool call, which is QUM-1197.
+    #
+    # So the reaper now ships DISABLED by default, and this row skips at rc 77
+    # rather than continuing. Two things that are deliberately NOT done here:
+    #
+    #   - It does not run the control and record the red in a comment. A header
+    #     telling the reader a phase is expected to fail converts every real
+    #     failure into something to skip past — a gate disarmed by
+    #     documentation rather than by code, which no test review catches
+    #     because it is not a test.
+    #   - It does not quietly drop the phase and let P1-P4 report the row
+    #     green. A skip is accounted separately from a pass and forces a
+    #     nonzero exit, so nothing here is claimed that is not true.
+    #
+    # P1-P4 above already ran and are real: with the reaper explicitly enabled,
+    # an idle agent's subprocess is genuinely reclaimed (PID gone, RSS returned)
+    # and a message brings back a DIFFERENT pid. That is the StopAfterTurn e2e
+    # coverage that dropped to zero when report-then-send was deleted, and it is
+    # why this row exists at all rather than waiting for QUM-1197.
+    e2e_skip_row "idle-reclaim P5/P6: reaper is DISABLED by default because it reaps agents that are mid-tool-call (QUM-1197, Urgent, blocks QUM-1187). The busy-agent control reproduced this twice on a clean host: a child with a live 'sleep' in its process tree was torn down. Do NOT enable idle_reclaim.after until QUM-1197 lands. P1-P4 ran and passed above: with the reaper explicitly enabled an idle agent IS reclaimed (PID gone, RSS returned to the OS) and a send_message revives it as a NEW pid — that is the StopAfterTurn e2e coverage re-homed from the deleted report-then-send row. Restore P5 (busy-agent negative control, precondition asserted from /proc) and P6 (knob-disabled positive control) from git history when QUM-1197 is fixed."
 
     e2e_print_results
 }

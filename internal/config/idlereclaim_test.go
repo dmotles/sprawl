@@ -33,17 +33,32 @@ func writeIdleConfig(t *testing.T, body string) string {
 	return root
 }
 
-func TestIdleReclaimAfter_DefaultWhenUnset(t *testing.T) {
+// TestIdleReclaimAfter_DefaultsToDisabled pins a DELIBERATE REVERSAL. This
+// test previously asserted the opposite — that an absent key must not disable
+// the reaper — on the reasoning that a silently-off memory reclaimer is the
+// classic guard-evaporation failure. That reasoning was right in general and
+// wrong here, and the thing that changed it was evidence, not taste:
+// scripts/e2e-tests/idle-reclaim.sh's busy-agent control reproduced, twice on a
+// clean host, an agent being torn down with a live `sleep` still in its process
+// tree. Until QUM-1197 gives the predicate a turn signal it can trust, ON is
+// the unsafe default. The reaper is not silently off — NewReal logs DISABLED
+// with the reason and the enabling command on every start.
+func TestIdleReclaimAfter_DefaultsToDisabled(t *testing.T) {
 	c := &Config{}
 	got, err := c.IdleReclaimAfterDuration()
 	if err != nil {
 		t.Fatalf("IdleReclaimAfterDuration() error = %v, want nil for an unset key", err)
 	}
-	if got != DefaultIdleReclaimAfter {
-		t.Errorf("IdleReclaimAfterDuration() = %v, want the built-in default %v", got, DefaultIdleReclaimAfter)
+	if got != 0 {
+		t.Errorf("IdleReclaimAfterDuration() = %v for an unset key, want 0 (disabled) — enabling by default reaps agents mid-tool-call (QUM-1197)", got)
 	}
-	if got == 0 {
-		t.Error("IdleReclaimAfterDuration() = 0 for an unset key; an absent key must NOT disable the reaper")
+	if DefaultIdleReclaimAfter != 0 {
+		t.Errorf("DefaultIdleReclaimAfter = %v, want 0", DefaultIdleReclaimAfter)
+	}
+	// The intended post-QUM-1197 value is kept as its own constant so the
+	// reversal did not throw it away.
+	if SuggestedIdleReclaimAfter != 15*time.Minute {
+		t.Errorf("SuggestedIdleReclaimAfter = %v, want 15m", SuggestedIdleReclaimAfter)
 	}
 }
 
@@ -93,14 +108,18 @@ func TestIdleReclaimAfter_ParsesExplicitValue(t *testing.T) {
 // Copying that arm here would make a typo — "15min" — silently switch off a
 // memory reclaimer with no error anywhere. The accessor must return the default
 // AND a non-nil error, never 0.
-func TestIdleReclaimAfter_UnparseableIsNotSilentlyDisabled(t *testing.T) {
+// TestIdleReclaimAfter_UnparseableIsNotSilentlyAccepted: the anti-typo property
+// survives the reversal, but it now rests entirely on the ERROR rather than on
+// the returned value. With the default at 0 a typo lands on the same value as
+// "off", so the value can no longer distinguish them — the error is the only
+// thing that can, which is why it is asserted to name the key. Note the
+// consequence, stated rather than discovered later: someone ENABLING the reaper
+// with a typo gets it off, and their only signal is NewReal's WARN.
+func TestIdleReclaimAfter_UnparseableIsNotSilentlyAccepted(t *testing.T) {
 	c := &Config{IdleReclaimAfter: "15min"}
 	got, err := c.IdleReclaimAfterDuration()
 	if err == nil {
 		t.Fatal("IdleReclaimAfter(\"15min\") error = nil, want a parse error; a typo must not pass silently")
-	}
-	if got == 0 {
-		t.Error("IdleReclaimAfter(\"15min\") = 0; an unparseable value must NOT disable the reaper")
 	}
 	if got != DefaultIdleReclaimAfter {
 		t.Errorf("IdleReclaimAfter(\"15min\") = %v, want the default %v alongside the error", got, DefaultIdleReclaimAfter)
@@ -149,7 +168,10 @@ func TestIdleReclaimKeys_AreSettableAndReferenced(t *testing.T) {
 	}
 
 	ref := Reference()
-	for _, want := range []string{"idle_reclaim.after", "idle_reclaim.sweep", "15m", "1m"} {
+	// "0 (DISABLED)" rather than a bare "0": the reference table is where an
+	// operator looks to decide whether a key is safe to set, and a bare 0 reads
+	// as "unset" rather than as a deliberate off.
+	for _, want := range []string{"idle_reclaim.after", "idle_reclaim.sweep", "0 (DISABLED)", "QUM-1197", "1m"} {
 		if !strings.Contains(ref, want) {
 			t.Errorf("Reference() is missing %q; got:\n%s", want, ref)
 		}
