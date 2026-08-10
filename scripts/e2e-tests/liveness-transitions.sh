@@ -75,8 +75,19 @@ test_run() {
     _stmux set-option -t "$SESSION" window-size manual >/dev/null
     _stmux resize-window -t "$SESSION" -x 200 -y 50 >/dev/null
 
-    if wait_for_pattern "$SESSION" "weave \\(idle\\)" 45; then
-        pass "TUI rendered ('weave (idle)' visible)"
+    # QUM-1186 lane 5 (defect PRE-DATES this slice — QUM-656): this gate waited
+    # for the literal `weave (idle)`. QUM-656 moved the tree out of a left-pane
+    # "weave (idle)" row into the header orbital row rendered as `weave --*`,
+    # so that string has been unrenderable ever since and this row has failed at
+    # launch every time it ran. The shared e2e_launch_tui helper was updated for
+    # QUM-656 and waits for the root token `weave ` (see its comment); these two
+    # rows do their own launch because they need extra env on the command line,
+    # and the fix never reached them.
+    #
+    # Same class as the rest of this lane — a probe whose subject was deleted —
+    # but a different cause, so it is called out rather than folded in.
+    if wait_for_pattern "$SESSION" "weave " 45; then
+        pass "TUI rendered ('weave' root visible in header tree)"
     else
         fail "TUI did not render within 45s"
         capture_pane "$SESSION" | tail -30 >&2
