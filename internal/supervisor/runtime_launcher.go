@@ -31,8 +31,8 @@ import (
 //
 // atomicDuration per the repo-wide CLAUDE.md convention rather than a plain
 // time.Duration var: production reads this from several goroutines (the MCP
-// handler goroutine via Real.SendMessage / Real.ReportStatus / Real.Delegate, and
-// the backend reader goroutine via PostTurnSweep → WakeForDelivery), and tests
+// handler goroutine via Real.SendMessage, and the backend reader goroutine
+// via PostTurnSweep → WakeForDelivery), and tests
 // override it. A plain var would be a live data race under -race the moment a
 // test set it.
 //
@@ -214,7 +214,6 @@ func (s *inProcessUnifiedStarter) Start(spec RuntimeStartSpec) (RuntimeHandle, e
 		return nil, err
 	}
 
-	// Phase 9: drain queued tasks from on-disk state into the runtime queue.
 	return handle, nil
 }
 

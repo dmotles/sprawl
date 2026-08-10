@@ -1,7 +1,7 @@
 // QUM-726: wake-on-traffic supervisor-level tests.
 //
 // These tests pin the new offline-target handling for Real.SendMessage and
-// Real.Delegate when wake_if_offline is false vs true. They also pin the
+// Real.SendMessage when wake_if_offline is false vs true. They also pin the
 // bare Real.Wake path's RestartInjection plumbing (WakeReasonBare).
 //
 // RED phase: the canonical "Delivery failed: …" error is not surfaced yet,

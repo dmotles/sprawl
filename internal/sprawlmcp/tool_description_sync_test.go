@@ -26,9 +26,14 @@ func promptModeSource(t *testing.T) string {
 
 // canonicalMessagingTools is the subset of canonical tools we expect to be
 // surfaced in the TUI-mode prompt templates.
+//
+// QUM-1186: `report_status` and `delegate` were REMOVED from this list. Leaving
+// either here inverted the test's purpose: §1 asserts every entry appears in
+// prompt_mode.go, so the list would have REQUIRED the shipped agent prompt to
+// go on teaching a deleted tool — and it would have stayed green only for as
+// long as that prose survived, then gone red at whoever removed it.
 var canonicalMessagingTools = []string{
 	"send_message",
-	"report_status",
 	"peek",
 	"spawn",
 	"merge",

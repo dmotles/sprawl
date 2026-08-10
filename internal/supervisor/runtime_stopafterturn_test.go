@@ -3,7 +3,8 @@
 // follow-on send_message emitted in the same turn is not silently cut off by
 // an immediate drainInflight teardown. The mechanism is generic (a later issue
 // reuses it for handoff), so these tests pin the state machine directly on
-// AgentRuntime as well as through the Real.ReportStatus wiring.
+// AgentRuntime. QUM-1186 deleted the Real.ReportStatus wiring that was its
+// only production caller; lane 3's idle reaper is the intended next one.
 
 package supervisor
 

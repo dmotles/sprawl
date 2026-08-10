@@ -11,8 +11,7 @@
 //
 // SHAPE. The drain is split into an I/O half and a pure half:
 //
-//	readInboxSnapshot  — I/O: ListPending, the in-flight filter, and the
-//	                     DESTRUCTIVE status_change drain
+//	readInboxSnapshot  — I/O: ListPending and the in-flight filter
 //	buildInjection     — PURE: snapshot + policy → frames. No I/O, no clock,
 //	                     no runtime. Unit-testable without a session or handle.
 //	writeInjection     — I/O: one bounded write per frame, ack, WARN on failure
@@ -147,7 +146,7 @@ func childDrainPolicy() drainPolicy {
 		// question rather than an accident of having two functions.
 		//
 		// The read-then-write is TOCTOU: a poke on the MCP handler goroutine
-		// (Real.SendMessage / Real.ReportStatus) can interleave with PostTurnSweep
+		// (Real.SendMessage) can interleave with PostTurnSweep
 		// on the backend reader goroutine, and both can read the in-flight set
 		// before either writes. So the child's guarantee is "written once per
 		// SEQUENTIAL drain", not "once under concurrent drains". The unbounded
@@ -293,18 +292,10 @@ func buildInjection(snap inboxSnapshot, pol drainPolicy) []systemFrame {
 // readInboxSnapshot performs the drain's reads: the maildir peek and the
 // in-flight filter.
 //
-// QUM-1186: the DESTRUCTIVE status_change drain that used to run here is gone.
-//
-// Order is load-bearing and must not be "optimised": the destructive read happens
-// unconditionally, before any emptiness decision, because whether any lines exist
-// is only knowable by draining them.
-//
-// CONCRETELY, the edit to never make: an early `if len(pending) == 0 { return
-// inboxSnapshot{} }` above the drain below. It reads like a harmless fast path and
-// it permanently loses every status_change line whose maildir happened to be
-// empty. That is why the drain is its own statement under this comment rather than
-// an expression inside the returned literal — a reader adding that fast path has
-// to step over a named, commented destructive call to do it.
+// QUM-1186: this used to also perform a DESTRUCTIVE status_change drain, which
+// made the read order load-bearing and turned any early return into silent data
+// loss. That drain is gone with the status_change envelope class, so every read
+// here is now a non-destructive peek and no such ordering constraint survives.
 func readInboxSnapshot(rt *runtimepkg.UnifiedRuntime, sprawlRoot, name string, pol drainPolicy) inboxSnapshot {
 	pending, err := agentloop.ListPending(sprawlRoot, name)
 	if err != nil {

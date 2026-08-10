@@ -1,6 +1,6 @@
 // QUM-725: WalkDeadAncestors — pure helper that walks the ancestor chain
 // starting at `target` and stops at the first live ancestor. Used by
-// Real.SendMessage and Real.ReportStatus to redirect deliveries away from
+// Real.SendMessage to redirect deliveries away from
 // Died agents.
 package supervisor
 

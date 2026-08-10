@@ -27,7 +27,7 @@ const rowPrefixWidth = 2
 
 // clipTreeRow coerces an arbitrary row label into a single-line, width-bounded
 // string. Embedded newlines/tabs are replaced with spaces so a multi-line
-// a long blurb cannot push the tree onto extra visual rows, and the
+// blurb cannot push the tree onto extra visual rows, and the
 // result is then truncated (with an ellipsis) at width display cells. When
 // width <= 0 the content is returned with its newlines stripped but
 // otherwise unbounded — the caller hasn't been sized yet.

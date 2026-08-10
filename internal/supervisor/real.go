@@ -766,7 +766,8 @@ func (r *Real) Retire(ctx context.Context, caller string, agentName string, merg
 				names[i] = child.Name
 			}
 			sort.Strings(names)
-			return nil, fmt.Errorf("agent %s has %d active children: %s; use --cascade to retire %s and all descendants, or --force to retire %s only (children become orphans)",
+			// QUM-1186: "active" -> "unresolved"; see agentops/merge.go.
+			return nil, fmt.Errorf("agent %s has %d unresolved children: %s; they may be running, paused, or idle-reclaimed (no process, but revivable and possibly holding unmerged work); use --cascade to retire %s and all descendants, or --force to retire %s only (children become orphans)",
 				agentName, len(children), strings.Join(names, ", "), agentName, agentName)
 		}
 		var retired []string
@@ -1227,6 +1228,21 @@ func (r *Real) RecoverAgents(_ context.Context) (resumed int, failed int, errs [
 		if lv == liveness.Paused {
 			continue
 		}
+		// QUM-1186: StatusIdle is REVIVABLE-ON-DEMAND, not auto-resumed. It
+		// projects onto Suspended (so the TUI, merge and the wake path all
+		// treat it as a resting state), which would otherwise land it inside
+		// the {Suspended, Running} accept-set above — and this loop is the BOOT
+		// resume loop, so that would relaunch every reclaimed agent on every
+		// `sprawl enter`. Ten reclaimed agents is roughly 2.8GB of RSS handed
+		// straight back, which is precisely the memory the reaper freed.
+		//
+		// An idle agent comes back when someone MESSAGES it (the auto-wake arm
+		// in Real.SendMessage), not because the session restarted. Excluded
+		// explicitly here rather than by refusing the Suspended projection,
+		// because that projection is load-bearing everywhere else.
+		if a.Status == state.StatusIdle {
+			continue
+		}
 		// QUM-1186: the terminal-OUTCOME exclusion was removed here. It kept a
 		// self-reported complete/failure agent from auto-resuming. Agents no
 		// longer assert an outcome, so the exclusion now lives entirely on the
@@ -1426,12 +1442,22 @@ func (r *Real) Shutdown(ctx context.Context) error {
 			}
 			preserve := false
 			switch agentState.Status {
-			case state.StatusKilled, state.StatusRetired, state.StatusRetiring, state.StatusPaused, state.StatusDied, state.StatusComplete:
+			case state.StatusKilled, state.StatusRetired, state.StatusRetiring, state.StatusPaused, state.StatusDied, state.StatusComplete, state.StatusIdle:
 				// QUM-625 (slice M4): leave terminal-ish states as-is.
 				// QUM-722: also leave Paused / Died as-is — they carry
 				// distinct resting semantics. QUM-787: leave Complete
 				// as-is — an agent that reported state=complete finished
 				// its work and should not be auto-resumed.
+				//
+				// QUM-1186: leave Idle as-is too. Flattening idle->suspended
+				// here would destroy the only durable record of WHY the
+				// process is gone, at exactly the moment the operator is most
+				// likely to look — a restart — and would make the state
+				// non-idempotent: reclaim -> shutdown -> boot leaves the agent
+				// indistinguishable from one that was never reclaimed. D3's
+				// "shutdown -> StatusSuspended" is about an agent being stopped
+				// BY shutdown; it is not a licence to overwrite a reason that
+				// was already recorded.
 				preserve = true
 			case state.StatusFaulted:
 				// QUM-1186 (D3): unconditional preserve. This arm used to
@@ -2204,7 +2230,6 @@ var validMessagesListFilters = map[string]bool{
 	"unread":   true,
 	"read":     true,
 	"archived": true,
-	"status":   true,
 }
 
 const (
@@ -2260,7 +2285,7 @@ func (r *Real) MessagesList(ctx context.Context, filter string, limit int) (*Mes
 		return nil, err
 	}
 	if !validMessagesListFilters[filter] {
-		return nil, fmt.Errorf("invalid filter %q: must be one of all, unread, read, archived, status", filter)
+		return nil, fmt.Errorf("invalid filter %q: must be one of all, unread, read, archived", filter)
 	}
 	effective := filter
 	if effective == "" {

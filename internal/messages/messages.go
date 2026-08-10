@@ -44,6 +44,18 @@ var RandReader = rand.Reader
 // use and is NOT legacy.
 const TypeLivenessCheck = "liveness_check"
 
+// legacyTypeStatusChange is the retired QUM-614 status_change envelope type,
+// kept ONLY as a hide-filter token. QUM-1186 deleted the class outright, so
+// nothing writes these any more — but an installation upgrading across that
+// change may still have undelivered ones sitting in <root>/messages/<n>/new/.
+//
+// They must stay hidden from messages_list rather than surfacing as mail: they
+// were never mail, they carry a JSON payload as their Body (which would render
+// as raw JSON), and they would inflate the unread count for a channel the
+// operator can no longer act on. Exactly the same reasoning, and the same
+// remedy, as TypeLivenessCheck above.
+const legacyTypeStatusChange = "status_change"
+
 // Message represents a message between agents.
 type Message struct {
 	ID        string `json:"id"`
@@ -499,11 +511,10 @@ func readMessagesFromDirs(agentDir string, dirs []string) ([]*Message, error) {
 
 // List returns messages filtered by the given filter.
 //
-// QUM-1186: the `status` filter and the status-hiding logic are gone with the
-// status_change envelope class. Every remaining envelope is a real message, so
-// there is nothing to hide from the default views. The liveness_check skip
-// (QUM-730) is unrelated and SURVIVES — those envelopes are ephemeral probes
-// and must never surface in messages_list.
+// QUM-1186: the `status` filter mode is gone with the status_change envelope
+// class. Legacy status_change envelopes left on disk by an upgrade are still
+// HIDDEN, for the same reason liveness_check envelopes are — see
+// legacyTypeStatusChange. What went away is the ability to ask for them.
 func List(sprawlRoot, agent, filter string) ([]*Message, error) {
 	var dirs []string
 	switch filter {
@@ -527,7 +538,7 @@ func List(sprawlRoot, agent, filter string) ([]*Message, error) {
 	}
 	out := msgs[:0]
 	for _, m := range msgs {
-		if m.Type == TypeLivenessCheck {
+		if m.Type == TypeLivenessCheck || m.Type == legacyTypeStatusChange {
 			continue
 		}
 		out = append(out, m)

@@ -45,11 +45,13 @@ type WeaveRuntimeHandle struct {
 	ring *agentloop.ActivityRing
 
 	// drainMu serialises drainPendingToStdin. Pokes arrive on independent MCP
-	// handler goroutines (one per child report_status / send_message), and both
-	// inbox reads are unsafe to run concurrently: messages.DrainStatusChange is an
-	// unlocked read-dir/read-file/remove sequence, and agentloop.ListPending is a
-	// non-destructive peek whose ack lands much later. Overlapping drains would
-	// write the same notification twice. (QUM-925)
+	// handler goroutines (one per child report_status / send_message), and the
+	// inbox read — agentloop.ListPending — is a non-destructive peek whose
+	// MarkDelivered ack lands only after the write. Two overlapping drains
+	// therefore both see the same entry as not-yet-in-flight and both write it,
+	// delivering the notification twice. Removing this lock turns
+	// TestWeaveRuntimeHandle_ConcurrentWakeForDelivery_NoDuplicateWrite red on
+	// the first iteration, so it is load-bearing, not defensive. (QUM-925)
 	drainMu sync.Mutex
 
 	// stopInboxRedrain tears down the inbox-redrain ticker goroutine (QUM-925).
@@ -114,7 +116,7 @@ func (v *atomicDuration) set(d time.Duration) { v.ns.Store(int64(d)) }
 //     and its reducer discarded the drained frame if a turn had started — that
 //     gating was the original QUM-925 defect.
 //
-// The event-driven poke path (Real.SendMessage / Real.ReportStatus →
+// The event-driven poke path (Real.SendMessage →
 // WakeForDelivery) remains the primary and instant delivery mechanism. This exists
 // only for entries that reach pending/ with no in-process producer to poke: an
 // out-of-process writer dropping an envelope into the maildir directly, or a poke
@@ -224,7 +226,7 @@ func (h *WeaveRuntimeHandle) Wake() error {
 
 // WakeForDelivery is the cooperative-wake path, fired unconditionally by the
 // producer side on every child report_status / send_message (see Real.SendMessage
-// and Real.ReportStatus). It drains weave's inbox straight to the CLI stdin the
+// only). It drains weave's inbox straight to the CLI stdin the
 // instant the notification arrives, regardless of weave's turn state (QUM-925).
 //
 // Before QUM-925 this was a no-op: pending entries were left on disk for the TUI's

@@ -17,7 +17,7 @@ package tui
 //   - Family/type chip [eng]/[mgr]/[res] dim-italic; weave omitted.
 //   - Cost tag `[$0.0000]` when SessionCostUsd > 0 (current session, not
 //     lifetime — QUM-1093).
-//   - `(status)` or `— <last_report_message>`.
+//   - `— <blurb>` when the node has a blurb, else `(status)`.
 //
 // Keys: ↑/↓ move cursor; Enter emits AgentSelectedMsg and hides the modal
 // (visibility sync at the AppModel layer clears showTree — QUM-733 hotfix:

@@ -1270,15 +1270,12 @@ func TestE2E_QUM441_TwoMessagesOverTimeNoReinjection(t *testing.T) {
 }
 
 // ---------------------------------------------------------------------------
-// QUM-488: Delegate task-queue bridge
+// QUM-1186: the QUM-488 delegate task-queue bridge described here is DELETED.
 // ---------------------------------------------------------------------------
 //
-// Real.Delegate writes a queued task to disk via state.EnqueueTask and calls
-// runtime.Wake(). Under the unified runtime, unifiedHandle.Wake() must scan
-// the on-disk task queue, mark queued tasks in-progress, and enqueue a
-// ClassTask QueueItem so the turn loop actually picks them up. Delivery must
-// then mark the task done. The bridge must also fire on Start() so any tasks
-// queued while the runtime was stopped are picked up at launch.
+// It bridged Real.Delegate's on-disk task queue into the runtime via
+// unifiedHandle.Wake. Both the tool and the task subsystem are gone; the
+// helpers below survive because tests of the SURVIVING drain path use them.
 
 // captureSlogHandler is a minimal in-memory slog.Handler that records every
 // record. Mirrors the helper in internal/runtime/eventbus_test.go so tests in
@@ -1434,11 +1431,30 @@ func makeToolUseAssistant(name string) *protocol.Message {
 // tasks/ directory, which are deleted outright; there is no surviving
 // behaviour to re-host.
 //
-// The two properties in that cluster that were NOT delegate-specific — a
-// stopped runtime accepts no writes, and repeated pokes do not double-deliver
-// — survive on the send_message path and are pinned by
-// TestUnifiedHandle_WakeForDelivery_MarksPendingDelivered and
-// TestE2E_QUM441_TwoMessagesOverTimeNoReinjection above.
+// ACCOUNTING CORRECTION (code review): an earlier version of this note claimed
+// both non-delegate-specific properties survived and named two tests as
+// carrying them. That was HALF WRONG, and a wrong accounting note is worse
+// than none because it reads as a verified handover:
+//
+//   - "repeated pokes do not double-deliver" IS still covered —
+//     TestUnifiedHandle_WakeForDelivery_MarksPendingDelivered and
+//     TestE2E_QUM441_TwoMessagesOverTimeNoReinjection above genuinely assert it.
+//   - "a stopped runtime accepts no writes" did NOT survive, and on
+//     investigation it was never the general property the note implied. The
+//     guard was `if h.rt.State().Liveness == liveness.Stopped { return }`, the
+//     first line of feedTasks — it protected the TASK write only. Wake() has
+//     always been feedTasks + drainPendingToStdin, and the DRAIN half has no
+//     such guard on this branch or on main: runDrain writes a pending entry to
+//     a stopped session either way.
+//
+// So there is nothing to re-host. An attempt to write
+// TestUnifiedHandle_Wake_StoppedRuntimeWritesNothing failed immediately
+// against BOTH this branch and the parent commit, which is what established
+// that the property was task-scoped rather than lost.
+//
+// That the drain pokes a torn-down session is a real (pre-existing, not
+// introduced here) rough edge and is reported to the manager rather than fixed
+// in a deletion lane.
 
 func TestSweepCoordinator_PostTurnSweep_NoOpWhenIdle(t *testing.T) {
 	sprawlRoot := t.TempDir()

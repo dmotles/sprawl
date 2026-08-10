@@ -2581,3 +2581,45 @@ func TestList_HidesLegacyLivenessEnvelope(t *testing.T) {
 		t.Errorf("a legacy liveness_check envelope surfaced in messages_list as mail")
 	}
 }
+
+// TestList_HidesLegacyStatusChangeEnvelope is the QUM-1186 twin of
+// TestList_HidesLegacyLivenessEnvelope above, and was added after code review
+// pointed out that the identical reasoning had not been applied.
+//
+// QUM-1186 deleted the status_change class, so nothing writes these any more.
+// An installation upgrading across that change may still have undelivered ones
+// in <root>/messages/<n>/new/. Without a hide-filter they would count as
+// UNREAD and render with a raw-JSON body — a channel the operator can no
+// longer act on, inflating the badge that tells them they have mail.
+func TestList_HidesLegacyStatusChangeEnvelope(t *testing.T) {
+	tmpDir := t.TempDir()
+
+	// Hand-write a legacy envelope; there is no longer a helper that can.
+	agentDir := filepath.Join(MessagesDir(tmpDir), "alice")
+	if err := os.MkdirAll(filepath.Join(agentDir, "new"), 0o755); err != nil {
+		t.Fatalf("mkdir: %v", err)
+	}
+	legacy := `{"id":"legacy-sc-1","from":"kid","to":"alice","subject":"kid: complete",` +
+		`"body":"{\"state\":\"complete\",\"summary\":\"did the thing\"}",` +
+		`"timestamp":"2026-06-06T12:00:00Z","type":"status_change"}`
+	if err := os.WriteFile(filepath.Join(agentDir, "new", "legacy-sc-1.json"), []byte(legacy), 0o644); err != nil {
+		t.Fatalf("write legacy envelope: %v", err)
+	}
+	// A real message alongside it, so an empty result cannot pass vacuously.
+	if _, err := Send(tmpDir, "kid", "alice", "hello", "real body"); err != nil {
+		t.Fatalf("Send: %v", err)
+	}
+
+	for _, filter := range []string{"", "all", "unread"} {
+		got, err := List(tmpDir, "alice", filter)
+		if err != nil {
+			t.Fatalf("List(%q): %v", filter, err)
+		}
+		if len(got) != 1 {
+			t.Fatalf("List(%q) returned %d messages, want 1 (the real one); legacy status_change leaked into the view", filter, len(got))
+		}
+		if got[0].Subject != "hello" {
+			t.Errorf("List(%q) returned %q, want the real message", filter, got[0].Subject)
+		}
+	}
+}

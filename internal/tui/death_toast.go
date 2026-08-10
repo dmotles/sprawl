@@ -3,7 +3,7 @@
 // A Died agent fires AgentDiedMsg into the TUI; the app reducer spawns a
 // persistent (user-only-dismiss) error toast informing the user that the
 // agent died and that its parent has been notified (the route-up path in
-// Real.SendMessage / Real.ReportStatus delivers the parent notification).
+// Real.SendMessage delivers the parent notification).
 package tui
 
 import (

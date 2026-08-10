@@ -186,10 +186,16 @@ func TestAgentRuntime_StartInterruptQueueAndSyncEmitSnapshotsWithoutTmux(t *test
 
 	updated := testAgentState("alice")
 	// QUM-1186: this used to mutate the LastReport* fields so SyncAgentState
-	// had something observable to propagate. Blurb is the surviving field with
-	// the same shape — carried on AgentState, mirrored into the snapshot, not
-	// otherwise touched by Sync.
-	updated.Blurb = "writing tests"
+	// had something observable to propagate into the snapshot.
+	//
+	// An earlier revision of this edit used Blurb, which was WRONG and caught in
+	// code review: RuntimeSnapshot has no Blurb field, so snapshotFromAgentState
+	// never carries it and the propagation half of this test asserted nothing
+	// (proven by mutation — neutering `r.snapshot = updated` still passed).
+	// Branch IS mirrored into the snapshot and is inert with respect to the
+	// liveness classification below, so it probes propagation without
+	// perturbing what the rest of the test measures.
+	updated.Branch = "dmotles/alice-resynced"
 	rt.SyncAgentState(updated)
 
 	// QUM-1186: the RuntimeEventTaskQueued step is gone with the task
@@ -223,6 +229,11 @@ func TestAgentRuntime_StartInterruptQueueAndSyncEmitSnapshotsWithoutTmux(t *test
 	snap := rt.Snapshot()
 	if snap.Liveness != liveness.Running {
 		t.Fatalf("Lifecycle = %q, want %q", snap.Liveness, liveness.Running)
+	}
+	// Field propagation: SyncAgentState must carry disk fields onto the
+	// snapshot, not merely emit an event.
+	if snap.Branch != "dmotles/alice-resynced" {
+		t.Fatalf("snapshot.Branch = %q, want the synced value — SyncAgentState emitted its event without propagating the state", snap.Branch)
 	}
 	if snap.InterruptCount != 1 {
 		t.Fatalf("InterruptCount = %d, want 1", snap.InterruptCount)

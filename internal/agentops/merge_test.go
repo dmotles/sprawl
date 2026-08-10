@@ -118,7 +118,8 @@ func TestMerge_ActiveChildBlocks(t *testing.T) {
 	if err == nil {
 		t.Fatalf("Merge of parent with active child must fail")
 	}
-	if !strings.Contains(err.Error(), "active children") {
+	// QUM-1186: reworded to "unresolved children" — see agentops/merge.go.
+	if !strings.Contains(err.Error(), "unresolved children") {
 		t.Errorf("unexpected error: %v", err)
 	}
 }

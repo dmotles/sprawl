@@ -52,9 +52,13 @@ const (
 	// them would tell the operator a lie in the TUI and, worse, would put a
 	// reaped-but-unfinished agent outside the auto-resume accept-set.
 	//
-	// It projects onto liveness.Suspended, which is what puts it INSIDE that
-	// accept-set (internal/supervisor/real.go RecoverAgents). Pinned by
-	// TestRecoverAgents_StatusIdleIsAutoResumeEligible.
+	// It projects onto liveness.Suspended (load-bearing for the TUI, merge and
+	// the wake path) but is deliberately EXCLUDED from the boot auto-resume
+	// loop in RecoverAgents: revival is ON DEMAND, when someone messages the
+	// agent, not eager at every `sprawl enter`. Resuming reclaimed agents at
+	// boot would hand back the exact RSS the reaper freed.
+	// Pinned by TestRecoverAgents_BootResumeAcceptSet and
+	// TestSendMessage_StatusIdleTarget_AutoWakesWithoutFlag.
 	StatusIdle = "idle"
 )
 

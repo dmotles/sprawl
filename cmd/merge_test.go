@@ -213,7 +213,21 @@ func TestMerge_StatusActive_Accepted(t *testing.T) {
 	}
 }
 
-func TestMerge_StatusDone_Accepted(t *testing.T) {
+// TestMerge_StatusDone_Rejected is an INVERSION, found in code review.
+//
+// QUM-1186: this was TestMerge_StatusDone_Accepted, and it was a vacuous green
+// of the same shape as TestMerge_CompleteViaLastReportState below — worse,
+// actually, because its fixture did not even mention its subject. It asserted
+// "done agents should be mergeable" while seeding Status:"suspended", so it
+// passed on the suspended arm of the allow-set and said nothing about
+// StatusDone at all. Setting the fixture to state.StatusDone made it FAIL.
+//
+// state.StatusDone is a legacy token and is deliberately NOT in
+// mergeableStatus(); LoadAgent migrates it to StatusComplete on read, so the
+// only way to observe it here is a hand-built fixture like this one. The test
+// now asserts the truth, and uses the constant instead of a bare string so it
+// cannot drift from the allow-set again.
+func TestMerge_StatusDone_Rejected(t *testing.T) {
 	deps, tmpDir := newTestMergeDeps(t)
 
 	createTestAgent(t, tmpDir, &state.AgentState{
@@ -221,14 +235,17 @@ func TestMerge_StatusDone_Accepted(t *testing.T) {
 		Worktree: "/worktree/parent", Parent: "root",
 	})
 	createTestAgent(t, tmpDir, &state.AgentState{
-		Name: "target-agent", Status: "suspended", Branch: "feature-branch",
+		Name: "target-agent", Status: state.StatusDone, Branch: "feature-branch",
 		Worktree: "/worktree/target", Parent: "parent-agent",
 		Type: "engineer", Family: "engineering",
 	})
 
 	err := runMerge(context.Background(), deps, "target-agent", "", true, false)
-	if err != nil {
-		t.Fatalf("done agents should be mergeable, got: %v", err)
+	if err == nil {
+		t.Fatal("StatusDone is not in the precondition-4 allow-set; merge should have been refused")
+	}
+	if !strings.Contains(err.Error(), "cannot be merged") {
+		t.Errorf("error should mention cannot be merged, got: %v", err)
 	}
 }
 
@@ -247,7 +264,7 @@ func TestMerge_StatusOther_Rejected(t *testing.T) {
 
 	err := runMerge(context.Background(), deps, "target-agent", "", true, false)
 	if err == nil {
-		t.Fatal("expected error for non-active/non-done agent")
+		t.Fatal("expected error for a status outside the precondition-4 allow-set")
 	}
 	if !strings.Contains(err.Error(), "cannot be merged") {
 		t.Errorf("error should mention cannot be merged, got: %v", err)
@@ -315,8 +332,10 @@ func TestMerge_ActiveChildren(t *testing.T) {
 	if err == nil {
 		t.Fatal("expected error for active children")
 	}
-	if !strings.Contains(err.Error(), "active children") {
-		t.Errorf("error should mention active children, got: %v", err)
+	// QUM-1186: "active children" -> "unresolved children" — an idle-reclaimed
+	// child has no process yet still blocks, so "active" was inaccurate.
+	if !strings.Contains(err.Error(), "unresolved children") {
+		t.Errorf("error should mention unresolved children, got: %v", err)
 	}
 	if !strings.Contains(err.Error(), "child-one") {
 		t.Errorf("error should list child-one, got: %v", err)

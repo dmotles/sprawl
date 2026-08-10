@@ -129,11 +129,24 @@ func TestStopWithReason_Shutdown_RestsSuspended(t *testing.T) {
 	assertRestingStatus(t, rt, root, "stop-shutdown", state.StatusSuspended)
 }
 
-// TestStopReason_ClearedOnRestart is the stale-reason guard, and nothing else
-// in the suite catches it. If a reason survives across a restart, the NEXT
-// teardown inherits it — an agent reclaimed once would be stamped `idle`
-// forever after, including on a shutdown that should say `suspended`.
-func TestStopReason_ClearedOnRestart(t *testing.T) {
+// TestStopReason_NotInheritedByALaterReasonlessStop is the stale-reason guard:
+// if a recorded reason could survive into the NEXT teardown, an agent
+// reclaimed once would be stamped `idle` forever after, including on a
+// shutdown that should say `suspended`.
+//
+// WHAT IT ACTUALLY PINS, stated precisely because an earlier version of this
+// test did not discriminate. The load-bearing mechanism is that Stop() is a
+// wrapper for StopWithReason(ctx, stopReasonNone) and therefore STORES the
+// reason on every call — so a prior reason cannot leak into it. Mutation:
+// remove the Store from StopWithReason and this test fires.
+//
+// The re-arms at startWithSpec / AttachHandle / Wake are belt-and-braces on
+// top of that and are NOT what this test measures: removing the AttachHandle
+// re-arm alone leaves it green, because the subsequent Stop() re-stores anyway.
+// That is recorded here rather than hidden, so nobody reads this test as
+// proving those re-arms are load-bearing. They are defensive, and correctly so
+// — every teardown path currently sets a reason before it is read.
+func TestStopReason_NotInheritedByALaterReasonlessStop(t *testing.T) {
 	rt, _, root := newStopReasonRuntime(t, "stop-rearm")
 
 	if err := rt.StopWithReason(context.Background(), stopReasonIdleReclaim); err != nil {
@@ -141,9 +154,25 @@ func TestStopReason_ClearedOnRestart(t *testing.T) {
 	}
 	assertRestingStatus(t, rt, root, "stop-rearm", state.StatusIdle)
 
-	// Re-attach a fresh handle, as a wake/restart does, then stop with no
-	// reason. The idle-reclaim reason must NOT still be in effect.
+	// Re-attach a fresh handle and clear the resting marker, which is what a
+	// real wake does (Wake stamps StatusActive before the agent runs again).
+	// Both halves are needed: AttachHandle re-arms the IN-MEMORY reason, and
+	// clearing disk is required because the durable-persist preserve switch
+	// deliberately protects an already-recorded StatusIdle — see
+	// TestStopPreservesIdleReclaimMarker. Without the disk clear this test
+	// would be asserting against that preserve rule rather than against the
+	// re-arm it exists to pin.
 	rt.AttachHandle(newStopReasonHandle())
+	woken, err := state.LoadAgent(root, "stop-rearm")
+	if err != nil {
+		t.Fatalf("LoadAgent: %v", err)
+	}
+	woken.Status = state.StatusActive
+	if err := state.SaveAgent(root, woken); err != nil {
+		t.Fatalf("SaveAgent: %v", err)
+	}
+
+	// Stop with NO reason. The idle-reclaim reason must NOT still be in effect.
 	if err := rt.Stop(context.Background()); err != nil {
 		t.Fatalf("Stop after re-attach: %v", err)
 	}
@@ -211,4 +240,41 @@ func waitForStatus(t *testing.T, rt *AgentRuntime, want string) {
 		time.Sleep(5 * time.Millisecond)
 	}
 	t.Fatalf("status did not reach %q within 5s (last = %q)", want, rt.Snapshot().Status)
+}
+
+// TestStopPreservesIdleReclaimMarker pins tower's Q2 ruling: a teardown must
+// not flatten an already-recorded StatusIdle back to StatusSuspended.
+//
+// The flatten would destroy the only durable record of WHY the process is
+// gone, at exactly the moment the operator is most likely to look — a restart
+// — and it makes the state non-idempotent: reclaim -> shutdown -> boot leaves
+// the agent indistinguishable from one that was never reclaimed.
+//
+// D3's "shutdown -> StatusSuspended" governs an agent being stopped BY
+// shutdown. It is not a licence to overwrite a reason already on disk.
+func TestStopPreservesIdleReclaimMarker(t *testing.T) {
+	rt, _, root := newStopReasonRuntime(t, "already-reaped")
+
+	// Disk already records the reclaim, as lane 3's reaper will leave it.
+	cur, err := state.LoadAgent(root, "already-reaped")
+	if err != nil {
+		t.Fatalf("LoadAgent: %v", err)
+	}
+	cur.Status = state.StatusIdle
+	if err := state.SaveAgent(root, cur); err != nil {
+		t.Fatalf("SaveAgent: %v", err)
+	}
+
+	// A shutdown-reason stop arrives afterwards.
+	if err := rt.StopWithReason(context.Background(), stopReasonShutdown); err != nil {
+		t.Fatalf("StopWithReason: %v", err)
+	}
+
+	loaded, err := state.LoadAgent(root, "already-reaped")
+	if err != nil {
+		t.Fatalf("LoadAgent after stop: %v", err)
+	}
+	if loaded.Status != state.StatusIdle {
+		t.Errorf("on-disk Status = %q, want %q — a later stop must not erase the reclaim marker", loaded.Status, state.StatusIdle)
+	}
 }

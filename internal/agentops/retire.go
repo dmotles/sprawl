@@ -114,7 +114,10 @@ func Retire(ctx context.Context, deps *RetireDeps, agentName string, cascade, fo
 			for i, c := range children {
 				names[i] = c.Name
 			}
-			return nil, fmt.Errorf("agent %s has %d active children: %s; use --cascade to retire %s and all descendants, or --force to retire %s only (children become orphans)",
+			// QUM-1186: "active" -> "unresolved". An idle-reclaimed child has
+			// no process yet still blocks, deliberately — see the matching note
+			// in agentops/merge.go. The cascade/force remedies are unchanged.
+			return nil, fmt.Errorf("agent %s has %d unresolved children: %s; they may be running, paused, or idle-reclaimed (no process, but revivable and possibly holding unmerged work); use --cascade to retire %s and all descendants, or --force to retire %s only (children become orphans)",
 				agentName, len(children), strings.Join(names, ", "), agentName, agentName)
 		}
 	}

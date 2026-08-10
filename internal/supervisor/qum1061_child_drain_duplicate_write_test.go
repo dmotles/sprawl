@@ -79,7 +79,7 @@
 //
 // The missing mutex bounds the guarantee above, so read "EXACTLY ONCE" as "exactly
 // once per SEQUENTIAL drain". The filter is a read-then-write, so two concurrent
-// drains — an MCP-handler-goroutine poke (Real.SendMessage / Real.ReportStatus)
+// drains — an MCP-handler-goroutine poke (Real.SendMessage)
 // interleaving with PostTurnSweep on the reader goroutine — can both read the
 // in-flight set before either writes. Every arm here drains sequentially, by
 // construction: the turn-boundary re-drain is synchronous on the calling
@@ -265,7 +265,7 @@ func TestQUM1066_ChildDrain_MidTurnAsyncEntry_NotDuplicatedAtTurnBoundary(t *tes
 	openFrameTurnViaWire(t, mock)
 	seedAsyncEntry(t, sprawlRoot, "alice", entryID, "all green")
 
-	// The producer-side poke (Real.SendMessage / Real.ReportStatus call this
+	// The producer-side poke (Real.SendMessage calls this
 	// synchronously).
 	if err := uh.WakeForDelivery(); err != nil {
 		t.Fatalf("WakeForDelivery: %v", err)
@@ -398,7 +398,7 @@ func restartChildHandleAtRoot(t *testing.T, sprawlRoot string) (*unifiedHandle, 
 //
 // (The other restart leg — Real.Wake — redelivers via the FRESH handle's own
 // PostTurnSweep → WakeForDelivery rather than via unifiedHandle.Wake, which is
-// reached only from Real.Delegate on the SAME handle and so cannot clear a wedge.
+// reached only from the same handle and so cannot clear a wedge.
 // Same empty-outstanding-map argument, not separately covered here.)
 //
 // Suppression is therefore a DELAY, not loss. If this test ever fails, the QUM-1028

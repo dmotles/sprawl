@@ -13,11 +13,13 @@
 //
 // QUM-562: each `<system-notification>` now carries a `type` attribute so the
 // TUI parser (internal/tui/messages.go) can branch on signal kind without
-// string-sniffing the body. Three wire shapes:
+// string-sniffing the body. Two wire shapes:
 //
 //	<system-notification type="message">From $AGENT — mcp__sprawl__messages_read(id=$ID)</system-notification>
 //	<system-notification type="message" interrupt="true">[interrupt] From $AGENT — mcp__sprawl__messages_read(id=$ID)</system-notification>
-//	<system-notification type="status_change">$AGENT changed status to $STATE: $SUMMARY</system-notification>
+//
+// QUM-1186 deleted a third, type="status_change", shape. The TUI parser still
+// recognises it so pre-QUM-1186 transcripts replay, but nothing writes it.
 //
 // The inner `[interrupt]` body marker is retained on interrupt-class entries
 // for human-readability when the wrapper is stripped from rendered output;

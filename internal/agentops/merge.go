@@ -129,7 +129,17 @@ func Merge(ctx context.Context, deps *MergeDeps, agentName, messageOverride stri
 	// for any status added later. There is deliberately no quiescence gate
 	// here — that is QUM-1187.
 	if !salvagingTerminalAgent && !mergeableStatus(agentState.Status) {
-		return nil, fmt.Errorf("agent %q cannot be merged (status: %q). Merge requires status active, idle, suspended or complete — wake it first if it is retired, killed or dead", agentName, agentState.Status)
+		// QUM-1186: the hint is SPLIT by what is actually actionable for the
+		// observed status. An earlier version said "wake it first if it is
+		// retired, killed or dead" — but `wake` explicitly ERRORS on
+		// retired/retiring, so for two of the three statuses it named the
+		// advice could not work. /cli-ux-best-practices: a next-action hint has
+		// to be actionable for every case it covers.
+		hint := "wake it first (mcp__sprawl__wake), then retry"
+		if state.IsTerminal(agentState.Status) {
+			hint = "a retired/retiring agent cannot be woken; merge its branch through `retire --merge` instead"
+		}
+		return nil, fmt.Errorf("agent %q cannot be merged (status: %q). Merge requires status active, idle, suspended or complete — %s", agentName, agentState.Status, hint)
 	}
 
 	// Precondition 5: No active children
@@ -148,7 +158,18 @@ func Merge(ctx context.Context, deps *MergeDeps, agentName, messageOverride stri
 		}
 	}
 	if len(childNames) > 0 {
-		return nil, fmt.Errorf("agent %q has active children: [%s]. Retire or cascade-retire them first", agentName, strings.Join(childNames, ", "))
+		// QUM-1186: "active children" is now a LIE for one of the statuses this
+		// check blocks on. An idle-reclaimed child has no process at all, yet it
+		// correctly still blocks — reclamation is a memory optimisation and must
+		// be semantically invisible in BOTH directions, so a reclaimed child
+		// keeps counting as a child. Being quiet for a while is not evidence
+		// that its work is done; that is exactly why `idle` is a distinct state
+		// from `complete`.
+		//
+		// The BLOCK is right; the sentence was wrong. It says "unresolved"
+		// rather than "active", and names cascade as the next action
+		// (/cli-ux-best-practices).
+		return nil, fmt.Errorf("agent %q has unresolved children: [%s]. They may be running, paused, or idle-reclaimed (no process, but revivable and possibly holding unmerged work) — retire or cascade-retire them first", agentName, strings.Join(childNames, ", "))
 	}
 
 	// QUM-511: resolve the agent's actual current branch from its worktree

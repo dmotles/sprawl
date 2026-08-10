@@ -520,27 +520,6 @@ func (r *AgentRuntime) Interrupt(ctx context.Context) error {
 	return nil
 }
 
-// NotifyWake notifies an idle runtime that persisted work is ready to be
-// observed. Distinct from the lifecycle verb AgentRuntime.Wake(ctx) (QUM-724)
-// — this is the lower-level "poke the handle" path used by delegate dispatch.
-func (r *AgentRuntime) NotifyWake() error {
-	r.mu.RLock()
-	handle := r.handle
-	r.mu.RUnlock()
-
-	if handle == nil {
-		return fmt.Errorf("runtime session not started")
-	}
-	if err := handle.Wake(); err != nil {
-		return err
-	}
-
-	r.mu.Lock()
-	r.snapshot.WakeCount++
-	r.mu.Unlock()
-	return nil
-}
-
 // WakeForDelivery notifies a runtime cooperatively that newly-persisted work
 // is available. Updates the WakeCount snapshot counter. See QUM-549/QUM-550.
 func (r *AgentRuntime) WakeForDelivery() error {
@@ -782,6 +761,12 @@ func (r *AgentRuntime) Pause(ctx context.Context, timeout time.Duration) (clean 
 // draining, propagating an error that skips stopWithFunc's snapshot
 // bookkeeping — i.e. the runaway guard, whose whole job is a reliable
 // teardown, would degrade. (QUM-866)
+//
+// NO PRODUCTION CALLER TODAY (QUM-1186). Its only one went with the deleted
+// report_status(complete/failure) self-teardown path. It is kept deliberately,
+// not overlooked: lane 3's idle reaper is the intended next caller. Coverage
+// is runtime_stopafterturn_test.go — read that file's trailer before deleting
+// this.
 func (r *AgentRuntime) StopAfterTurn(ctx context.Context, timeout time.Duration, reason stopReason) error {
 	stop := func() error {
 		stopCtx, cancel := context.WithTimeout(context.Background(), runtimeStopTimeout)
@@ -1255,10 +1240,16 @@ func (r *AgentRuntime) stopWithFunc(_ context.Context, stop func(RuntimeHandle) 
 		} else {
 			switch cur.Status {
 			case state.StatusKilled, state.StatusRetired, state.StatusRetiring,
-				state.StatusFaulted, state.StatusComplete, state.StatusDied:
+				state.StatusFaulted, state.StatusComplete, state.StatusDied,
+				state.StatusIdle:
 				// QUM-787: leave terminal-ish / already-resolved resting
 				// states as-is. Complete + Died are durable resting
 				// states that mustn't be re-derived by a late Stop.
+				//
+				// QUM-1186: Idle joins them. It records WHY the process is
+				// gone (reclaimed for inactivity), and a later Stop must not
+				// flatten that to suspended — see the matching preserve arm in
+				// Real.Shutdown.
 			default:
 				// QUM-1186 (D3): stamp the reason-derived resting status.
 				cur.Status = newStatus

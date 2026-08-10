@@ -140,8 +140,18 @@ func TestMergePrecondition4_RejectsEveryDeniedStatus(t *testing.T) {
 				t.Fatalf("Merge of status=%q rejected for the WRONG reason: %v", s, err)
 			}
 			// /cli-ux-best-practices: the error must tell the caller what to
-			// do next, not merely that it refused.
-			if !strings.Contains(err.Error(), "wake") {
+			// do next — and the advice must be ACTIONABLE for the status it is
+			// given for. `wake` errors on retired/retiring, so those two get a
+			// different remedy; suggesting a wake there would be advice that
+			// cannot work.
+			if state.IsTerminal(s) {
+				if !strings.Contains(err.Error(), "retire --merge") {
+					t.Errorf("Merge of terminal status=%q: error %q should point at retire --merge, not wake", s, err.Error())
+				}
+				if strings.Contains(err.Error(), "wake it first") {
+					t.Errorf("Merge of terminal status=%q: error %q advises a wake, which errors for this status", s, err.Error())
+				}
+			} else if !strings.Contains(err.Error(), "wake") {
 				t.Errorf("Merge of status=%q: error %q lacks a next-action hint", s, err.Error())
 			}
 		})

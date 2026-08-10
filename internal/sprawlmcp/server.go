@@ -468,8 +468,7 @@ func (s *Server) toolSpawn(ctx context.Context, args json.RawMessage) (string, e
 // emitted by the status tool (QUM-899). The blurb is the headline; the internal
 // debugging fields (process_alive, eventbus_*) are dropped (they remain
 // available via peek) and subprocess_alive is collapsed into the single
-// liveness token. last_report_message is retained but demoted below the blurb.
-// Field order here is the emitted JSON order.
+// liveness token. Field order here is the emitted JSON order.
 type statusView struct {
 	Name           string    `json:"name"`
 	Type           string    `json:"type"`

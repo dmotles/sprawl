@@ -6,17 +6,16 @@
 // and feedTasks' task notification (`later`). A wedged recipient makes a
 // notification LATE rather than hanging the writer.
 //
-// The feedTasks arm was added after code review and is not optional symmetry: it
-// is the one write the drain's bound CANNOT protect. unifiedHandle.Wake calls
-// feedTasks() BEFORE drainPendingToStdin(), and Real.Delegate pokes inline via
-// NotifyWake → Wake — so on the delegate path an unbounded feedTasks write hangs
-// the delegator and the drain's deadline is never reached at all.
+// QUM-1186: a feedTasks arm used to be described here — the one write the
+// drain's bound could not protect, because Wake called feedTasks BEFORE
+// drainPendingToStdin. feedTasks is deleted; Wake is the drain alone, and it
+// keeps its own bounded-write arm below.
 //
 // WHY THE HARM IS CROSS-AGENT, which is what makes this severe rather than
 // untidy. The goroutine that blocks is not the wedged child's — it belongs to the
 // SENDER. Verified in the current tree, not inherited from the issue:
 //
-//	Real.SendMessage (real.go) and Real.ReportStatus both call
+//	Real.SendMessage (real.go) calls
 //	  `_ = runtime.WakeForDelivery()` INLINE — no goroutine — on the MCP handler
 //	  goroutine currently serving some other agent's tool call;
 //	→ AgentRuntime.WakeForDelivery (synchronous)
