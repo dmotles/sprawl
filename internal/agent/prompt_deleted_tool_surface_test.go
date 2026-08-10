@@ -131,6 +131,23 @@ var deletedSurfacePatterns = []struct {
 		regexp.MustCompile(`(?i)report (your )?progress`),
 		"per-step progress narration was the report_status habit; do not move it onto send_message",
 	},
+	// Space-spelled, which an identifier grep for `last_report` misses. peek's
+	// last_report block is deleted; a prompt promising it sends the reader
+	// looking for a field that is not in the response.
+	{
+		regexp.MustCompile(`(?i)last[_ ]report`),
+		"peek no longer returns a last_report block — it reports observed activity only",
+	},
+	// There is no report channel. A prompt offering "messages OR reports" as a
+	// choice describes a fork with one arm deleted.
+	{
+		regexp.MustCompile(`(?i)(sending|send) reports?\b`),
+		"there is no report channel; messages are the only way to reach another agent",
+	},
+	{
+		regexp.MustCompile(`(?i)done report`),
+		"there is no done report; the hand-off is a <=300-character message, so anything substantial goes in the tracker or a findings file",
+	},
 }
 
 // delegateAllowedPhrases are the ordinary-English uses of the word "delegate"
@@ -178,6 +195,15 @@ var (
 	nowParamRe = regexp.MustCompile(`now\s*[:=]`)
 	// The cap is a number with a unit, not a bare "300" that any future
 	// QUM-1300 or 3000ms would satisfy forever.
+	//
+	// The cap is enforced rune-counted, but the prompts say "300 characters"
+	// deliberately: "rune" is a Go word, the two differ only for text an agent
+	// is unlikely to be composing a 300-unit message out of, and the failure
+	// mode of the vaguer word (an agent budgets slightly conservatively) is
+	// harmless while the failure mode of jargon is an agent that does not
+	// recognise the limit as applying to it. The regexp accepts either
+	// spelling so the prompts and the implementation's own error text are not
+	// forced to disagree.
 	bodyCapRe = regexp.MustCompile(`300[- ](char|rune)`)
 	// Work-record guidance, not a bare token: `s/Linear/tracker/` on one line
 	// would otherwise satisfy both the Linear ban and this floor at once.

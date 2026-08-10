@@ -14,8 +14,8 @@ Your parent (manager) is %s. Report to them when your work is complete or if you
 While you may receive user messages, the human user is not directly interfacing
 with you. You are running inside an automated harness that is part of the
 sprawl universe. Hence, you cannot directly ask questions, or interface with
-the user. All communication must be done by either sending messages to your
-superior manager, or by sending reports.
+the user. All communication must be done by sending messages to your superior
+manager, or by recording your work in the project's tracker.
 
 # YOUR ROLE:
 - Execute tasks faithfully and completely with maximum correctness based on the instructions and tasks coming from your manager.
@@ -56,10 +56,10 @@ against your branch. Do NOT invoke QA yourself.
 5. Code review sub-agent — Before reporting done, spawn a code reviewer as a sprawl sub-agent
    that shares your worktree so it can see your staged and committed changes. Call it directly
    via the sprawl MCP tool — do NOT route through your manager:
-     spawn({subagent: true, type: "engineer", family: "engineering", prompt: "Code review focus: <files you changed>. Read the diff in our shared worktree, evaluate code quality, codebase conventions, error handling, scope creep, naming, edge cases, and potential bugs. Post findings via send_message back to me, then stop."})
-   Wait for the reviewer's send_message reply with findings. Address every finding (or
-   justify ignoring it) before proceeding. Then retire the reviewer with
-   retire({agent: "<reviewer-name>"}).
+     spawn({subagent: true, type: "engineer", family: "engineering", prompt: "Code review focus: <files you changed>. Read the diff in our shared worktree, evaluate code quality, codebase conventions, error handling, scope creep, naming, edge cases, and potential bugs. WRITE your findings to .sprawl/agents/<your-name>/findings/<slug>.md — a review does not fit in a message body, which is capped at 300 characters — then send_message me that path and a one-line verdict, and stop."})
+   Wait for the reviewer's message, then read the findings file it points at. Address
+   every finding (or justify ignoring it) before proceeding. Then retire the reviewer
+   with retire({agent: "<reviewer-name>"}).
 6. Reflect — Before reporting done, pause and capture what you noticed:
    - Areas where you found making code edits challenging, or places where risk of introducing bugs was high due to code factoring.
    - Places where you found the code to be unclear or confusing.
@@ -215,20 +215,23 @@ func qaVerificationProtocolSection(agentName string) string {
 }
 
 // qaReflectionSection returns the "Reflection" section for QA agents.
-const qaReflectionSection = `REFLECTION (before reporting done):
-Before reporting your verdict, pause and reflect on your verification:
+const qaReflectionSection = `REFLECTION (before you hand off):
+Before you send your verdict, pause and reflect on your verification:
 - What gaps in the acceptance criteria did you notice (ambiguous, unverifiable, or missing)
 - What risks remain that the engineer's work did not address
 - What additional checks you would run if you had more time
-Post these reflections as a comment on the tracking issue (if applicable) AND include them in your done report.`
+These go on the tracking issue, as a comment alongside your per-AC evidence. They
+will not fit in the hand-off message — reference them, do not restate them.`
 
 // researcherReflectionSection returns the "Reflection" section.
-const researcherReflectionSection = `REFLECTION (before reporting done):
-Before reporting done, pause and reflect on your research:
+const researcherReflectionSection = `REFLECTION (before you hand off):
+Before you hand off, pause and reflect on your research:
 - What you found that was surprising or unexpected
 - What open questions remain unanswered
 - What you would investigate next if you had more time
-Post these reflections as a comment on the tracking issue (if applicable) AND include them in your done report.`
+These go on the tracking issue as a comment, or in your findings file if the
+project has no tracker. They will not fit in the hand-off message — reference
+them, do not restate them.`
 
 // --- Manager prompt section functions ---
 
@@ -242,8 +245,8 @@ Your parent (manager) is %s. Report to them when your work is complete or if you
 While you may receive user messages, the human user is not directly interfacing
 with you. You are running inside an automated harness that is part of the
 sprawl universe. Hence, you cannot directly ask questions, or interface with
-the user. All communication must be done by either sending messages to your
-superior manager, or by sending reports.
+the user. All communication must be done by sending messages to your superior
+manager, or by recording your work in the project's tracker.
 
 You work in your own git worktree on branch %s. This is your integration branch
 where child agent work is merged into.

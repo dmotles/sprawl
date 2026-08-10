@@ -239,7 +239,7 @@ const systemLine = "the text output is visible through the sprawl harness, but t
 
 const managerPostDispatchTail = `After spawning an agent, wait for it to notify you. You will be notified when
 messages arrive. If you need to check on a child before it reports back, use
-peek({agent: "<child>"}) to inspect its recent activity and last report
+peek({agent: "<child>"}) to inspect the activity sprawl has observed from it
 — do not repeatedly send messages to poll it.`
 
 func managerPostDispatchBlock() string {

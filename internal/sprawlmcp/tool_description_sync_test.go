@@ -95,6 +95,9 @@ func TestPromptModeDescriptions_InSyncWithMCPTools(t *testing.T) {
 	//    sidechain" at prompt_mode.go's sidechain guidance is ordinary English
 	//    and must survive. The bare-word ban belongs in internal/agent's
 	//    prompt-render test, which can allowlist by line.
+	//    Banning `report_status` here also retired a scan for a banned `detail:`
+	//    field on its call sites: once the tool name cannot appear, that loop
+	//    could only iterate zero times while still reading as coverage.
 	for _, banned := range []string{"send_async", "send_interrupt", "report_status", "delegate("} {
 		if strings.Contains(src, banned) {
 			t.Errorf("prompt_mode.go must not reference removed tool %q", banned)
@@ -124,12 +127,6 @@ func TestPromptModeDescriptions_InSyncWithMCPTools(t *testing.T) {
 		}
 		searchFrom = abs + len("send_message(")
 	}
-
-	// QUM-1186: the former §5 scanned every `report_status(` mention for a
-	// banned `detail:` field. §3 now bans `report_status` outright, so that
-	// loop could only ever iterate zero times — a permanently vacuous check
-	// that still reads as coverage. It is deleted rather than "updated":
-	// there is no report_status contract left to pin.
 }
 
 // TestNowParamRe_Controls demonstrates the §2 probe both firing and staying
@@ -166,11 +163,3 @@ func TestPromptModeDescriptions_SendMessageMentionedInTUITemplates(t *testing.T)
 		t.Fatalf("prompt_mode.go must reference `send_message(` — canonical messaging tool after QUM-550.")
 	}
 }
-
-// TestPromptModeDescriptions_ReportStatusHasNoDetailField was deleted in
-// QUM-1186. It scanned prompt_mode.go for `report_status(` lines carrying a
-// banned `detail:` field; with report_status deleted the loop body was
-// unreachable, so the test passed by iterating zero times. A zero-iteration
-// loop that still reads as coverage is the vacuous green this slice exists to
-// remove. §3 of TestPromptModeDescriptions_InSyncWithMCPTools now bans the
-// tool name outright, which is the assertion that has a subject.

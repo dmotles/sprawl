@@ -284,8 +284,11 @@ func TestBuildResearcherPrompt_ReflectionStep(t *testing.T) {
 		"surprising",
 		"open questions",
 		"investigate next",
-		"comment on the tracking issue",
-		"done report",
+		"on the tracking issue",
+		// QUM-1186: was "done report". There is no done report — the hand-off
+		// is a <=300-character message, so the reflections have to live
+		// somewhere the parent can read them at length.
+		"will not fit in the hand-off message",
 	}
 	for _, phrase := range keyPhrases {
 		if !strings.Contains(prompt, phrase) {
