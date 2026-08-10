@@ -179,6 +179,11 @@ Observed instances, all in `internal/supervisor`:
    FAIL	github.com/dmotles/sprawl/internal/supervisor	70.976s
    ```
 
+   **FIXED 2026-08-10 (QUM-1197 item 2 lane): see the MECHANISM section below.**
+   The cause was this test's own teardown poll, which waited on the in-memory
+   status while `watchHandleExit`'s disk write was still pending. Sightings on
+   OTHER tests are not covered by that fix.
+
    The second sighting was in a **pre-commit hook's** `make validate`, on the
    commit that added this very paragraph — which is the "hurts you indirectly"
    warning at the bottom of this entry, arriving on schedule. Same test, same
@@ -216,10 +221,49 @@ nothing to do with your diff. Confirm with the grep, then commit again.
 
 **Load correlates with every sighting and explains none of them.** Contention —
 CPU, parallel agents, a busy host — is present in all of them, and it is why a
-standalone re-run passes. That is a *condition*, not a mechanism: nobody has
-traced why cleanup loses the race, and "it was under load" does not tell you
-what is still holding `.sprawl/agents` open. Do not let a fresh sighting under
-load reopen the disk hypothesis, which is falsified above and stays falsified.
+standalone re-run passes. That is a *condition*, not a mechanism: "it was under
+load" does not tell you what is still holding `.sprawl/agents` open. Do not let a
+fresh sighting under load reopen the disk hypothesis, which is falsified above
+and stays falsified.
+
+### MECHANISM, traced 2026-08-10 (instance 3 only) — and instance 3 is FIXED
+
+The mechanism is a **test that waits on an in-memory read while the production
+code's disk write is still pending.** `watchHandleExit` (`runtime.go`) sets the
+in-memory snapshot under `r.mu` and only then persists to
+`<root>/.sprawl/agents/<name>.json` — deliberately **outside** the lock, as its
+own comment says. Instance 3's teardown poll waited for
+`rt.Snapshot().Status == faulted`, i.e. the in-memory half, so the test could
+return with the watcher goroutine still about to write. `t.TempDir()`'s
+`RemoveAll` then raced that write: the directory is removed, `SaveAgent`
+recreates a file inside it, and `unlinkat … .sprawl/agents: directory not empty`
+is what the loser of that race prints. Load widens the window; it is not the
+cause. Nothing is "holding the directory open" — something is *re-creating* it.
+
+**Fix (test-only, no production change):** make the poll also require the
+DURABLE status on disk (`state.LoadAgent(root, name).Status == faulted`). The
+window closes, and it is the stronger assertion anyway, since durable-Faulted is
+what that test's M4 subject actually is.
+
+Controls, both directions, measured on one host and one commit:
+
+* **Defect present** — with the in-memory-only wait, `go test ./... -race
+  -count=1` and `make validate` failed **3 of 3** runs (the failure had become
+  reliable rather than rare because a diff on the same package added ~8 tests,
+  shifting the timing).
+* **Defect absent** — with the disk wait, **2 of 2** whole-tree `-race` runs
+  green, zero `(cached)` lines. Discriminator applied throughout: zero
+  `_test.go:` frames in every red.
+
+**Scope of this claim, stated narrowly on purpose.** Only instance 3 was traced
+and only instance 3 is fixed. Instances 1 and 2 are *consistent with* the same
+shape — both assert on state a supervisor goroutine persists asynchronously —
+but neither has been traced, so treat this as a hypothesis for them and check it
+rather than assuming. **The discriminator above stays the entry point:** a fresh
+sighting on any other test is not covered by this fix, and the general rule the
+mechanism suggests is worth more than the one-test repair — *if a test waits on an
+in-memory projection of state that production also writes to disk, wait for the
+disk.*
 
 **The trap is the subject matter, and it moves with the test.** Whichever test
 surfaces it, the FAIL reads as a real regression in *that test's* subject — a
@@ -236,7 +280,9 @@ Remedy: re-run. It is load-dependent, so a passing standalone re-run does **not*
 contradict this diagnosis — and equally does not confirm it, so check for the
 missing assertion rather than trusting the retry.
 
-Tracked as QUM-1070, unfixed.
+Tracked as QUM-1070. **Partially fixed:** instance 3's mechanism is traced and
+repaired (see MECHANISM above); instances 1 and 2 are untraced and QUM-1070 stays
+open for them.
 
 > *Mechanism reported, not confirmed here:* the issue attributes it to test
 > cleanup racing a released-but-unwaited goroutine writing into the directory

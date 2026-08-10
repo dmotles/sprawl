@@ -74,9 +74,10 @@ func addReclaimAgent(t *testing.T, r *Real, tmpDir, name string) (*AgentRuntime,
 			sessionID: "sess-" + name,
 			caps:      backendpkg.Capabilities{SupportsInterrupt: true, SupportsResume: true},
 		},
-		urt: runtimepkg.New(runtimepkg.RuntimeConfig{Name: name}),
 	}
+	handle.urt = runtimepkg.New(runtimepkg.RuntimeConfig{Name: name, Session: handle.runtimeTestSession})
 	handle.lastAct.Store(time.Now().Add(-2 * config.SuggestedIdleReclaimAfter).UnixNano())
+	feedBackgroundTasks(t, handle.runtimeTestSession)
 	handle.starter = &runtimeTestStarter{session: handle}
 	rt := ensureRuntimeWithStarter(t, r, tmpDir, agentState, handle.starter)
 	if err := rt.Start(); err != nil {

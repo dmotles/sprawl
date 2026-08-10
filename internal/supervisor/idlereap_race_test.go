@@ -81,6 +81,21 @@ func (h *reclaimTestHandle) Stop(ctx context.Context) error {
 // test below either asserts the reap or spoils exactly one thing.
 func newReclaimFixture(t *testing.T) (*Real, string, *AgentRuntime, *reclaimTestHandle) {
 	t.Helper()
+	r, tmpDir, rt, handle := newReclaimFixtureNoBackgroundFrame(t)
+	// QUM-1197 item 2: the seventh term blocks a reap until the outstanding-work
+	// set has actually been OBSERVED, so a fixture that never saw a
+	// background_tasks_changed frame is not reapable — correctly. Feed the
+	// emitted empty set every real CLI sends, so these tests keep testing what
+	// they are named for. The un-fed variant is a subject in its own right; see
+	// TestReclaim_NeverObservedBackgroundTasks_IsNotTornDown.
+	feedBackgroundTasks(t, handle.runtimeTestSession)
+	return r, tmpDir, rt, handle
+}
+
+// newReclaimFixtureNoBackgroundFrame is newReclaimFixture with the CLI's
+// outstanding-work frame deliberately never delivered.
+func newReclaimFixtureNoBackgroundFrame(t *testing.T) (*Real, string, *AgentRuntime, *reclaimTestHandle) {
+	t.Helper()
 	r, tmpDir := newFakeReal(t)
 	agentState := testAgentState("alice")
 	saveTestAgent(t, tmpDir, agentState)
@@ -90,8 +105,10 @@ func newReclaimFixture(t *testing.T) (*Real, string, *AgentRuntime, *reclaimTest
 			sessionID: "sess-alice",
 			caps:      backendpkg.Capabilities{SupportsInterrupt: true, SupportsResume: true},
 		},
-		urt: runtimepkg.New(runtimepkg.RuntimeConfig{Name: "alice"}),
 	}
+	// Session wired so runtime.New installs its frame router on it: that is how a
+	// real CLI's frames reach the runtime, and the only honest way to feed one.
+	handle.urt = runtimepkg.New(runtimepkg.RuntimeConfig{Name: "alice", Session: handle.runtimeTestSession})
 	// The production DEFAULT is now 0 (disabled, QUM-1197), so these tests must
 	// enable the reaper explicitly — which is honest: they are testing the
 	// enabled behaviour. Both the threshold and the fixture's idle age derive

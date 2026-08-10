@@ -33,6 +33,34 @@ type runtimeTestSession struct {
 	// IsTerminallyFaulted() method (QUM-601). AgentRuntime.Recover probes
 	// the handle to decide whether in-place recovery is needed.
 	terminallyFaulted bool
+
+	// frameRouterMu/frameRouter capture the router the UnifiedRuntime installs
+	// on its session (QUM-815/817). QUM-1197 item 2 needs it: the outstanding-
+	// background-work set is fed by CLI frames, and this is the seam a real
+	// session delivers them through — so a test drives the production path
+	// rather than reaching into runtime internals from another package.
+	frameRouterMu sync.Mutex
+	frameRouter   func(*protocol.Message, backendpkg.TurnInfo)
+}
+
+// SetFrameRouter is the type-assertion surface runtime.New looks for.
+func (s *runtimeTestSession) SetFrameRouter(h func(*protocol.Message, backendpkg.TurnInfo)) {
+	s.frameRouterMu.Lock()
+	defer s.frameRouterMu.Unlock()
+	s.frameRouter = h
+}
+
+// routeFrameTo returns the captured router, failing the test if the runtime
+// never installed one — a nil router would make every frame a test feeds
+// silently disappear, and the assertion would be about nothing.
+func (s *runtimeTestSession) routeFrameTo(t *testing.T) func(*protocol.Message, backendpkg.TurnInfo) {
+	t.Helper()
+	s.frameRouterMu.Lock()
+	defer s.frameRouterMu.Unlock()
+	if s.frameRouter == nil {
+		t.Fatal("no frame router captured: the UnifiedRuntime was built without this session, so no CLI frame can reach it")
+	}
+	return s.frameRouter
 }
 
 func (s *runtimeTestSession) Start(context.Context) error                           { return nil }

@@ -1653,3 +1653,19 @@ func (r *RuntimeRegistry) List() []*AgentRuntime {
 	})
 	return runtimes
 }
+
+// WorkOutstandingObserved reports the CLI-managed background work this agent has
+// outstanding — backgrounded tool calls and live sidechains — and whether that
+// could be observed at all (QUM-1197 item 2).
+//
+// An absent UnifiedRuntime yields observed=false, the same D1a rule as
+// InFlightSystemObserved: "no runtime to ask" is not "asked, and nothing is
+// outstanding". The runtime itself reports observed=false for a set it has never
+// seen a frame for, or one whose last frame was unreadable.
+func (r *AgentRuntime) WorkOutstandingObserved() ([]runtimepkg.OutstandingTask, bool) {
+	urt := r.UnifiedRuntime()
+	if urt == nil {
+		return nil, false
+	}
+	return urt.WorkOutstandingObserved()
+}

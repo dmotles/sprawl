@@ -199,11 +199,25 @@ func TestAgentRuntime_FaultChain_DoneClosesAndLivenessReachesFaulted(t *testing.
 	// returns false — that is how we observe detachment without exporting
 	// currentHandle. The durable Faulted now lives in snapshot.Status, not the
 	// live probe.
+	// The DISK read is not decoration, and it is what fixes the long-standing
+	// `TempDir RemoveAll cleanup: … .sprawl/agents: directory not empty` flake
+	// attributed to this test (documented in /false-red as cause-untraced).
+	// watchHandleExit sets the in-memory snapshot under r.mu and only THEN
+	// persists, outside the lock (runtime.go — the durable persist is explicitly
+	// "OUTSIDE r.mu"). Waiting on the in-memory status alone therefore lets the
+	// test return while the watcher goroutine is still about to write
+	// <tmp>/.sprawl/agents/<name>.json, and t.TempDir()'s RemoveAll races that
+	// write. Waiting for the durable status closes the window — and it is also
+	// the stronger assertion, since "durable Faulted" is what M4 is about.
 	deadline := time.Now().Add(5 * time.Second)
-	for rt.Snapshot().Status != state.StatusFaulted || rt.IsTerminallyFaulted() {
+	diskFaulted := func() bool {
+		cur, err := state.LoadAgent(root, agent.Name)
+		return err == nil && cur.Status == state.StatusFaulted
+	}
+	for rt.Snapshot().Status != state.StatusFaulted || rt.IsTerminallyFaulted() || !diskFaulted() {
 		if time.Now().After(deadline) {
-			t.Fatalf("teardown end-state not reached within 5s: Status=%q Lifecycle=%q rt.IsTerminallyFaulted=%v (want durable Status=faulted + detached handle)",
-				rt.Snapshot().Status, rt.Snapshot().Liveness, rt.IsTerminallyFaulted())
+			t.Fatalf("teardown end-state not reached within 5s: Status=%q Lifecycle=%q rt.IsTerminallyFaulted=%v diskFaulted=%v (want durable Status=faulted on disk AND in memory + detached handle)",
+				rt.Snapshot().Status, rt.Snapshot().Liveness, rt.IsTerminallyFaulted(), diskFaulted())
 		}
 		time.Sleep(10 * time.Millisecond)
 	}

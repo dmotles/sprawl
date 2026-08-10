@@ -29,11 +29,16 @@ type fakeIdleProbe struct {
 	lastAct        time.Time
 	inFlight       int
 	inFlightSeen   bool
+	workTasks      []runtimepkg.OutstandingTask
+	workObserved   bool
 }
 
 func (f *fakeIdleProbe) InTurnObserved() (bool, bool)        { return f.inTurn, f.inTurnObserved }
 func (f *fakeIdleProbe) LastActivityAt() time.Time           { return f.lastAct }
 func (f *fakeIdleProbe) InFlightSystemObserved() (int, bool) { return f.inFlight, f.inFlightSeen }
+func (f *fakeIdleProbe) WorkOutstandingObserved() ([]runtimepkg.OutstandingTask, bool) {
+	return f.workTasks, f.workObserved
+}
 
 // fakeQuestions is a questionPendingProbe that answers from a fixed set.
 type fakeQuestions struct{ pending map[string]bool }
@@ -59,6 +64,7 @@ func idleTestInputs(t *testing.T) idleInputs {
 			lastAct:        now.Add(-30 * time.Minute),
 			inFlight:       0,
 			inFlightSeen:   true,
+			workObserved:   true,
 		},
 		Questions: &fakeQuestions{pending: map[string]bool{}},
 		Now:       now,

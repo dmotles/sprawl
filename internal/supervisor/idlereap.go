@@ -20,12 +20,15 @@ package supervisor
 
 import (
 	"context"
+	"fmt"
 	"log/slog"
+	"strings"
 	"sync"
 	"time"
 
 	agentpkg "github.com/dmotles/sprawl/internal/agent"
 	"github.com/dmotles/sprawl/internal/agentloop"
+	runtimepkg "github.com/dmotles/sprawl/internal/runtime"
 )
 
 // idleObs is the tri-state result of ONE reap precondition.
@@ -60,6 +63,11 @@ type idleRuntimeProbe interface {
 	InTurnObserved() (inTurn bool, observed bool)
 	LastActivityAt() time.Time
 	InFlightSystemObserved() (n int, observed bool)
+	// WorkOutstandingObserved is the QUM-1197 item-2 term: the agent's
+	// outstanding CLI-managed background work. Returns the tasks (with the time
+	// each was first seen, for the refusal record's age) and whether the set
+	// could be observed at all.
+	WorkOutstandingObserved() (tasks []runtimepkg.OutstandingTask, observed bool)
 }
 
 // questionPendingProbe answers whether an agent has an outstanding
@@ -90,11 +98,16 @@ type idleInputs struct {
 // blocked the reap — and can tell "busy" from "could not tell".
 type idleAssessment struct {
 	InTurn    idleObs
+	Work      idleObs
 	Pending   idleObs
 	InFlight  idleObs
 	Question  idleObs
 	Quiescent idleObs
 	NotRoot   idleObs
+
+	// WorkTasks is the outstanding set the DECISION saw, kept so the record
+	// describes that set rather than a fresher one re-probed at log time.
+	WorkTasks []runtimepkg.OutstandingTask
 
 	// Reap is true iff every term above is obsIdle.
 	Reap bool
@@ -138,6 +151,32 @@ func assessIdle(in idleInputs) idleAssessment {
 		a.InTurn = obsIdle
 	}
 
+	// Work outstanding (QUM-1197 item 2). The term this whole issue exists for:
+	// every other term can read `idle` HONESTLY while the agent has work it means
+	// to return to. An agent that backgrounds a tool call or spawns a sidechain
+	// and ends its turn was reaped, the work died with it, and the wake
+	// notification it was waiting for never arrived.
+	//
+	// The unavailable arm is not a formality — it is the load-bearing half. A set
+	// never observed is not an empty set: if the CLI renames the subtype or stops
+	// emitting, a set-valued term would silently read "no work" and the whole
+	// protection would evaporate with no error anywhere.
+	//
+	// LIMIT, stated so it is not discovered later: this covers CLI-MANAGED
+	// background work only. A process a Bash call `nohup`ed away, or a long
+	// MCP-side call, carries no task_id and is invisible here. And this protects
+	// the REAP DECISION only — an operator can still see an agent rendered idle
+	// with live sidechains until QUM-1213 lands.
+	switch tasks, observed := probeWorkOutstanding(in.Probe); {
+	case !observed:
+		a.Work = obsUnavailable
+	case len(tasks) > 0:
+		a.Work = obsBusy
+		a.WorkTasks = tasks
+	default:
+		a.Work = obsIdle
+	}
+
 	// Durable queue. A MISSING pending/ dir is a real "no mail" answer
 	// (agentloop.listDir returns no error for it); an I/O error is not.
 	if pending, err := agentloop.ListPending(in.SprawlRoot, in.Name); err != nil {
@@ -148,8 +187,14 @@ func assessIdle(in idleInputs) idleAssessment {
 		a.Pending = obsIdle
 	}
 
-	// In-flight system entries: mail already handed to the runtime but not yet
-	// consumed. No UnifiedRuntime to ask means unavailable, not clean.
+	// In-flight system entries: SPRAWL MAIL already handed to the runtime but not
+	// yet consumed. No UnifiedRuntime to ask means unavailable, not clean.
+	//
+	// Read that first sentence carefully, because this term's NAME is what misled
+	// a whole verification pass on QUM-1197: "in_flight_system" sounds like it
+	// covers work the agent has in flight. It does not — it counts sprawl's own
+	// undelivered messages (InFlightSystemEntryIDs). The agent's own background
+	// work is `work_outstanding` above, and nothing measured it until item 2.
 	switch n, observed := probeInFlight(in.Probe); {
 	case !observed:
 		a.InFlight = obsUnavailable
@@ -191,6 +236,7 @@ func assessIdle(in idleInputs) idleAssessment {
 	}{
 		{"not_root", a.NotRoot},
 		{"in_turn", a.InTurn},
+		{"work_outstanding", a.Work},
 		{"pending_queue", a.Pending},
 		{"in_flight_system", a.InFlight},
 		{"question", a.Question},
@@ -226,6 +272,13 @@ func probeInFlight(p idleRuntimeProbe) (int, bool) {
 		return 0, false
 	}
 	return p.InFlightSystemObserved()
+}
+
+func probeWorkOutstanding(p idleRuntimeProbe) ([]runtimepkg.OutstandingTask, bool) {
+	if p == nil {
+		return nil, false
+	}
+	return p.WorkOutstandingObserved()
 }
 
 func probeLastActivity(p idleRuntimeProbe) time.Time {
@@ -450,6 +503,9 @@ func logAssessment(level slog.Level, msg, name string, a idleAssessment, in idle
 		slog.Bool("reap", a.Reap),
 		slog.String("blocker", a.Blocker),
 		slog.String("in_turn", a.InTurn.String()),
+		slog.String("work_outstanding", a.Work.String()),
+		slog.Int("work_outstanding_n", len(a.WorkTasks)),
+		slog.String("work_outstanding_tasks", renderOutstanding(a.WorkTasks, in.Now)),
 		slog.String("pending_queue", a.Pending.String()),
 		slog.String("in_flight_system", a.InFlight.String()),
 		slog.String("question", a.Question.String()),
@@ -556,3 +612,42 @@ func (r *Real) forgetRefusal(name string) {
 	defer e.refusalMu.Unlock()
 	e.lastRefusal = ""
 }
+
+// renderOutstanding formats the outstanding set for the refusal record, with a
+// per-task AGE.
+//
+// The age is the operator-facing half of a settled decision: stale tasks are
+// deliberately NOT auto-expired, because any cap short enough to clear a
+// two-hour wedge (a real one was measured: five tasks pinned for 2h1m by a
+// pgrep that matched its own command line) would also clear a legitimate
+// `make validate` on a loaded box. So a wedged task must instead be a NAMED,
+// visible condition — and without the age, a task stuck for hours and one
+// started a second ago read identically.
+//
+// Bounded at renderMaxOutstanding entries so one pathological agent cannot make
+// this line unreadable; the count is reported separately, so truncation is
+// visible rather than silent.
+func renderOutstanding(tasks []runtimepkg.OutstandingTask, now time.Time) string {
+	if len(tasks) == 0 {
+		return ""
+	}
+	var b strings.Builder
+	for i, task := range tasks {
+		if i == renderMaxOutstanding {
+			fmt.Fprintf(&b, ",+%d more", len(tasks)-i)
+			break
+		}
+		if i > 0 {
+			b.WriteByte(',')
+		}
+		age := "age=unknown"
+		if !task.FirstSeen.IsZero() {
+			age = "age=" + now.Sub(task.FirstSeen).Round(time.Second).String()
+		}
+		fmt.Fprintf(&b, "%s:%s:%s", task.TaskType, task.TaskID, age)
+	}
+	return b.String()
+}
+
+// renderMaxOutstanding bounds renderOutstanding's detail.
+const renderMaxOutstanding = 8
