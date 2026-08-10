@@ -209,6 +209,7 @@ The agent-facing messaging surface is MCP-only:
   API"). `body` is capped at 300 characters, enforced by a hard error rather
   than truncation — put the detail on the issue and send the key.
   Consult the tool's own MCP schema for its current arguments and semantics.
-- `peek` — inspect a child/peer's recent activity and last report.
+- `peek` — inspect the activity sprawl has OBSERVED from a child/peer. It no
+  longer returns a last-report block; agents do not report on themselves.
   **Use this before** sending a child "are you done?" — only `send_message`
   if peek is inconclusive.
