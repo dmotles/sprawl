@@ -48,6 +48,11 @@ func LivenessFromStatus(status string) (AgentLiveness, bool) {
 		return Stopped, true
 	case "suspended":
 		return Suspended, true
+	// QUM-1186 (D2): "idle" (runtime reclaimed for inactivity) decodes to
+	// Suspended. Note State.Status() deliberately does NOT encode Suspended
+	// back to "idle" — the mapping is many-to-one on purpose.
+	case "idle":
+		return Suspended, true
 	case "resume_failed":
 		return ResumeFailed, true
 	case "killed":

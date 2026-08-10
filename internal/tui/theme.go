@@ -73,6 +73,11 @@ type Theme struct {
 	// "complete". Faint Info so the dot reads as at-rest but distinct from
 	// the gray Idle dot and the red Failure dot.
 	ReportDotDormant lipgloss.Style
+	// QUM-1186: idle-reclaimed dot — agents whose disk Status is "idle"
+	// (runtime reclaimed for inactivity, work unfinished). FgSubtle, which is
+	// brighter than the FgMostSubtle idle dot and a different hue from the
+	// Info-tinted dormant dot.
+	ReportDotReclaimed lipgloss.Style
 
 	// QUM-664: stub fields for visual-identity spike port. Zero-value styles
 	// until the implementer phase wires Palette.UserPrompt / Palette.InputBar
@@ -110,6 +115,14 @@ func (t *Theme) ReportDot(state string) string {
 		// QUM-788: dormant-revivable glyph (Status=complete). Dotted circle
 		// rendered with Faint Info — distinct from idle/failure dots.
 		return t.ReportDotDormant.Render("◌")
+	case "reclaimed":
+		// QUM-1186: idle-reclaimed glyph (Status=idle) — the runtime was torn
+		// down for inactivity, but the agent is NOT finished and revives on
+		// the next message. A hollow DIAMOND, deliberately not another circle:
+		// ◌ (dormant) and ● (idle) are near-indistinguishable at a glance in a
+		// dense tree, and confusing "reclaimed" with "finished" is exactly the
+		// misread this state exists to prevent.
+		return t.ReportDotReclaimed.Render("◇")
 	default:
 		return t.ReportDotIdle.Render(dot)
 	}
@@ -154,14 +167,15 @@ func NewTheme(accentColor string) Theme {
 		StatusBar: lipgloss.NewStyle().
 			Foreground(pal.FgBase).
 			Background(pal.BgLessVisible),
-		SelectedItem:      lipgloss.NewStyle().Foreground(pal.Primary).Bold(true),
-		PlaceholderStyle:  lipgloss.NewStyle().Foreground(pal.FgMostSubtle).Faint(true),
-		ReportDotWorking:  lipgloss.NewStyle().Foreground(pal.Success),
-		ReportDotBlocked:  lipgloss.NewStyle().Foreground(pal.Busy),
-		ReportDotFailure:  lipgloss.NewStyle().Foreground(pal.Error),
-		ReportDotComplete: lipgloss.NewStyle().Foreground(pal.Info),
-		ReportDotIdle:     lipgloss.NewStyle().Foreground(pal.FgMostSubtle),
-		ReportDotDormant:  lipgloss.NewStyle().Foreground(pal.Info).Faint(true),
+		SelectedItem:       lipgloss.NewStyle().Foreground(pal.Primary).Bold(true),
+		PlaceholderStyle:   lipgloss.NewStyle().Foreground(pal.FgMostSubtle).Faint(true),
+		ReportDotWorking:   lipgloss.NewStyle().Foreground(pal.Success),
+		ReportDotBlocked:   lipgloss.NewStyle().Foreground(pal.Busy),
+		ReportDotFailure:   lipgloss.NewStyle().Foreground(pal.Error),
+		ReportDotComplete:  lipgloss.NewStyle().Foreground(pal.Info),
+		ReportDotIdle:      lipgloss.NewStyle().Foreground(pal.FgMostSubtle),
+		ReportDotDormant:   lipgloss.NewStyle().Foreground(pal.Info).Faint(true),
+		ReportDotReclaimed: lipgloss.NewStyle().Foreground(pal.FgSubtle),
 		// QUM-664: visual-identity spike — bold bright-blue chevron + grey
 		// vertical bar gutter sourced from the semantic palette.
 		UserPromptText:        lipgloss.NewStyle().Foreground(pal.UserPrompt).Bold(true),

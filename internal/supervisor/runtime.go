@@ -1276,9 +1276,13 @@ func (r *AgentRuntime) SyncAgentState(agentState *state.AgentState) {
 			updated.Status == state.StatusStopped ||
 			updated.Status == state.StatusComplete ||
 			updated.Status == state.StatusSuspended ||
+			updated.Status == state.StatusIdle ||
 			updated.Status == state.StatusResumeFailed):
 		// QUM-787: include StatusComplete in the torn-down-but-revivable
 		// projection alongside the legacy stopped sentinel.
+		// QUM-1186 (D2): StatusIdle joins them — an idle-reclaimed agent has
+		// no handle and is revivable, so it must project the same way or the
+		// TUI would keep rendering the stale pre-reclaim liveness.
 		updated.Liveness = liveness.Unstarted
 	case r.snapshot.Liveness == liveness.Running:
 		updated.Liveness = liveness.Running

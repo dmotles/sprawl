@@ -35,6 +35,11 @@ const (
 	// "complete" — terminal-but-revivable. Distinct dim style so it does not
 	// collide with StateIdle (gray) or StateFailure (red).
 	StateDormant
+	// StateReclaimed is the QUM-1186 projection for agents whose disk Status
+	// is "idle" — the runtime was reclaimed for inactivity and the work is
+	// UNFINISHED. Separate from StateDormant (which means finished) and from
+	// StateIdle (the generic no-signal bucket).
+	StateReclaimed
 )
 
 // TreeNodeAgentState classifies a TreeNode into an AgentState for rendering.
@@ -62,6 +67,8 @@ func TreeNodeAgentState(n TreeNode, now time.Time) AgentState {
 		return StateFailure
 	case "dormant":
 		return StateDormant
+	case "reclaimed":
+		return StateReclaimed
 	}
 	return StateIdle
 }

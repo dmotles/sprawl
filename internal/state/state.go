@@ -43,6 +43,21 @@ const (
 	// "reported complete and torn down" with "clean subprocess exit
 	// without a completion report" (now StatusFaulted).
 	StatusComplete = "complete"
+	// QUM-1186 (D2): StatusIdle is the durable resting state for an agent
+	// whose runtime was reclaimed for INACTIVITY rather than because its work
+	// finished. Session, worktree and branch are preserved and it revives on
+	// the next message, exactly like StatusSuspended — from which it differs
+	// only in why the teardown happened.
+	//
+	// It is deliberately NOT StatusComplete. Complete claims the agent
+	// finished; an idle agent may be mid-task and merely quiet. Conflating
+	// them would tell the operator a lie in the TUI and, worse, would put a
+	// reaped-but-unfinished agent outside the auto-resume accept-set.
+	//
+	// It projects onto liveness.Suspended, which is what puts it INSIDE that
+	// accept-set (internal/supervisor/real.go RecoverAgents). Pinned by
+	// TestRecoverAgents_StatusIdleIsAutoResumeEligible.
+	StatusIdle = "idle"
 )
 
 // IsTerminal reports whether a Status value names a terminal liveness in

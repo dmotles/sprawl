@@ -78,7 +78,7 @@ type TreeNode struct {
 // derived primarily from liveness signals (InTurn, recent
 // activity) and secondarily from the agent's self-reported LastReportState.
 // Returns one of "working", "blocked", "complete", "failure", "idle",
-// "paused", "died", "dormant".
+// "paused", "died", "dormant", "reclaimed".
 // Pure (no time.Now); the caller supplies `now` for testability. (QUM-665)
 func DeriveIconState(n TreeNode, now time.Time) string {
 	// QUM-722: Paused / Died are surfaced by the unified liveness projection
@@ -98,6 +98,17 @@ func DeriveIconState(n TreeNode, now time.Time) string {
 	// agent does not collapse into the idle bucket.
 	if n.Status == state.StatusComplete {
 		return "dormant"
+	}
+	// QUM-1186: an idle-RECLAIMED agent (disk Status == "idle") gets its own
+	// icon state. It must be checked here — after the paused/died operator
+	// signals, but BEFORE the ProcessAlive/InTurn/LastActivityAt heuristics
+	// below — because those heuristics run off signals that are stale by
+	// construction after a reclaim: ProcessAlive is nil when the projection
+	// has no opinion, and InTurn/LastActivityAt still carry the pre-teardown
+	// values, so the node would render "working" for a process that no longer
+	// exists.
+	if n.Status == state.StatusIdle {
+		return "reclaimed"
 	}
 	if n.ProcessAlive != nil && !*n.ProcessAlive {
 		return "idle"

@@ -1870,7 +1870,12 @@ func (r *Real) SendMessage(ctx context.Context, to, body string, interrupt, wake
 	// first post-wake turn sees the send_message prompt, then continue to
 	// the interrupt gate + persistence below. Bypasses the offline-gate /
 	// TerminalAgentError branches since complete is not terminal.
-	case agentState.Status == state.StatusComplete:
+	// QUM-1186 (D2): StatusIdle joins the same arm. An idle agent was
+	// reclaimed precisely BECAUSE no traffic was reaching it, so a message is
+	// the exact signal that should bring it back — requiring wake_if_offline
+	// here would make the reaper user-visible, which is the whole thing it is
+	// supposed not to be.
+	case agentState.Status == state.StatusComplete || agentState.Status == state.StatusIdle:
 		if _, wErr := r.Wake(ctx, to, agentpkg.WakeReasonSendMessage, body); wErr != nil {
 			return nil, wErr
 		}

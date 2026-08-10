@@ -32,6 +32,11 @@ const (
 	// QUM-722: new disk tokens for pause/death.
 	diskPaused = "paused"
 	diskDied   = "died"
+	// QUM-1186 (D2): "idle" marks an agent whose runtime was reclaimed for
+	// inactivity. It projects onto Suspended — same liveness, different
+	// reason — so it inherits Suspended's resting-state precedence and its
+	// auto-resume eligibility without widening any accept-set.
+	diskIdle = "idle"
 )
 
 // From projects a raw Snapshot onto a unified liveness State.
@@ -76,7 +81,7 @@ func From(s Snapshot) State {
 	if s.DiskStatus == diskResumeFailed {
 		return State{Liveness: ResumeFailed}
 	}
-	if s.DiskStatus == diskSuspended {
+	if s.DiskStatus == diskSuspended || s.DiskStatus == diskIdle {
 		return State{Liveness: Suspended}
 	}
 
