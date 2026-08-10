@@ -811,6 +811,22 @@ func (s *session) runReader(ctx context.Context) {
 			}
 		}
 
+		// QUM-1197 item 2: background_tasks_changed carries the FULL current set
+		// of the agent's outstanding background work (run_in_background tasks and
+		// live sidechains), and the idle reaper's work_outstanding term consumes
+		// it from routeFrame. Measured over the whole recorded corpus, 104 of
+		// 1,615 such frames arrive with tf==nil — and 66 of those are DRAIN
+		// frames (tasks:[]). Dropped as stray telemetry, the consumer's set goes
+		// non-empty and never clears, so the agent becomes permanently
+		// unreclaimable: a failure that looks exactly like a working term.
+		//
+		// Routed like the two precedents on this same gate — the QUM-634
+		// task_notification trigger and the QUM-867 compaction status — i.e.
+		// delivered immediately with PreInit, so it never allocates a turnFrame
+		// and never gates StartTurn (QUM-570). Narrowed to this one subtype;
+		// the gate is deliberately not broadened to all pre-init telemetry.
+		preInitBackgroundTasks := tf == nil && msg.Type == "system" && msg.Subtype == protocol.SubtypeBackgroundTasksChanged
+
 		// QUM-903: a session_state_changed frame is the CLI's authoritative
 		// turn-state signal (running/idle/requires_action). It is routed to the
 		// runtime frame router as the in_turn authority regardless of turn state
@@ -826,12 +842,13 @@ func (s *session) runReader(ctx context.Context) {
 		}
 
 		// Single route point. Frames belonging to a turn (sprawl or autonomous),
-		// a pre-init autonomous trigger, isReplay consumption echoes, and
-		// session_state_changed authority frames flow to the runtime frame router.
-		// Stray telemetry is observer-only.
-		if r := s.frameRouter.Load(); r != nil && (tf != nil || preInitTrigger || preInitCompactStatus || replayEcho || stateChange != "") {
+		// a pre-init autonomous trigger, isReplay consumption echoes,
+		// session_state_changed authority frames, and background_tasks_changed
+		// outstanding-work frames flow to the runtime frame router. Stray
+		// telemetry is observer-only.
+		if r := s.frameRouter.Load(); r != nil && (tf != nil || preInitTrigger || preInitCompactStatus || preInitBackgroundTasks || replayEcho || stateChange != "") {
 			autonomous := tf == nil || tf.autonomous
-			(*r)(msg, TurnInfo{Autonomous: autonomous, EndOfTurn: msg.Type == "result" && tf != nil, PreInit: preInitTrigger || preInitCompactStatus, Replay: replayEcho, StateChange: stateChange})
+			(*r)(msg, TurnInfo{Autonomous: autonomous, EndOfTurn: msg.Type == "result" && tf != nil, PreInit: preInitTrigger || preInitCompactStatus || preInitBackgroundTasks, Replay: replayEcho, StateChange: stateChange})
 		}
 
 		if tf != nil && tf.subscriber != nil {

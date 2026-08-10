@@ -72,6 +72,9 @@ type RuntimeConfig struct {
 	// entryIDs (maildir ids / "task:<id>"). Replaces the QUM-579
 	// OnQueueItemDelivered queue-drain signal. Must not block.
 	OnDelivered func(entryIDs []string)
+	// Now, if non-nil, supplies the clock. Snapshotted into an immutable field
+	// by New so production and tests never race on it.
+	Now func() time.Time
 	// PostTurnSweep, if non-nil, is invoked once per turn boundary (on
 	// EventTurnCompleted/Failed/Interrupted). The QUM-580 defense-in-depth
 	// re-drain of undelivered pending maildir entries. Must not block.
@@ -204,6 +207,24 @@ type UnifiedRuntime struct {
 	// writeMessage, giving recall / send-all-now a stable submit order (the
 	// outstanding map's iteration order is random). Guarded by outMu.
 	outSeq uint64
+	// bgMu guards the QUM-1197 outstanding-background-work set. A LEAF lock:
+	// never held while publishing, calling the session, or holding mu. Written
+	// only by noteBackgroundTasks on the reader goroutine; read by the idle
+	// reaper's sweep goroutine.
+	bgMu sync.Mutex
+	// bgTasks is the current set, keyed by task_id.
+	bgTasks map[string]OutstandingTask
+	// bgObserved is false until the FIRST background_tasks_changed frame is
+	// parsed. It is NOT redundant with len(bgTasks) == 0: never-observed and
+	// observed-empty are different facts and only one may permit a reap.
+	bgObserved bool
+	// bgParseFailed records that the most recent frame could not be read, so the
+	// set is unknown rather than empty.
+	bgParseFailed bool
+	// nowFn is the clock, snapshotted from RuntimeConfig.Now in New so it is
+	// immutable afterwards.
+	nowFn func() time.Time
+
 	// lastRunningMark is the outSeq watermark captured at the most recent
 	// →phaseRunning TRANSITION, i.e. the submit order at the instant the CLI
 	// confirmed a new live turn (QUM-1000). settleNeverAcked settles only entries
@@ -285,6 +306,8 @@ func New(cfg RuntimeConfig) *UnifiedRuntime {
 		liveness:    livenesspkg.State{Liveness: livenesspkg.Running},
 		done:        make(chan struct{}),
 		outstanding: make(map[string]*OutstandingEntry),
+		bgTasks:     make(map[string]OutstandingTask),
+		nowFn:       cfg.Now,
 	}
 	// QUM-602: install the backend-fault handler on the session. We use a
 	// type assertion (rather than extending SessionHandle) so the public
@@ -435,6 +458,16 @@ func (rt *UnifiedRuntime) routeFrame(msg *protocol.Message, turn backend.TurnInf
 			rt.setPhase(phaseIdle)
 		}
 		return
+	}
+
+	// QUM-1197 item 2: fold an outstanding-background-work frame into the set the
+	// idle reaper's work_outstanding term reads. Deliberately NOT an early
+	// return: the frame keeps flowing through the publish below, because that
+	// publish is the TUI/telemetry stream and LastActivityAt's source, and
+	// swallowing it here would be a cross-lane regression (QUM-1213 owns that
+	// rendering). It touches no turn state — see bgtasks.go.
+	if msg != nil && msg.Type == "system" && msg.Subtype == protocol.SubtypeBackgroundTasksChanged {
+		rt.noteBackgroundTasks(msg)
 	}
 
 	// Snapshot the open frame turn once (QUM-931 writer discipline: routeFrame is

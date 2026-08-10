@@ -363,3 +363,88 @@ func TestSession_FrameRouter_AutonomousOrphan_NotifiesEndOnTeardown(t *testing.T
 		}
 	}
 }
+
+// bgTasksWireFrame is a verbatim background_tasks_changed frame, one task
+// outstanding, copied from a real session log.
+const bgTasksWireFrame = `{"type":"system","subtype":"background_tasks_changed","tasks":[{"task_id":"bsspuvme4","task_type":"local_bash","description":"Run make validate"}],"session_id":"sess-1"}`
+
+// TestSession_FrameRouter_BackgroundTasksChangedRoutedBetweenTurns (QUM-1197
+// item 2): background_tasks_changed carries the agent's outstanding background
+// work, and the reap predicate consumes it from routeFrame. 104 of 1,615
+// recorded frames — 66 of them DRAIN frames (tasks:[]) — arrive while
+// s.currentTurn == nil, and were dropped here as stray telemetry. A consumer
+// that never sees the drain frame takes its set non-empty and never clears it,
+// making the agent permanently unreclaimable — a failure that looks like a
+// working term.
+//
+// Routed like the QUM-867 compaction-status and QUM-634 task_notification
+// pre-init frames: delivered immediately with PreInit=true, so it is
+// publish-only and cannot allocate a turnFrame or gate StartTurn (QUM-570).
+//
+// Direction: MUST FIRE. The negative control is
+// TestSession_FrameRouter_TrulyStrayFrameNotRouted above, which pins that this
+// gate is not simply routing everything; it stays green across this change.
+func TestSession_FrameRouter_BackgroundTasksChangedRoutedBetweenTurns(t *testing.T) {
+	transport := newMockManagedTransport()
+	session := NewSession(transport, SessionConfig{SessionID: "sess-1"})
+	rec := &frameRouterRecorder{}
+	installFrameRouter(t, session, rec.handler())
+
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+	if err := session.Start(ctx); err != nil {
+		t.Fatalf("Start: %v", err)
+	}
+
+	// No init first: this is the between-turns case, where currentTurn is nil.
+	transport.feedMessage(t, bgTasksWireFrame)
+	rec.waitForCount(t, 1, 2*time.Second)
+	frames := rec.snapshot()
+	if len(frames) != 1 {
+		t.Fatalf("router saw %d frames for a between-turns background_tasks_changed, want 1", len(frames))
+	}
+	if frames[0].msg.Subtype != protocol.SubtypeBackgroundTasksChanged {
+		t.Errorf("routed subtype = %q, want %q", frames[0].msg.Subtype, protocol.SubtypeBackgroundTasksChanged)
+	}
+	if !frames[0].turn.PreInit {
+		t.Error("routed with PreInit=false; without it routeFrame would treat this as a turn frame and could open one")
+	}
+	if frames[0].msg.Raw == nil {
+		t.Error("routed frame has nil Raw; protocol.ParseAs cannot read it, so the set would never be observed")
+	}
+	if session.InTurn() {
+		t.Error("background_tasks_changed opened a turn (InTurn=true), want false; it must never gate StartTurn")
+	}
+}
+
+// TestSession_FrameRouter_BackgroundTasksChangedMidTurn_IsNotPreInit is the
+// other half: with a turn open the frame already routed today, and it must keep
+// doing so as an ORDINARY turn frame. Direction: MUST FIRE with PreInit=false —
+// an implementation that stamped PreInit unconditionally would make every
+// mid-turn frame publish-only and change routeFrame's existing behaviour.
+func TestSession_FrameRouter_BackgroundTasksChangedMidTurn_IsNotPreInit(t *testing.T) {
+	transport := newMockManagedTransport()
+	session := NewSession(transport, SessionConfig{SessionID: "sess-1"})
+	rec := &frameRouterRecorder{}
+	installFrameRouter(t, session, rec.handler())
+
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+	if err := session.Start(ctx); err != nil {
+		t.Fatalf("Start: %v", err)
+	}
+
+	transport.feedMessage(t, `{"type":"system","subtype":"init","session_id":"sess-1"}`)
+	rec.waitForCount(t, 1, 2*time.Second)
+	transport.feedMessage(t, bgTasksWireFrame)
+	rec.waitForCount(t, 2, 2*time.Second)
+
+	frames := rec.snapshot()
+	last := frames[len(frames)-1]
+	if last.msg.Subtype != protocol.SubtypeBackgroundTasksChanged {
+		t.Fatalf("last routed frame = %s/%s, want the background_tasks_changed frame", last.msg.Type, last.msg.Subtype)
+	}
+	if last.turn.PreInit {
+		t.Error("mid-turn background_tasks_changed routed with PreInit=true; it belongs to the open turn")
+	}
+}
