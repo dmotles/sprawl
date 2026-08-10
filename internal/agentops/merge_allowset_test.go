@@ -8,6 +8,7 @@ import (
 	"testing"
 
 	"github.com/dmotles/sprawl/internal/state"
+	"github.com/dmotles/sprawl/internal/supervisor/liveness"
 )
 
 // QUM-1186 (D4): merge precondition 4 becomes a Status ALLOW-SET.
@@ -69,6 +70,19 @@ func mergeableSetupRoot(t *testing.T, status string) (string, string) {
 // regression, not a simplification.
 var mergeAllowedStatuses = []string{
 	state.StatusActive,
+	// StatusRunning is the on-disk legacy synonym for StatusActive, and every
+	// axis the system consults treats the two identically —
+	// liveness.LivenessFromStatus projects both to Running (checked by
+	// TestMergePrecondition4_RunningIsTheLivenessTwinOfActive below), and
+	// boot-resume eligibility follows that projection. Merge must not be the
+	// single place they diverge.
+	//
+	// Unlike Suspended and Complete, this row is NOT a preserved capability: a
+	// "running" agent is denied by the allow-set as it stands, so allowing it
+	// is a deliberate behaviour CHANGE. It is the right one because the denial
+	// was never a decision about "running" — it fell out of enumerating the
+	// canonical statuses and forgetting the synonym.
+	state.StatusRunning,
 	state.StatusIdle,
 	state.StatusSuspended,
 	state.StatusComplete,
@@ -79,7 +93,6 @@ var mergeAllowedStatuses = []string{
 // allowed" so that TestMergePrecondition4_EveryStatusConstantIsClassified can
 // force a decision when a new status is introduced.
 var mergeDeniedStatuses = []string{
-	state.StatusRunning,
 	state.StatusKilled,
 	state.StatusRetired,
 	state.StatusRetiring,
@@ -112,6 +125,81 @@ func TestMergePrecondition4_StoppedIsRewrittenBeforeItIsSeen(t *testing.T) {
 	}
 	if loaded.Status == state.StatusStopped {
 		t.Fatalf("Status survived load as %q; StatusStopped is reachable after all and must be classified as allowed or denied", loaded.Status)
+	}
+}
+
+// TestMergePrecondition4_RunningIsTheLivenessTwinOfActive checks the reason
+// StatusRunning is in the allow-set, rather than asserting it in a comment —
+// the same discipline as TestMergePrecondition4_StoppedIsRewrittenBeforeItIsSeen
+// above. If the "running" alias is ever dropped from the liveness projection,
+// the two statuses stop being twins and this row's justification evaporates;
+// this fails then instead of the comment quietly going stale.
+func TestMergePrecondition4_RunningIsTheLivenessTwinOfActive(t *testing.T) {
+	running, okRunning := liveness.LivenessFromStatus(state.StatusRunning)
+	active, okActive := liveness.LivenessFromStatus(state.StatusActive)
+	if !okRunning || !okActive {
+		t.Fatalf("LivenessFromStatus: running ok=%v, active ok=%v; both must project", okRunning, okActive)
+	}
+	if running != active {
+		t.Fatalf("LivenessFromStatus(running) = %v, LivenessFromStatus(active) = %v; the merge allow-set entry for StatusRunning rests on these being equal", running, active)
+	}
+}
+
+// mergeStatusesNamedInHint is the allow-set as the operator-facing error in
+// merge.go enumerates it. The hint is a hand-maintained duplicate of
+// mergeableStatus, so the two can drift silently; the test below pins the
+// divergence to exactly the one entry we chose not to surface.
+var mergeStatusesNamedInHint = []string{
+	state.StatusActive,
+	state.StatusIdle,
+	state.StatusSuspended,
+	state.StatusComplete,
+}
+
+// TestMergePrecondition4_HintNamesEveryAllowedStatusExceptTheLegacySynonym
+// makes omitting a status from the operator-facing hint a decision. StatusRunning
+// is deliberately absent: nobody who is SHOWN that error has status "running"
+// (they would have merged), so naming a legacy synonym there is noise. Any
+// OTHER divergence is an accident, and this fails on it.
+func TestMergePrecondition4_HintNamesEveryAllowedStatusExceptTheLegacySynonym(t *testing.T) {
+	named := map[string]bool{}
+	for _, s := range mergeStatusesNamedInHint {
+		named[s] = true
+	}
+
+	var unnamed []string
+	for _, s := range mergeAllowedStatuses {
+		if !named[s] {
+			unnamed = append(unnamed, s)
+		}
+	}
+	if len(unnamed) != 1 || unnamed[0] != state.StatusRunning {
+		t.Errorf("allow-set statuses missing from the hint = %v, want exactly [%s]. "+
+			"Add the status to the hint in merge.go, or to mergeStatusesNamedInHint if omitting it is deliberate.",
+			unnamed, state.StatusRunning)
+	}
+
+	// The other direction: the hint must not promise a status merge rejects.
+	allowed := map[string]bool{}
+	for _, s := range mergeAllowedStatuses {
+		allowed[s] = true
+	}
+	for _, s := range mergeStatusesNamedInHint {
+		if !allowed[s] {
+			t.Errorf("the merge hint names %q, which is not in the allow-set", s)
+		}
+	}
+
+	// And the hint list must describe the string operators actually see.
+	sprawlRoot, agentName := mergeableSetupRoot(t, state.StatusKilled)
+	_, err := Merge(context.Background(), mergeTestDeps(sprawlRoot), agentName, "", true, false, false)
+	if err == nil {
+		t.Fatal("Merge of a killed agent returned nil error; wanted the precondition-4 rejection that carries the hint")
+	}
+	for _, s := range mergeStatusesNamedInHint {
+		if !strings.Contains(err.Error(), s) {
+			t.Errorf("precondition-4 error %q does not name %q, but mergeStatusesNamedInHint claims it does", err.Error(), s)
+		}
 	}
 }
 

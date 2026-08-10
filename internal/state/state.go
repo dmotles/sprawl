@@ -16,7 +16,11 @@ import (
 // back-compat with older state files — but every new write-site in the
 // codebase should reference one of these constants so the set stays closed.
 const (
-	StatusActive       = "active"
+	StatusActive = "active"
+	// StatusRunning is a legacy synonym for StatusActive, still readable from
+	// older state files. Every axis that inspects it treats the two the same —
+	// liveness.LivenessFromStatus projects both to Running, and merge
+	// precondition 4 accepts both. Prefer StatusActive at write-sites.
 	StatusRunning      = "running"
 	StatusSuspended    = "suspended"
 	StatusKilled       = "killed"

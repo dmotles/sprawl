@@ -293,6 +293,13 @@ func Merge(ctx context.Context, deps *MergeDeps, agentName, messageOverride stri
 func mergeableStatus(s string) bool {
 	switch s {
 	case state.StatusActive,
+		// StatusRunning is the on-disk legacy synonym for StatusActive.
+		// liveness.LivenessFromStatus projects both to Running, and
+		// boot-resume eligibility follows that projection — so merge was the
+		// one axis treating them differently, by omission rather than by
+		// decision. Deliberately NOT added to the error hint below: nobody
+		// shown that error has status "running".
+		state.StatusRunning,
 		// An idle-reclaimed agent's branch is as merge-ready as a live
 		// one's; reclamation is a runtime memory decision, not a statement
 		// about the work.
