@@ -198,6 +198,20 @@ type AgentRuntime struct {
 	// classify the exit: true → Stopped, false → Died. QUM-722.
 	expectingExit atomic.Bool
 
+	// stopReasonBits carries WHY the current teardown was initiated, so
+	// stopWithFunc and watchHandleExit can pick the resting Status without a
+	// disk read. QUM-1186 (D3).
+	//
+	// Stored under the SAME happens-before argument documented at the
+	// expectingExit read in watchHandleExit: the Store precedes the handle
+	// stop call, and the close of done synchronizes-with the receive, so a
+	// paired Stop+close observes the reason that Stop set.
+	//
+	// Re-armed to stopReasonNone wherever expectingExit is re-armed
+	// (startWithSpec / AttachHandle / a successful Wake). A reason that
+	// survived a restart would mislabel the NEXT teardown.
+	stopReasonBits atomic.Int32
+
 	// wakeMu serializes Wake. TryLock-based fail-fast so concurrent callers
 	// get a "wake already in progress" error rather than queuing.
 	// QUM-724 (renamed from recoverMu, QUM-601).
@@ -404,6 +418,9 @@ func (r *AgentRuntime) startWithSpec(spec RuntimeStartSpec) error {
 	// QUM-722: a fresh start is an expected entry into Running; clear the
 	// expectingExit bit so a later unexpected handle exit classifies as Died.
 	r.expectingExit.Store(false)
+	// QUM-1186 (D3): re-arm the stop reason too. A reason that survived a
+	// restart would mislabel the NEXT teardown.
+	r.stopReasonBits.Store(int32(stopReasonNone))
 
 	r.mu.Lock()
 	r.handle = handle
@@ -473,6 +490,9 @@ func (r *AgentRuntime) AttachHandle(handle RuntimeHandle) {
 	// QUM-722: attaching a fresh handle = expected Running state; reset the
 	// expectingExit bit so a later unexpected exit classifies as Died.
 	r.expectingExit.Store(false)
+	// QUM-1186 (D3): re-arm the stop reason too. A reason that survived a
+	// restart would mislabel the NEXT teardown.
+	r.stopReasonBits.Store(int32(stopReasonNone))
 	r.mu.Lock()
 	r.handle = handle
 	r.snapshot.Liveness = liveness.Running
@@ -551,11 +571,50 @@ func (r *AgentRuntime) WakeForDelivery() error {
 	return nil
 }
 
-// Stop stops the tracked runtime handle, if any.
+// stopReason records WHY a teardown was initiated. It is the in-memory
+// replacement for the disk LastReportState read that stopWithFunc and
+// watchHandleExit used to classify teardowns with (QUM-1186 D3).
+type stopReason int32
+
+const (
+	// stopReasonNone means nobody recorded a reason. An EXPECTED exit with no
+	// reason rests at StatusSuspended — never StatusFaulted. A clean exit we
+	// did not label is not evidence of a fault.
+	stopReasonNone stopReason = iota
+	// stopReasonShutdown is a process-wide shutdown → StatusSuspended.
+	stopReasonShutdown
+	// stopReasonIdleReclaim is the idle reaper (lane 3) → StatusIdle.
+	stopReasonIdleReclaim
+	// stopReasonOperator is retire/kill/pause. Those paths stamp their own
+	// terminal status immediately afterwards and are protected by the
+	// preserve switch in the durable-persist block, so the resting status
+	// derived here is not the one that survives.
+	stopReasonOperator
+)
+
+// restingStatus maps a teardown reason onto the durable resting Status.
+// Everything that is not an explicit idle-reclaim rests at StatusSuspended:
+// the deliberate default is "parked and revivable", never "faulted".
+func (s stopReason) restingStatus() string {
+	if s == stopReasonIdleReclaim {
+		return state.StatusIdle
+	}
+	return state.StatusSuspended
+}
+
+// Stop stops the tracked runtime handle, if any, without recording a reason.
 func (r *AgentRuntime) Stop(ctx context.Context) error {
+	return r.StopWithReason(ctx, stopReasonNone)
+}
+
+// StopWithReason stops the tracked runtime handle and records why, so the
+// teardown classifiers can pick the resting Status. QUM-1186 (D3).
+func (r *AgentRuntime) StopWithReason(ctx context.Context, reason stopReason) error {
 	// QUM-722: signal an expected exit BEFORE invoking the handle stop fn so
 	// watchHandleExit observes expectingExit=true via the atomic happens-before
-	// the done close (avoids classifying a polite stop as Died).
+	// the done close (avoids classifying a polite stop as Died). The reason is
+	// stored first so it is visible to the same happens-before edge.
+	r.stopReasonBits.Store(int32(reason))
 	r.expectingExit.Store(true)
 	return r.stopWithFunc(ctx, func(h RuntimeHandle) error { return h.Stop(ctx) })
 }
@@ -564,7 +623,14 @@ func (r *AgentRuntime) Stop(ctx context.Context) error {
 // path that skips the polite Session.Interrupt issued by Stop. Used by
 // Real.Retire(abandon=true). See QUM-600.
 func (r *AgentRuntime) StopAbandon(ctx context.Context) error {
+	return r.StopAbandonWithReason(ctx, stopReasonNone)
+}
+
+// StopAbandonWithReason is StopAbandon with an explicit teardown reason.
+// QUM-1186 (D3).
+func (r *AgentRuntime) StopAbandonWithReason(ctx context.Context, reason stopReason) error {
 	// QUM-722: same expected-exit signal as Stop, ahead of the handle call.
+	r.stopReasonBits.Store(int32(reason))
 	r.expectingExit.Store(true)
 	return r.stopWithFunc(ctx, func(h RuntimeHandle) error { return h.StopAbandon(ctx) })
 }
@@ -645,7 +711,9 @@ func (r *AgentRuntime) Pause(ctx context.Context, timeout time.Duration) (clean 
 	}
 
 	if cleanExit {
-		if err := r.Stop(ctx); err != nil {
+		// QUM-1186 (D3): operator reason. Pause stamps StatusPaused itself
+		// immediately below; the reason only has to not claim idle-reclaim.
+		if err := r.StopWithReason(ctx, stopReasonOperator); err != nil {
 			return false, err
 		}
 		// Persist disk Status=paused so the projection rests at Paused.
@@ -667,7 +735,7 @@ func (r *AgentRuntime) Pause(ctx context.Context, timeout time.Duration) (clean 
 	}
 
 	// Escalation: timeout fired. Hard-abandon and stamp killed on disk.
-	if err := r.StopAbandon(ctx); err != nil {
+	if err := r.StopAbandonWithReason(ctx, stopReasonOperator); err != nil {
 		return false, err
 	}
 	if name != "" {
@@ -724,11 +792,11 @@ func (r *AgentRuntime) Pause(ctx context.Context, timeout time.Duration) (clean 
 // draining, propagating an error that skips stopWithFunc's snapshot
 // bookkeeping — i.e. the runaway guard, whose whole job is a reliable
 // teardown, would degrade. (QUM-866)
-func (r *AgentRuntime) StopAfterTurn(ctx context.Context, timeout time.Duration) error {
+func (r *AgentRuntime) StopAfterTurn(ctx context.Context, timeout time.Duration, reason stopReason) error {
 	stop := func() error {
 		stopCtx, cancel := context.WithTimeout(context.Background(), runtimeStopTimeout)
 		defer cancel()
-		return r.Stop(stopCtx)
+		return r.StopWithReason(stopCtx, reason)
 	}
 
 	urt := r.UnifiedRuntime()
@@ -966,6 +1034,9 @@ func (r *AgentRuntime) Wake(ctx context.Context, restartInjection string) (*Wake
 	// QUM-722: re-arm expectingExit so a future unexpected exit classifies
 	// as Died rather than inheriting a stale Pause/Stop intent.
 	r.expectingExit.Store(false)
+	// QUM-1186 (D3): re-arm the stop reason too. A reason that survived a
+	// restart would mislabel the NEXT teardown.
+	r.stopReasonBits.Store(int32(stopReasonNone))
 
 	// Best-effort durable persist OUTSIDE r.mu so disk Status tracks the
 	// woken liveness (Running → "active") AND — critical for the fresh
@@ -1161,21 +1232,9 @@ func (r *AgentRuntime) stopWithFunc(_ context.Context, stop func(RuntimeHandle) 
 		return stopErr
 	}
 
-	// QUM-786: prefer disk LastReportState over the in-memory snapshot.
-	// Real.ReportStatus deliberately SKIPS syncRuntimeFromState on
-	// terminal reports (complete/failure) — the in-memory snapshot's
-	// LastReport.State is stale at this point but agentops.Report wrote
-	// the canonical value to disk synchronously.
-	diskLastReportStateForStop := ""
-	if snapName := func() string {
-		r.mu.RLock()
-		defer r.mu.RUnlock()
-		return r.snapshot.Name
-	}(); snapName != "" {
-		if cur, lErr := state.LoadAgent(r.sprawlRoot, snapName); lErr == nil && cur != nil {
-			diskLastReportStateForStop = cur.LastReportState
-		}
-	}
+	// QUM-1186 (D3): the resting status comes from the in-memory stop reason.
+	// This replaces a disk LastReportState load that used to happen here.
+	restingStatus := stopReason(r.stopReasonBits.Load()).restingStatus()
 
 	emitStopped := false
 	var name string
@@ -1186,23 +1245,12 @@ func (r *AgentRuntime) stopWithFunc(_ context.Context, stop func(RuntimeHandle) 
 		r.snapshot.Liveness = liveness.Stopped
 		emitStopped = true
 	}
-	// QUM-787 / QUM-786: a deliberate Stop is durable + distinguishable
-	// from a fault. If the agent reported state=complete before teardown,
-	// stamp StatusComplete (revivable per QUM-786 arc); otherwise the
-	// clean exit without a completion report is treated as the unexpected
-	// case, so stamp StatusFaulted. StatusStopped is no longer a write
-	// target. Prefer disk LastReportState (see above) over the stale
-	// in-memory snapshot.
+	// QUM-1186 (D3): a deliberate Stop is a clean teardown and rests at
+	// StatusSuspended unless the stopper named a different reason
+	// (idle-reclaim → StatusIdle). It is NEVER StatusFaulted: this path only
+	// runs because someone asked for the stop.
 	name = r.snapshot.Name
-	lastReportStateForStop := diskLastReportStateForStop
-	if lastReportStateForStop == "" {
-		lastReportStateForStop = r.snapshot.LastReport.State
-	}
-	if lastReportStateForStop == "complete" {
-		newStatus = state.StatusComplete
-	} else {
-		newStatus = state.StatusFaulted
-	}
+	newStatus = restingStatus
 	r.snapshot.Status = newStatus
 	r.mu.Unlock()
 
@@ -1222,13 +1270,8 @@ func (r *AgentRuntime) stopWithFunc(_ context.Context, stop func(RuntimeHandle) 
 				// states as-is. Complete + Died are durable resting
 				// states that mustn't be re-derived by a late Stop.
 			default:
-				// QUM-787: re-derive from disk LastReportState in case it
-				// landed between the snapshot read above and this load.
-				if cur.LastReportState == "complete" {
-					cur.Status = state.StatusComplete
-				} else {
-					cur.Status = state.StatusFaulted
-				}
+				// QUM-1186 (D3): stamp the reason-derived resting status.
+				cur.Status = newStatus
 				if sErr := state.SaveAgent(r.sprawlRoot, cur); sErr != nil {
 					slog.Warn("supervisor: stop durable status save", "agent", name, "err", sErr)
 				}
@@ -1315,23 +1358,10 @@ func (r *AgentRuntime) watchHandleExit(handle RuntimeHandle, done <-chan struct{
 		// An unexpected exit observes false → classify as Died.
 		expectedExit := r.expectingExit.Load()
 
-		// QUM-786: prefer disk LastReportState over the in-memory snapshot.
-		// Real.ReportStatus deliberately SKIPS syncRuntimeFromState on
-		// terminal reports (complete/failure) to avoid racing the async
-		// Stop that fires immediately after — so the in-memory snapshot's
-		// LastReport.State is stale at this point. agentops.Report wrote
-		// the canonical value to disk synchronously, so disk is the source
-		// of truth for the expected-exit classifier.
-		diskLastReportState := ""
-		if snapName := func() string {
-			r.mu.RLock()
-			defer r.mu.RUnlock()
-			return r.snapshot.Name
-		}(); snapName != "" {
-			if cur, lErr := state.LoadAgent(r.sprawlRoot, snapName); lErr == nil && cur != nil {
-				diskLastReportState = cur.LastReportState
-			}
-		}
+		// QUM-1186 (D3): read the in-memory stop reason under the same
+		// happens-before edge as expectingExit above. This replaces a disk
+		// LastReportState load that used to happen here.
+		restingStatus := stopReason(r.stopReasonBits.Load()).restingStatus()
 
 		emitStopped := false
 		matched := false
@@ -1343,30 +1373,18 @@ func (r *AgentRuntime) watchHandleExit(handle RuntimeHandle, done <-chan struct{
 			matched = true
 			name = r.snapshot.Name
 			r.handle = nil
-			// QUM-722 / QUM-787 / QUM-786: four-way classifier. Faulted
-			// beats Died beats the expected-exit branch. On an expected
-			// exit we split on LastReportState: complete → StatusComplete
-			// (revivable), otherwise → StatusFaulted (clean subprocess
-			// exit without a completion report is treated as unexpected).
-			// StatusStopped is no longer a write target. The
-			// LastReportState read prefers disk (see above) over the
-			// in-memory snapshot, which can be stale by design.
-			lastReportState := diskLastReportState
-			if lastReportState == "" {
-				lastReportState = r.snapshot.LastReport.State
-			}
+			// QUM-722 / QUM-1186 (D3): three-way classifier. A probed
+			// terminal fault beats everything; an exit nobody asked for is
+			// Died; an EXPECTED exit is never a fault and rests at the
+			// reason-derived status (StatusSuspended unless the stopper
+			// named idle-reclaim).
 			switch {
 			case wasFaulted:
 				newLiveness = liveness.Faulted
 				durableStatus = state.StatusFaulted
 			case expectedExit:
-				if lastReportState == "complete" {
-					newLiveness = liveness.Stopped
-					durableStatus = state.StatusComplete
-				} else {
-					newLiveness = liveness.Faulted
-					durableStatus = state.StatusFaulted
-				}
+				newLiveness = liveness.Stopped
+				durableStatus = restingStatus
 			default:
 				newLiveness = liveness.Died
 				durableStatus = state.StatusDied

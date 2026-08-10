@@ -64,7 +64,7 @@ func TestStopAfterTurn_InTurnDefersUntilTurnEnd(t *testing.T) {
 
 	done := make(chan error, 1)
 	go func() {
-		done <- rt.StopAfterTurn(context.Background(), 5*time.Second)
+		done <- rt.StopAfterTurn(context.Background(), 5*time.Second, stopReasonNone)
 	}()
 
 	// Give StopAfterTurn time to subscribe and enter its wait. Stop must be
@@ -119,7 +119,7 @@ func TestStopAfterTurn_InTurnFiresOnTerminalEvents(t *testing.T) {
 			rt, handle := newStopAfterTurnRuntime(t, tmp, true)
 
 			done := make(chan error, 1)
-			go func() { done <- rt.StopAfterTurn(context.Background(), 5*time.Second) }()
+			go func() { done <- rt.StopAfterTurn(context.Background(), 5*time.Second, stopReasonNone) }()
 
 			time.Sleep(150 * time.Millisecond)
 			if got := handle.stopCalls.Load(); got != 0 {
@@ -151,7 +151,7 @@ func TestStopAfterTurn_NotInTurnStopsImmediately(t *testing.T) {
 	rt, handle := newStopAfterTurnRuntime(t, tmp, false /* inTurn */)
 
 	start := time.Now()
-	if err := rt.StopAfterTurn(context.Background(), 5*time.Second); err != nil {
+	if err := rt.StopAfterTurn(context.Background(), 5*time.Second, stopReasonNone); err != nil {
 		t.Fatalf("StopAfterTurn: %v", err)
 	}
 	elapsed := time.Since(start)
@@ -175,7 +175,7 @@ func TestStopAfterTurn_RunawayBoundedByTimeout(t *testing.T) {
 	rt, handle := newStopAfterTurnRuntime(t, tmp, true /* inTurn, never ends */)
 
 	start := time.Now()
-	if err := rt.StopAfterTurn(context.Background(), 150*time.Millisecond); err != nil {
+	if err := rt.StopAfterTurn(context.Background(), 150*time.Millisecond, stopReasonNone); err != nil {
 		t.Fatalf("StopAfterTurn: %v", err)
 	}
 	elapsed := time.Since(start)
@@ -207,7 +207,7 @@ func TestStopAfterTurn_NoUnifiedRuntimeStopsImmediately(t *testing.T) {
 	})
 	rt.AttachHandle(session)
 
-	if err := rt.StopAfterTurn(context.Background(), 5*time.Second); err != nil {
+	if err := rt.StopAfterTurn(context.Background(), 5*time.Second, stopReasonNone); err != nil {
 		t.Fatalf("StopAfterTurn: %v", err)
 	}
 	if got := session.stopCalls.Load(); got != 1 {

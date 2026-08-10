@@ -94,112 +94,17 @@ func TestWatchHandleExit_FaultedRecordsDurableFaulted(t *testing.T) {
 	}
 }
 
-// TestWatchHandleExit_CleanStopWithoutReportRecordsFaulted pins the
-// deliberate-Stop path when the agent had NOT reported state=complete:
-// AgentRuntime.Stop must record a durable StatusFaulted (QUM-787; pre-arc
-// this was StatusStopped, but StatusStopped is no longer a write target).
-// A clean subprocess exit without a completion report is treated as the
-// unexpected-exit case.
-func TestWatchHandleExit_CleanStopWithoutReportRecordsFaulted(t *testing.T) {
-	root := t.TempDir()
-	agent := testAgentState("clean-stop")
-	// LastReportState intentionally empty: pre-QUM-787 path landed in
-	// StatusStopped; post-arc this lands in StatusFaulted.
-	saveTestAgent(t, root, agent)
-
-	session := &runtimeTestSession{
-		sessionID: "sess-clean-stop",
-		caps:      backendpkg.Capabilities{SupportsInterrupt: true, SupportsResume: true},
-	}
-	starter := &runtimeTestStarter{session: session}
-	rt := NewAgentRuntime(AgentRuntimeConfig{
-		SprawlRoot: root,
-		Agent:      agent,
-		Starter:    starter,
-	})
-
-	if err := rt.Start(); err != nil {
-		t.Fatalf("Start: %v", err)
-	}
-	if err := rt.Stop(context.Background()); err != nil {
-		t.Fatalf("Stop: %v", err)
-	}
-
-	snap := rt.Snapshot()
-	if snap.Status != state.StatusFaulted {
-		t.Errorf("after clean Stop without complete report, snapshot.Status = %q, want %q",
-			snap.Status, state.StatusFaulted)
-	}
-	if got := liveness.From(liveness.Snapshot{
-		Lifecycle:  livenessToLifecycleString(snap.Liveness),
-		DiskStatus: snap.Status,
-	}).Liveness; got != liveness.Faulted {
-		t.Errorf("post-Stop liveness projection = %v, want %v (Lifecycle=%q Status=%q)",
-			got, liveness.Faulted, snap.Liveness, snap.Status)
-	}
-}
-
-// TestWatchHandleExit_StopAfterCompleteReportRecordsComplete pins the
-// QUM-786 contract that watchHandleExit lands in StatusComplete when the
-// agent reported state=complete via Real.ReportStatus. Real.ReportStatus
-// intentionally SKIPS syncRuntimeFromState on terminal reports, so the
-// in-memory snapshot.LastReport.State is stale at teardown time; the
-// classifier must read the canonical value from disk (agentops.Report
-// wrote it synchronously) rather than trust the stale snapshot. Pre-fix
-// against this guard the runtime stamped StatusFaulted, breaking the
-// arc's central acceptance criterion.
-func TestWatchHandleExit_StopAfterCompleteReportRecordsComplete(t *testing.T) {
-	root := t.TempDir()
-	agent := testAgentState("complete-after-report")
-	// On-disk LastReportState empty at Start — Start() seeds the snapshot
-	// from disk so the in-memory snapshot.LastReport.State is also empty
-	// (this is what Real.ReportStatus's skip-sync optimization preserves).
-	saveTestAgent(t, root, agent)
-
-	session := &runtimeTestSession{
-		sessionID: "sess-complete-after-report",
-		caps:      backendpkg.Capabilities{SupportsInterrupt: true, SupportsResume: true},
-	}
-	starter := &runtimeTestStarter{session: session}
-	rt := NewAgentRuntime(AgentRuntimeConfig{
-		SprawlRoot: root,
-		Agent:      agent,
-		Starter:    starter,
-	})
-
-	if err := rt.Start(); err != nil {
-		t.Fatalf("Start: %v", err)
-	}
-
-	// Simulate agentops.Report writing LastReportState=complete to disk
-	// without syncing the in-memory snapshot — mirrors Real.ReportStatus's
-	// skip-sync-on-terminal optimization (real.go ~2002).
-	cur, err := state.LoadAgent(root, "complete-after-report")
-	if err != nil {
-		t.Fatalf("LoadAgent: %v", err)
-	}
-	cur.LastReportState = "complete"
-	if err := state.SaveAgent(root, cur); err != nil {
-		t.Fatalf("SaveAgent: %v", err)
-	}
-
-	if err := rt.Stop(context.Background()); err != nil {
-		t.Fatalf("Stop: %v", err)
-	}
-
-	snap := rt.Snapshot()
-	if snap.Status != state.StatusComplete {
-		t.Errorf("after Stop following state=complete report, snapshot.Status = %q, want %q (watchHandleExit read stale in-memory LastReportState instead of disk)",
-			snap.Status, state.StatusComplete)
-	}
-	loaded, err := state.LoadAgent(root, "complete-after-report")
-	if err != nil {
-		t.Fatalf("LoadAgent after Stop: %v", err)
-	}
-	if loaded.Status != state.StatusComplete {
-		t.Errorf("on-disk Status after Stop = %q, want %q", loaded.Status, state.StatusComplete)
-	}
-}
+// QUM-1186 (D3): two tests were removed from this spot —
+// TestWatchHandleExit_CleanStopWithoutReportRecordsFaulted (which asserted a
+// clean Stop with no completion report lands StatusFaulted) and
+// TestWatchHandleExit_StopAfterCompleteReportRecordsComplete (which asserted
+// the disk-LastReportState read). The first was INVERTED, not dropped: an
+// expected exit is now never a fault, and the replacement is
+// TestStopWithFunc_ExpectedExitNoReason_RestsSuspendedNotFaulted in
+// runtime_stop_reason_test.go. The second tested a mechanism deleted with
+// report_status. TestWatchHandleExit_FaultedRecordsDurableFaulted above is
+// untouched — a PROBED terminal fault still records a durable fault, and that
+// is the half of this file's subject that survives.
 
 // TestSnapshotFromAgentState_SeedsAllRestingStatuses (R7) guards that the
 // runtime snapshot seeded from a disk AgentState projects onto the right
@@ -213,6 +118,8 @@ func TestSnapshotFromAgentState_SeedsAllRestingStatuses(t *testing.T) {
 		want       liveness.AgentLiveness
 	}{
 		{state.StatusSuspended, liveness.Suspended},
+		// QUM-1186 (D2): idle is a resting status and projects onto Suspended.
+		{state.StatusIdle, liveness.Suspended},
 		{state.StatusResumeFailed, liveness.ResumeFailed},
 		{state.StatusFaulted, liveness.Faulted},
 		{state.StatusStopped, liveness.Stopped},

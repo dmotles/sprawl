@@ -874,9 +874,9 @@ func (r *Real) Retire(ctx context.Context, caller string, agentName string, merg
 		if abandon {
 			// QUM-600: abandon path skips the polite Session.Interrupt
 			// issued by Stop so a wedged stdin writer cannot stall retire.
-			stopErr = runtime.StopAbandon(stopCtx)
+			stopErr = runtime.StopAbandonWithReason(stopCtx, stopReasonOperator)
 		} else {
-			stopErr = runtime.Stop(stopCtx)
+			stopErr = runtime.StopWithReason(stopCtx, stopReasonOperator)
 		}
 		if cp != nil {
 			cp(doneLabel,
@@ -955,7 +955,7 @@ func (r *Real) Kill(ctx context.Context, agentName string) error {
 		stopStart := time.Now()
 		// QUM-722: Kill is now HARD — flipped from polite Stop to StopAbandon.
 		// The previous polite-Stop semantics moved to the new `pause` verb.
-		stopErr := runtime.StopAbandon(stopCtx)
+		stopErr := runtime.StopAbandonWithReason(stopCtx, stopReasonOperator)
 		if cp != nil {
 			cp("kill.runtime-stop-done",
 				"agent_name", agentName,
@@ -1485,24 +1485,16 @@ func (r *Real) Shutdown(ctx context.Context) error {
 			defer wg.Done()
 			stopCtx, cancel := withRuntimeStopTimeout(ctx)
 			defer cancel()
-			// QUM-787: capture pre-Stop disk Status so the post-Stop
-			// promotion-to-suspended can distinguish "agent was already
-			// in a terminal-ish resting state on disk" (preserve) from
-			// "Stop just landed StatusFaulted because there was no
-			// complete report" (promote to suspended). Without this
-			// snapshot the new stopWithFunc behavior would mask the
-			// legacy active→suspended Shutdown contract.
-			preStop, _ := state.LoadAgent(r.sprawlRoot, name)
 			if runtime.InTurn() {
 				// In-turn → use Pause (bounded escalation to killed).
 				if _, pErr := runtime.Pause(stopCtx, pauseBudget); pErr != nil {
-					_ = runtime.StopAbandon(stopCtx)
+					_ = runtime.StopAbandonWithReason(stopCtx, stopReasonShutdown)
 				}
 			} else {
 				// Idle → classic polite Stop (fast). Falls through to the
 				// status-rewrite block below which stamps "suspended" so
 				// auto-resume picks it up on next launch.
-				if sErr := runtime.Stop(stopCtx); sErr != nil {
+				if sErr := runtime.StopWithReason(stopCtx, stopReasonShutdown); sErr != nil {
 					errMu.Lock()
 					if firstErr == nil {
 						firstErr = sErr
@@ -1525,15 +1517,14 @@ func (r *Real) Shutdown(ctx context.Context) error {
 				// its work and should not be auto-resumed.
 				preserve = true
 			case state.StatusFaulted:
-				// QUM-787: preserve only if disk was ALREADY faulted
-				// pre-Stop (genuine fault). If Stop is what landed the
-				// faulted Status (clean idle-Stop with no complete
-				// report under the new stopWithFunc semantics), promote
-				// to suspended so the active→suspended Shutdown
-				// contract still holds.
-				if preStop != nil && preStop.Status == state.StatusFaulted {
-					preserve = true
-				}
+				// QUM-1186 (D3): unconditional preserve. This arm used to
+				// re-check a pre-Stop disk snapshot, because a clean
+				// idle-Stop with no completion report landed StatusFaulted
+				// and had to be promoted back to suspended. A shutdown Stop
+				// now rests at StatusSuspended directly, so a faulted status
+				// here can only be a GENUINE fault — either pre-existing on
+				// disk or stamped by watchHandleExit's terminal-fault probe.
+				preserve = true
 			}
 			if !preserve {
 				agentState.Status = state.StatusSuspended
@@ -2206,7 +2197,7 @@ func (r *Real) ReportStatus(ctx context.Context, agentName, reportState, summary
 				// The wait is bounded by runtimeStopTimeout; StopAfterTurn gives
 				// the final Stop its own fresh budget, so background ctx here
 				// carries no deadline of its own.
-				if err := rt.StopAfterTurn(context.Background(), runtimeStopTimeout); err != nil {
+				if err := rt.StopAfterTurn(context.Background(), runtimeStopTimeout, stopReasonNone); err != nil {
 					slog.Default().Warn("supervisor: ReportStatus runtime.StopAfterTurn failed",
 						slog.String("agent", agentName),
 						slog.String("state", reportState),
