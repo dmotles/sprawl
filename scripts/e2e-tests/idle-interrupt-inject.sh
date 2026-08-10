@@ -41,11 +41,16 @@ NOW_WRITE_STORM_BOUND=5
 
 # QUM-1029: the number of assertions a COMPLETE, PASSING run of this row
 # makes. Nine pass sites, all green-reachable; the final chain's other arms
-# fail. QUM-1186 lane 5 raised this from 8: the nested empirical if/else that
-# decided whether `now` had PREEMPTED the in-flight turn used to echo on both
-# arms, so it contributed 0 and could not fail — meaning the primary
-# interrupt-semantics row never asserted the one thing it exists to prove. It
-# is a symmetric pass/fail gate now, so it contributes 1.
+# fail. QUM-1186 lane 5 raised this from 8, and the story is worth keeping
+# because the first attempt was wrong. The nested empirical if/else deciding
+# whether `now` had PREEMPTED the in-flight turn echoed on BOTH arms, so it
+# contributed 0 and could not fail — the primary interrupt-semantics row
+# asserted nothing about urgency. Converting it to a pass/fail gate made it
+# fire, which then showed the asserted behaviour is BIMODAL (9s and 43s on two
+# clean runs) because mid-tool abandonment is the CLI's call, not sprawl's. The
+# ninth assertion is therefore a DIFFERENT gate: sprawl must ISSUE the
+# now-priority write promptly, mid-turn. That is the half sprawl owns, it holds
+# every run, and the timing stayed as a diagnostic.
 MIN_ASSERTIONS=9
 
 test_metadata() {
@@ -243,6 +248,41 @@ test_run() {
     local URGENT_SENT=$SECONDS
 
     echo ""
+    echo "=== PHASE 2a(i): sprawl ISSUES the now-priority write while the child is mid-turn ==="
+    # QUM-1186 lane 5. This replaces a gate that asserted the child's ACK arrived
+    # before its ${BUSY_SECS}s sleep could end — i.e. that the turn was actually
+    # PREEMPTED. Measured twice on a clean host, that outcome is BIMODAL: ACK at
+    # 9s (preempted) on one run, 43s (only after the sleep ended) on the next.
+    #
+    # The reason is a split in who owns what. sprawl's contract is to write the
+    # message to stdin at priority "now" immediately — cancel-and-replace
+    # urgency, no separate interrupt frame (internal/supervisor/drain.go:162).
+    # Whether the CLI can then abandon a FOREGROUND Bash tool that is already
+    # running is upstream behaviour sprawl does not control, and evidently it
+    # cannot do so reliably. Asserting the ACK timing therefore asserts someone
+    # else's non-contract, and turns an honest run red on a coin flip — which is
+    # exactly what "a floor above what a legitimately-passing path asserts" means.
+    #
+    # So the gate moves to the half sprawl owns and can guarantee: the
+    # now-priority frame must appear in the child's wire log PROMPTLY, while the
+    # turn is still in flight. If sprawl deferred the write to turn end, this
+    # fails — and that is the regression QUM-821 is about.
+    local NW_DEADLINE=$((SECONDS + 15))
+    local NW_EARLY=0
+    while [ "$SECONDS" -lt "$NW_DEADLINE" ]; do
+        if [ "$(count_now_writes "$CHILD2_NAME")" -ge 1 ]; then
+            NW_EARLY=1
+            break
+        fi
+        sleep 1
+    done
+    if [ "$NW_EARLY" -eq 1 ]; then
+        pass "sprawl issued the now-priority stdin write $((SECONDS - URGENT_SENT))s after the urgent send, with the child still inside its ${BUSY_SECS}s turn"
+    else
+        fail "no now-priority write reached $CHILD2_NAME's wire log within 15s of the urgent send — sprawl deferred an urgent delivery instead of injecting it mid-turn (QUM-821)"
+    fi
+
+    echo ""
     echo "=== PHASE 2a: mid-turn child's urgent ACK reaches weave ==="
     # Unique body, for the reason recorded at the phase-1 gate above.
     if e2e_wait_maildir_substring weave "URGENT-NOW-ACK" 120; then
@@ -267,11 +307,17 @@ test_run() {
         # The threshold is the same one the echo used, now load-bearing: an ACK
         # landing more than 8s before the sleep could have ended cannot be
         # explained by waiting the turn out.
-        local PREEMPT_BY=$((BUSY_SECS - 8))
-        if [ "$((ACK_AT - BUSY_START))" -lt "$PREEMPT_BY" ]; then
-            pass "'now' PREEMPTED the in-flight turn — ACK at $((ACK_AT - BUSY_START))s, before the ${BUSY_SECS}s sleep could have ended (<${PREEMPT_BY}s)"
+        # DIAGNOSTIC, deliberately not a gate — see PHASE 2a(i) above for why.
+        # Both outcomes are legitimate: sprawl's now-write is prompt either way
+        # (asserted there), and whether the CLI abandons an in-flight foreground
+        # tool is upstream. Measured both ways on a clean host, 9s and 43s.
+        # DO NOT convert this back into a pass/fail gate without first
+        # establishing that the CLI guarantees mid-tool abandonment; a gate here
+        # fails on a coin flip and its red says nothing about sprawl.
+        if [ "$((ACK_AT - BUSY_START))" -lt "$((BUSY_SECS - 8))" ]; then
+            echo "  EMPIRICAL: ACK at $((ACK_AT - BUSY_START))s ⇒ the CLI abandoned the in-flight tool and the turn was genuinely preempted."
         else
-            fail "'now' did NOT preempt: ACK landed at $((ACK_AT - BUSY_START))s into a ${BUSY_SECS}s sleep, i.e. only at/after the turn ended. The message arrived, so the ACK gate above still passed — but urgency did not, which is the whole claim of this row (QUM-821)"
+            echo "  EMPIRICAL: ACK at $((ACK_AT - BUSY_START))s into a ${BUSY_SECS}s sleep ⇒ the CLI ran the foreground tool to completion and applied the now-write at the turn boundary. sprawl's half is still asserted above."
         fi
     else
         fail "mid-turn child's 'URGENT-NOW-ACK' did NOT reach weave within 120s"
