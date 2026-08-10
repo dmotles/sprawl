@@ -288,7 +288,9 @@ test-exit-code-preservation:
 # QUM-1186: this comment previously cited a "delegate-style branch swap".
 # That mechanism is deleted; the field still goes stale for the more general
 # reason above (any agent may check out or create a branch in its own
-# worktree), so the guard stays. Matches internal/agentops/merge.go:181. Pre-fix it silently no-ops because it
+# worktree), so the guard stays. This mirrors the note on the
+# `deps.CurrentBranch(agentState.Worktree)` resolution in
+# internal/agentops/merge.go. Pre-fix it silently no-ops because it
 # reads stale agentState.Branch. Pure shell — no claude required. See
 # scripts/test-merge-reuse-e2e.sh. Mandatory before merging any change to
 # internal/agentops/merge.go, internal/sprawlmcp/server.go (toolMerge),

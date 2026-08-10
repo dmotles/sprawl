@@ -101,8 +101,11 @@ FAIL=0
 # markdown stays quiet; an empty token list reports clean on a known-dirty
 # subject; the canonical-absence check fires on a set shipping the name; the
 # whole-file P19-INERT-ROW exemption does not leak outside scripts/e2e-tests/).
-# Net +13 over 466. Re-measured on a FULL GREEN run — 479 passed / 0 failed.
-MIN_ASSERTIONS=479
+# Net +13 over 466, then +1 for the exemption-ceiling control code review asked
+# for (the ceiling now counts LINE-LEVEL exemptions only, so it needs an arm
+# proving the counter can reach 1). Re-measured on a FULL GREEN run — 480
+# passed / 0 failed.
+MIN_ASSERTIONS=480
 # A [16b] nested child deliberately does NOT re-run section [16] (recursing would
 # fork-bomb, and counting there would corrupt the parity comparison), so it asserts
 # strictly fewer things and needs its own floor. Measured at de22410: 237; 238 after
@@ -121,10 +124,10 @@ MIN_ASSERTIONS=479
 # with UNIT_NESTED_SEAM_CHECK set to any value and SUBTRACT ONE from the total —
 # without a live nonce 16c's deliberate fail fires, so a hand-driven child reads
 # exactly one higher than a real [16b] child ("393 passed / 1 failed" here).
-# 471 once lane 5's [19c] never-existed tree scan landed (+13; the child DOES
-# run [19]). Measured with UNIT_NESTED_SEAM_CHECK set: "471 passed / 1 failed",
+# 472 once lane 5's [19c] never-existed tree scan landed (+14; the child DOES
+# run [19]). Measured with UNIT_NESTED_SEAM_CHECK set: "472 passed / 1 failed",
 # the one fail being 16c's deliberate one, per the recipe above.
-MIN_ASSERTIONS_NESTED=471
+MIN_ASSERTIONS_NESTED=472
 
 # Pin the temp root. This suite runs inside `make validate` and therefore inside
 # the pre-commit hook, so it must not inherit the committing agent's TMPDIR:
@@ -3982,35 +3985,40 @@ _p19_is_skipped_row() {
 	[ "$skip_ln" -lt "$assert_ln" ]
 }
 
-# Repo-relative label. The scans used to print a BASENAME, which is unambiguous
-# for `scripts/**/*.sh` and useless for the tree corpus below, where eleven
-# distinct files are named SKILL.md. Fixtures live outside REPO_ROOT and keep
-# their basename, so every control's expectations are unchanged.
-_p19_label() {
-	case "$1" in
-		"$REPO_ROOT"/*) printf '%s' "${1#"$REPO_ROOT"/}" ;;
-		*) printf '%s' "${1##*/}" ;;
-	esac
-}
-
 # Token scan, parameterized on the token list in $1 so the tree corpus can run
 # the NARROWER `P19_NEVER_EXISTED` set through the SAME code path — and the same
 # exemptions, the same unreadable accounting — that every control below already
 # exercises. A second copy of this function would be a second thing to control.
+#
+# `-I` on the grep: the tree corpus contains a tracked binary, and without it
+# grep emits `Binary file … matches` with no line number, which corrupts the
+# `n:body` parse below. It is behaviour-neutral for the `.sh` corpus. The cost
+# is that a binary is reported SILENTLY CLEAN — the unreadable accounting does
+# not cover that case, so "a clean verdict covers all of it" is overstated by
+# exactly the tracked binaries.
 _p19_scan_tokens() {
 	local toks="$1"
 	shift
 	local f tok base line n body
 	for f in "$@"; do
+		# Repo-relative label, computed inline rather than in a helper: the tree
+		# corpus is ~939 files and a `$( )` per file is measurable on every
+		# `make validate`. A BASENAME was unambiguous for `scripts/**/*.sh` and
+		# useless here, where eleven distinct files are named SKILL.md.
+		# Fixtures live outside REPO_ROOT and keep their basename, so every
+		# control's expectations are unchanged.
+		case "$f" in
+			"$REPO_ROOT"/*) base="${f#"$REPO_ROOT"/}" ;;
+			*) base="${f##*/}" ;;
+		esac
 		if [ ! -r "$f" ]; then
-			printf '__UNREADABLE__:%s\n' "$(_p19_label "$f")"
+			printf '__UNREADABLE__:%s\n' "$base"
 			continue
 		fi
 		if _p19_is_skipped_row "$f"; then
-			printf '__EXEMPT__:%s:0:whole-file (row skips before it asserts)\n' "$(_p19_label "$f")"
+			printf '__EXEMPT__:%s:0:whole-file (row skips before it asserts)\n' "$base"
 			continue
 		fi
-		base=$(_p19_label "$f")
 		for tok in $toks; do
 			while IFS= read -r line; do
 				[ -n "$line" ] || continue
@@ -4302,20 +4310,39 @@ else
 	fail "19c: $_p19_tree_unread_n tree-corpus file(s) were unreadable — they contributed zero violations, which is indistinguishable from being clean"
 fi
 
-# Ceiling, measured: exactly THREE, and all three are WHOLE-FILE exemptions —
-# the inert `# P19-INERT-ROW` rows the script corpus already accounts for. Zero
-# line-level P19-ALLOW claims exist in the tracked tree, and the ceiling is set
-# at the measured 3 rather than padded, so the first line-level claim against a
-# never-existed name is a deliberate, reviewable bump. It needs a ceiling for
-# the same reason the script corpus does: otherwise "adding a marker shows up in
-# review" is a hope rather than a check.
-P19_TREE_EXEMPT_CEILING=3
-_p19_tree_exempt_n=$(_p19_exempt_lines "$_p19_tree_hits")
-if [ "$_p19_tree_exempt_n" -le "$P19_TREE_EXEMPT_CEILING" ]; then
-	pass "19c: $_p19_tree_exempt_n exemption(s) claimed against the never-existed scan (ceiling $P19_TREE_EXEMPT_CEILING):$(printf '%s\n' "$_p19_tree_hits" | grep '^__EXEMPT__:' | cut -d: -f2 | sort -u | tr '\n' ' ')"
+# Ceiling of ZERO, counting LINE-LEVEL exemptions only. The whole-file
+# `P19-INERT-ROW` exemptions are deliberately excluded from this count: all
+# three that exist are inert matrix rows that `P19_EXEMPT_CEILING` already
+# governs, none of them contains a never-existed name, and counting them here
+# would mean adding or removing a legitimate inert row trips this arm with the
+# wrong diagnosis ("the marker is being used to silence an advertisement").
+#
+# Zero is the right ceiling because a name that never existed has no history to
+# recount, so no line in the tracked tree has a reason to claim exemption from
+# this scan. Measured: zero today.
+#
+# NOTE the line-level exemption also matches `e2e_skip_row`, whose rationale
+# ("skip accounting must be allowed to name the tools it explains") is
+# script-specific and meaningless in markdown or a Makefile. A prose line
+# mentioning `e2e_skip_row` beside a never-existed name would be silently
+# exempt. The ceiling of 0 is what bounds that, so do not raise it without
+# splitting the two markers apart first.
+_p19_tree_exempt_n=$(printf '%s\n' "$_p19_tree_hits" | grep '^__EXEMPT__:' | grep -vc ':0:whole-file' || true)
+if [ "$_p19_tree_exempt_n" -eq 0 ]; then
+	pass "19c: no line in the tracked tree claims exemption from the never-existed scan (ceiling 0; the $(_p19_exempt_lines "$_p19_tree_hits") whole-file inert-row exemptions are counted by P19_EXEMPT_CEILING instead)"
 else
-	fail "19c: $_p19_tree_exempt_n line(s) claim an exemption from the never-existed scan, over the ceiling of $P19_TREE_EXEMPT_CEILING — a name that never existed has no history to recount, so the marker is being used to silence an advertisement:
-$(printf '%s\n' "$_p19_tree_hits" | grep '^__EXEMPT__:' | sed 's/^/      /')"
+	fail "19c: $_p19_tree_exempt_n line(s) claim a line-level exemption from the never-existed scan, over the ceiling of 0 — a name that never existed has no history to recount, so the marker is silencing an advertisement:
+$(printf '%s\n' "$_p19_tree_hits" | grep '^__EXEMPT__:' | grep -v ':0:whole-file' | sed 's/^/      /')"
+fi
+# POSITIVE control for the ceiling, through the SAME counting expression: a
+# planted LINE-LEVEL exemption must be counted, and a planted WHOLE-FILE one
+# must not. Without it, "zero today" is indistinguishable from a counter that
+# can only ever be zero.
+if [ "$(printf '%s\n' "__EXEMPT__:docs/planted.md:9:messages_send
+__EXEMPT__:scripts/e2e-tests/inert.sh:0:whole-file (row skips before it asserts)" | grep '^__EXEMPT__:' | grep -vc ':0:whole-file' || true)" -eq 1 ]; then
+	pass "19c: positive control — the exemption ceiling counts a planted line-level exemption and does NOT count a planted whole-file one"
+else
+	fail "19c: positive control FAILED — the exemption counter cannot distinguish a line-level claim from a whole-file inert row, so its zero proves nothing"
 fi
 
 # The exemption is a marker anyone can add to a live agent prompt to silence a
@@ -4445,11 +4472,16 @@ if [ "$P19_FIX_OK" -eq 1 ]; then
 	# control. These are.
 	mkdir -p "$P19_FIX/skills/planted" "$P19_FIX/docs"
 	# POSITIVE control (defect planted in a SKILL-shaped markdown file, which is
-	# the surface the corpus was widened to reach). Two names, so the arm cannot
-	# pass by keying on one literal.
+	# the surface the corpus was widened to reach). TWO DISTINCT names and an
+	# EQUALITY, so a scan that only ever matched one of them fails this arm.
+	# The first draft passed `"$P19_NEVER_EXISTED messages_send no_such_tool_xyz"`
+	# with a `-ge 2` threshold — but `messages_send` is already IN
+	# P19_NEVER_EXISTED, so line 1 was counted twice and a scan blind to the
+	# second name still scored 2. A control whose direction is right and whose
+	# discrimination is not what its comment claims is this lane's own defect.
 	printf 'The child calls `messages_send` to weave.\nThen `mcp__sprawl__no_such_tool_xyz`.\n' \
 		>"$P19_FIX/skills/planted/SKILL.md"
-	if [ "$(_p19_violation_lines "$(_p19_scan_tokens "$P19_NEVER_EXISTED messages_send no_such_tool_xyz" "$P19_FIX/skills/planted/SKILL.md")")" -ge 2 ]; then
+	if [ "$(_p19_violation_lines "$(_p19_scan_tokens "$P19_NEVER_EXISTED no_such_tool_xyz" "$P19_FIX/skills/planted/SKILL.md")")" -eq 2 ]; then
 		pass "19c: positive control — the never-existed scan fires on planted names in a markdown skill file"
 	else
 		fail "19c: positive control FAILED — the never-existed scan stayed quiet on a skill file naming a nonexistent tool, so its clean verdict on the tracked tree proves nothing"
