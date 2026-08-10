@@ -123,65 +123,11 @@ func TestSendMessage_OfflineTarget_WakeIfOffline_WakesAndInjectsPrompt(t *testin
 	}
 }
 
-// TestDelegate_OfflineTarget_NoFlag_ReturnsCanonicalError mirrors the
-// SendMessage table for Delegate: paused/killed/died/faulted +
-// wake_if_offline=false ⇒ canonical error.
-func TestDelegate_OfflineTarget_NoFlag_ReturnsCanonicalError(t *testing.T) {
-	for _, st := range offlineStatuses() {
-		t.Run(st, func(t *testing.T) {
-			r, tmpDir := newFakeReal(t)
-			saveTestAgent(t, tmpDir, &state.AgentState{
-				Name:   "alice",
-				Type:   "engineer",
-				Family: "engineering",
-				Parent: "weave",
-				Status: st,
-			})
-
-			err := r.Delegate(context.Background(), "alice", "do X", false)
-			if err == nil {
-				t.Fatalf("Delegate to %s agent returned nil error; want canonical wake-not-permitted error", st)
-			}
-			want := fmt.Sprintf(canonicalOfflineError, "alice", st)
-			if err.Error() != want {
-				t.Errorf("error mismatch\n got: %q\nwant: %q", err.Error(), want)
-			}
-		})
-	}
-}
-
-// TestDelegate_OfflineTarget_WakeIfOffline_HardRedirectInjected: paused
-// recipient + wake_if_offline=true ⇒
-//   - the starter sees RestartInjection ==
-//     BuildWakePrompt(WakeReasonDelegate, "paused", "do X"),
-//   - the task is enqueued via the existing task path.
-func TestDelegate_OfflineTarget_WakeIfOffline_HardRedirectInjected(t *testing.T) {
-	r, tmpDir := newFakeReal(t)
-	agentState := testAgentState("alice")
-	agentState.Status = state.StatusPaused
-	saveTestAgent(t, tmpDir, agentState)
-
-	starter := &wakeCapturingStarter{}
-	rt := ensureRuntimeWithStarter(t, r, tmpDir, agentState, starter)
-
-	task := "do X"
-	if err := r.Delegate(context.Background(), "alice", task, true); err != nil {
-		t.Fatalf("Delegate(wake_if_offline=true) on paused agent: %v", err)
-	}
-
-	specs := starter.snapshotSpecs()
-	if len(specs) == 0 {
-		t.Fatal("starter received zero specs; want at least one")
-	}
-	wantInjection := fmt.Sprintf(agentpkg.WakePromptDelegate, "paused", task)
-	if specs[0].RestartInjection != wantInjection {
-		t.Errorf("RestartInjection mismatch\n got: %q\nwant: %q", specs[0].RestartInjection, wantInjection)
-	}
-	// Task must still hit the standard task queue.
-	if got := rt.Snapshot().QueueDepth; got < 1 {
-		t.Errorf("QueueDepth = %d, want >= 1 (wake-with-delegate must enqueue the task)", got)
-	}
-}
+// QUM-1186: TestDelegate_OfflineTarget_NoFlag_ReturnsCanonicalError and
+// TestDelegate_OfflineTarget_WakeIfOffline_HardRedirectInjected were removed
+// here. Both had exact send_message twins above driving the SAME
+// offlineStatuses() table and the same byte-pinned canonical error, so the
+// status matrix is unchanged by their removal — only the vehicle died.
 
 // TestReal_Wake_BareReason_BuildsBareTemplate pins the bare-wake path: when
 // Real.Wake is called with WakeReasonBare + empty body, the runtime starter

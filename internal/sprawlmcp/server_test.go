@@ -34,7 +34,6 @@ type mockSupervisor struct {
 	statusErr    error
 	spawnResult  *supervisor.AgentInfo
 	spawnErr     error
-	delegateErr  error
 	mergeErr     error
 	retireErr    error
 	retireReturn []string
@@ -42,13 +41,11 @@ type mockSupervisor struct {
 	shutdownErr  error
 
 	// Recorded calls
-	spawnCalled   *supervisor.SpawnRequest
-	delegateAgent string
-	delegateTask  string
-	mergeCaller   string
-	mergeAgent    string
-	mergeMessage  string
-	mergeNoVal    bool
+	spawnCalled  *supervisor.SpawnRequest
+	mergeCaller  string
+	mergeAgent   string
+	mergeMessage string
+	mergeNoVal   bool
 	// mergeNoOp — QUM-511: when true, the mock should report a no-op
 	// merge outcome (zero new commits) to toolMerge so it can surface
 	// "Nothing to merge: <agent> has no new commits". Wired through once
@@ -91,9 +88,6 @@ type mockSupervisor struct {
 	sendMessageWakeIfOffline bool // QUM-726
 	sendMessageResult        *supervisor.SendMessageResult
 	sendMessageErr           error
-
-	// Delegate recording (QUM-726 wake_if_offline)
-	delegateWakeIfOffline bool
 
 	// Messages* recording + seams (QUM-316)
 	messagesListFilter       string
@@ -196,13 +190,6 @@ func (m *mockSupervisor) Spawn(_ context.Context, req supervisor.SpawnRequest) (
 
 func (m *mockSupervisor) Status(_ context.Context) ([]supervisor.AgentInfo, error) {
 	return m.statusResult, m.statusErr
-}
-
-func (m *mockSupervisor) Delegate(_ context.Context, agentName, task string, wakeIfOffline bool) error {
-	m.delegateAgent = agentName
-	m.delegateTask = task
-	m.delegateWakeIfOffline = wakeIfOffline
-	return m.delegateErr
 }
 
 func (m *mockSupervisor) Merge(_ context.Context, caller, agentName, message string, noValidate bool) (*supervisor.MergeOutcome, error) {
@@ -373,7 +360,6 @@ func TestServer_ToolsList(t *testing.T) {
 	expectedTools := []string{
 		"spawn",
 		"status",
-		"delegate",
 		"send_message",
 		"peek",
 		"report_status",
@@ -836,35 +822,10 @@ func TestServer_ToolsCall_SprawlSpawn_NoAdvisoryFromManager(t *testing.T) {
 	}
 }
 
-func TestServer_ToolsCall_SprawlDelegate(t *testing.T) {
-	mock := &mockSupervisor{}
-	srv := New(mock)
-	ctx := context.Background()
-
-	msg := makeJSONRPCRequest(5, "tools/call", map[string]any{
-		"name": "delegate",
-		"arguments": map[string]any{
-			"agent": "ratz",
-			"task":  "implement feature Y",
-		},
-	})
-	resp, err := srv.HandleMessage(ctx, msg)
-	if err != nil {
-		t.Fatalf("HandleMessage() error: %v", err)
-	}
-
-	if mock.delegateAgent != "ratz" {
-		t.Errorf("delegate agent = %q, want ratz", mock.delegateAgent)
-	}
-	if mock.delegateTask != "implement feature Y" {
-		t.Errorf("delegate task = %q, want 'implement feature Y'", mock.delegateTask)
-	}
-
-	parsed := parseJSONRPCResponse(t, resp)
-	if _, ok := parsed["error"]; ok {
-		t.Errorf("unexpected error: %v", parsed["error"])
-	}
-}
+// QUM-1186: TestServer_ToolsCall_SprawlDelegate was removed with the tool.
+// That delegate is now an UNKNOWN tool over MCP is asserted positively by
+// TestServer_ToolsList (the catalog no longer contains it) and by
+// TestDeletedTools_ReturnUnknownToolError.
 
 func TestServer_ToolsCall_SprawlMerge(t *testing.T) {
 	mock := &mockSupervisor{}
@@ -1282,17 +1243,20 @@ func TestServer_ToolsCall_UnknownTool(t *testing.T) {
 }
 
 func TestServer_ToolsCall_SupervisorError(t *testing.T) {
+	// QUM-1186: re-hosted from delegate onto send_message. The subject is
+	// supervisor-error -> MCP-content-error plumbing, not the tool; delegate
+	// was only the vehicle.
 	mock := &mockSupervisor{
-		delegateErr: fmt.Errorf("agent not found"),
+		sendMessageErr: fmt.Errorf("agent not found"),
 	}
 	srv := New(mock)
 	ctx := context.Background()
 
 	msg := makeJSONRPCRequest(11, "tools/call", map[string]any{
-		"name": "delegate",
+		"name": "send_message",
 		"arguments": map[string]any{
-			"agent": "nonexistent",
-			"task":  "do something",
+			"to":   "nonexistent",
+			"body": "do something",
 		},
 	})
 	resp, err := srv.HandleMessage(ctx, msg)
@@ -2292,16 +2256,18 @@ func TestHandleToolsCall_EndOnError(t *testing.T) {
 	}
 	defer logger.Close()
 
+	// QUM-1186: re-hosted from delegate onto send_message. The subject is the
+	// call log recording a tool error, not the tool itself.
 	mock := &mockSupervisor{
-		delegateErr: fmt.Errorf("agent not found"),
+		sendMessageErr: fmt.Errorf("agent not found"),
 	}
 	srv := New(mock).WithCallLog(logger)
 
 	msg := makeJSONRPCRequest(201, "tools/call", map[string]any{
-		"name": "delegate",
+		"name": "send_message",
 		"arguments": map[string]any{
-			"agent": "nonexistent",
-			"task":  "do something",
+			"to":   "nonexistent",
+			"body": "do something",
 		},
 	})
 	if _, err := srv.HandleMessage(context.Background(), msg); err != nil {

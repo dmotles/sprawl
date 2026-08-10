@@ -29,7 +29,6 @@ func promptModeSource(t *testing.T) string {
 var canonicalMessagingTools = []string{
 	"send_message",
 	"report_status",
-	"delegate",
 	"peek",
 	"spawn",
 	"merge",

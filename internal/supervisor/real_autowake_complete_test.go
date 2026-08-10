@@ -23,38 +23,6 @@ import (
 	"github.com/dmotles/sprawl/internal/state"
 )
 
-// TestDelegate_StatusComplete_AutoWakes_NoFlag pins QUM-789: a delegate
-// targeting an agent whose persisted Status is "complete" must auto-wake
-// the runtime (driving the starter) and enqueue the task — WITHOUT the
-// caller having to pass wake_if_offline=true.
-func TestDelegate_StatusComplete_AutoWakes_NoFlag(t *testing.T) {
-	r, tmpDir := newFakeReal(t)
-	agentState := testAgentState("alice")
-	agentState.Status = state.StatusComplete
-	saveTestAgent(t, tmpDir, agentState)
-
-	starter := &wakeCapturingStarter{}
-	rt := ensureRuntimeWithStarter(t, r, tmpDir, agentState, starter)
-
-	task := "do X"
-	if err := r.Delegate(context.Background(), "alice", task, false /* wake_if_offline */); err != nil {
-		t.Fatalf("Delegate on complete agent returned error: %v; want nil (auto-wake)", err)
-	}
-
-	specs := starter.snapshotSpecs()
-	if len(specs) == 0 {
-		t.Fatal("starter received zero specs; want at least one (auto-wake must call Start)")
-	}
-	wantInjection := fmt.Sprintf(agentpkg.WakePromptDelegate, "complete", task)
-	if specs[0].RestartInjection != wantInjection {
-		t.Errorf("RestartInjection mismatch\n got: %q\nwant: %q", specs[0].RestartInjection, wantInjection)
-	}
-
-	if got := rt.Snapshot().QueueDepth; got < 1 {
-		t.Errorf("QueueDepth = %d, want >= 1 (auto-wake-with-delegate must enqueue the task)", got)
-	}
-}
-
 // TestSendMessage_StatusComplete_AutoWakes_NoFlag mirrors the delegate test
 // for send_message: a send_message targeting Status=complete must auto-wake
 // and persist the body without any flag.
@@ -97,26 +65,29 @@ func TestSendMessage_StatusComplete_AutoWakes_NoFlag(t *testing.T) {
 	}
 }
 
-// TestDelegate_RetiredOrRetiring_ReturnsTerminalAgentError pins QUM-789:
-// delegate to a retired/retiring agent returns the canonical
-// "no longer running" terminal-agent error.
-func TestDelegate_RetiredOrRetiring_ReturnsTerminalAgentError(t *testing.T) {
+// TestSendMessage_RetiredOrRetiring_ReturnsTerminalAgentError pins that both
+// truly-terminal statuses reject a send with the canonical error.
+//
+// QUM-1186: this was retiring-only, and the retired case lived in the
+// delegate twin (TestDelegate_RetiredOrRetiring_ReturnsTerminalAgentError),
+// which is deleted with the tool. Widened to the full table here so deleting
+// the delegate test does not quietly narrow the matrix — that would be a
+// coverage loss disguised as a deletion.
+func TestSendMessage_RetiredOrRetiring_ReturnsTerminalAgentError(t *testing.T) {
 	for _, st := range []string{state.StatusRetired, state.StatusRetiring} {
 		t.Run(st, func(t *testing.T) {
 			r, tmpDir := newFakeReal(t)
 			saveTestAgent(t, tmpDir, &state.AgentState{
-				Name:            "alice",
-				Type:            "engineer",
-				Family:          "engineering",
-				Parent:          "weave",
-				Status:          st,
-				LastReportState: "complete",
-				LastReportAt:    "2026-06-06T12:00:00Z",
+				Name:   "alice",
+				Type:   "engineer",
+				Family: "engineering",
+				Parent: "weave",
+				Status: st,
 			})
 
-			err := r.Delegate(context.Background(), "alice", "do X", false)
+			_, err := r.SendMessage(context.Background(), "alice", "hello", false, false)
 			if err == nil {
-				t.Fatalf("Delegate to %s agent returned nil error; want TerminalAgentError", st)
+				t.Fatalf("SendMessage to %s agent returned nil error; want TerminalAgentError", st)
 			}
 			for _, want := range []string{"no longer running", `"alice"`} {
 				if !strings.Contains(err.Error(), want) {
@@ -124,30 +95,6 @@ func TestDelegate_RetiredOrRetiring_ReturnsTerminalAgentError(t *testing.T) {
 				}
 			}
 		})
-	}
-}
-
-// TestSendMessage_Retiring_ReturnsTerminalAgentError pins the retiring case
-// for send_message (retired is covered by an existing QUM-680 test that
-// post-QUM-787 still uses StatusRetired).
-func TestSendMessage_Retiring_ReturnsTerminalAgentError(t *testing.T) {
-	r, tmpDir := newFakeReal(t)
-	saveTestAgent(t, tmpDir, &state.AgentState{
-		Name:            "alice",
-		Type:            "engineer",
-		Family:          "engineering",
-		Parent:          "weave",
-		Status:          state.StatusRetiring,
-		LastReportState: "complete",
-		LastReportAt:    "2026-06-06T12:00:00Z",
-	})
-
-	_, err := r.SendMessage(context.Background(), "alice", "hello", false, false)
-	if err == nil {
-		t.Fatal("SendMessage to retiring agent returned nil error; want TerminalAgentError")
-	}
-	if !strings.Contains(err.Error(), "no longer running") {
-		t.Errorf("error %q missing 'no longer running'", err.Error())
 	}
 }
 

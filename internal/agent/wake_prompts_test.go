@@ -8,7 +8,6 @@
 package agent
 
 import (
-	"strings"
 	"testing"
 )
 
@@ -28,19 +27,14 @@ func TestWakePromptSendMessage_Verbatim(t *testing.T) {
 	}
 }
 
-func TestWakePromptDelegate_Verbatim(t *testing.T) {
-	got := BuildWakePrompt(WakeReasonDelegate, "killed", "do X")
-	want := "You are coming back online from an offline state (killed). If you were in the middle of something previously, that work is abandoned — this delegate is your new task:\n\ndo X"
-	if got != want {
-		t.Errorf("BuildWakePrompt(delegate) mismatch\n got: %q\nwant: %q", got, want)
-	}
-	// Em-dash check (U+2014). If somebody normalizes to "--" or " - " the
-	// pin above already fails, but be explicit since this is the most
-	// common drift.
-	if !strings.Contains(got, "—") {
-		t.Errorf("delegate template missing em-dash (U+2014); got: %q", got)
-	}
-}
+// QUM-1186: TestWakePromptDelegate_Verbatim was removed with
+// WakeReasonDelegate / WakePromptDelegate. The template it byte-pinned no
+// longer exists — there is no surviving behaviour to re-host, since every
+// payload-carrying wake is now a send_message wake, pinned above.
+//
+// TestBuildWakePrompt_UnknownReasonFallsBackToBare below is now also the
+// guard that a caller passing the old "delegate" reason string gets the bare
+// template rather than a panic or an empty prompt.
 
 func TestBuildWakePrompt_UnknownReasonFallsBackToBare(t *testing.T) {
 	got := BuildWakePrompt(WakeReason("zzz-not-a-real-reason"), "killed", "ignored")

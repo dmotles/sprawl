@@ -556,58 +556,6 @@ func (r *Real) Status(_ context.Context) ([]AgentInfo, error) {
 	return result, nil
 }
 
-func (r *Real) Delegate(ctx context.Context, agentName, task string, wakeIfOffline bool) error {
-	agentState, err := state.LoadAgent(r.sprawlRoot, agentName)
-	if err != nil {
-		return fmt.Errorf("agent %q not found: %w", agentName, err)
-	}
-
-	// QUM-789 lifecycle arc #2: retired/retiring is truly terminal — surface
-	// the canonical "no longer running" error.
-	if state.IsTerminal(agentState.Status) {
-		if err := agentops.TerminalAgentError(r.sprawlRoot, agentName); err != nil {
-			return err
-		}
-	}
-
-	if task == "" {
-		return fmt.Errorf("task prompt must not be empty")
-	}
-
-	// QUM-789 lifecycle arc #2: Status==complete is revivable via auto-wake
-	// — NO wake_if_offline flag required. Wake first so the recipient's
-	// first post-wake turn sees the delegate prompt, then continue to the
-	// standard task enqueue below.
-	if agentState.Status == state.StatusComplete {
-		if _, wErr := r.Wake(ctx, agentName, agentpkg.WakeReasonDelegate, task); wErr != nil {
-			return wErr
-		}
-	} else if lv, ok := r.livenessOf(agentName); ok {
-		// QUM-726: offline-recoverable gate. For Paused/Killed/Died/Faulted/ResumeFailed, either
-		// reject with the canonical error or wake-and-enqueue.
-		if lv == liveness.Paused || lv == liveness.Killed || lv == liveness.Died || lv == liveness.Faulted || lv == liveness.ResumeFailed {
-			if !wakeIfOffline {
-				// QUM-726: canonical error string is byte-pinned in tests; do not reword.
-				return fmt.Errorf("Delivery failed: agent %s is %s. Set wake_if_offline: true to wake and deliver.", agentName, lv.String()) //nolint:revive,staticcheck
-			}
-			if _, wErr := r.Wake(ctx, agentName, agentpkg.WakeReasonDelegate, task); wErr != nil {
-				return wErr
-			}
-		}
-	}
-
-	if _, err := state.EnqueueTask(r.sprawlRoot, agentName, task); err != nil {
-		return fmt.Errorf("enqueuing task: %w", err)
-	}
-	if runtime, ok := r.runtimeRegistry.Get(agentName); ok {
-		runtime.RecordQueuedTask()
-		if runtime.Snapshot().Liveness == liveness.Running {
-			_ = runtime.NotifyWake()
-		}
-	}
-	return nil
-}
-
 func (r *Real) Spawn(ctx context.Context, req SpawnRequest) (*AgentInfo, error) {
 	deps := r.spawnDepsForCaller(r.effectiveCaller(ctx))
 	st, err := r.spawnFn(deps, req.Family, req.Type, req.Prompt, req.Branch, req.Subagent)

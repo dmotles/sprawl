@@ -62,7 +62,7 @@ func baseToolDefinitions() []map[string]any {
 	return []map[string]any{
 		{
 			"name":        "spawn",
-			"description": "Create a new worktree-backed child agent under the current sprawl enter session. The child starts immediately and can receive tasks via delegate or messages via send_message. The new worktree is based on the caller's current worktree HEAD (committed only — uncommitted changes do NOT propagate). Commit before spawning if you want the child to see in-flight work.",
+			"description": "Create a new worktree-backed child agent under the current sprawl enter session. The child starts immediately and can receive work via send_message. The new worktree is based on the caller's current worktree HEAD (committed only — uncommitted changes do NOT propagate). Commit before spawning if you want the child to see in-flight work.",
 			"inputSchema": map[string]any{
 				"type": "object",
 				"properties": map[string]any{
@@ -112,28 +112,6 @@ func baseToolDefinitions() []map[string]any {
 			"inputSchema": map[string]any{
 				"type":       "object",
 				"properties": map[string]any{},
-			},
-		},
-		{
-			"name":        "delegate",
-			"description": "Assign a tracked work item (task) to an existing agent. The task is queued and the agent picks it up when ready. Agents that reported `complete` are revivable — delegate AUTO-WAKES them; no flag required. Delegating to a `retired`/`retiring` agent returns a terminal-agent error.",
-			"inputSchema": map[string]any{
-				"type": "object",
-				"properties": map[string]any{
-					"agent": map[string]any{
-						"type":        "string",
-						"description": "Name of the target agent",
-					},
-					"task": map[string]any{
-						"type":        "string",
-						"description": "Task description to delegate",
-					},
-					"wake_if_offline": map[string]any{
-						"type":        "boolean",
-						"description": "Required to revive paused/killed/died/faulted/resume_failed agents — wakes the target first and delivers this task as its first inbox item. NOT required for `complete` agents (auto-revives). Default false (delivery errors with an actionable message if target is in one of the offline fault classes and the flag is unset).",
-					},
-				},
-				"required": []string{"agent", "task"},
 			},
 		},
 		{
@@ -427,7 +405,7 @@ func baseToolDefinitions() []map[string]any {
 		},
 		{
 			"name":        "wake",
-			"description": "Bring an offline or completed agent back online. Accepts any agent that is not retired/retiring, including paused/killed/died/faulted/resume_failed and the post-report `complete` resting state. Attempts to resume the prior claude session by session-id; falls back to a fresh session if the session cookie is rejected or no session exists. No-op success if the agent is already running. Errors if the agent is retired or retiring. Does NOT inject any task — combine with `delegate` or `send_message` (with `wake_if_offline: true`) for wake-with-work.",
+			"description": "Bring an offline or completed agent back online. Accepts any agent that is not retired/retiring, including paused/killed/died/faulted/resume_failed and the post-report `complete` resting state. Attempts to resume the prior claude session by session-id; falls back to a fresh session if the session cookie is rejected or no session exists. No-op success if the agent is already running. Errors if the agent is retired or retiring. Does NOT inject any work — combine with `send_message` (with `wake_if_offline: true`) for wake-with-work.",
 			"inputSchema": map[string]any{
 				"type": "object",
 				"properties": map[string]any{

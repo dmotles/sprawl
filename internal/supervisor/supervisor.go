@@ -223,13 +223,6 @@ type WakeResult struct {
 type Supervisor interface {
 	Spawn(ctx context.Context, req SpawnRequest) (*AgentInfo, error)
 	Status(ctx context.Context) ([]AgentInfo, error)
-	// Delegate enqueues a task for agentName. When wakeIfOffline is true and
-	// the target's projected liveness is offline-but-recoverable
-	// ({Paused,Killed,Died,Faulted,ResumeFailed}), the supervisor wakes the
-	// agent and threads a delegate-flavored RestartInjection (built via
-	// agent.BuildWakePrompt(WakeReasonDelegate, ...)) so the recipient's
-	// first post-wake turn sees the task as a hard task redirect. QUM-726.
-	Delegate(ctx context.Context, agentName, task string, wakeIfOffline bool) error
 	// Merge merges agentName's branch up to its parent. `caller` is the
 	// agent identity invoking this operation — used to override
 	// SPRAWL_AGENT_IDENTITY in the per-call agentops deps so child-agent MCP

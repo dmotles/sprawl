@@ -1,5 +1,5 @@
 // QUM-666: tests covering the rename of agent_name → agent across all
-// agent-targeting MCP tools (delegate, merge, retire, kill, wake).
+// agent-targeting MCP tools (merge, retire, kill, wake).
 // `peek` already uses the canonical `agent` key and is unaffected.
 //
 // Three behaviors are exercised for each renamed tool:
@@ -76,17 +76,16 @@ func extractToolErrorText(t *testing.T, resp json.RawMessage) string {
 	return text
 }
 
-// renamedToolCall builds a tools/call JSON-RPC request for one of the five
-// renamed tools with the given agent-key/value, plus tool-specific extra
-// required args (e.g. delegate's task).
+// renamedToolCall builds a tools/call JSON-RPC request for one of the
+// renamed tools with the given agent-key/value.
+//
+// QUM-1186: the tool-specific extra-required-args branch existed only for
+// delegate's `task` and went with it; the remaining four tools need no extras.
 func renamedToolCall(t *testing.T, id int, tool, key, value string) json.RawMessage {
 	t.Helper()
 	args := map[string]any{}
 	if key != "" {
 		args[key] = value
-	}
-	if tool == "delegate" {
-		args["task"] = "do thing"
 	}
 	return makeJSONRPCRequest(id, "tools/call", map[string]any{
 		"name":      tool,
@@ -99,8 +98,6 @@ func renamedToolCall(t *testing.T, id int, tool, key, value string) json.RawMess
 // from the outer struct only for the wake tool.
 func supervisorTarget(tool string, mock *mockSupervisor, rec *wakeAwareSupervisor) string {
 	switch tool {
-	case "delegate":
-		return mock.delegateAgent
 	case "merge":
 		return mock.mergeAgent
 	case "retire":
@@ -113,7 +110,7 @@ func supervisorTarget(tool string, mock *mockSupervisor, rec *wakeAwareSuperviso
 	return ""
 }
 
-var renamedAgentToolNames = []string{"delegate", "merge", "retire", "kill", "wake"}
+var renamedAgentToolNames = []string{"merge", "retire", "kill", "wake"}
 
 // newSupForRenamed returns a supervisor wired to record the agent name
 // regardless of which renamed tool is dispatched. wakeAwareSupervisor

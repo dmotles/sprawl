@@ -5,7 +5,7 @@
 //   - toolDelegate forwards wake_if_offline to Supervisor.Delegate.
 //   - toolWake invokes Supervisor.Wake with WakeReasonBare and an empty body
 //     (the wake verb has no payload of its own).
-//   - The send_message and delegate input schemas advertise the new
+//   - The send_message input schema advertises the new
 //     wake_if_offline boolean property.
 //
 // RED phase: these tests reference symbols/behavior that do not exist yet —
@@ -69,55 +69,17 @@ func TestToolSendMessage_WakeIfOfflineDefaultsFalse(t *testing.T) {
 	}
 }
 
-// TestToolDelegate_ForwardsWakeIfOffline pins delegate's plumb-through of the
-// new flag.
-func TestToolDelegate_ForwardsWakeIfOffline(t *testing.T) {
-	mock := &mockSupervisor{}
-	srv := New(mock)
-
-	msg := makeJSONRPCRequest(702, "tools/call", map[string]any{
-		"name": "delegate",
-		"arguments": map[string]any{
-			"agent":           "alice",
-			"task":            "implement X",
-			"wake_if_offline": true,
-		},
-	})
-	if _, err := srv.HandleMessage(context.Background(), msg); err != nil {
-		t.Fatalf("HandleMessage: %v", err)
-	}
-	if mock.delegateAgent != "alice" {
-		t.Fatalf("Delegate target = %q, want alice", mock.delegateAgent)
-	}
-	if !mock.delegateWakeIfOffline {
-		t.Errorf("supervisor saw delegate wakeIfOffline = false, want true (QUM-726)")
-	}
-}
-
-// TestToolDelegate_WakeIfOfflineDefaultsFalse — flag omitted ⇒ false.
-func TestToolDelegate_WakeIfOfflineDefaultsFalse(t *testing.T) {
-	mock := &mockSupervisor{}
-	srv := New(mock)
-
-	msg := makeJSONRPCRequest(703, "tools/call", map[string]any{
-		"name": "delegate",
-		"arguments": map[string]any{
-			"agent": "alice",
-			"task":  "implement X",
-		},
-	})
-	if _, err := srv.HandleMessage(context.Background(), msg); err != nil {
-		t.Fatalf("HandleMessage: %v", err)
-	}
-	if mock.delegateWakeIfOffline {
-		t.Errorf("supervisor saw delegate wakeIfOffline = true; want false default")
-	}
-}
+// QUM-1186: TestToolDelegate_ForwardsWakeIfOffline and
+// TestToolDelegate_WakeIfOfflineDefaultsFalse were removed with the tool.
+// The wake_if_offline plumb-through and its false default are the SURVIVING
+// behaviour and are pinned for the surviving tool by
+// TestToolSendMessage_ForwardsWakeIfOffline and
+// TestToolSendMessage_WakeIfOfflineDefaultsFalse above.
 
 // TestToolWake_DefaultsToBareReason pins that the wake MCP verb passes
 // WakeReasonBare + empty body to Supervisor.Wake. The wake tool itself does
 // not (and is intentionally not designed to) carry a payload — combine with
-// delegate/send_message for wake-with-work.
+// send_message for wake-with-work.
 func TestToolWake_DefaultsToBareReason(t *testing.T) {
 	mock := newWakeAware()
 	srv := New(mock)
@@ -166,36 +128,6 @@ func TestSendMessageSchema_HasWakeIfOffline(t *testing.T) {
 	woi, ok := props["wake_if_offline"].(map[string]any)
 	if !ok {
 		t.Fatalf("send_message.properties.wake_if_offline missing or wrong type: %T", props["wake_if_offline"])
-	}
-	if woi["type"] != "boolean" {
-		t.Errorf("wake_if_offline.type = %v, want boolean", woi["type"])
-	}
-}
-
-// TestDelegateSchema_HasWakeIfOffline asserts the delegate tool catalog entry
-// advertises wake_if_offline as a boolean property.
-func TestDelegateSchema_HasWakeIfOffline(t *testing.T) {
-	var def map[string]any
-	for _, d := range baseToolDefinitions() {
-		if d["name"] == "delegate" {
-			def = d
-			break
-		}
-	}
-	if def == nil {
-		t.Fatal("delegate tool definition not found")
-	}
-	schema, ok := def["inputSchema"].(map[string]any)
-	if !ok {
-		t.Fatalf("inputSchema type = %T", def["inputSchema"])
-	}
-	props, ok := schema["properties"].(map[string]any)
-	if !ok {
-		t.Fatalf("properties type = %T", schema["properties"])
-	}
-	woi, ok := props["wake_if_offline"].(map[string]any)
-	if !ok {
-		t.Fatalf("delegate.properties.wake_if_offline missing or wrong type: %T", props["wake_if_offline"])
 	}
 	if woi["type"] != "boolean" {
 		t.Errorf("wake_if_offline.type = %v, want boolean", woi["type"])

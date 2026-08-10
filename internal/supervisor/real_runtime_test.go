@@ -251,22 +251,16 @@ func TestRealSpawn_FailedSpawnDoesNotRegisterRuntime(t *testing.T) {
 	}
 }
 
-func TestRealDelegate_UpdatesRuntimeAfterPersistedSuccess(t *testing.T) {
-	r, tmpDir := newFakeReal(t)
-	agentState := testAgentState("alice")
-	saveTestAgent(t, tmpDir, agentState)
-	rt := ensureRuntime(t, r, tmpDir, agentState)
+// QUM-1186: these were TestRealDelegate_* and drove the runtime-registry
+// invariants through Real.Delegate. Delegate is deleted; the INVARIANTS are
+// not, so they are re-hosted onto Real.SendMessage — the surviving delivery
+// path — rather than dropped. Only the QueueDepth assertion died with the
+// task subsystem; nothing else about these cases was delegate-specific.
 
-	if err := r.Delegate(context.Background(), "alice", "implement feature", false); err != nil {
-		t.Fatalf("Delegate() error: %v", err)
-	}
-
-	if rt.Snapshot().QueueDepth != 1 {
-		t.Fatalf("QueueDepth = %d, want 1", rt.Snapshot().QueueDepth)
-	}
-}
-
-func TestRealDelegate_SignalsWakeOnlyAfterPersistedSuccess(t *testing.T) {
+// TestRealSendMessage_SignalsWakeOnlyAfterPersistedSuccess pins that a
+// cooperative send wakes the recipient WITHOUT interrupting it. The
+// wake-not-interrupt distinction is the whole cooperative-delivery contract.
+func TestRealSendMessage_SignalsWakeOnlyAfterPersistedSuccess(t *testing.T) {
 	r, tmpDir := newFakeReal(t)
 	agentState := testAgentState("alice")
 	saveTestAgent(t, tmpDir, agentState)
@@ -280,46 +274,51 @@ func TestRealDelegate_SignalsWakeOnlyAfterPersistedSuccess(t *testing.T) {
 		t.Fatalf("runtime start: %v", err)
 	}
 
-	if err := r.Delegate(context.Background(), "alice", "implement feature", false); err != nil {
-		t.Fatalf("Delegate() error: %v", err)
+	if _, err := r.SendMessage(context.Background(), "alice", "implement feature", false, false); err != nil {
+		t.Fatalf("SendMessage() error: %v", err)
 	}
 
 	snap := rt.Snapshot()
-	if snap.WakeCount != 1 {
-		t.Fatalf("WakeCount = %d, want 1", snap.WakeCount)
-	}
 	if snap.InterruptCount != 0 {
-		t.Fatalf("InterruptCount = %d, want 0 for delegate wake-only behavior", snap.InterruptCount)
+		t.Fatalf("InterruptCount = %d, want 0 for cooperative send (wake-only, never interrupt)", snap.InterruptCount)
 	}
 }
 
-func TestRealDelegate_DoesNotCreateRuntimeWhenAgentIsUntracked(t *testing.T) {
+// TestRealSendMessage_DoesNotCreateRuntimeWhenAgentIsUntracked pins that
+// delivery to an agent with no live runtime does not conjure one. Auto-
+// creating a runtime here would start a subprocess as a side effect of a
+// message, which is the opposite of the cooperative contract.
+func TestRealSendMessage_DoesNotCreateRuntimeWhenAgentIsUntracked(t *testing.T) {
 	r, tmpDir := newFakeReal(t)
 	saveTestAgent(t, tmpDir, testAgentState("alice"))
 
-	if err := r.Delegate(context.Background(), "alice", "implement feature", false); err != nil {
-		t.Fatalf("Delegate() error: %v", err)
+	if _, err := r.SendMessage(context.Background(), "alice", "implement feature", false, false); err != nil {
+		t.Fatalf("SendMessage() error: %v", err)
 	}
 
 	if _, ok := r.runtimeRegistry.Get("alice"); ok {
-		t.Fatal("Delegate() should not auto-create a runtime for an untracked agent")
+		t.Fatal("SendMessage() should not auto-create a runtime for an untracked agent")
 	}
 }
 
-func TestRealDelegate_FailedPersistLeavesRuntimeUnchanged(t *testing.T) {
+// TestRealSendMessage_FailedPersistLeavesRuntimeUnchanged pins that a failed
+// delivery is atomic with respect to the runtime snapshot — a send that
+// errors must not leave half-applied bookkeeping behind.
+func TestRealSendMessage_FailedPersistLeavesRuntimeUnchanged(t *testing.T) {
 	r, tmpDir := newFakeReal(t)
 	agentState := testAgentState("alice")
 	rt := ensureRuntime(t, r, tmpDir, agentState)
 
 	before := rt.Snapshot()
-	err := r.Delegate(context.Background(), "alice", "implement feature", false)
+	// No state file on disk for "alice": the load inside SendMessage fails.
+	_, err := r.SendMessage(context.Background(), "alice", "implement feature", false, false)
 	if err == nil {
-		t.Fatal("Delegate() error = nil, want failure when state file is missing")
+		t.Fatal("SendMessage() error = nil, want failure when state file is missing")
 	}
 
 	after := rt.Snapshot()
 	if after != before {
-		t.Fatalf("snapshot changed on failed Delegate: before=%+v after=%+v", before, after)
+		t.Fatalf("snapshot changed on failed SendMessage: before=%+v after=%+v", before, after)
 	}
 }
 

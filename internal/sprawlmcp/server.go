@@ -260,8 +260,6 @@ func (s *Server) dispatchTool(ctx context.Context, name string, args json.RawMes
 		return s.toolSpawn(ctx, args)
 	case "status":
 		return s.toolStatus(ctx)
-	case "delegate":
-		return s.toolDelegate(ctx, args)
 	case "send_message":
 		return s.toolSendMessage(ctx, args)
 	case "peek":
@@ -593,27 +591,6 @@ func (s *Server) toolStatus(ctx context.Context) (string, error) {
 	}
 	data, _ := json.MarshalIndent(payload, "", "  ")
 	return string(data), nil
-}
-
-func (s *Server) toolDelegate(ctx context.Context, args json.RawMessage) (string, error) {
-	var p struct {
-		Agent         string `json:"agent"`
-		AgentName     string `json:"agent_name"` // QUM-666: deprecated synonym
-		Task          string `json:"task"`
-		WakeIfOffline bool   `json:"wake_if_offline"`
-	}
-	if err := json.Unmarshal(args, &p); err != nil {
-		return "", fmt.Errorf("invalid arguments: %w", err)
-	}
-	caller := backendpkg.CallerIdentity(ctx)
-	target, err := resolveAgentTarget(p.Agent, p.AgentName, "delegate", caller)
-	if err != nil {
-		return "", err
-	}
-	if err := s.sup.Delegate(ctx, target, p.Task, p.WakeIfOffline); err != nil {
-		return "", err
-	}
-	return fmt.Sprintf("Delegated task to %s", target), nil
 }
 
 // toolSendMessage dispatches the canonical send_message MCP tool (QUM-550).

@@ -33,8 +33,6 @@ func (*NoopSupervisor) Status(context.Context) ([]supervisor.AgentInfo, error) {
 	return nil, nil
 }
 
-func (*NoopSupervisor) Delegate(context.Context, string, string, bool) error { return nil }
-
 func (*NoopSupervisor) Merge(context.Context, string, string, string, bool) (*supervisor.MergeOutcome, error) {
 	return nil, nil
 }

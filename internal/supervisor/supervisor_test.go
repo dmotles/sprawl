@@ -202,63 +202,11 @@ func TestStatus_ProcessAliveTriStateComesFromRuntimeKnowledge(t *testing.T) {
 	}
 }
 
-func TestDelegate_EnqueuesTask(t *testing.T) {
-	sup, tmpDir := newTestSupervisor(t)
-
-	saveTestAgent(t, tmpDir, &state.AgentState{
-		Name:   "ratz",
-		Type:   "engineer",
-		Family: "engineering",
-		Parent: "weave",
-		Status: "active",
-	})
-
-	err := sup.Delegate(context.Background(), "ratz", "implement feature X", false)
-	if err != nil {
-		t.Fatalf("Delegate() error: %v", err)
-	}
-
-	// Verify task was enqueued
-	tasks, err := state.ListTasks(tmpDir, "ratz")
-	if err != nil {
-		t.Fatalf("ListTasks() error: %v", err)
-	}
-	if len(tasks) != 1 {
-		t.Fatalf("got %d tasks, want 1", len(tasks))
-	}
-	if tasks[0].Prompt != "implement feature X" {
-		t.Errorf("task prompt = %q, want 'implement feature X'", tasks[0].Prompt)
-	}
-	if tasks[0].Status != "queued" {
-		t.Errorf("task status = %q, want queued", tasks[0].Status)
-	}
-}
-
-func TestDelegate_AgentNotFound(t *testing.T) {
-	sup, _ := newTestSupervisor(t)
-
-	err := sup.Delegate(context.Background(), "nonexistent", "do something", false)
-	if err == nil {
-		t.Fatal("expected error for nonexistent agent")
-	}
-}
-
-func TestDelegate_KilledAgent(t *testing.T) {
-	sup, tmpDir := newTestSupervisor(t)
-
-	saveTestAgent(t, tmpDir, &state.AgentState{
-		Name:   "ratz",
-		Type:   "engineer",
-		Family: "engineering",
-		Parent: "weave",
-		Status: "killed",
-	})
-
-	err := sup.Delegate(context.Background(), "ratz", "do something", false)
-	if err == nil {
-		t.Fatal("expected error for killed agent")
-	}
-}
+// QUM-1186: TestDelegate_EnqueuesTask / _AgentNotFound / _KilledAgent were
+// removed here. Their subject was the task subsystem (state.EnqueueTask and
+// the tasks/ directory), which is deleted outright — there is no surviving
+// behaviour to re-host. The agent-not-found and offline-gate equivalents for
+// the SURVIVING delivery path live in real_wake_on_traffic_test.go.
 
 func TestPeek_ReturnsStateAndActivity(t *testing.T) {
 	sup, tmpDir := newTestSupervisor(t)

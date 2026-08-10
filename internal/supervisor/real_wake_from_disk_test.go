@@ -15,7 +15,6 @@ package supervisor
 
 import (
 	"context"
-	"fmt"
 	"strings"
 	"testing"
 
@@ -62,61 +61,6 @@ func TestWake_RegistryMiss_CompleteOnDisk_EnsuresAndResumes(t *testing.T) {
 	// Ensure side effect: the runtime is now registered.
 	if _, ok := r.runtimeRegistry.Get("alice"); !ok {
 		t.Error("registry still has no runtime for alice after Wake; want Ensure to have registered it")
-	}
-}
-
-// TestDelegate_RegistryMiss_CompleteOnDisk_AutoWakes pins QUM-818 for delegate:
-// a delegate to a parked `complete` agent absent from the registry must
-// auto-wake (no flag), resume by session-id, and enqueue the task.
-func TestDelegate_RegistryMiss_CompleteOnDisk_AutoWakes(t *testing.T) {
-	r, tmpDir := newFakeReal(t)
-	shortenWakeTimeouts(t)
-	agentState := testAgentState("alice")
-	agentState.Status = state.StatusComplete
-	agentState.SessionID = "sess-alice"
-	saveTestAgent(t, tmpDir, agentState)
-
-	starter := &wakeCapturingStarter{}
-	installStarter(r, starter)
-
-	if _, ok := r.runtimeRegistry.Get("alice"); ok {
-		t.Fatal("precondition: registry must be empty before Delegate")
-	}
-
-	task := "do X"
-	if err := r.Delegate(context.Background(), "alice", task, false /* wake_if_offline */); err != nil {
-		t.Fatalf("Delegate on registry-miss complete agent returned error: %v; want nil (auto-wake)", err)
-	}
-
-	specs := starter.snapshotSpecs()
-	if len(specs) == 0 {
-		t.Fatal("starter received zero specs; want at least one")
-	}
-	if !specs[0].Resume {
-		t.Errorf("specs[0].Resume = false, want true")
-	}
-	if specs[0].SessionID != "sess-alice" {
-		t.Errorf("specs[0].SessionID = %q, want %q", specs[0].SessionID, "sess-alice")
-	}
-	wantInjection := fmt.Sprintf(agentpkg.WakePromptDelegate, "complete", task)
-	if specs[0].RestartInjection != wantInjection {
-		t.Errorf("RestartInjection mismatch\n got: %q\nwant: %q", specs[0].RestartInjection, wantInjection)
-	}
-
-	if _, ok := r.runtimeRegistry.Get("alice"); !ok {
-		t.Fatal("registry has no runtime for alice after Delegate; want Ensure to have registered it")
-	}
-	// Disk truth: the task must be durably enqueued, not just reflected in the
-	// in-memory snapshot counter.
-	tasks, err := state.ListTasks(tmpDir, "alice")
-	if err != nil {
-		t.Fatalf("ListTasks: %v", err)
-	}
-	if len(tasks) != 1 {
-		t.Fatalf("persisted tasks = %d, want 1", len(tasks))
-	}
-	if tasks[0].Prompt != task {
-		t.Errorf("persisted task prompt = %q, want %q", tasks[0].Prompt, task)
 	}
 }
 
@@ -169,11 +113,16 @@ func TestSendMessage_RegistryMiss_CompleteOnDisk_AutoWakes(t *testing.T) {
 	}
 }
 
-// TestDelegate_RegistryMiss_FaultedOnDisk_WakeIfOffline_Resumes pins QUM-818
-// for the broader offline family: a `faulted` agent on disk but absent from
-// the registry, delegated with wake_if_offline=true, must also Ensure-from-disk
-// and resume — the same latent gap as `complete`.
-func TestDelegate_RegistryMiss_FaultedOnDisk_WakeIfOffline_Resumes(t *testing.T) {
+// TestSendMessage_RegistryMiss_FaultedOnDisk_WakeIfOffline_Resumes pins that
+// a faulted agent with no registry entry is RESUMED (not freshly started)
+// when a send carries wake_if_offline — the session cookie must survive the
+// registry miss, or waking a faulted agent silently discards its transcript.
+//
+// QUM-1186: re-hosted from TestDelegate_RegistryMiss_FaultedOnDisk_
+// WakeIfOffline_Resumes. Unlike the other delegate wake tests this one had NO
+// send_message twin, so deleting it outright would have dropped the
+// faulted-plus-registry-miss resume path from the suite entirely.
+func TestSendMessage_RegistryMiss_FaultedOnDisk_WakeIfOffline_Resumes(t *testing.T) {
 	r, tmpDir := newFakeReal(t)
 	shortenWakeTimeouts(t)
 	agentState := testAgentState("alice")
@@ -185,11 +134,11 @@ func TestDelegate_RegistryMiss_FaultedOnDisk_WakeIfOffline_Resumes(t *testing.T)
 	installStarter(r, starter)
 
 	if _, ok := r.runtimeRegistry.Get("alice"); ok {
-		t.Fatal("precondition: registry must be empty before Delegate")
+		t.Fatal("precondition: registry must be empty before SendMessage")
 	}
 
-	if err := r.Delegate(context.Background(), "alice", "do X", true /* wake_if_offline */); err != nil {
-		t.Fatalf("Delegate on registry-miss faulted agent (wake_if_offline) returned error: %v; want nil", err)
+	if _, err := r.SendMessage(context.Background(), "alice", "do X", false, true /* wake_if_offline */); err != nil {
+		t.Fatalf("SendMessage on registry-miss faulted agent (wake_if_offline) returned error: %v; want nil", err)
 	}
 
 	specs := starter.snapshotSpecs()
