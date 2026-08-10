@@ -213,20 +213,35 @@ func TestMerge_StatusActive_Accepted(t *testing.T) {
 	}
 }
 
-// TestMerge_StatusDone_Rejected is an INVERSION, found in code review.
+// TestMerge_StatusDone_Rejected pins that merge fails CLOSED on a "done" that
+// reached disk out of contract. It is an INVERSION, found in code review.
 //
-// QUM-1186: this was TestMerge_StatusDone_Accepted, and it was a vacuous green
-// of the same shape as TestMerge_CompleteViaLastReportState below — worse,
-// actually, because its fixture did not even mention its subject. It asserted
-// "done agents should be mergeable" while seeding Status:"suspended", so it
-// passed on the suspended arm of the allow-set and said nothing about
-// StatusDone at all. Setting the fixture to state.StatusDone made it FAIL.
+// QUM-1186: this was TestMerge_StatusDone_Accepted and its fixture did not
+// mention its subject — it asserted "done agents should be mergeable" while
+// seeding Status:"suspended", so it passed on the suspended arm and said
+// nothing about StatusDone. Setting the fixture to state.StatusDone made it
+// FAIL, and the assertion was inverted to match.
 //
-// state.StatusDone is a legacy token and is deliberately NOT in
-// mergeableStatus(); LoadAgent migrates it to StatusComplete on read, so the
-// only way to observe it here is a hand-built fixture like this one. The test
-// now asserts the truth, and uses the constant instead of a bare string so it
-// cannot drift from the allow-set again.
+// READ THIS BEFORE CONCLUDING THE INVERSION DROPPED A CAPABILITY — it did not,
+// and the question has been asked twice:
+//
+//   - The M12 capability was "a FINISHED agent is mergeable". QUM-615
+//     (bd024ab) re-pointed that at LastReportState=="complete" and deleted the
+//     last writer of Status="done" in the same commit; QUM-1186 deleted the
+//     outcome axis and the capability now lives as StatusComplete, which IS in
+//     the allow-set. A real legacy v0 "done" file still merges — it migrates to
+//     complete on read. That end-to-end path is pinned by
+//     TestMergePrecondition4_LegacyDoneAgentMergesAsComplete in
+//     internal/agentops.
+//   - This fixture is NOT that path. createTestAgent goes through SaveAgent,
+//     which stamps CurrentSchemaVersion, and the "done" rewrite in migrate() is
+//     gated on SchemaVersion < 1 — so migration is bypassed BY CONSTRUCTION and
+//     the token survives to precondition 4. No sprawl binary produces that
+//     file; a hand-edit or a foreign tool would.
+//
+// So this asserts fail-closed on out-of-contract input, not a policy about
+// finished agents. Restoring "done" to the allow-set would ADD the ability to
+// merge a forged file, not restore anything.
 func TestMerge_StatusDone_Rejected(t *testing.T) {
 	deps, tmpDir := newTestMergeDeps(t)
 
@@ -249,6 +264,12 @@ func TestMerge_StatusDone_Rejected(t *testing.T) {
 	}
 }
 
+// TestMerge_StatusOther_Rejected is the "problem" twin of
+// TestMerge_StatusDone_Rejected above and carries the same caveat: "problem" is
+// a v0 legacy token with no producer, its rewrite to StatusFaulted is gated on
+// SchemaVersion < 1, and createTestAgent's SaveAgent stamps past that gate — so
+// this too asserts fail-closed on a token that cannot arise in production,
+// rather than a policy about any live agent.
 func TestMerge_StatusOther_Rejected(t *testing.T) {
 	deps, tmpDir := newTestMergeDeps(t)
 

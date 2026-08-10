@@ -2,6 +2,7 @@ package agentops
 
 import (
 	"context"
+	"fmt"
 	"os"
 	"path/filepath"
 	"strings"
@@ -88,10 +89,44 @@ var mergeAllowedStatuses = []string{
 	state.StatusComplete,
 }
 
-// mergeDeniedStatuses is every other status constant that precondition 4 can
-// actually observe. Kept as an explicit list rather than "whatever is not
-// allowed" so that TestMergePrecondition4_EveryStatusConstantIsClassified can
-// force a decision when a new status is introduced.
+// mergeDeniedStatuses is every status constant precondition 4 must REFUSE.
+//
+// It is deliberately NOT a claim about production reachability — it used to say
+// "every other status constant that precondition 4 can actually observe", and
+// that was false of two of its members. The other six have live production
+// writers (deliberately not indexed by filename here: a hand-maintained file
+// list rots silently on the first writer move, which is how the sentence this
+// replaces went wrong). StatusDone and StatusRetired do not, and they are here
+// so merge fails CLOSED if one ever reaches disk out of contract — a hand-edit,
+// a foreign tool, a future writer:
+//
+//   - StatusDone is a v0 legacy token with no producer since QUM-615
+//     (bd024ab). It does NOT belong in mergeUnreachableStatuses: its rewrite in
+//     migrate() is gated on SchemaVersion < 1, unlike the always-on stopped
+//     rewrite, so a SaveAgent-built fixture (stamped at CurrentSchemaVersion)
+//     reads back as "done" and a stopped-style proof would be aimed at a gate
+//     that does not hold. It is nonetheless unreachable in production, because
+//     bd024ab introduced the schema stamp and deleted the last writer of "done"
+//     in the SAME commit — no binary has ever emitted "done" at
+//     schema_version >= 1, and every file that could carry it is v0 and
+//     migrates to StatusComplete on read. The capability that legacy token
+//     represents is therefore intact, which
+//     TestMergePrecondition4_LegacyDoneAgentMergesAsComplete checks end to end;
+//     the version gate itself is pinned by
+//     TestLoadAgent_LegacyTokenRewriteIsVersionGated_StoppedIsNot in
+//     internal/state.
+//   - StatusRetired has no writer in this tree, current or historical (that is
+//     the honest form of the claim — "never persisted" would be stronger than
+//     the evidence supports). retire.go writes "retiring" and then DELETES the
+//     state file, so a retired agent fails precondition 1, not 4; that
+//     precedence is checked by
+//     TestMergePrecondition4_RetiredAgentIsGoneNotDenied below. Nothing
+//     migrates "retired" away, so if a legacy or foreign file ever carried it
+//     this entry is the only guard standing behind it.
+//
+// Kept as an explicit list rather than "whatever is not allowed" so that
+// TestMergePrecondition4_EveryStatusConstantIsClassified can force a decision
+// when a new status is introduced.
 var mergeDeniedStatuses = []string{
 	state.StatusKilled,
 	state.StatusRetired,
@@ -107,6 +142,10 @@ var mergeDeniedStatuses = []string{
 // rewrites them on read, so Merge only ever sees their migrated value. They are
 // classified here so the exhaustiveness test below stays honest rather than
 // being satisfied by a row that silently tests the migration instead.
+//
+// Membership requires an ALWAYS-ON rewrite. A version-gated one does not
+// qualify — see the StatusDone note on mergeDeniedStatuses above, which is the
+// case that made this distinction worth writing down.
 var mergeUnreachableStatuses = []string{
 	// StatusStopped is the legacy sentinel; the always-on QUM-787 read
 	// migration rewrites it before any caller sees it.
@@ -125,6 +164,102 @@ func TestMergePrecondition4_StoppedIsRewrittenBeforeItIsSeen(t *testing.T) {
 	}
 	if loaded.Status == state.StatusStopped {
 		t.Fatalf("Status survived load as %q; StatusStopped is reachable after all and must be classified as allowed or denied", loaded.Status)
+	}
+}
+
+// writeRawV0MergeableAgent writes a GENUINE v0 state file — no schema_version
+// key — so LoadAgent's version-gated migration actually fires. A struct-literal
+// fixture cannot do this: SaveAgent stamps CurrentSchemaVersion on write, so
+// the gate never runs and the legacy token survives verbatim.
+func writeRawV0MergeableAgent(t *testing.T, sprawlRoot, name, status string) {
+	t.Helper()
+	wt := filepath.Join(sprawlRoot, ".sprawl", "worktrees", name)
+	if err := os.MkdirAll(wt, 0o755); err != nil {
+		t.Fatalf("mkdir agent wt: %v", err)
+	}
+	dir := state.AgentsDir(sprawlRoot)
+	if err := os.MkdirAll(dir, 0o755); err != nil {
+		t.Fatalf("mkdir agents: %v", err)
+	}
+	raw := fmt.Sprintf(`{"name":%q,"type":"engineer","family":"engineering",`+
+		`"branch":"dmotles/%s","worktree":%q,"parent":"weave","status":%q}`,
+		name, name, wt, status)
+	if err := os.WriteFile(filepath.Join(dir, name+".json"), []byte(raw), 0o644); err != nil {
+		t.Fatalf("write raw v0 fixture: %v", err)
+	}
+}
+
+// TestMergePrecondition4_LegacyDoneAgentMergesAsComplete is the answer to
+// "did QUM-1186 drop the ability to merge a `done` agent?". It did not, and
+// this checks the whole composition rather than asserting it in prose:
+// a genuine v0 file carrying the legacy token "done" is migrated to
+// StatusComplete on read, and StatusComplete is in the allow-set, so the merge
+// succeeds. The capability M12 shipped survives; only its representation moved.
+//
+// Deliberately NOT written as a "LoadAgent rewrites it before merge sees it"
+// probe in the style of TestMergePrecondition4_StoppedIsRewrittenBeforeItIsSeen.
+// That probe would be aimed at the wrong gate: the "done" rewrite fires only
+// for SchemaVersion < 1, while the "stopped" rewrite is always-on. See
+// TestLoadAgent_LegacyTokenRewriteIsVersionGated_StoppedIsNot in internal/state.
+func TestMergePrecondition4_LegacyDoneAgentMergesAsComplete(t *testing.T) {
+	sprawlRoot := t.TempDir()
+	writeRawV0MergeableAgent(t, sprawlRoot, "kid", state.StatusDone)
+
+	weaveWT := filepath.Join(sprawlRoot, "weave-wt")
+	if err := os.MkdirAll(weaveWT, 0o755); err != nil {
+		t.Fatalf("mkdir weave wt: %v", err)
+	}
+	if err := state.SaveAgent(sprawlRoot, &state.AgentState{
+		Name: "weave", Type: "manager", Family: "engineering",
+		Worktree: weaveWT, Status: state.StatusActive,
+	}); err != nil {
+		t.Fatalf("SaveAgent weave: %v", err)
+	}
+
+	// Precondition, asserted from the RAW BYTES rather than via LoadAgent.
+	// LoadAgent persists the migration back to disk, so probing with it would
+	// normalise the fixture to complete/v4 and leave Merge reading an already-
+	// migrated file — the composition would go untested while looking tested.
+	// (That is how this test was first written; the mutation control fired on
+	// the probe line and never reached the Merge call.)
+	raw, err := os.ReadFile(filepath.Join(state.AgentsDir(sprawlRoot), "kid.json"))
+	if err != nil {
+		t.Fatalf("read fixture: %v", err)
+	}
+	if !strings.Contains(string(raw), `"status":"done"`) {
+		t.Fatalf("fixture does not carry the legacy token: %s", raw)
+	}
+	if strings.Contains(string(raw), "schema_version") {
+		t.Fatalf("fixture is not v0 — it carries a schema_version, so migrate's gate will not fire: %s", raw)
+	}
+
+	// Merge is the first and only reader: its own LoadAgent runs the migration.
+	if _, err := Merge(context.Background(), mergeTestDeps(sprawlRoot), "kid", "", true, false, false); err != nil {
+		t.Fatalf("Merge of a legacy v0 \"done\" agent: err = %v, want nil — it migrates to complete, which is mergeable", err)
+	}
+}
+
+// TestMergePrecondition4_RetiredAgentIsGoneNotDenied checks the mechanism that
+// keeps StatusRetired out of precondition 4's way, rather than asserting it in
+// the comment above: retire DELETES the state file, so the merge fails at
+// precondition 1 with "not found". If retire ever starts persisting `retired`
+// instead of deleting, this flips to the precondition-4 error and says so.
+func TestMergePrecondition4_RetiredAgentIsGoneNotDenied(t *testing.T) {
+	sprawlRoot, agentName := mergeableSetupRoot(t, state.StatusActive)
+	if err := state.DeleteAgent(sprawlRoot, agentName); err != nil {
+		t.Fatalf("DeleteAgent: %v", err)
+	}
+
+	_, err := Merge(context.Background(), mergeTestDeps(sprawlRoot), agentName, "", true, false, false)
+	if err == nil {
+		t.Fatal("Merge of a deleted agent returned nil error")
+	}
+	if strings.Contains(err.Error(), "cannot be merged") {
+		t.Errorf("error %q is the precondition-4 status rejection; a retired agent should fail EARLIER, at precondition 1 — "+
+			"if retire now persists `retired` rather than deleting, the deny-set entry is load-bearing and its comment must say so", err)
+	}
+	if !strings.Contains(err.Error(), "not found") {
+		t.Errorf("error %q should be the precondition-1 not-found error", err)
 	}
 }
 

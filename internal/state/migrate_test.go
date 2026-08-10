@@ -2,6 +2,7 @@ package state
 
 import (
 	"encoding/json"
+	"fmt"
 	"os"
 	"path/filepath"
 	"strings"
@@ -330,5 +331,64 @@ func TestSaveAgent_StampsSchemaVersion(t *testing.T) {
 	}
 	if probe.SchemaVersion != CurrentSchemaVersion {
 		t.Errorf("persisted schema_version = %d, want %d", probe.SchemaVersion, CurrentSchemaVersion)
+	}
+}
+
+// TestLoadAgent_LegacyTokenRewriteIsVersionGated_StoppedIsNot pins the
+// asymmetry between the two legacy-token rewrites, because that asymmetry is
+// what decides how "done" may be classified elsewhere in the tree.
+//
+// "stopped" is rewritten unconditionally; "done" is rewritten only below
+// schema_version 1. So "done" is NOT unreachable the way "stopped" is: any file
+// at v1 or above carrying "done" survives the read verbatim — and that is
+// exactly what a SaveAgent-built fixture is, since SaveAgent stamps
+// CurrentSchemaVersion, so the gate never fires.
+//
+// This matters at internal/agentops merge precondition 4, where a reader might
+// otherwise conclude "done" belongs in the unreachable bucket beside "stopped"
+// and write a proof aimed at a gate that does not hold. "done" IS unreachable
+// in production, but for a different reason: QUM-615 (bd024ab) introduced
+// CurrentSchemaVersion and deleted the last writer of "done" (report.go) in the
+// SAME commit, so no binary has ever emitted "done" at schema_version >= 1, and
+// every file that could carry it is v0 and is migrated below.
+//
+// Driven through genuine raw files and LoadAgent, per this file's header — not
+// migrate() directly. The v1 row is the boundary the classification argument
+// actually rests on; it is written as a literal 1 rather than a constant so it
+// cannot drift away from the gate on the next schema bump.
+func TestLoadAgent_LegacyTokenRewriteIsVersionGated_StoppedIsNot(t *testing.T) {
+	cases := []struct {
+		name string
+		raw  string
+		want string
+	}{
+		{"v0 done is rewritten", `{"name":"n","status":"done"}`, StatusComplete},
+		{"v0 stopped is rewritten", `{"name":"n","status":"stopped"}`, StatusSuspended},
+		{
+			"v1 done SURVIVES — the gate is version-scoped, and v1 is its boundary",
+			`{"name":"n","status":"done","schema_version":1}`, StatusDone,
+		},
+		{
+			"v-current done SURVIVES",
+			fmt.Sprintf(`{"name":"n","status":"done","schema_version":%d}`, CurrentSchemaVersion), StatusDone,
+		},
+		{
+			"v-current stopped is STILL rewritten — that rewrite is always-on",
+			fmt.Sprintf(`{"name":"n","status":"stopped","schema_version":%d}`, CurrentSchemaVersion), StatusSuspended,
+		},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			root := t.TempDir()
+			writeRawV0Agent(t, root, "n", tc.raw)
+
+			got, err := LoadAgent(root, "n")
+			if err != nil {
+				t.Fatalf("LoadAgent: %v", err)
+			}
+			if got.Status != tc.want {
+				t.Errorf("LoadAgent(%s).Status = %q, want %q", tc.raw, got.Status, tc.want)
+			}
+		})
 	}
 }
