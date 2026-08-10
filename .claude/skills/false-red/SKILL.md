@@ -130,16 +130,34 @@ Zero `_test.go:` frames means **no assertion was violated** — no expectation
 failed and the product behaved. The run fails anyway.
 
 **Do not diagnose this by test identity.** The instances observed so far are
-listed below as illustrations, *not* as a list to match against: **18 test files
-in `internal/supervisor` alone call `t.TempDir()`**, so this can surface on a
-test nobody has written down yet, and a name you do not recognise proves
-nothing either way. Three names is already enough to show the list is not
-exhaustive. The absent `_test.go:` frame is the diagnostic; the names are not.
+listed below as illustrations, *not* as a list to match against: **22 test files
+in `internal/supervisor` alone call `t.TempDir()`** (re-measured 2026-08-10; the
+figure was 18 when this entry was written, and it moved without anyone touching
+this skill), so this can surface on a test nobody has written down yet, and a
+name you do not recognise proves nothing either way. The absent `_test.go:`
+frame is the diagnostic; the names are not.
+
+**The list being COMPLETE makes it less of a diagnostic, not more.** Instance 1
+sat here unnamed until 2026-08-10, when an agent hit it, matched the
+discriminator, and independently rediscovered the very test this entry had been
+describing by subject the whole time. That is the argument against name-matching
+in miniature: the entry could describe the failure precisely and still not name
+it, and the name added nothing to the identification — the grep did all the
+work. Every additional sighting has landed on a test already listed **or** on
+one the list would have had to grow to accommodate; neither outcome is
+information. If you are here because you recognise a name below, you have not
+yet run the discriminator. Run it.
 
 Observed instances, all in `internal/supervisor`:
 
-1. A test whose subject is **duplicate-write prevention in the delivery path** —
-   how the failure was originally described to us. Secondhand; no output captured.
+1. **`TestWeaveRuntimeHandle_WakeForDelivery_ConsumedButNotYetDelivered_NoDuplicateWrite`**
+   (`weave_handle_test.go:601`; reaches `t.TempDir()` via `newWeaveHandleForTest`
+   at `:53`) — subject is **duplicate-write prevention in the delivery path**.
+   This entry described that subject from the day it was written but did not
+   name the test, because the original report was secondhand with no output
+   captured. **Named 2026-08-10**, when an agent hit it directly, applied the
+   discriminator (zero `_test.go:` frames, exactly one `testing.go:1464`), and
+   arrived at the same test the description had been pointing at all along.
 2. **`TestQUM1072_SenderMCPCallReturns_WhileRecipientWedged`** — subject is a
    sender's MCP call returning while the recipient is wedged. Observed
    2026-08-07 during `make validate` under 4-way host contention:
@@ -178,11 +196,40 @@ Observed instances, all in `internal/supervisor`:
    > explain it and a healthy one does not rule it out. Instance 2 was likewise
    > seen under CPU contention rather than disk exhaustion.
 
+**Frequency, and the symptom that actually costs you.** On 2026-08-10 a single
+agent hit this **four times in one day** while working one slice: once on
+instance 2 (`TestQUM1072_…`), twice on instance 3
+(`TestAgentRuntime_FaultChain_…`), and once on instance 1, which is how instance
+1 finally got a name. Discriminator applied every time — zero `_test.go:`
+frames, exactly one `testing.go:1464` — so all four are this, not four
+regressions. (Whether any of those four are the *same events* already tallied
+under instances 2 and 3 above was never established, so do not add the numbers
+up. The point is the rate one agent saw in one day, not a total.)
+
+**It fails inside the pre-commit hook.** That is the expensive symptom, and it
+is worth more than the tally: the hook runs `make validate`, so this does not
+merely lose you a test run, it **refuses your commit**. On that same day it cost
+one agent two commit attempts and cost a merge cycle. The correct response is to
+re-run the commit, *not* to reach for `--no-verify` — which this repo forbids
+outright, and which would here be bypassing a guard over a failure that has
+nothing to do with your diff. Confirm with the grep, then commit again.
+
+**Load correlates with every sighting and explains none of them.** Contention —
+CPU, parallel agents, a busy host — is present in all of them, and it is why a
+standalone re-run passes. That is a *condition*, not a mechanism: nobody has
+traced why cleanup loses the race, and "it was under load" does not tell you
+what is still holding `.sprawl/agents` open. Do not let a fresh sighting under
+load reopen the disk hypothesis, which is falsified above and stays falsified.
+
 **The trap is the subject matter, and it moves with the test.** Whichever test
 surfaces it, the FAIL reads as a real regression in *that test's* subject — a
-delivery regression for instance 2, a liveness regression for instance 3, which
-is exactly the area a messaging or lifecycle slice is touching when it hits
-this. All three have been or could be misdiagnosed that way. Matching on test
+**duplicate-write** regression for instance 1, a delivery regression for
+instance 2, a liveness regression for instance 3, which is exactly the area a
+messaging or lifecycle slice is touching when it hits this. Instance 1 is the
+sharpest version: a messaging slice that hits
+`…_ConsumedButNotYetDelivered_NoDuplicateWrite` while changing the delivery path
+is being handed a red that names its own riskiest invariant, and none of it is
+real. All three have been or could be misdiagnosed that way. Matching on test
 identity is what produces the misdiagnosis; the grep above is what prevents it.
 
 Remedy: re-run. It is load-dependent, so a passing standalone re-run does **not**
@@ -313,7 +360,7 @@ part — the mechanisms and issue states are not.**
 | `no space left on device` | **observed** — quoted in an incident report and in a delivered agent message describing most rows of a matrix run dying in `go build` | **verified** — the two filesystems measured as distinct devices; the build-cache misattribution is recorded in QUM-1118 itself |
 | `parallel golangci-lint is running` | **verified** — present in the installed `golangci-lint` binary; contention **observed** by two agents on this host | machine-wide scope **observed** (cross-worktree); both Makefile call sites read directly. What a parallel run does to shared state: **not established** |
 | `Not logged in` | **verified** — verbatim in a captured payload under `docs/research/` and in an e2e script | **verified** — stated in `scripts/run-claude`'s own header comment and CLAUDE.md; skip-flag inertness quoted verbatim from the harness |
-| `TempDir RemoveAll cleanup:` | **observed three times, independently, by three agents** — 2026-08-07 on `TestQUM1072_SenderMCPCallReturns_WhileRecipientWedged` under 4-way host contention; 2026-08-10 on `TestAgentRuntime_FaultChain_DoneClosesAndLivenessReachesFaulted` at 99% disk; and again 2026-08-10 on that same test at 52% disk, in the pre-commit hook of the commit adding this row. All during `make validate`, all outputs quoted verbatim in the entry | **still reported only.** The named tests **are** present in the tree and do call `t.TempDir()` (verified: `qum1072_child_drain_bounded_write_test.go`, `runtime_fault_chain_test.go:118`), and the absent-assertion discriminator is **verified** on all three captured runs (one `testing.go:` frame, zero `_test.go:` frames each). The *cause* remains secondhand; the `drainPendingToStdin` correlation is an unconfirmed lead scoped to instance 2, and neither later sighting confirms or extends it. **One thing IS now established rather than reported:** the 99%-full disk is **not necessary** — the same test reproduced with 9.1G free. That is a falsified hypothesis, not a mechanism |
+| `TempDir RemoveAll cleanup:` | **observed repeatedly and independently, by four agents across two days** — 2026-08-07 on `TestQUM1072_SenderMCPCallReturns_WhileRecipientWedged` under 4-way host contention; 2026-08-10 on `TestAgentRuntime_FaultChain_DoneClosesAndLivenessReachesFaulted` at 99% disk; again 2026-08-10 on that same test at 52% disk, in the pre-commit hook of the commit adding this row; and 2026-08-10 **four sightings by one agent in a single day** across all three instances, including the first direct sighting of instance 1 (overlap with the three above was never established — the rate is the datum, not a total). All during `make validate`, discriminator applied each time | **still reported only.** All three named tests **are** present in the tree and do reach `t.TempDir()` (verified: `qum1072_child_drain_bounded_write_test.go`; `runtime_fault_chain_test.go:118`; `weave_handle_test.go:601` via `newWeaveHandleForTest` at `:53`), and the absent-assertion discriminator is **verified** on every captured run (one `testing.go:` frame, zero `_test.go:` frames each). Instance 1 is now **named from a direct sighting** rather than from the secondhand description that opened this entry — but that is the SYMPTOM being observed, not the cause. The *cause* remains untraced by anyone: the `drainPendingToStdin` correlation is still an unconfirmed lead scoped to instance 2, and no later sighting confirms or extends it. **Two things ARE established rather than reported:** the 99%-full disk is **not necessary** — the same test reproduced with 9.1G free, a falsified hypothesis rather than a mechanism; and the failure surfaces **inside the pre-commit hook**, blocking commits, which is observed rather than inferred. **Load correlates with every sighting and explains none** — a condition, not a mechanism |
 | `has uncommitted changes in worktree` | **verified** — literal string in `internal/agentops/merge.go` | **verified** — the un-undone `reset --soft` is readable in `internal/merge/merge.go`; the incident is described in the fix commit's own message; recovery **observed** to work twice |
 
 **Closed gap (QUM-1161):** the `TempDir` entry used to be the only one resting
