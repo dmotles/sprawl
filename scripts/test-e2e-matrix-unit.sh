@@ -131,7 +131,13 @@ FAIL=0
 # proved the fix above showed that sibling silently tolerating the same defect, so it
 # was swept in the same diff rather than left as a known instance. Re-measured on a
 # FULL GREEN run.
-MIN_ASSERTIONS=499
+# 498 after QUM-1197 items 2/5 un-skipped idle-reclaim-busy: the [19d] pin that
+# asserted the matrix table names QUM-1197 as the busy row's blocker was DELETED,
+# because the blocker is gone and a table naming a fixed hazard is a false record.
+# One pin removed = one assertion. Lowering a floor is the direction that hides
+# things, so it is stated here rather than left to be inferred from the number.
+# Re-measured on a FULL GREEN run.
+MIN_ASSERTIONS=498
 # A [16b] nested child deliberately does NOT re-run section [16] (recursing would
 # fork-bomb, and counting there would corrupt the parity comparison), so it asserts
 # strictly fewer things and needs its own floor. Measured at de22410: 237; 238 after
@@ -166,7 +172,9 @@ MIN_ASSERTIONS=499
 # one fail being 16c's deliberate one.
 # 491 with the maildir/queue unreadable control (+1). Measured with
 # UNIT_NESTED_SEAM_CHECK set: "491 passed / 1 failed", the one fail being 16c's.
-MIN_ASSERTIONS_NESTED=491
+# 490 after the same QUM-1197 pin deletion (-1). Measured with
+# UNIT_NESTED_SEAM_CHECK set.
+MIN_ASSERTIONS_NESTED=490
 
 # Pin the temp root. This suite runs inside `make validate` and therefore inside
 # the pre-commit hook, so it must not inherit the committing agent's TMPDIR:
@@ -4485,11 +4493,13 @@ done
 # Corpus floor for THIS loop, for the same reason every scan has one: if
 # `_p19_is_skipped_row` stopped matching, the loop would examine nothing and the
 # arm below would report clean — indistinguishable from every row being
-# annotated. Three inert rows exist today.
-if [ "$_p19_inert_seen" -ge 3 ]; then
-	pass "19c: the inert-row floor check examined $_p19_inert_seen inert row(s) (floor 3)"
+# annotated. TWO inert rows exist today: idle-reclaim-busy was un-skipped on
+# 2026-08-11 when the QUM-1197 (c) ruling made its P8 control passable, so the
+# floor moved 3 -> 2 in that commit.
+if [ "$_p19_inert_seen" -ge 2 ]; then
+	pass "19c: the inert-row floor check examined $_p19_inert_seen inert row(s) (floor 2)"
 else
-	fail "19c: the inert-row floor check examined only $_p19_inert_seen inert row(s) — _p19_is_skipped_row is not matching, so the arm below would report clean against an empty set"
+	fail "19c: the inert-row floor check examined only $_p19_inert_seen inert row(s) (floor 2) — _p19_is_skipped_row is not matching, so the arm below would report clean against an empty set"
 fi
 if [ -z "$_p19_floor_bad" ]; then
 	pass "19c: every inert row's MIN_ASSERTIONS floor records that it is never reached"
@@ -5070,11 +5080,12 @@ if [ -r "$P19_SKILL" ]; then
 	# archaeology session because its message quoted the phrase it pinned; these
 	# go one better and say what to do about it.
 	_p19_pin 'idle-reclaim-busy' \
-		"the matrix table names idle-reclaim-busy, so the half that could not land is discoverable" \
-		"the busy-agent control would look forgotten rather than deliberately skipped. IF QUM-1197 HAS LANDED and the busy row is live, this pin has expired: repoint it at the restored row (assert the row file exists and declares a positive MIN_ASSERTIONS, as [18t] does) rather than re-inserting the phrase"
-	_p19_pin 'QUM-1197' \
-		"the matrix table names the hazard that blocks the busy half" \
-		"a reader could not tell whether the skipped row is safe to re-enable. IF QUM-1197 HAS LANDED, this pin has expired: delete it together with the skip in scripts/e2e-tests/idle-reclaim-busy.sh — do NOT keep the table naming a hazard that is fixed"
+		"the matrix table names idle-reclaim-busy, so the row that gates the busy half is discoverable" \
+		"the busy-agent control would be unreachable from the table that owes it"
+	# The QUM-1197 hazard pin is DELETED, not repointed: it expired by its own
+	# text on 2026-08-11 when the row was un-skipped, and a table that keeps
+	# naming a hazard as blocking is a false record. The row's own existence and
+	# its positive MIN_ASSERTIONS are what the pin above now rests on.
 	_p19_pin 'report-then-send' \
 		"the matrix table still names report-then-send, so the deletion is traceable from the table" \
 		"the row's removal is now untraceable from the table it was removed from"

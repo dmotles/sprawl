@@ -1,9 +1,4 @@
 #!/usr/bin/env bash
-# P19-INERT-ROW — this row calls e2e_skip_row unconditionally at the top of
-# test_run, so it executes nothing. That is what exempts its body from section
-# [19c]'s deleted-token scan in scripts/test-e2e-matrix-unit.sh: an inert row
-# cannot advertise a deleted tool to a live agent, and its body is the blueprint
-# for re-hosting it. Delete this marker in the same commit that deletes the skip.
 # scripts/e2e-tests/idle-reclaim-busy.sh — the idle reaper's NEGATIVE half.
 #
 # Its sibling idle-reclaim.sh proves the reaper reclaims an idle agent, with real
@@ -36,6 +31,26 @@
 # precondition therefore has a WIRE half as well as an OS half: a
 # background_tasks_changed frame with a non-empty task set, FOLLOWED by the turn's
 # terminal frame. That ordering IS "the turn closed with work outstanding".
+#
+# VALIDATION STATE, 2026-08-11, stated here because a row nobody has watched fail
+# is a claim rather than a gate:
+#
+#   WATCHED GREEN — yes, for the first time in this row's life: 10 passed / 0
+#   failed, including P7c (the refusal record attributing the refusal to
+#   work_outstanding) and P8 (a no-work agent still reaped).
+#
+#   WATCHED RED — NO, and not for want of trying. Five runs against three
+#   mutations (term deleted from the verdict table; ingest disabled so the term
+#   reads unobservable; term unconditionally busy) all died at P5a — "no
+#   busy-control child appeared within 180s" — which is the QUM-1212 host
+#   condition, not the mutation. A red for the wrong reason proves nothing, so
+#   none of them counts. The mutations' effects ARE watched at the unit level
+#   (internal/supervisor/idlereap_work_test.go), which is weaker: it shows the
+#   TERM is falsifiable, not that this ROW would catch its removal.
+#
+#   So: whoever next gets a quiet host owes this row a red watch before treating
+#   it as the thing standing between an enabled reaper and working agents.
+#   The mutations are named above; each takes one row run.
 #
 # Phases:
 #
@@ -79,10 +94,11 @@
 # count, and the hard-fail precondition gates count because a green run passes
 # through them.
 #
-# NEVER REACHED while the skip at the top of test_run stands — e2e_skip_row exits
-# before e2e_print_results — so this declaration is a promise about the restored
-# row, not an enforced gate. That is exactly why the PASSING assertions live in
-# the sibling idle-reclaim row instead. Delete the skip and this becomes real.
+# REACHED: this row runs, so the floor is enforced. It was unreachable for as
+# long as the row was skipped (e2e_skip_row exits before e2e_print_results), which
+# is why the passing assertions lived in the sibling idle-reclaim row. If this row
+# is ever skipped again, say so here — a floor the aggregator never reaches
+# enforces nothing, and an annotation claiming otherwise is a false record.
 MIN_ASSERTIONS=10
 
 test_metadata() {
@@ -221,14 +237,25 @@ ir_wire_log() {
 ir_wire_work_outstanding_at_close() {
     local log="$1"
     [ -n "$log" ] && [ -r "$log" ] || return 2
+    # The wire log wraps each frame as {"ts","dir","seq","raw":"<escaped JSON>"},
+    # so the inner keys appear as \"type\" rather than "type". Unescaping first
+    # makes this work against BOTH encodings instead of silently matching neither
+    # — which is exactly what happened on the first live run, where this function
+    # returned "could not parse" and the floor below refused to render a verdict
+    # rather than reporting the ordering absent.
     awk '
-        /"subtype":"background_tasks_changed"/ {
+        { line = $0; gsub(/\\/, "", line) }
+        line ~ /"subtype":"background_tasks_changed"/ {
             parsed++
-            if ($0 ~ /"tasks":\[\{/) { pending = 1 }
-            else                       { pending = 0 }
+            # A non-empty task set always carries at least one task_id; the drain
+            # frame is tasks:[] and carries none.
+            pending = (line ~ /"task_id"/) ? 1 : 0
             next
         }
-        /"type":"result"/ { parsed++; if (pending) { closed = 1 } }
+        line ~ /"type":"result"/ {
+            parsed++
+            if (pending) { closed = 1 }
+        }
         END {
             if (parsed == 0) { exit 2 }
             if (closed)      { exit 0 }
@@ -238,18 +265,14 @@ ir_wire_work_outstanding_at_close() {
 }
 
 test_run() {
-    # SKIP FIRST, then the phases. The body below is UNREACHABLE today and that
-    # is deliberate rather than sloppy: scripts/test-e2e-matrix-unit.sh section
-    # [17j] fails any row that never calls e2e_print_results, because a floor the
-    # aggregator never reaches enforces nothing. The convention here for a
-    # blocked row is to keep the body and skip at the top, so restoring it is
-    # deleting one line rather than reconstructing it from git history.
-    #
-    # QUM-1197 items 2/5 REWROTE this body (P7 and P8 are new, P5's axis is now
-    # named correctly) and REPLACED the old skip text, which asserted a refuted
-    # mechanism as established fact. The skip itself stays for reasons that are
-    # measured, not assumed — see the text below.
-    e2e_skip_row "idle-reclaim-busy: the body is REWRITTEN and current (QUM-1197 items 2/5) but two measured blockers stand between it and a green run, and this row must be watched green AND red before it counts for anything. (1) QUM-1197's work_outstanding term is implemented, but 207 of 361 recorded sessions NEVER emit a background_tasks_changed frame at all, so under the ruling's 'never-observed blocks the reap' those agents are permanently unreclaimable — which reds P8, the positive control that a no-work agent IS still reaped, and also reds the sibling idle-reclaim row's P3a. That trade is with the operator; the term ships in the safe direction meanwhile. (2) QUM-1212: rows fail on this host downstream of a SUCCESSFUL spawn (wire-log evidence on that issue), so a red here is not attributable. WHAT IS NO LONGER TRUE, and was the old skip text: that in_turn cannot see a child mid-tool-call. Five runs did not support it, and QUM-1186 lane 3 made InTurnObserved the union of the session probe and the phase machine. The real defect was the MISSING TERM for work outstanding across a turn boundary. Un-skip by deleting this call once (1) is ruled on, and delete the P19-INERT-ROW marker at the top of this file plus its bookkeeping in scripts/test-e2e-matrix-unit.sh in the same commit."
+    # UN-SKIPPED 2026-08-11, on the QUM-1197 (c)+provenance ruling. The skip that
+    # stood here asserted a REFUTED mechanism as fact — that in_turn cannot see a
+    # child mid-tool-call — which five runs did not support; the real defect was
+    # the missing work_outstanding term, and P7 below is its gate. If this row must
+    # be blocked again, skip at the TOP of test_run (the body stays, so restoring
+    # is deleting one line), name the ACTUAL blocker, and restore the
+    # P19-INERT-ROW marker plus the inert-row bookkeeping in
+    # scripts/test-e2e-matrix-unit.sh in the same commit.
     e2e_recover_oauth_token
     unset SPRAWL_AGENT_IDENTITY
     e2e_setup_tmux_socket "sprawl-idle-reclaim-busy-e2e"
