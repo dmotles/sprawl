@@ -50,6 +50,19 @@ var ChildDisallowedTools = []string{
 	"ExitWorktree",
 	"TaskStop",
 	"AskUserQuestion",
+	// SendMessage and ListAgents (QUM-1219) are here for a different reason
+	// than the rest of this list: not a --print-mode no-op, but the Claude
+	// CLI's own cross-session agent registry/messaging surface, which never
+	// contains sprawl agents. A child that ToolSearches these instead of
+	// mcp__sprawl__send_message got a call that silently "succeeded" against
+	// an empty registry, then wrongly concluded its parent was unreachable
+	// and ended its turn with the deliverable stranded in its own transcript.
+	// Denying them turns that into a hard tool error naming the right tool.
+	// Known consequence: this also removes the ability to *continue* a
+	// Claude Agent-tool sidechain via SendMessage (fresh Agent-tool spawns
+	// are unaffected) — an accepted cost, not a regression to chase.
+	"SendMessage",
+	"ListAgents",
 }
 
 // Per-role model constants. The root weave session and manager agents use

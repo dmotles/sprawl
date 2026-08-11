@@ -26,6 +26,8 @@ func TestChildDisallowedTools_PinnedList(t *testing.T) {
 		"ExitWorktree",
 		"TaskStop",
 		"AskUserQuestion",
+		"SendMessage",
+		"ListAgents",
 	}
 	got := append([]string(nil), ChildDisallowedTools...)
 

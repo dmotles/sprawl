@@ -280,6 +280,30 @@ func scanIdleVocabulary(prompt string) []string {
 	return []string{"must explain the `idle` agent state on one line: the process was reclaimed for inactivity and the agent revives on the next message — it is NOT complete"}
 }
 
+// scanCLIRegistryConfusion checks the child-role prompts (engineer, researcher,
+// manager, qa — everything that shares childReportBullets) for QUM-1219: the
+// Claude CLI's built-in SendMessage/ListAgents tools are a cross-session
+// registry that never contains sprawl agents, so a child that reaches for
+// them and doesn't find its parent in ListAgents must NOT conclude the parent
+// is gone. The three facts — the CLI names, that they don't reach sprawl
+// agents, and the BLOCKED/escalate framing for an agent that thinks its
+// parent is unreachable — must land on one line; spread across the prompt
+// they do not constitute the claim (same shape as scanIdleVocabulary above).
+var (
+	cliRegistryNameRe    = regexp.MustCompile(`\bSendMessage\b|\bListAgents\b`)
+	cliRegistryScopeRe   = regexp.MustCompile(`(?i)cross-session|does not reach sprawl|not sprawl agents|unrelated to sprawl`)
+	cliRegistryBlockedRe = regexp.MustCompile(`(?i)\bBLOCKED\b|escalate`)
+)
+
+func scanCLIRegistryConfusion(prompt string) []string {
+	for _, line := range strings.Split(prompt, "\n") {
+		if cliRegistryNameRe.MatchString(line) && cliRegistryScopeRe.MatchString(line) && cliRegistryBlockedRe.MatchString(line) {
+			return nil
+		}
+	}
+	return []string{"must explain on one line that the CLI's SendMessage/ListAgents are a cross-session registry that does not reach sprawl agents, and that an agent who concludes its parent is unreachable is BLOCKED and must escalate — never end the turn with the result stranded only in its own transcript"}
+}
+
 // contextAround renders a rune-safe window around a byte offset.
 func contextAround(s string, idx int) string {
 	start := idx - 60
@@ -317,6 +341,32 @@ func TestPromptRenderers_TeachSurvivingMessagingSurface(t *testing.T) {
 	for _, tc := range allPromptRenderCases() {
 		t.Run(tc.name, func(t *testing.T) {
 			for _, f := range scanSurvivingSurface(tc.render()) {
+				t.Errorf("%s prompt: %s", tc.name, f)
+			}
+		})
+	}
+}
+
+// TestPromptRenderers_ChildPromptsTeachCLIRegistryDistinction pins QUM-1219:
+// every child-role prompt (engineer, researcher, manager, qa — the roles that
+// share childReportBullets) must name the CLI's SendMessage/ListAgents
+// registry, say it does not reach sprawl agents, and frame an agent's belief
+// that its parent is unreachable as BLOCKED (escalate), not a reason to end
+// the turn silently. Root is excluded: it never renders childReportBullets.
+func TestPromptRenderers_ChildPromptsTeachCLIRegistryDistinction(t *testing.T) {
+	children := map[string]bool{
+		"engineer": true, "engineer-subagent": true,
+		"researcher": true,
+		"manager":    true, "manager-subagent": true,
+		"qa": true,
+	}
+
+	for _, tc := range allPromptRenderCases() {
+		if !children[tc.name] {
+			continue
+		}
+		t.Run(tc.name, func(t *testing.T) {
+			for _, f := range scanCLIRegistryConfusion(tc.render()) {
 				t.Errorf("%s prompt: %s", tc.name, f)
 			}
 		})
@@ -457,6 +507,50 @@ func TestPromptScanners_Controls(t *testing.T) {
 	t.Run("fires/idle-absent", func(t *testing.T) {
 		if got := scanIdleVocabulary("- Agents are either active or complete."); len(got) == 0 {
 			t.Error("scanIdleVocabulary stayed quiet on a subject that never mentions the idle state")
+		}
+	})
+
+	// scanCLIRegistryConfusion (QUM-1219): a clean subject with all three
+	// required facts on one line must stay quiet.
+	const cleanCLIRegistry = `- Do NOT use the CLI's built-in SendMessage or ListAgents tools — they are a cross-session registry and do not reach sprawl agents. If you conclude your parent is unreachable you are BLOCKED: escalate, never end your turn silently.`
+
+	t.Run("clean-cli-registry-stays-quiet", func(t *testing.T) {
+		if got := scanCLIRegistryConfusion(cleanCLIRegistry); len(got) != 0 {
+			t.Errorf("scanCLIRegistryConfusion fired on a clean subject: %v", got)
+		}
+	})
+
+	t.Run("fires/cli-registry-no-blocked-language", func(t *testing.T) {
+		subject := `- Do NOT use the CLI's built-in SendMessage or ListAgents tools — they are a cross-session registry and do not reach sprawl agents.`
+		if got := scanCLIRegistryConfusion(subject); len(got) == 0 {
+			t.Error("scanCLIRegistryConfusion stayed quiet on a subject missing the BLOCKED/escalate framing")
+		}
+	})
+
+	t.Run("fires/cli-registry-names-absent", func(t *testing.T) {
+		subject := `- If you conclude your parent is unreachable you are BLOCKED: escalate, never end your turn silently.`
+		if got := scanCLIRegistryConfusion(subject); len(got) == 0 {
+			t.Error("scanCLIRegistryConfusion stayed quiet on a subject that never names SendMessage/ListAgents")
+		}
+	})
+
+	t.Run("fires/cli-registry-facts-split-across-lines", func(t *testing.T) {
+		subject := "- Do NOT use the CLI's built-in SendMessage or ListAgents tools.\n- They are a cross-session registry and do not reach sprawl agents.\n- If you conclude your parent is unreachable you are BLOCKED: escalate."
+		if got := scanCLIRegistryConfusion(subject); len(got) == 0 {
+			t.Error("scanCLIRegistryConfusion stayed quiet when the name/scope/blocked facts were split across unrelated lines")
+		}
+	})
+
+	// Vacuity demonstration: a bare strings.Contains on "ListAgents" would pass
+	// forever even when the word appears in an unrelated sentence that never
+	// explains the distinction. scanCLIRegistryConfusion must still fire.
+	t.Run("naive-listagents-contains-cannot-fail", func(t *testing.T) {
+		vacuous := "- ListAgents is deprecated in v2 of some unrelated tool, totally different topic."
+		if !strings.Contains(vacuous, "ListAgents") {
+			t.Fatal("fixture no longer contains the literal ListAgents; the demonstration is broken")
+		}
+		if got := scanCLIRegistryConfusion(vacuous); len(got) == 0 {
+			t.Errorf("scanCLIRegistryConfusion stayed quiet on a subject where ListAgents appears with no scope/blocked framing — the probe is as vacuous as strings.Contains(s, %q)", "ListAgents")
 		}
 	})
 }
