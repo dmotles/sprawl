@@ -67,7 +67,7 @@ type idleRuntimeProbe interface {
 	// outstanding CLI-managed background work. Returns the tasks (with the time
 	// each was first seen, for the refusal record's age) and whether the set
 	// could be observed at all.
-	WorkOutstandingObserved() (tasks []runtimepkg.OutstandingTask, observed bool)
+	WorkOutstanding() (tasks []runtimepkg.OutstandingTask, basis runtimepkg.WorkBasis)
 }
 
 // questionPendingProbe answers whether an agent has an outstanding
@@ -105,6 +105,12 @@ type idleAssessment struct {
 	Quiescent idleObs
 	NotRoot   idleObs
 
+	// WorkBasis records WHY the work verdict is what it is (a real frame, or the
+	// absence of one on a session that demonstrably spoke). The QUM-1197 ruling
+	// of 2026-08-11 relaxed the strict rule and made this provenance the price:
+	// a fleet whose reaps all read by_absence is what a CLI vocabulary change
+	// would look like, and it must be one grep away rather than silent.
+	WorkBasis runtimepkg.WorkBasis
 	// WorkTasks is the outstanding set the DECISION saw, kept so the record
 	// describes that set rather than a fresher one re-probed at log time.
 	WorkTasks []runtimepkg.OutstandingTask
@@ -167,8 +173,10 @@ func assessIdle(in idleInputs) idleAssessment {
 	// MCP-side call, carries no task_id and is invisible here. And this protects
 	// the REAP DECISION only — an operator can still see an agent rendered idle
 	// with live sidechains until QUM-1213 lands.
-	switch tasks, observed := probeWorkOutstanding(in.Probe); {
-	case !observed:
+	tasks, basis := probeWorkOutstanding(in.Probe)
+	a.WorkBasis = basis
+	switch {
+	case basis == runtimepkg.WorkUnobservable:
 		a.Work = obsUnavailable
 	case len(tasks) > 0:
 		a.Work = obsBusy
@@ -274,11 +282,11 @@ func probeInFlight(p idleRuntimeProbe) (int, bool) {
 	return p.InFlightSystemObserved()
 }
 
-func probeWorkOutstanding(p idleRuntimeProbe) ([]runtimepkg.OutstandingTask, bool) {
+func probeWorkOutstanding(p idleRuntimeProbe) ([]runtimepkg.OutstandingTask, runtimepkg.WorkBasis) {
 	if p == nil {
-		return nil, false
+		return nil, runtimepkg.WorkUnobservable
 	}
-	return p.WorkOutstandingObserved()
+	return p.WorkOutstanding()
 }
 
 func probeLastActivity(p idleRuntimeProbe) time.Time {
@@ -503,7 +511,7 @@ func logAssessment(level slog.Level, msg, name string, a idleAssessment, in idle
 		slog.Bool("reap", a.Reap),
 		slog.String("blocker", a.Blocker),
 		slog.String("in_turn", a.InTurn.String()),
-		slog.String("work_outstanding", a.Work.String()),
+		slog.String("work_outstanding", renderWorkTerm(a.Work, a.WorkBasis)),
 		slog.Int("work_outstanding_n", len(a.WorkTasks)),
 		slog.String("work_outstanding_tasks", renderOutstanding(a.WorkTasks, in.Now)),
 		slog.String("pending_queue", a.Pending.String()),
@@ -651,3 +659,20 @@ func renderOutstanding(tasks []runtimepkg.OutstandingTask, now time.Time) string
 
 // renderMaxOutstanding bounds renderOutstanding's detail.
 const renderMaxOutstanding = 8
+
+// renderWorkTerm renders the work term with its PROVENANCE, e.g.
+// "idle(observed_empty)" versus "idle(by_absence)". The distinction is the whole
+// price of the QUM-1197 (c) ruling: absence may now conclude "nothing
+// outstanding", and the one failure shape that trades away — the CLI renaming or
+// dropping the subtype — shows up as a fleet-wide by_absence rather than as
+// nothing at all. On the reap line as well as the refusal line, by design: the
+// reap is the decision the provenance is about.
+func renderWorkTerm(obs idleObs, basis runtimepkg.WorkBasis) string {
+	if obs != obsIdle {
+		return obs.String()
+	}
+	if basis == runtimepkg.WorkByAbsence {
+		return "idle(by_absence)"
+	}
+	return "idle(observed_empty)"
+}

@@ -1662,10 +1662,10 @@ func (r *RuntimeRegistry) List() []*AgentRuntime {
 // InFlightSystemObserved: "no runtime to ask" is not "asked, and nothing is
 // outstanding". The runtime itself reports observed=false for a set it has never
 // seen a frame for, or one whose last frame was unreadable.
-func (r *AgentRuntime) WorkOutstandingObserved() ([]runtimepkg.OutstandingTask, bool) {
+func (r *AgentRuntime) WorkOutstanding() ([]runtimepkg.OutstandingTask, runtimepkg.WorkBasis) {
 	urt := r.UnifiedRuntime()
 	if urt == nil {
-		return nil, false
+		return nil, runtimepkg.WorkUnobservable
 	}
-	return urt.WorkOutstandingObserved()
+	return urt.WorkOutstanding()
 }

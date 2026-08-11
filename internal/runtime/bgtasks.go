@@ -97,6 +97,91 @@ func (rt *UnifiedRuntime) noteBackgroundTasks(msg *protocol.Message) {
 	rt.bgParseFailed = false
 }
 
+// WorkBasis records WHY a work-outstanding conclusion is what it is. It exists
+// because the QUM-1197 ruling of 2026-08-11 relaxed a rule, and a relaxation
+// without provenance is indistinguishable from the defect it permits.
+//
+// The original rule was that never having seen a task frame must block the reap,
+// guarding one shape: the CLI renames or drops the subtype, sprawl reads "no
+// work", and the protection evaporates silently. That shape was probed for
+// across 9 CLI versions and has zero recorded instances — while the strict rule
+// cost 57.3% of sessions their reclamation, because the CLI emits a frame only
+// when the set CHANGES and a majority of agents never background anything.
+//
+// So absence may now conclude "empty" — but only after the session has proved it
+// is talking to us, and every conclusion is labelled. A fleet whose reaps all
+// read by_absence is exactly what a vocabulary change would look like, and that
+// is one grep rather than a silence.
+type WorkBasis int
+
+const (
+	// WorkUnobservable: no conclusion is available. Never a licence to reap.
+	WorkUnobservable WorkBasis = iota
+	// WorkObserved: a real background_tasks_changed frame is the basis.
+	WorkObserved
+	// WorkByAbsence: no task frame has ever arrived, but the session emitted an
+	// init AND completed a turn, so it was demonstrably talking to us and had
+	// nothing to declare.
+	WorkByAbsence
+)
+
+func (b WorkBasis) String() string {
+	switch b {
+	case WorkObserved:
+		return "observed"
+	case WorkByAbsence:
+		return "by_absence"
+	default:
+		return "unobservable"
+	}
+}
+
+// noteFrameForWorkBasis tracks the two frames that let ABSENCE mean something:
+// a system/init and a completed turn. Same writer goroutine as
+// noteBackgroundTasks.
+//
+// A completed turn is the load-bearing half. An init alone only says the session
+// started; a turn that ran to its terminal says the CLI drove a whole exchange
+// past us without ever declaring a task — which is what makes the absence
+// evidence rather than silence.
+func (rt *UnifiedRuntime) noteFrameForWorkBasis(msg *protocol.Message, endOfTurn bool) {
+	if msg == nil {
+		return
+	}
+	isInit := msg.Type == "system" && msg.Subtype == "init"
+	isTerminal := endOfTurn || msg.Type == "result"
+	if !isInit && !isTerminal {
+		return
+	}
+	rt.bgMu.Lock()
+	defer rt.bgMu.Unlock()
+	if isInit {
+		rt.bgInitSeen = true
+	}
+	if isTerminal && rt.bgInitSeen {
+		rt.bgTurnClosed = true
+	}
+}
+
+// WorkOutstanding is WorkOutstandingObserved plus the provenance of the answer.
+func (rt *UnifiedRuntime) WorkOutstanding() ([]OutstandingTask, WorkBasis) {
+	rt.bgMu.Lock()
+	defer rt.bgMu.Unlock()
+	// A frame we could not read is a FAILED scan, and a completed turn does not
+	// license reading it as absence — otherwise (c) would launder every parse
+	// failure into a reap. Checked before the absence arm on purpose.
+	if rt.bgParseFailed {
+		return nil, WorkUnobservable
+	}
+	if rt.bgObserved {
+		return rt.sortedTasksLocked(), WorkObserved
+	}
+	if rt.bgTurnClosed {
+		return nil, WorkByAbsence
+	}
+	return nil, WorkUnobservable
+}
+
 // WorkOutstandingObserved reports the agent's outstanding CLI-managed background
 // work, and whether that could be observed AT ALL.
 //
@@ -111,11 +196,15 @@ func (rt *UnifiedRuntime) noteBackgroundTasks(msg *protocol.Message) {
 // The result is sorted (oldest first, then by id) so the refusal record it feeds
 // is deterministic.
 func (rt *UnifiedRuntime) WorkOutstandingObserved() ([]OutstandingTask, bool) {
-	rt.bgMu.Lock()
-	defer rt.bgMu.Unlock()
-	if !rt.bgObserved || rt.bgParseFailed {
-		return nil, false
-	}
+	tasks, basis := rt.WorkOutstanding()
+	return tasks, basis != WorkUnobservable
+}
+
+// sortedTasksLocked returns the set oldest-first, then by id. Deterministic
+// because the refusal record TRUNCATES at a cap: with the order reversed,
+// truncation would drop the oldest tasks, which are precisely the wedged ones
+// the record exists to surface. Caller holds bgMu.
+func (rt *UnifiedRuntime) sortedTasksLocked() []OutstandingTask {
 	out := make([]OutstandingTask, 0, len(rt.bgTasks))
 	for _, task := range rt.bgTasks {
 		out = append(out, task)
@@ -126,7 +215,7 @@ func (rt *UnifiedRuntime) WorkOutstandingObserved() ([]OutstandingTask, bool) {
 		}
 		return out[i].TaskID < out[j].TaskID
 	})
-	return out, true
+	return out
 }
 
 // now is the runtime's clock, overridable via RuntimeConfig.Now. Immutable after

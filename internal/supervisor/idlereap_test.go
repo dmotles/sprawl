@@ -31,13 +31,22 @@ type fakeIdleProbe struct {
 	inFlightSeen   bool
 	workTasks      []runtimepkg.OutstandingTask
 	workObserved   bool
+	workBasis      runtimepkg.WorkBasis
 }
 
 func (f *fakeIdleProbe) InTurnObserved() (bool, bool)        { return f.inTurn, f.inTurnObserved }
 func (f *fakeIdleProbe) LastActivityAt() time.Time           { return f.lastAct }
 func (f *fakeIdleProbe) InFlightSystemObserved() (int, bool) { return f.inFlight, f.inFlightSeen }
-func (f *fakeIdleProbe) WorkOutstandingObserved() ([]runtimepkg.OutstandingTask, bool) {
-	return f.workTasks, f.workObserved
+func (f *fakeIdleProbe) WorkOutstanding() ([]runtimepkg.OutstandingTask, runtimepkg.WorkBasis) {
+	// workObserved is the older two-state knob; keep it working so the arms
+	// written before the (c) ruling still say what they said.
+	if f.workBasis != runtimepkg.WorkUnobservable {
+		return f.workTasks, f.workBasis
+	}
+	if f.workObserved {
+		return f.workTasks, runtimepkg.WorkObserved
+	}
+	return nil, runtimepkg.WorkUnobservable
 }
 
 // fakeQuestions is a questionPendingProbe that answers from a fixed set.

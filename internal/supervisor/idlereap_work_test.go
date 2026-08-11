@@ -56,6 +56,16 @@ func feedBackgroundTasks(t *testing.T, sess *runtimeTestSession, tasks ...protoc
 	)
 }
 
+// closeTurnOnHandle drives the init + terminal frames that make ABSENCE mean
+// "nothing outstanding" — the session demonstrably talked to us and declared no
+// task. Routed through the same seam a real backend session uses.
+func closeTurnOnHandle(t *testing.T, handle *reclaimTestHandle) {
+	t.Helper()
+	route := handle.routeFrameTo(t)
+	route(&protocol.Message{Type: "system", Subtype: "init"}, backendpkg.TurnInfo{Autonomous: true})
+	route(&protocol.Message{Type: "result", Subtype: "success"}, backendpkg.TurnInfo{Autonomous: true, EndOfTurn: true})
+}
+
 // workTask builds one outstanding task, first seen `age` ago relative to
 // idleTestInputs' fixed clock.
 func workTask(id, typ string, seenAt time.Time) runtimepkg.OutstandingTask {
@@ -141,16 +151,16 @@ func TestAssessIdle_WorkOutstanding_NeverObservedIsNotObservedEmpty(t *testing.T
 	})
 }
 
-// TestAgentRuntime_WorkOutstandingObserved_ReportsUnavailableSeparatelyFromEmpty
+// TestAgentRuntime_WorkOutstanding_ReportsBasisNotJustEmptiness
 // is the bridge from the predicate's tri-state to the real handle, modelled on
 // its InFlightSystemObserved sibling. Four arms, and the second is the one a
 // naive implementation reports as "empty".
-func TestAgentRuntime_WorkOutstandingObserved_ReportsUnavailableSeparatelyFromEmpty(t *testing.T) {
+func TestAgentRuntime_WorkOutstanding_ReportsBasisNotJustEmptiness(t *testing.T) {
 	t.Run("no unified runtime", func(t *testing.T) {
 		rt := newIdleTestRuntime(t, &unobservableTurnHandle{&runtimeTestSession{sessionID: "s"}})
-		tasks, observed := rt.WorkOutstandingObserved()
-		if observed {
-			t.Errorf("observed = true with no UnifiedRuntime (tasks=%+v), want false; no runtime to ask is not 'asked, and nothing is outstanding'", tasks)
+		tasks, basis := rt.WorkOutstanding()
+		if basis != runtimepkg.WorkUnobservable {
+			t.Errorf("basis = %v with no UnifiedRuntime (tasks=%+v), want unobservable; no runtime to ask is not 'asked, and nothing is outstanding'", basis, tasks)
 		}
 	})
 	t.Run("unified runtime that never saw a frame", func(t *testing.T) {
@@ -158,8 +168,8 @@ func TestAgentRuntime_WorkOutstandingObserved_ReportsUnavailableSeparatelyFromEm
 			runtimeTestSession: &runtimeTestSession{sessionID: "s"},
 			urt:                runtimepkg.New(runtimepkg.RuntimeConfig{Name: "alice"}),
 		})
-		if _, observed := rt.WorkOutstandingObserved(); observed {
-			t.Error("observed = true for a runtime that has never seen a background_tasks_changed frame, want false")
+		if _, basis := rt.WorkOutstanding(); basis != runtimepkg.WorkUnobservable {
+			t.Errorf("basis = %v for a runtime that has neither seen a task frame nor completed a turn, want unobservable", basis)
 		}
 	})
 	t.Run("fed an emitted empty set", func(t *testing.T) {
@@ -167,9 +177,9 @@ func TestAgentRuntime_WorkOutstandingObserved_ReportsUnavailableSeparatelyFromEm
 		urt := runtimepkg.New(runtimepkg.RuntimeConfig{Name: "alice", Session: sess})
 		rt := newIdleTestRuntime(t, &observableTurnHandle{runtimeTestSession: sess, urt: urt})
 		feedBackgroundTasks(t, sess)
-		tasks, observed := rt.WorkOutstandingObserved()
-		if !observed || len(tasks) != 0 {
-			t.Errorf("got (%d tasks, observed=%v), want (0, true) after an emitted tasks:[]", len(tasks), observed)
+		tasks, basis := rt.WorkOutstanding()
+		if basis != runtimepkg.WorkObserved || len(tasks) != 0 {
+			t.Errorf("got (%d tasks, basis=%v), want (0, observed) after an emitted tasks:[]", len(tasks), basis)
 		}
 	})
 	t.Run("fed one task", func(t *testing.T) {
@@ -177,9 +187,25 @@ func TestAgentRuntime_WorkOutstandingObserved_ReportsUnavailableSeparatelyFromEm
 		urt := runtimepkg.New(runtimepkg.RuntimeConfig{Name: "alice", Session: sess})
 		rt := newIdleTestRuntime(t, &observableTurnHandle{runtimeTestSession: sess, urt: urt})
 		feedBackgroundTasks(t, sess, protocol.BackgroundTask{TaskID: "b1", TaskType: protocol.BackgroundTaskLocalBash})
-		tasks, observed := rt.WorkOutstandingObserved()
-		if !observed || len(tasks) != 1 || tasks[0].TaskID != "b1" {
-			t.Errorf("got (%+v, observed=%v), want one task b1 observed", tasks, observed)
+		tasks, basis := rt.WorkOutstanding()
+		if basis != runtimepkg.WorkObserved || len(tasks) != 1 || tasks[0].TaskID != "b1" {
+			t.Errorf("got (%+v, basis=%v), want one task b1 observed", tasks, basis)
+		}
+	})
+	// The (c) arm at the bridge: no task frame ever, but the session emitted an
+	// init and completed a turn, so absence is now evidence — and it is labelled
+	// as such rather than dressed up as an observation.
+	t.Run("no frame but a completed turn", func(t *testing.T) {
+		sess := &runtimeTestSession{sessionID: "s"}
+		urt := runtimepkg.New(runtimepkg.RuntimeConfig{Name: "alice", Session: sess})
+		rt := newIdleTestRuntime(t, &observableTurnHandle{runtimeTestSession: sess, urt: urt})
+		route := sess.routeFrameTo(t)
+		route(&protocol.Message{Type: "system", Subtype: "init"}, backendpkg.TurnInfo{Autonomous: true})
+		route(&protocol.Message{Type: "result", Subtype: "success"}, backendpkg.TurnInfo{Autonomous: true, EndOfTurn: true})
+
+		tasks, basis := rt.WorkOutstanding()
+		if basis != runtimepkg.WorkByAbsence || len(tasks) != 0 {
+			t.Errorf("got (%d tasks, basis=%v), want (0, by_absence)", len(tasks), basis)
 		}
 	})
 }
@@ -323,5 +349,84 @@ func TestRenderOutstanding_TruncationIsVisible(t *testing.T) {
 	}
 	if got := renderOutstanding(nil, now); got != "" {
 		t.Errorf("rendering an empty set = %q, want empty", got)
+	}
+}
+
+// --- QUM-1197 (c) + PROVENANCE, supervisor side -----------------------------
+
+// TestAssessIdle_WorkOutstanding_ByAbsenceReapsAndIsRecorded is the arm the
+// 2026-08-11 ruling adds, and the one that unblocks 57.3% of the fleet: a
+// session that emitted an init and completed a turn without ever declaring a
+// task is reapable. The provenance is the price of that relaxation, so it is
+// asserted here rather than trusted — the ruling requires it be greppable.
+func TestAssessIdle_WorkOutstanding_ByAbsenceReapsAndIsRecorded(t *testing.T) {
+	in := idleTestInputs(t)
+	probe := in.Probe.(*fakeIdleProbe)
+	probe.workBasis = runtimepkg.WorkByAbsence
+	probe.workTasks = nil
+
+	got := assessIdle(in)
+	if !got.Reap {
+		t.Fatalf("Reap = false for a session that completed a turn without declaring any task (blocker=%q); this is the 57.3 percent case, and refusing here makes the reaper inert for most of the fleet", got.Blocker)
+	}
+	if got.WorkBasis != runtimepkg.WorkByAbsence {
+		t.Errorf("WorkBasis = %v, want %v; a conclusion drawn from absence must not be recorded as an observation", got.WorkBasis, runtimepkg.WorkByAbsence)
+	}
+}
+
+// TestRefusalRecord_ProvenanceDistinguishesObservedFromAbsence pins the
+// greppable half. A fleet whose reaps all read by_absence is what a CLI
+// vocabulary change would look like — the one shape (c) trades away — so the two
+// bases must be distinguishable in the record, on the REAP line as well as the
+// refusal line.
+func TestRefusalRecord_ProvenanceDistinguishesObservedFromAbsence(t *testing.T) {
+	t.Run("observed empty", func(t *testing.T) {
+		r, _, rt, _ := newReclaimFixture(t) // feeds a real tasks:[]
+		h := installCaptureSlog(t)
+		r.maybeReclaimIdle(context.Background(), rt)
+
+		got := refusalRecordsAt(t, h, slog.LevelInfo, reapMsg)
+		if len(got) != 1 {
+			t.Fatalf("INFO reap records = %d, want 1. all records:\n%s", len(got), h.String())
+		}
+		if !strings.Contains(got[0], "work_outstanding=idle(observed_empty)") {
+			t.Errorf("reap record does not record that the conclusion rests on a REAL emitted tasks:[]: %s", got[0])
+		}
+	})
+	t.Run("by absence", func(t *testing.T) {
+		r, _, rt, handle := newReclaimFixtureNoBackgroundFrame(t)
+		closeTurnOnHandle(t, handle)
+
+		h := installCaptureSlog(t)
+		r.maybeReclaimIdle(context.Background(), rt)
+
+		got := refusalRecordsAt(t, h, slog.LevelInfo, reapMsg)
+		if len(got) != 1 {
+			t.Fatalf("INFO reap records = %d, want 1; a session that completed a turn with no task frame must be reapable. all records:\n%s", len(got), h.String())
+		}
+		if !strings.Contains(got[0], "work_outstanding=idle(by_absence)") {
+			t.Errorf("reap record does not disclose that the conclusion rests on ABSENCE, which is the entire price of the (c) relaxation: %s", got[0])
+		}
+	})
+}
+
+// TestReclaim_NoInitNoTurn_IsStillNotTornDown is the negative control the
+// relaxation must not eat: a session that has NOT proved it is talking to us —
+// no init, no completed turn — is still unobservable and still blocks.
+func TestReclaim_NoInitNoTurn_IsStillNotTornDown(t *testing.T) {
+	r, _, rt, handle := newReclaimFixtureNoBackgroundFrame(t)
+
+	h := installCaptureSlog(t)
+	r.maybeReclaimIdle(context.Background(), rt)
+
+	if got := handle.stopCalls.Load(); got != 0 {
+		t.Fatalf("stopCalls = %d for a session that never emitted an init or completed a turn, want 0; absence only means something once the session has demonstrably spoken", got)
+	}
+	got := refusalRecordsAt(t, h, slog.LevelInfo, refusalMsg)
+	if len(got) != 1 {
+		t.Fatalf("INFO refusal records = %d, want 1. all records:\n%s", len(got), h.String())
+	}
+	if !strings.Contains(got[0], "blocker=work_outstanding_unobservable") {
+		t.Errorf("record does not name the unobservable arm: %s", got[0])
 	}
 }

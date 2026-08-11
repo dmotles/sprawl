@@ -314,3 +314,102 @@ func TestBackgroundTasks_SortedOldestFirstThenByID(t *testing.T) {
 		}
 	}
 }
+
+// --- QUM-1197 (c) + PROVENANCE ---------------------------------------------
+//
+// Ruling of 2026-08-11: never-observed no longer blocks forever. 207 of 361
+// recorded sessions never emit a task frame at all, because the CLI emits one
+// only when the set CHANGES — so the strict rule left a majority of the fleet
+// permanently unreclaimable and turned a passing gated row red. Observed-empty
+// may now be concluded from the ABSENCE of any task frame, but only once the
+// session has demonstrably been talking to us: a system/init AND at least one
+// completed turn with no task frame in between.
+//
+// The relaxation is paid for with PROVENANCE: every conclusion records whether
+// it rests on a real emitted tasks:[] or on absence, so the one shape this
+// trades away — the CLI renaming or dropping the subtype — stays detectable by
+// a single grep (fleet-wide by_absence) instead of being silent.
+
+// closeTurn drives the frames that make a completed turn observable: an init
+// and a terminal result.
+func closeTurn(rt *UnifiedRuntime) {
+	rt.routeFrame(&protocol.Message{Type: "system", Subtype: "init"}, backend.TurnInfo{Autonomous: true})
+	rt.routeFrame(&protocol.Message{Type: "result", Subtype: "success"}, backend.TurnInfo{Autonomous: true, EndOfTurn: true})
+}
+
+// TestWorkBasis_NoFramesAndNoCompletedTurn_IsUnobservable: before the session
+// has proved it is talking to us, absence is not evidence. Direction: MUST
+// report unobservable — this is the arm that keeps a silent or broken session
+// from being reaped on the strength of hearing nothing.
+func TestWorkBasis_NoFramesAndNoCompletedTurn_IsUnobservable(t *testing.T) {
+	rt := newBGRuntime(nil)
+
+	if _, basis := rt.WorkOutstanding(); basis != WorkUnobservable {
+		t.Errorf("basis = %v for a runtime that has seen nothing at all, want %v", basis, WorkUnobservable)
+	}
+	// An init alone is not enough: the turn must complete without a task frame.
+	rt.routeFrame(&protocol.Message{Type: "system", Subtype: "init"}, backend.TurnInfo{Autonomous: true})
+	if _, basis := rt.WorkOutstanding(); basis != WorkUnobservable {
+		t.Errorf("basis = %v after an init with no completed turn, want %v", basis, WorkUnobservable)
+	}
+}
+
+// TestWorkBasis_CompletedTurnWithNoFrames_IsByAbsence is the arm that unblocks
+// the 57.3%. Direction: MUST become observable, and MUST be labelled by_absence
+// rather than passed off as an observation.
+func TestWorkBasis_CompletedTurnWithNoFrames_IsByAbsence(t *testing.T) {
+	rt := newBGRuntime(nil)
+
+	closeTurn(rt)
+
+	tasks, basis := rt.WorkOutstanding()
+	if basis != WorkByAbsence {
+		t.Fatalf("basis = %v after a completed turn with no task frame, want %v; without this a majority of real sessions are permanently unreclaimable", basis, WorkByAbsence)
+	}
+	if len(tasks) != 0 {
+		t.Errorf("tasks = %+v under by_absence, want none", tasks)
+	}
+}
+
+// TestWorkBasis_RealFrameBeatsAbsence: once the CLI has spoken, the set is the
+// authority and the conclusion is labelled as observed. Both orders are driven,
+// because a frame can arrive before or after the first completed turn and the
+// provenance must not depend on which.
+func TestWorkBasis_RealFrameBeatsAbsence(t *testing.T) {
+	t.Run("frame after a completed turn", func(t *testing.T) {
+		rt := newBGRuntime(nil)
+		closeTurn(rt)
+		rt.routeFrame(bgFrame(t, bgTask("b1", protocol.BackgroundTaskLocalBash)))
+
+		tasks, basis := rt.WorkOutstanding()
+		if basis != WorkObserved || len(tasks) != 1 {
+			t.Fatalf("got (%d tasks, basis=%v), want (1, %v)", len(tasks), basis, WorkObserved)
+		}
+	})
+	t.Run("frame before any completed turn", func(t *testing.T) {
+		rt := newBGRuntime(nil)
+		rt.routeFrame(bgFrame(t))
+		if _, basis := rt.WorkOutstanding(); basis != WorkObserved {
+			t.Errorf("basis = %v after an emitted tasks:[] with no completed turn, want %v; a real frame needs no corroboration", basis, WorkObserved)
+		}
+	})
+}
+
+// TestWorkBasis_ParseFailureIsStillUnobservable_EvenAfterACompletedTurn is the
+// arm the relaxation must NOT weaken. A frame we could not read is a failed
+// scan, and a completed turn does not license reading it as absence — otherwise
+// the (c) rule would launder every parse failure into a reap.
+func TestWorkBasis_ParseFailureIsStillUnobservable_EvenAfterACompletedTurn(t *testing.T) {
+	rt := newBGRuntime(nil)
+	closeTurn(rt)
+	rt.routeFrame(bgFrame(t, bgTask("b1", protocol.BackgroundTaskLocalBash)))
+
+	rt.routeFrame(
+		&protocol.Message{Type: "system", Subtype: protocol.SubtypeBackgroundTasksChanged, Raw: []byte(`{"tasks":`)},
+		backend.TurnInfo{Autonomous: true, PreInit: true},
+	)
+
+	if _, basis := rt.WorkOutstanding(); basis != WorkUnobservable {
+		t.Errorf("basis = %v after an unreadable frame on a session with a completed turn, want %v; absence-based reasoning must not launder a failed read", basis, WorkUnobservable)
+	}
+}

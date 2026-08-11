@@ -221,6 +221,11 @@ type UnifiedRuntime struct {
 	// bgParseFailed records that the most recent frame could not be read, so the
 	// set is unknown rather than empty.
 	bgParseFailed bool
+	// bgInitSeen / bgTurnClosed are the QUM-1197 (c) provenance inputs: absence
+	// of a task frame only means "nothing outstanding" once this session has
+	// emitted an init AND completed a turn, i.e. demonstrably talked to us.
+	bgInitSeen   bool
+	bgTurnClosed bool
 	// nowFn is the clock, snapshotted from RuntimeConfig.Now in New so it is
 	// immutable afterwards.
 	nowFn func() time.Time
@@ -469,6 +474,7 @@ func (rt *UnifiedRuntime) routeFrame(msg *protocol.Message, turn backend.TurnInf
 	if msg != nil && msg.Type == "system" && msg.Subtype == protocol.SubtypeBackgroundTasksChanged {
 		rt.noteBackgroundTasks(msg)
 	}
+	rt.noteFrameForWorkBasis(msg, turn.EndOfTurn)
 
 	// Snapshot the open frame turn once (QUM-931 writer discipline: routeFrame is
 	// the only writer of openTurnID, so this cannot go stale under us).
