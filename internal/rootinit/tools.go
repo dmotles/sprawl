@@ -23,12 +23,16 @@ var RootTools = []string{
 // `mcp__sprawl__ask_user_question` MCP tool (QUM-527) instead.
 var DisallowedTools = []string{"Edit", "Write", "NotebookEdit", "AskUserQuestion"}
 
-// ChildDisallowedTools is the set of harness-tied tools that silently no-op
-// when claude runs in `--print` (stream-json) mode, which is how all sprawl
-// child agents are launched. Without this denylist, children can ToolSearch
-// these names and issue tool calls that "succeed" without doing anything —
-// e.g. ScheduleWakeup queues a wake that never fires because no idle session
-// loop exists in --print mode. See QUM-470 for the wake-loss footgun.
+// ChildDisallowedTools is the set of tools that are unsafe or misleading for
+// sprawl child agents. Most are harness-tied tools that silently no-op when
+// claude runs in `--print` (stream-json) mode, which is how all sprawl child
+// agents are launched. Without this denylist, children can ToolSearch these
+// names and issue tool calls that "succeed" without doing anything — e.g.
+// ScheduleWakeup queues a wake that never fires because no idle session loop
+// exists in --print mode. See QUM-470 for the wake-loss footgun. SendMessage
+// and ListAgents (QUM-1219, below) are a different class of unsafe: not a
+// --print-mode no-op, but a tool whose call genuinely succeeds while never
+// reaching sprawl's messaging system at all.
 //
 // AskUserQuestion belongs here too (QUM-528): the harness version returns
 // inputs to the model but never renders a prompt to the user under
@@ -50,14 +54,17 @@ var ChildDisallowedTools = []string{
 	"ExitWorktree",
 	"TaskStop",
 	"AskUserQuestion",
-	// SendMessage and ListAgents (QUM-1219) are here for a different reason
-	// than the rest of this list: not a --print-mode no-op, but the Claude
-	// CLI's own cross-session agent registry/messaging surface, which never
-	// contains sprawl agents. A child that ToolSearches these instead of
-	// mcp__sprawl__send_message got a call that silently "succeeded" against
-	// an empty registry, then wrongly concluded its parent was unreachable
-	// and ended its turn with the deliverable stranded in its own transcript.
-	// Denying them turns that into a hard tool error naming the right tool.
+	// SendMessage and ListAgents (QUM-1219): the Claude CLI's own
+	// cross-session agent registry/messaging surface. Sprawl agents' claude
+	// sessions CAN appear in ListAgents — but under CLI session names (e.g.
+	// "finn-a0"), not sprawl agent names, and a SendMessage call there never
+	// reaches sprawl's inbox: no messages_read entry, no unread count, no
+	// delivery ack, no wake-if-offline. A child that ToolSearches these
+	// instead of mcp__sprawl__send_message can therefore get a call that
+	// reports success while the deliverable is never actually delivered, and
+	// then wrongly concludes its parent is unreachable and ends its turn with
+	// the result stranded in its own transcript. Denying them turns that into
+	// a tool-not-found error instead of a silent, undelivered "success".
 	// Known consequence: this also removes the ability to *continue* a
 	// Claude Agent-tool sidechain via SendMessage (fresh Agent-tool spawns
 	// are unaffected) — an accepted cost, not a regression to chase.

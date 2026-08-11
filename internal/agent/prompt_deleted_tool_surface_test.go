@@ -373,6 +373,30 @@ func TestPromptRenderers_ChildPromptsTeachCLIRegistryDistinction(t *testing.T) {
 	}
 }
 
+// TestPromptRenderers_RootDoesNotRenderCLIRegistryBullet is the negative
+// direction of the test above: root never renders childReportBullets, so the
+// QUM-1219 bullet must NOT appear in the root prompt. Without this, a future
+// refactor that accidentally pulled the bullet into the root builder would go
+// unnoticed. Keys on a phrase unique to the bullet (not the bare "SendMessage"/
+// "ListAgents" words, which legitimately appear elsewhere in this package,
+// e.g. wake_prompts.go's WakeReasonSendMessage) so the assertion cannot be
+// satisfied by an unrelated mention.
+func TestPromptRenderers_RootDoesNotRenderCLIRegistryBullet(t *testing.T) {
+	roots := map[string]bool{"root": true, "root-no-cli": true}
+	const uniquePhrase = "mangled CLI session name"
+
+	for _, tc := range allPromptRenderCases() {
+		if !roots[tc.name] {
+			continue
+		}
+		t.Run(tc.name, func(t *testing.T) {
+			if prompt := tc.render(); strings.Contains(prompt, uniquePhrase) {
+				t.Errorf("%s prompt: unexpectedly contains the QUM-1219 child-only CLI-registry bullet (%q) — root never renders childReportBullets", tc.name, uniquePhrase)
+			}
+		})
+	}
+}
+
 func TestPromptRenderers_ObserverPromptsTeachIdle(t *testing.T) {
 	observers := map[string]bool{"root": true, "root-no-cli": true, "manager": true, "manager-subagent": true}
 
