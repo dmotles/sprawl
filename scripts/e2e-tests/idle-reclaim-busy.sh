@@ -267,6 +267,33 @@ ir_wire_work_outstanding_at_close() {
     ' "$log"
 }
 
+# ir_dump_agent_records prints the reaper records for agent $1 from log $2 to
+# stderr, bounded, with a real "none" fallback.
+#
+# It exists because both failure dumps had the same bug and QA caught it:
+#
+#   grep "agent=$N" "$LOG" >&2 | tail -20 || echo "  (none)" >&2
+#
+# The `>&2` redirects grep's stdout BEFORE the pipe, so `tail` reads EOF: the
+# bound is inert and every matching record prints, and `||` then tests tail's
+# status (0), so the fallback can never fire. Measured against a 25-record log:
+# the broken form emits 25 lines where 20 was intended, and emits NOTHING at all
+# when there are no records. The fixed form emits 20 and "  (none)".
+#
+# That matters because this dump only ever runs on a red, i.e. exactly when
+# someone needs it to explain the failure.
+ir_dump_agent_records() {
+    local name="$1" log="$2" recs=""
+    if [ -n "$log" ] && [ -r "$log" ]; then
+        recs=$(grep "agent=$name" "$log" | tail -20 || true)
+    fi
+    if [ -n "$recs" ]; then
+        printf '%s\n' "$recs" >&2
+    else
+        echo "  (no records for agent=$name in '${log:-<no log>}')" >&2
+    fi
+}
+
 # ir_wire_turn_still_open answers P5's axis question from the wire: has a `result`
 # frame arrived since the child's most recent `system/init`? If not, the turn is
 # still open.
@@ -449,7 +476,7 @@ test_run() {
     local SLEEP_STILL
     SLEEP_STILL=$(pgrep -f "timeout ${BUSY_SECS} tail" 2>/dev/null | head -1 || true)
     if [ -z "$SLEEP_STILL" ] && ! kill -0 "$SLEEP_PID" 2>/dev/null; then
-        fail "P5b: PRECONDITION LAPSED, not a product verdict. The child's claude PID $PID_BUSY is alive, but no 'sleep' remains in its process tree, so it was not observably busy for the whole ${IR_THRESHOLD_SECS}s+ window. A pass here would be unearned — the reaper may simply have had nothing to reap yet. HARD FAIL BY DESIGN, as at P5a: a red rather than a 77, so the floor of the re-hosted row stays enforceable. Host or model timing is the likelier cause than the reaper."
+        fail "P5b: PRECONDITION LAPSED, not a product verdict. The child's claude PID $PID_BUSY is alive, but no 'timeout ${BUSY_SECS} tail' remains in its process tree, so it was not observably busy for the whole ${IR_THRESHOLD_SECS}s+ window. A pass here would be unearned — the reaper may simply have had nothing to reap yet. HARD FAIL BY DESIGN, as at P5a: a red rather than a 77, so the floor of the re-hosted row stays enforceable. Host or model timing is the likelier cause than the reaper."
         e2e_print_results
         return 1
     fi
@@ -474,7 +501,7 @@ test_run() {
         pass "P5c: the refusal record attributes the refusal to the TURN-OPEN axis (agent=$BUSY_NAME blocker=in_turn)"
     else
         fail "P5c: no refusal record naming agent=$BUSY_NAME with blocker=in_turn in '$BUSY_REAPER_LOG'. P5b's survival is therefore not attributable to the turn term — another term may have blocked, which is the axis collapse QUM-1197 F2 describes. Records for this agent:"
-        grep "agent=$BUSY_NAME" "$BUSY_REAPER_LOG" >&2 | tail -20 || echo "  (none)" >&2
+        ir_dump_agent_records "$BUSY_NAME" "$BUSY_REAPER_LOG"
         e2e_print_results
         return 1
     fi
@@ -596,7 +623,7 @@ test_run() {
         pass "P7c: the refusal record attributes the refusal to the new term (agent=$BG_NAME blocker=work_outstanding)"
     else
         fail "P7c: no refusal record naming agent=$BG_NAME with blocker=work_outstanding in $REAPER_LOG. P7b's survival is therefore NOT attributable to the work_outstanding term — some other term may have blocked, or the term read 'unobservable' (which is the mechanism failing safe, not working). Records for this agent:"
-        grep "agent=$BG_NAME" "$REAPER_LOG" >&2 | tail -20 || echo "  (none)" >&2
+        ir_dump_agent_records "$BG_NAME" "$REAPER_LOG"
         e2e_print_results
         return 1
     fi
