@@ -84,7 +84,7 @@ type Config struct {
 	// every user who has never edited their config, silently. With a string,
 	// absent ("") and an explicit "0" are distinguishable, so "absent → default"
 	// and "0 → disabled" are both true at once.
-	IdleReclaimAfter string `yaml:"idle_reclaim.after,omitempty" sprawl:"default=0 (DISABLED),purpose=Idle time before an agent's subprocess is reclaimed as a Go duration. DEFAULT 0 = OFF: the reaper reaps agents that are mid-tool-call (QUM-1197). Do not enable until that is fixed"`
+	IdleReclaimAfter string `yaml:"idle_reclaim.after,omitempty" sprawl:"default=0 (DISABLED),purpose=Idle time before an agent's subprocess is reclaimed as a Go duration. DEFAULT 0 = OFF: enabling is gated on QUM-1213 (LastActivityAt can go stale during a long tool call and the quiescent term reads it). A wedged background task also has no auto-expiry by design, so it pins its agent until an operator notices"`
 	IdleReclaimSweep string `yaml:"idle_reclaim.sweep,omitempty" sprawl:"default=1m,purpose=How often the idle reaper sweeps the runtime registry as a Go duration"`
 
 	// sprawlRoot is not a config key. Unexported, so yaml ignores it on both
@@ -134,17 +134,26 @@ func (c *Config) ValidateTimeoutDuration() time.Duration {
 	return d
 }
 
-// DefaultIdleReclaimAfter is 0, meaning the idle reaper is OFF unless a
-// project opts in. That is a deliberate reversal of the original 15-minute
-// default, made on evidence rather than caution: scripts/e2e-tests/idle-reclaim.sh's
-// busy-agent control reproduced, twice on a clean host, a child being torn down
-// while a `sleep` it had started was still live in its process tree. The
-// predicate cannot currently see a child that is mid-tool-call — the in_turn
-// authority reads idle — which is QUM-1197, and it blocks QUM-1187 too.
+// DefaultIdleReclaimAfter is 0, meaning the idle reaper is OFF unless a project
+// opts in. A deliberate reversal of the original 15-minute default, made on
+// evidence: a child was torn down twice on a clean host while work it had
+// started was still live.
 //
-// The machinery ships and is covered; only the switch is off. Turning it on
-// before QUM-1197 lands means destroying work to save memory, which is not a
-// trade this project wants. QUM-1186.
+// The MECHANISM originally recorded here — "the predicate cannot see a child
+// that is mid-tool-call, the in_turn authority reads idle" — was WITHDRAWN by
+// the QUM-1197 ruling of 2026-08-10 after five runs failed to support it. The
+// real defect was a MISSING TERM: an agent that backgrounds a tool call or
+// spawns a sidechain ENDS ITS TURN, so every term read idle honestly while the
+// work ran. That term (work_outstanding) now exists.
+//
+// So the switch stays off for DIFFERENT reasons, and they are the ones to state:
+//   - QUM-1213: LastActivityAt can go stale during a long tool call, and the
+//     quiescent term reads it.
+//   - A wedged background task has no auto-expiry by design (any cap short
+//     enough to clear a two-hour wedge also clears a legitimate build), so it
+//     pins its agent until an operator reads the refusal record.
+//
+// The machinery ships and is covered; only the switch is off. QUM-1186/QUM-1197.
 const DefaultIdleReclaimAfter = 0
 
 // SuggestedIdleReclaimAfter is what the threshold should be once QUM-1197 makes

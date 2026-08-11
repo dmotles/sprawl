@@ -35,22 +35,25 @@
 # VALIDATION STATE, 2026-08-11, stated here because a row nobody has watched fail
 # is a claim rather than a gate:
 #
-#   WATCHED GREEN — yes, for the first time in this row's life: 10 passed / 0
-#   failed, including P7c (the refusal record attributing the refusal to
-#   work_outstanding) and P8 (a no-work agent still reaped).
+#   WATCHED GREEN — yes. 11 passed / 0 failed after the QA rework, and the two
+#   axes are now separately ATTRIBUTED in the same run: P5c reads
+#   `blocker=in_turn` for the foreground child, P7c reads
+#   `blocker=work_outstanding` for the backgrounded one.
 #
-#   WATCHED RED — NO, and not for want of trying. Five runs against three
-#   mutations (term deleted from the verdict table; ingest disabled so the term
-#   reads unobservable; term unconditionally busy) all died at P5a — "no
-#   busy-control child appeared within 180s" — which is the QUM-1212 host
-#   condition, not the mutation. A red for the wrong reason proves nothing, so
-#   none of them counts. The mutations' effects ARE watched at the unit level
-#   (internal/supervisor/idlereap_work_test.go), which is weaker: it shows the
-#   TERM is falsifiable, not that this ROW would catch its removal.
+#   WATCHED RED — ONE mutation of four. QA (`sentry`) deleted the
+#   work_outstanding term from the verdict table on a quiet host and the row
+#   failed with the reap record naming the work it destroyed
+#   (`work_outstanding=busy n=1 local_bash:bxiilz51r:age=36s`). The other three —
+#   ingest disabled so the term reads `unobservable`; term unconditionally busy
+#   (P8 must fire); the in_turn term deleted (the rewritten P5 must fire) — are
+#   still row-unwatched. SEVEN attempts across them all died at
+#   `P5a: no busy-control child appeared within 180s`, which is the QUM-1212 host
+#   condition and NOT the mutation. A red for the wrong reason proves nothing, so
+#   none of those counts.
 #
-#   So: whoever next gets a quiet host owes this row a red watch before treating
-#   it as the thing standing between an enabled reaper and working agents.
-#   The mutations are named above; each takes one row run.
+#   The remaining three ARE watched at unit level, which is weaker: it shows the
+#   terms are falsifiable, not that this row would catch their removal. Whoever
+#   next gets a quiet host owes them — one row run each, mutations named above.
 #
 # Phases:
 #
@@ -88,8 +91,8 @@
 #       so the reaper never fires, and the mechanism looks safe because it does
 #       nothing. P6 controls the knob; only P8 controls the term.
 #
-# QUM-1029: a complete, passing run of the body below makes ten assertions —
-# P5a, P5b, P5c, P6a, P6b, P7a, P7b, P7c, P7d, P8. Counted against the written
+# QUM-1029: a complete, passing run of the body below makes ELEVEN assertions —
+# P5a, P5b, P5c, P5d, P6a, P6b, P7a, P7b, P7c, P7d, P8. Counted against the written
 # body, not derived arithmetically: only `pass` calls on the single success path
 # count, and the hard-fail precondition gates count because a green run passes
 # through them.
@@ -99,7 +102,7 @@
 # is why the passing assertions lived in the sibling idle-reclaim row. If this row
 # is ever skipped again, say so here — a floor the aggregator never reaches
 # enforces nothing, and an annotation claiming otherwise is a false record.
-MIN_ASSERTIONS=10
+MIN_ASSERTIONS=11
 
 test_metadata() {
     echo "needs_claude=1 needs_tmux=1 needs_jq=1"
@@ -264,6 +267,30 @@ ir_wire_work_outstanding_at_close() {
     ' "$log"
 }
 
+# ir_wire_turn_still_open answers P5's axis question from the wire: has a `result`
+# frame arrived since the child's most recent `system/init`? If not, the turn is
+# still open.
+#
+# Same encoding hazard and the same floor as ir_wire_work_outstanding_at_close:
+# the log wraps frames as {"ts","dir","seq","raw":"<escaped JSON>"}, so unescape
+# before matching, and report "could not parse" apart from "the turn closed".
+# Exit codes: 0 = still open; 1 = parsed, and the turn has closed; 2 = nothing
+# could be parsed, so NO claim is available.
+ir_wire_turn_still_open() {
+    local log="$1"
+    [ -n "$log" ] && [ -r "$log" ] || return 2
+    awk '
+        { line = $0; gsub(/\\/, "", line) }
+        line ~ /"subtype":"init"/   { parsed++; open = 1; next }
+        line ~ /"type":"result"/    { parsed++; open = 0 }
+        END {
+            if (parsed == 0) { exit 2 }
+            if (open)        { exit 0 }
+            exit 1
+        }
+    ' "$log"
+}
+
 test_run() {
     # UN-SKIPPED 2026-08-11, on the QUM-1197 (c)+provenance ruling. The skip that
     # stood here asserted a REFUTED mechanism as fact — that in_turn cannot see a
@@ -327,8 +354,14 @@ test_run() {
     # the sleep still ended first, which cost a whole run to a precondition
     # failure rather than a verdict.
     local BUSY_SECS=$((IR_THRESHOLD_SECS * 10))
+    # NOT `sleep`. QUM-1197 QA (F2): the CLI backgrounds a long foreground
+    # `sleep` on this host, the turn CLOSES, and P5's subject silently became a
+    # WORK-OUTSTANDING case — i.e. P7's axis, with in_turn=idle in the record at
+    # both samples. The row's two axes collapsed into one and the turn-open axis
+    # was untested while P5b's text asserted the opposite. `timeout N tail -f
+    # /dev/null` is a real foreground wait that stays in the turn.
     ir_spawn_child "$SESSION" "$BRANCH_BUSY" \
-        "You are a QUM-1186 busy-agent control. Run exactly one Bash command: sleep ${BUSY_SECS}. When it finishes, reply BUSY_DONE and stop. Do not call any other tools." \
+        "You are a QUM-1186 turn-open control. Run exactly one Bash command in the FOREGROUND (do NOT background it, do not set run_in_background): timeout ${BUSY_SECS} tail -f /dev/null. Wait for it. When it finishes, reply BUSY_DONE and stop. Call no other tools." \
         "SPAWNB_${SUFFIX}"
 
     local STATE_BUSY WORKTREE_BUSY PID_BUSY
@@ -356,24 +389,43 @@ test_run() {
     local SLEEP_PID=""
     local sp_elapsed=0
     while [ "$sp_elapsed" -lt 180 ]; do
-        SLEEP_PID=$(pgrep -P "$PID_BUSY" -f "sleep" 2>/dev/null | head -1 || true)
-        if [ -z "$SLEEP_PID" ]; then
-            # The CLI may run Bash under an intermediate shell, so also accept a
-            # `sleep <BUSY_SECS>` anywhere under this claude's descendants.
-            SLEEP_PID=$(pgrep -f "sleep ${BUSY_SECS}" 2>/dev/null | head -1 || true)
-        fi
+        SLEEP_PID=$(pgrep -f "timeout ${BUSY_SECS} tail" 2>/dev/null | head -1 || true)
         [ -n "$SLEEP_PID" ] && break
         sleep 2
         sp_elapsed=$((sp_elapsed + 2))
     done
     if [ -z "$SLEEP_PID" ]; then
-        fail "P5a: no live 'sleep ${BUSY_SECS}' process appeared within 180s, so the busy child was never observably mid-tool-call. This control CANNOT run without that precondition — asserting on a child we merely instructed to be busy would measure our prompt, not the reaper. HARD FAIL BY DESIGN: reported as a red rather than a skip so that this gate is still a gate when the row is re-hosted — e2e_skip_row exits 77 before e2e_print_results, which would leave the restored row's MIN_ASSERTIONS floor unenforced. An unmet premise here is host or model timing, not a reaper defect."
-        pgrep -af 'sleep|claude' >&2 || true
+        fail "P5a: no live 'timeout ${BUSY_SECS} tail' process appeared within 180s, so the busy child was never observably mid-tool-call. This control CANNOT run without that precondition — asserting on a child we merely instructed to be busy would measure our prompt, not the reaper. HARD FAIL BY DESIGN: reported as a red rather than a skip so that this gate is still a gate when the row is re-hosted — e2e_skip_row exits 77 before e2e_print_results, which would leave the restored row's MIN_ASSERTIONS floor unenforced. An unmet premise here is host or model timing, not a reaper defect."
+        pgrep -af 'tail|claude' >&2 || true
         capture_pane "$SESSION" | tail -60 >&2
         e2e_print_results
         return 1
     fi
-    pass "P5a: busy control is OBSERVABLY mid-tool-call (claude PID=$PID_BUSY, live sleep PID=$SLEEP_PID)"
+
+    # The WIRE half of P5's precondition, and the reason F2 was possible without
+    # it: an OS-level live process is satisfied by BOTH axes. Only the absence of
+    # a turn terminal — no `result` since this child's last init — establishes
+    # that the turn is still OPEN, which is what P5 claims to test. Same parse
+    # floor discipline as P7a: "could not parse" is reported apart from "the turn
+    # closed", because a scan that fails is not a scan that came back clean.
+    local BUSY_NAME BUSY_WIRE
+    BUSY_NAME=$(jq -r '.name // empty' "$STATE_BUSY")
+    BUSY_WIRE=$(ir_wire_log "$BUSY_NAME")
+    ir_wire_turn_still_open "$BUSY_WIRE"
+    case $? in
+        0) : ;;
+        2)
+            fail "P5a: the wire log for '$BUSY_NAME' could not be parsed (log='$BUSY_WIRE'), so whether the turn is open is unknown and NO verdict is available in either direction. HARD FAIL BY DESIGN."
+            e2e_print_results
+            return 1
+            ;;
+        *)
+            fail "P5a: the child's turn has already CLOSED (a result frame followed its last init), so this subject is a work-outstanding case — P7's axis — not the turn-open one P5 tests. That collapse is QUM-1197 F2, and it is why this precondition exists. HARD FAIL BY DESIGN: precondition unmet, not a reaper verdict."
+            e2e_print_results
+            return 1
+            ;;
+    esac
+    pass "P5a: busy control is OBSERVABLY mid-tool-call AND its turn is still OPEN (claude PID=$PID_BUSY, foreground wait PID=$SLEEP_PID)"
 
     # Sleep past the threshold + a sweep, while the child is demonstrably in a
     # turn. The reaper must observe the turn and refuse.
@@ -395,7 +447,7 @@ test_run() {
         return 1
     fi
     local SLEEP_STILL
-    SLEEP_STILL=$(pgrep -P "$PID_BUSY" -f "sleep" 2>/dev/null | head -1 || true)
+    SLEEP_STILL=$(pgrep -f "timeout ${BUSY_SECS} tail" 2>/dev/null | head -1 || true)
     if [ -z "$SLEEP_STILL" ] && ! kill -0 "$SLEEP_PID" 2>/dev/null; then
         fail "P5b: PRECONDITION LAPSED, not a product verdict. The child's claude PID $PID_BUSY is alive, but no 'sleep' remains in its process tree, so it was not observably busy for the whole ${IR_THRESHOLD_SECS}s+ window. A pass here would be unearned — the reaper may simply have had nothing to reap yet. HARD FAIL BY DESIGN, as at P5a: a red rather than a 77, so the floor of the re-hosted row stays enforceable. Host or model timing is the likelier cause than the reaper."
         e2e_print_results
@@ -403,19 +455,36 @@ test_run() {
     fi
 
     if kill -0 "$PID_BUSY" 2>/dev/null; then
-        pass "P5b: busy child PID $PID_BUSY still alive after $((IR_THRESHOLD_SECS + IR_SWEEP_SECS * 3))s (> the ${IR_THRESHOLD_SECS}s threshold), with its sleep PID $SLEEP_PID still in flight — the reaper did not cut off a running turn"
+        pass "P5b: busy child PID $PID_BUSY still alive after $((IR_THRESHOLD_SECS + IR_SWEEP_SECS * 3))s (> the ${IR_THRESHOLD_SECS}s threshold), with its foreground wait PID $SLEEP_PID still in flight — the reaper did not cut off a running turn"
     else
         fail "P5b: busy child PID $PID_BUSY was killed while mid-turn. The predicate's InTurn term is not blocking the reap, and work is being destroyed."
         cat "$STATE_BUSY" >&2 2>/dev/null || true
         e2e_print_results
         return 1
     fi
+    # P5's attribution, the twin of P7c. Without it P5b's survival is unattributed:
+    # the child could have survived because work_outstanding or quiescent blocked,
+    # and the row would credit the turn-open axis for a refusal it did not earn —
+    # which is exactly how F2 went unnoticed. Exact token, so
+    # `in_turn_unobservable` cannot satisfy it: that reading means the observation
+    # broke, not that a turn was seen.
+    local BUSY_REAPER_LOG
+    BUSY_REAPER_LOG=$(ir_reaper_log)
+    if [ -n "$BUSY_REAPER_LOG" ] && grep -q "agent=$BUSY_NAME .*blocker=in_turn " "$BUSY_REAPER_LOG"; then
+        pass "P5c: the refusal record attributes the refusal to the TURN-OPEN axis (agent=$BUSY_NAME blocker=in_turn)"
+    else
+        fail "P5c: no refusal record naming agent=$BUSY_NAME with blocker=in_turn in '$BUSY_REAPER_LOG'. P5b's survival is therefore not attributable to the turn term — another term may have blocked, which is the axis collapse QUM-1197 F2 describes. Records for this agent:"
+        grep "agent=$BUSY_NAME" "$BUSY_REAPER_LOG" >&2 | tail -20 || echo "  (none)" >&2
+        e2e_print_results
+        return 1
+    fi
+
     local BUSY_STATUS
     BUSY_STATUS=$(jq -r '.status // empty' "$STATE_BUSY" 2>/dev/null || true)
     if [ "$BUSY_STATUS" != "idle" ]; then
-        pass "P5c: busy child status is '$BUSY_STATUS', not 'idle'"
+        pass "P5d: busy child status is '$BUSY_STATUS', not 'idle'"
     else
-        fail "P5c: busy child was stamped 'idle' while mid-turn"
+        fail "P5d: busy child was stamped 'idle' while mid-turn"
         e2e_print_results
         return 1
     fi

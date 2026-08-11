@@ -171,7 +171,14 @@ func TestIdleReclaimKeys_AreSettableAndReferenced(t *testing.T) {
 	// "0 (DISABLED)" rather than a bare "0": the reference table is where an
 	// operator looks to decide whether a key is safe to set, and a bare 0 reads
 	// as "unset" rather than as a deliberate off.
-	for _, want := range []string{"idle_reclaim.after", "idle_reclaim.sweep", "0 (DISABLED)", "QUM-1197", "1m"} {
+	//
+	// The issue key moved QUM-1197 -> QUM-1213, and that is the POINT of the
+	// assertion rather than a re-baseline to clear a red: what must be named is
+	// the blocker that is actually live. QUM-1197's mechanism was withdrawn and
+	// its missing term is now implemented, so a reference table still telling an
+	// operator "do not enable until QUM-1197 is fixed" would be a false record
+	// about a live decision — the class this whole arc exists to remove.
+	for _, want := range []string{"idle_reclaim.after", "idle_reclaim.sweep", "0 (DISABLED)", "QUM-1213", "1m"} {
 		if !strings.Contains(ref, want) {
 			t.Errorf("Reference() is missing %q; got:\n%s", want, ref)
 		}

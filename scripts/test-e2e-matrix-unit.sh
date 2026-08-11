@@ -4613,10 +4613,13 @@ _p19_decline_marked_n() {
 #
 # The marker gets a CEILING for the same reason the P19-ALLOW exemption does: it is
 # a literal anyone can append, so without one "adding a marker shows up in review"
-# is a hope. Measured at this commit: TWELVE marked sites — idle-interrupt-inject.sh's
+# is a hope. Measured at this commit: THIRTEEN marked sites — idle-interrupt-inject.sh's
 # two lapsed-premise gates, notif-stacked-restart.sh's seven idle-precondition and
-# broken-measurement gates, and idle-reclaim-busy.sh's P5a, P5b plus one QUM-1197
-# item-5 addition. The ceiling moved 11 -> 12 in the commit that rewrote that row:
+# broken-measurement gates, and idle-reclaim-busy.sh's P5a, P5b plus two QUM-1197
+# item-5 additions. The ceiling moved 11 -> 12 when that row was rewritten, and
+# 12 -> 13 in the QA-rework commit that gave P5 a WIRE precondition of its own
+# (its OS-level check alone could not tell the turn-open axis from the
+# work-outstanding one — the axes had silently collapsed). The rewrite:
 # its new P7 phase declines to render a verdict when the work-outstanding premise
 # is unestablished (an OS-level live task AND the wire ordering showing the turn
 # closed with work still outstanding), and those gates hard-fail rather than skip
@@ -4627,10 +4630,10 @@ _p19_decline_marked_n() {
 # honesty, not assertion reachability, and its body is the blueprint for the
 # re-host, so exempting it would let the class return silently the day it comes back.
 _p19_dec_marked_n=$(_p19_decline_marked_n "${P19_CORPUS[@]}")
-if [ "$_p19_dec_marked_n" -le 12 ]; then
-	pass "19c: $_p19_dec_marked_n fail site(s) claim HARD FAIL BY DESIGN (ceiling 12)"
+if [ "$_p19_dec_marked_n" -le 13 ]; then
+	pass "19c: $_p19_dec_marked_n fail site(s) claim HARD FAIL BY DESIGN (ceiling 13)"
 else
-	fail "19c: $_p19_dec_marked_n fail site(s) claim HARD FAIL BY DESIGN, above the measured ceiling of 12 — a new hard-fail-on-unmet-premise gate was added. That may be right, but raise the ceiling in the same diff so it is visible in review rather than only in the log"
+	fail "19c: $_p19_dec_marked_n fail site(s) claim HARD FAIL BY DESIGN, above the measured ceiling of 13 — a new hard-fail-on-unmet-premise gate was added. That may be right, but raise the ceiling in the same diff so it is visible in review rather than only in the log"
 fi
 _p19_dec_bad=$(_p19_decline_unmarked "${P19_CORPUS[@]}")
 if [ -z "$_p19_dec_bad" ]; then

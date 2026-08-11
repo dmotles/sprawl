@@ -446,11 +446,21 @@ func NewReal(cfg Config) (*Real, error) {
 		slog.Default().Info("idle reclaim: ENABLED",
 			slog.Duration("idle_reclaim.after", after),
 			slog.Duration("idle_reclaim.sweep", r.idleReclaimSweep.get()),
-			slog.String("hazard", "QUM-1197: the predicate can reap an agent that is mid-tool-call"),
+			slog.String("hazard", "a task the CLI reports as outstanding but which is WEDGED makes its agent permanently unreclaimable — there is deliberately no auto-expiry, because any cap short enough to clear a wedge also clears a real build. Grep the refusal record for work_outstanding_tasks and their ages"),
+			slog.String("also", "QUM-1213: LastActivityAt can go stale during a long tool call, which the quiescent term reads"),
 		)
 	} else {
 		slog.Default().Info("idle reclaim: DISABLED (default)",
-			slog.String("why", "QUM-1197: the in_turn authority reads idle during a live tool call, so the reaper can tear down an agent that is working"),
+			// QUM-1197 item 5 rework: this used to say the reaper was off because
+			// "the in_turn authority reads idle during a live tool call". That
+			// mechanism was investigated across five runs, WITHDRAWN by the
+			// 2026-08-10 ruling, and the defect it misnamed — a missing term for
+			// work the agent had backgrounded — is fixed. A shipped binary
+			// explaining a live operator decision with a refuted, fixed cause is
+			// the exact false-record class this issue exists to remove, and this
+			// string reaches an operator directly.
+			slog.String("why", "QUM-1213: LastActivityAt can go stale during a long tool call, and the quiescent term reads it. Enabling before that lands risks reaping an agent that is working"),
+			slog.String("also", "a WEDGED background task has no auto-expiry by design, so it makes its agent permanently unreclaimable until an operator notices it in the refusal record"),
 			slog.String("enable_with", "sprawl config set idle_reclaim.after 15m"),
 		)
 	}
