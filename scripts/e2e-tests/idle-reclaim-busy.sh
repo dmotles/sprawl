@@ -284,13 +284,24 @@ ir_wire_work_outstanding_at_close() {
 # someone needs it to explain the failure.
 ir_dump_agent_records() {
     local name="$1" log="$2" recs=""
-    if [ -n "$log" ] && [ -r "$log" ]; then
-        recs=$(grep "agent=$name" "$log" | tail -20 || true)
+    # Three outcomes, not two. "nothing came back" from a MISSING log and from a
+    # log that genuinely has no record for this agent mean opposite things — the
+    # first says the probe looked in the wrong place, the second is evidence about
+    # the product — and a dump that renders them identically sends the reader
+    # down the wrong path at the one moment they are relying on it.
+    if [ -z "$log" ]; then
+        echo "  (NO LOG PATH resolved — the record could not be looked for at all, so this red says nothing about agent=$name)" >&2
+        return
     fi
+    if [ ! -r "$log" ]; then
+        echo "  (log '$log' is MISSING or unreadable — the record could not be looked for, so this red says nothing about agent=$name)" >&2
+        return
+    fi
+    recs=$(grep "agent=$name" "$log" | tail -20 || true)
     if [ -n "$recs" ]; then
         printf '%s\n' "$recs" >&2
     else
-        echo "  (no records for agent=$name in '${log:-<no log>}')" >&2
+        echo "  (log '$log' is readable and contains NO record for agent=$name — the agent was never assessed)" >&2
     fi
 }
 
@@ -437,12 +448,26 @@ test_run() {
     # closed", because a scan that fails is not a scan that came back clean.
     local BUSY_NAME BUSY_WIRE
     BUSY_NAME=$(jq -r '.name // empty' "$STATE_BUSY")
-    BUSY_WIRE=$(ir_wire_log "$BUSY_NAME")
-    ir_wire_turn_still_open "$BUSY_WIRE"
-    case $? in
+    # POLL, do not sample once. A freshly spawned child's log can hold only
+    # control frames for a few seconds, so "cannot tell yet" (rc 2) is a TIMING
+    # artifact at t=0, not an unmet premise — and hard-failing on it makes this
+    # gate fail for a reason that has nothing to do with the axis it checks.
+    # Found the honest way: a mutation run that was supposed to red on P8 red on
+    # this instead. Only a rc-2 that PERSISTS to the deadline is a real
+    # "cannot tell", and rc 1 (the turn has closed) is decisive immediately.
+    local wire_rc2=2 w_elapsed=0
+    while [ "$w_elapsed" -lt 120 ]; do
+        BUSY_WIRE=$(ir_wire_log "$BUSY_NAME")
+        ir_wire_turn_still_open "$BUSY_WIRE"
+        wire_rc2=$?
+        [ "$wire_rc2" -ne 2 ] && break
+        sleep 3
+        w_elapsed=$((w_elapsed + 3))
+    done
+    case "$wire_rc2" in
         0) : ;;
         2)
-            fail "P5a: the wire log for '$BUSY_NAME' could not be parsed (log='$BUSY_WIRE'), so whether the turn is open is unknown and NO verdict is available in either direction. HARD FAIL BY DESIGN."
+            fail "P5a: the wire log for '$BUSY_NAME' still could not be parsed after ${w_elapsed}s (log='$BUSY_WIRE'), so whether the turn is open is unknown and NO verdict is available in either direction. HARD FAIL BY DESIGN."
             e2e_print_results
             return 1
             ;;
