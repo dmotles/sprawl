@@ -178,7 +178,13 @@ func TestIdleReclaimKeys_AreSettableAndReferenced(t *testing.T) {
 	// its missing term is now implemented, so a reference table still telling an
 	// operator "do not enable until QUM-1197 is fixed" would be a false record
 	// about a live decision — the class this whole arc exists to remove.
-	for _, want := range []string{"idle_reclaim.after", "idle_reclaim.sweep", "0 (DISABLED)", "QUM-1213", "1m"} {
+	// "SIDECHAIN" is pinned because the QUM-1197 ruling of 2026-08-11 promoted
+	// that gap from a documented limit to a HARD PRECONDITION on enabling the
+	// reaper: no e2e run yet joins the two measured halves of the sidechain case.
+	// The reference table is where whoever proposes flipping the knob looks, so
+	// the precondition has to be legible there or it is not a gate at all — and a
+	// gate nobody reads is how this arc's worst records happened.
+	for _, want := range []string{"idle_reclaim.after", "idle_reclaim.sweep", "0 (DISABLED)", "QUM-1213", "SIDECHAIN", "1m"} {
 		if !strings.Contains(ref, want) {
 			t.Errorf("Reference() is missing %q; got:\n%s", want, ref)
 		}

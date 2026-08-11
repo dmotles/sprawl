@@ -84,7 +84,7 @@ type Config struct {
 	// every user who has never edited their config, silently. With a string,
 	// absent ("") and an explicit "0" are distinguishable, so "absent → default"
 	// and "0 → disabled" are both true at once.
-	IdleReclaimAfter string `yaml:"idle_reclaim.after,omitempty" sprawl:"default=0 (DISABLED),purpose=Idle time before an agent's subprocess is reclaimed as a Go duration. DEFAULT 0 = OFF: enabling is gated on QUM-1213 (LastActivityAt can go stale during a long tool call and the quiescent term reads it). A wedged background task also has no auto-expiry by design, so it pins its agent until an operator notices"`
+	IdleReclaimAfter string `yaml:"idle_reclaim.after,omitempty" sprawl:"default=0 (DISABLED),purpose=Idle time before an agent's subprocess is reclaimed as a Go duration. DEFAULT 0 = OFF. Two HARD PRECONDITIONS on enabling: (1) QUM-1213 — LastActivityAt can go stale during a long tool call and the quiescent term reads it; (2) a recorded e2e run in which an agent whose ONLY outstanding work is a live SIDECHAIN survives the sweep with the refusal record naming blocker=work_outstanding. That second join is covered today by construction and by a unit test — not by a run — and it is 43 of 263 recorded turn closures. Also note a wedged background task has no auto-expiry by design, so it pins its agent until an operator reads the refusal record"`
 	IdleReclaimSweep string `yaml:"idle_reclaim.sweep,omitempty" sprawl:"default=1m,purpose=How often the idle reaper sweeps the runtime registry as a Go duration"`
 
 	// sprawlRoot is not a config key. Unexported, so yaml ignores it on both
@@ -146,12 +146,27 @@ func (c *Config) ValidateTimeoutDuration() time.Duration {
 // spawns a sidechain ENDS ITS TURN, so every term read idle honestly while the
 // work ran. That term (work_outstanding) now exists.
 //
-// So the switch stays off for DIFFERENT reasons, and they are the ones to state:
-//   - QUM-1213: LastActivityAt can go stale during a long tool call, and the
+// So the switch stays off for DIFFERENT reasons, and they are the ones to state.
+// The first two are HARD PRECONDITIONS on enabling (QUM-1197 ruling,
+// 2026-08-11); whoever proposes flipping this knob is expected to have read them
+// here:
+//
+//  1. QUM-1213: LastActivityAt can go stale during a long tool call, and the
 //     quiescent term reads it.
-//   - A wedged background task has no auto-expiry by design (any cap short
-//     enough to clear a two-hour wedge also clears a legitimate build), so it
-//     pins its agent until an operator reads the refusal record.
+//  2. NO e2e run yet joins the two measured halves of the sidechain case. That
+//     real sidechains register as `local_agent` in background_tasks_changed is
+//     MEASURED (492 in the corpus, 64 outstanding at turn closure), and the code
+//     path handling them has a unit test watched failing — but nothing has
+//     observed the reaper end-to-end sparing an agent whose ONLY outstanding work
+//     is a live sidechain. Both halves are measured; the join is not. It is 43 of
+//     263 recorded closures, and it is the case an operator reported from
+//     experience. Enabling requires that run, with the refusal record naming
+//     blocker=work_outstanding so survival is attributed rather than lucky.
+//
+// And a standing hazard rather than a precondition: a wedged background task has
+// no auto-expiry by design (any cap short enough to clear a two-hour wedge also
+// clears a legitimate build), so it pins its agent until an operator reads the
+// refusal record.
 //
 // The machinery ships and is covered; only the switch is off. QUM-1186/QUM-1197.
 const DefaultIdleReclaimAfter = 0

@@ -460,7 +460,8 @@ func NewReal(cfg Config) (*Real, error) {
 			// the exact false-record class this issue exists to remove, and this
 			// string reaches an operator directly.
 			slog.String("why", "QUM-1213: LastActivityAt can go stale during a long tool call, and the quiescent term reads it. Enabling before that lands risks reaping an agent that is working"),
-			slog.String("also", "a WEDGED background task has no auto-expiry by design, so it makes its agent permanently unreclaimable until an operator notices it in the refusal record"),
+			slog.String("also_required_before_enabling", "no e2e run yet observes the reaper sparing an agent whose ONLY outstanding work is a live SIDECHAIN — the wire fact and the code path are each measured, the join is not, and it is 43 of 263 recorded turn closures"),
+			slog.String("hazard", "a WEDGED background task has no auto-expiry by design, so it makes its agent permanently unreclaimable until an operator notices it in the refusal record"),
 			slog.String("enable_with", "sprawl config set idle_reclaim.after 15m"),
 		)
 	}
