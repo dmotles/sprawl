@@ -134,6 +134,18 @@ func runSandboxGC(deps *sandboxGCDeps, dryRun bool, maxAge time.Duration) error 
 		now := deps.now()
 		procs, _ := deps.listProcs()
 		for _, dir := range dirs {
+			// QUM-1119 safety net: refuse LOUDLY rather than silently skip.
+			// listTmpDirs is production-populated by discoverSandboxTmpDirs
+			// today, but it is an injected dependency (tests replace it
+			// directly), so this is the backstop if discovery ever regresses
+			// to something broader than "/tmp/sprawl-<something>". Never
+			// silent: a reaper that quietly skips an unexpected path is
+			// indistinguishable from one that swept it, to anyone reading
+			// the output.
+			if !isSandboxRootPath(dir) {
+				fmt.Fprintf(deps.out, "%sREFUSING to remove unexpected path %s (not a direct /tmp/sprawl-* child)\n", prefix, dir)
+				continue
+			}
 			mtime, dErr := deps.dirInfo(dir)
 			if dErr != nil {
 				continue
@@ -261,21 +273,78 @@ func defaultSessionsOn(socket string) (int, error) {
 	return count, nil
 }
 
-// defaultListTmpDirs globs all known sandbox tmp-dir patterns.
+// defaultListTmpDirs discovers candidate sandbox roots under /tmp.
 func defaultListTmpDirs() ([]string, error) {
+	return discoverSandboxTmpDirs("/tmp")
+}
+
+// discoverSandboxTmpDirs finds sandbox roots directly under base by
+// STRUCTURAL MARKER rather than by an enumerated prefix list (QUM-1119). The
+// list this replaced — "sprawl-*-e2e-*", "sprawl-test-*", "sprawl-rb-*" —
+// matched only a handful of the ~40 prefixes real e2e rows actually pass to
+// e2e_make_sandbox_root (mostly "sprawl-qum<NNN>", with no "-e2e-"/"-test-"
+// substring), so it silently reaped almost nothing while reporting success.
+//
+// Every real sandbox root is created by e2e_make_sandbox_root (which always
+// names it "sprawl-<prefix>-XXXXXX" under /tmp) and then, for rows that boot
+// the TUI, e2e_init_sandbox_repo (which does `mkdir -p "$SPRAWL_ROOT/.sprawl"`
+// immediately inside it). A "sprawl-*" directory with a ".sprawl"
+// subdirectory directly inside it is therefore true for every prefix a row
+// picks, present or future, without enumerating any of them.
+//
+// This does NOT catch sandbox roots from rows that shell out to a bare
+// `claude` binary directly rather than through `sprawl enter` (attach-blocks,
+// capture-pane-liveness, replay-echo, recall-sendnow, as of QUM-1119) — those
+// never create the marker. That is a known, narrower gap than the prefix list
+// it replaces covered, not a claimed total fix; see QUM-1119's tracking notes.
+//
+// Retained backup artifacts observed in the QUM-1119 incident
+// (sprawl-*.bundle, sprawl-*.git, sprawl-agents-backup-*,
+// sprawl-v0.2.7-known-good.bin) are excluded because none of them has a
+// ".sprawl" marker directly inside — NOT by name, since a name denylist only
+// protects artifacts whose name is known today.
+//
+// Symlinks are never followed, at either level: Lstat (not Stat) is used on
+// both the candidate and its marker, so a symlinked "sprawl-*" name — or a
+// symlinked ".sprawl" inside a real one — can never smuggle an out-of-tree
+// path into the reap list.
+func discoverSandboxTmpDirs(base string) ([]string, error) {
+	matches, err := filepath.Glob(filepath.Join(base, "sprawl-*"))
+	if err != nil {
+		return nil, err
+	}
 	var out []string
-	for _, pat := range []string{
-		"/tmp/sprawl-*-e2e-*",
-		"/tmp/sprawl-test-*",
-		"/tmp/sprawl-rb-*",
-	} {
-		m, err := filepath.Glob(pat)
-		if err != nil {
-			return nil, err
+	for _, m := range matches {
+		lst, err := os.Lstat(m)
+		if err != nil || lst.Mode()&os.ModeSymlink != 0 || !lst.IsDir() {
+			continue // files (backup bundles, known-good binaries) and symlinks are never sandbox roots
 		}
-		out = append(out, m...)
+		marker, err := os.Lstat(filepath.Join(m, ".sprawl"))
+		if err != nil || marker.Mode()&os.ModeSymlink != 0 || !marker.IsDir() {
+			continue // no genuine .sprawl marker directly inside => not a root we created
+		}
+		out = append(out, m)
 	}
 	return out, nil
+}
+
+// isSandboxRootPath is the QUM-1119 safety net consulted immediately before
+// any removal: a path must be a DIRECT child of /tmp named "sprawl-*", and
+// must never be (or be inside) /tmp/coder-script-data — asserted explicitly
+// rather than relying on the name-prefix check alone, since that path is host
+// tooling state (a symlink into the developer's home dir) and deleting it
+// would silently break `claude` PATH resolution for every needs_claude row.
+// A pure path predicate: no disk access, so it is safe to call on a path that
+// does not exist (or no longer exists) on disk.
+func isSandboxRootPath(dir string) bool {
+	clean := filepath.Clean(dir)
+	if clean == "/tmp/coder-script-data" || strings.HasPrefix(clean, "/tmp/coder-script-data/") {
+		return false
+	}
+	if filepath.Dir(clean) != "/tmp" {
+		return false
+	}
+	return strings.HasPrefix(filepath.Base(clean), "sprawl-")
 }
 
 // defaultListProcs walks /proc/*/cmdline + /proc/*/status to gather pid/ppid/uid/argv.

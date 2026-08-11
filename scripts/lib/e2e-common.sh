@@ -187,6 +187,124 @@ e2e_skip_row() {
     exit "$E2E_SKIP_EXIT"
 }
 
+# QUM-1118: distinct from BOTH a skip (E2E_SKIP_EXIT=77, "nothing measured and
+# that's fine") and an ordinary row failure (1, "the product is broken"). An
+# unfit environment means nothing was measured and that is NOT acceptable, so
+# it gets its own exit code the driver never confuses with either.
+E2E_ENV_UNFIT_EXIT=5
+
+# Threshold basis (QUM-1118): the 2026-08-06 incident died with `/` at 3.4G
+# (3482MB) free, taking 13 of 19 concurrent rows down inside `go build` with
+# ENOSPC. Default is that failure point plus ~18% margin, rounded to a clean
+# 4096MB (4GiB), applied uniformly to every filesystem checked — the incident
+# gives no reason to trust one filesystem's margin over another's.
+E2E_MIN_FREE_MB_DEFAULT=4096
+
+# e2e_free_mb KIND PATH — echo free space at PATH in MB, or return 1 (echoing
+# nothing) if it cannot be read. KIND selects a debug-seam override
+# (SPRAWL_E2E_MATRIX_DEBUG_FREE_MB_TMP / _REPO) so unit tests can drive this
+# without ever touching a real filesystem, per the repo's assertion-rigor rule
+# against filling a real disk to test a disk check.
+#
+# The seam's value may be a bare number OR a path to a file whose first line
+# is read FRESH on every call. The file form is what lets a test simulate
+# space disappearing BETWEEN two checks in the same driver process (mid-run
+# exhaustion, QUM-1118 AC4) — a static env var cannot change value mid-process,
+# but a row can rewrite a file on real disk from inside its own subshell, and
+# the next e2e_check_disk_space call (in the parent driver, not the row's
+# subshell) will read the new value. This never touches disk SPACE, only a
+# tiny marker file's contents, so it is not "actually filling the disk".
+e2e_free_mb() {
+    local kind="$1" path="$2" kb var val
+    case "$kind" in
+        tmp) var=SPRAWL_E2E_MATRIX_DEBUG_FREE_MB_TMP ;;
+        repo) var=SPRAWL_E2E_MATRIX_DEBUG_FREE_MB_REPO ;;
+        *) var= ;;
+    esac
+    if [ -n "$var" ] && [ -n "${!var:-}" ]; then
+        val="${!var}"
+        case "$val" in
+            *[!0-9]*)
+                # Not a bare number — try it as a seam FILE, first line only.
+                [ -r "$val" ] && val=$(head -n1 "$val" 2>/dev/null)
+                ;;
+        esac
+        case "$val" in
+            '' | *[!0-9]*) : ;; # neither a number nor a readable numeric file: fall through to real df
+            *)
+                echo "$val"
+                return 0
+                ;;
+        esac
+    fi
+    kb=$(df -Pk "$path" 2>/dev/null | awk 'NR==2 {print $4}') || return 1
+    [ -n "$kb" ] || return 1
+    case "$kb" in *[!0-9]*) return 1 ;; esac
+    echo $((kb / 1024))
+}
+
+# e2e_check_disk_space — QUM-1118. FAILS LOUDLY (E2E_ENV_UNFIT_EXIT), never
+# skips, when any filesystem this harness writes to has less free space than
+# the threshold. Checks BOTH ${TMPDIR:-/tmp} (every sandbox root, tmux socket,
+# and go build's own scratch dir live here) and $REPO_ROOT (GOCACHE and the
+# built binary live here) because on this host they are measured to be
+# DIFFERENT devices — the same reason the 2026-08-06 incident was first
+# misdiagnosed as build-cache pressure on the wrong filesystem.
+#
+# SPRAWL_E2E_MIN_FREE_MB overrides the threshold for constrained environments.
+# The override is logged UNCONDITIONALLY — not only when it lowers the bar —
+# so a caller who sets it can never be silently unaware the check ran with a
+# different number than the documented default. A non-numeric override fails
+# loudly rather than silently falling back to the default: a typo'd override
+# must not quietly re-enable the check it was meant to relax (or disable one
+# meant to tighten it).
+e2e_check_disk_space() {
+    # df/awk are absent only when a caller has deliberately stripped PATH to
+    # test something else entirely (this suite's own [10]/[15] preflight
+    # fixtures do exactly that) — every real e2e run has both, and every row
+    # already needs a full PATH for git/tmux/claude/go regardless of this
+    # check. Treat "the tool to check is missing" as distinct from "the tool
+    # ran and found too little space": warn loudly and proceed rather than
+    # fabricating a disk-space verdict this process cannot actually measure.
+    if ! command -v df >/dev/null 2>&1 || ! command -v awk >/dev/null 2>&1; then
+        echo "WARN: df and/or awk not found on PATH — cannot evaluate the QUM-1118 disk-space precondition; proceeding without it (a tooling gap, not a disk-space fact)" >&2
+        return 0
+    fi
+    local threshold="$E2E_MIN_FREE_MB_DEFAULT"
+    if [ -n "${SPRAWL_E2E_MIN_FREE_MB:-}" ]; then
+        case "$SPRAWL_E2E_MIN_FREE_MB" in
+            *[!0-9]*)
+                echo "FATAL: SPRAWL_E2E_MIN_FREE_MB='$SPRAWL_E2E_MIN_FREE_MB' is not a whole number of MB — refusing to guess, environment unfit (QUM-1118)" >&2
+                exit "$E2E_ENV_UNFIT_EXIT"
+                ;;
+        esac
+        echo "WARN: disk-space precondition threshold overridden by SPRAWL_E2E_MIN_FREE_MB=${SPRAWL_E2E_MIN_FREE_MB} (default ${E2E_MIN_FREE_MB_DEFAULT}MB) — QUM-1118" >&2
+        threshold="$SPRAWL_E2E_MIN_FREE_MB"
+    fi
+
+    local tmp_path="${TMPDIR:-/tmp}"
+    local repo_path="${REPO_ROOT:-$E2E_COMMON_REPO_ROOT}"
+    local kind path free unfit=0
+    for kind_path in "tmp:$tmp_path" "repo:$repo_path"; do
+        kind="${kind_path%%:*}"
+        path="${kind_path#*:}"
+        if free=$(e2e_free_mb "$kind" "$path"); then
+            if [ "$free" -lt "$threshold" ]; then
+                echo "FATAL: ENVIRONMENT UNFIT — $path has ${free}MB free, below the ${threshold}MB threshold (QUM-1118)" >&2
+                unfit=1
+            fi
+        else
+            echo "FATAL: cannot read free space on $path (df failed) — environment unfit to run e2e rows (QUM-1118)" >&2
+            unfit=1
+        fi
+    done
+    if [ "$unfit" -eq 1 ]; then
+        echo "FATAL: refusing to run — this is NOT a skip (nothing was measured, and that is unacceptable) and NOT a row failure (the product was never exercised); exiting ${E2E_ENV_UNFIT_EXIT} (QUM-1118)" >&2
+        exit "$E2E_ENV_UNFIT_EXIT"
+    fi
+    return 0
+}
+
 e2e_require_claude_or_skip() {
     local name=${1:-test}
     if command -v claude >/dev/null 2>&1; then

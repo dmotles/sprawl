@@ -4,6 +4,8 @@ import (
 	"bytes"
 	"errors"
 	"io"
+	"os"
+	"path/filepath"
 	"strings"
 	"sync"
 	"testing"
@@ -258,6 +260,115 @@ func TestSandboxGC_OutputFormat(t *testing.T) {
 	}
 	if !gotHint {
 		t.Errorf("output missing actionable next-action hint per /cli-ux-best-practices; want one of [re-run|now safe|next:|you can now|sprawl sandbox]; got: %s", out)
+	}
+}
+
+// QUM-1119: defaultListTmpDirs used to glob only "/tmp/sprawl-*-e2e-*",
+// "/tmp/sprawl-test-*" and "/tmp/sprawl-rb-*" — a hardcoded, enumerated list
+// that none of the real e2e rows' sandbox-root prefixes match (they pass
+// their own prefix to e2e_make_sandbox_root, mostly "sprawl-qum<NNN>", with
+// no "-e2e-" or "-test-" substring). discoverSandboxTmpDirs replaces the
+// prefix list with a structural marker: a directory directly under base
+// named "sprawl-*" that itself contains a ".sprawl" subdirectory — the same
+// marker e2e_make_sandbox_root + e2e_init_sandbox_repo leave on every real
+// sandbox root, regardless of which prefix a given row picked.
+func TestDiscoverSandboxTmpDirs_FindsMarkedDirsRegardlessOfPrefix(t *testing.T) {
+	base := t.TempDir()
+
+	// A real leaked sandbox root, using a prefix NOT in the old hardcoded
+	// list. This is the positive control: if the discovery still keyed on
+	// "-e2e-"/"-test-"/"-rb-" it would miss this entirely.
+	leaked := filepath.Join(base, "sprawl-qum1186-busy-QMmd7o")
+	if err := os.MkdirAll(filepath.Join(leaked, ".sprawl"), 0o755); err != nil {
+		t.Fatalf("mkdir leaked root: %v", err)
+	}
+
+	// Retained artifacts observed in the real QUM-1119 incident. None has a
+	// ".sprawl" marker directly inside it, which is what must exclude them —
+	// NOT their name, since a name denylist only protects artifacts whose
+	// name is known today.
+	backupDated := filepath.Join(base, "sprawl-agents-backup-20260527-153542")
+	if err := os.MkdirAll(filepath.Join(backupDated, "weave"), 0o755); err != nil {
+		t.Fatalf("mkdir backupDated: %v", err)
+	}
+	backupGit := filepath.Join(base, "sprawl-backup.git")
+	if err := os.MkdirAll(backupGit, 0o755); err != nil {
+		t.Fatalf("mkdir backupGit: %v", err)
+	}
+	if err := os.WriteFile(filepath.Join(base, "sprawl-allrefs-backup.bundle"), []byte("x"), 0o644); err != nil {
+		t.Fatalf("write bundle: %v", err)
+	}
+	if err := os.WriteFile(filepath.Join(base, "sprawl-v0.2.7-known-good.bin"), []byte("x"), 0o755); err != nil {
+		t.Fatalf("write known-good bin: %v", err)
+	}
+
+	// A symlink whose target DOES have a .sprawl marker — must still be
+	// excluded. Reaping must never follow a symlink into deletion territory.
+	symlinkTarget := filepath.Join(base, "real-target-with-marker")
+	if err := os.MkdirAll(filepath.Join(symlinkTarget, ".sprawl"), 0o755); err != nil {
+		t.Fatalf("mkdir symlink target: %v", err)
+	}
+	if err := os.Symlink(symlinkTarget, filepath.Join(base, "sprawl-evil-symlink")); err != nil {
+		t.Fatalf("symlink: %v", err)
+	}
+
+	got, err := discoverSandboxTmpDirs(base)
+	if err != nil {
+		t.Fatalf("discoverSandboxTmpDirs: %v", err)
+	}
+
+	if len(got) != 1 || got[0] != leaked {
+		t.Fatalf("discoverSandboxTmpDirs(%s) = %v, want exactly [%s]", base, got, leaked)
+	}
+}
+
+// QUM-1119 AC: "/tmp/coder-script-data is never touched. Assert it
+// explicitly." discoverSandboxTmpDirs itself cannot return it (its glob is
+// "sprawl-*" and that name does not match), but the safety net inside
+// runSandboxGC must ALSO refuse it by name, in case discovery ever regresses
+// to something broader. This is the explicit assertion the AC calls for.
+func TestIsSandboxRootPath_RefusesCoderScriptData(t *testing.T) {
+	if isSandboxRootPath("/tmp/coder-script-data") {
+		t.Fatal("isSandboxRootPath(/tmp/coder-script-data) = true, want false — this path is host tooling state and must never be reaped")
+	}
+	if isSandboxRootPath("/tmp/coder-script-data/bin/claude") {
+		t.Fatal("isSandboxRootPath(/tmp/coder-script-data/bin/claude) = true, want false")
+	}
+}
+
+// QUM-1119 AC: "The reaper cannot delete outside /tmp/<known-prefix>; a unit
+// test asserts it refuses an unexpected path rather than silently skipping
+// it." Injects an unexpected path directly through listTmpDirs (as if
+// discovery itself regressed) and asserts runSandboxGC REFUSES it loudly
+// (prints a refusal) rather than quietly passing it through to removeAll.
+func TestSandboxGC_RefusesUnexpectedTmpDirPath(t *testing.T) {
+	tests := []struct {
+		name string
+		path string
+	}{
+		{"outside_tmp", "/etc/passwd-shaped-dir"},
+		{"coder_script_data", "/tmp/coder-script-data"},
+		{"coder_script_data_child", "/tmp/coder-script-data/bin/claude"},
+		{"not_sprawl_prefixed", "/tmp/not-sprawl-prefixed"},
+		{"nested_not_direct_child", "/tmp/sprawl-ok/sprawl-nested"},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			st := newGCMockState()
+			st.tmpDirs = []string{tt.path}
+			st.dirMtimes[tt.path] = st.nowT.Add(-3 * time.Hour)
+			deps, buf := newTestSandboxGCDeps(t, st)
+
+			if err := runSandboxGC(deps, false, time.Hour); err != nil {
+				t.Fatalf("runSandboxGC: %v", err)
+			}
+			if len(st.removedDirs) != 0 {
+				t.Errorf("removeAll called on unexpected path %s: %v", tt.path, st.removedDirs)
+			}
+			if !strings.Contains(strings.ToLower(buf.String()), "refus") {
+				t.Errorf("expected a loud refusal message for unexpected path %s, got: %s", tt.path, buf.String())
+			}
+		})
 	}
 }
 

@@ -115,6 +115,12 @@ discover_rows() {
 #   2   usage / argument error — no row ran
 #   3   at least one row skipped, none failed
 #   4   internal invariant violation (bucket sum, or the rc-0+sentinel row)
+#   5   environment unfit (QUM-1118) — a disk-space precondition failed, either
+#       before any row ran or mid-run between rows. Distinct from BOTH 3 (skip:
+#       nothing measured, and that's fine) and 1 (a row genuinely failed): here
+#       nothing was measured and that is NOT acceptable. Never downgrade this to
+#       3 or 1 to "simplify" scraping — that is precisely the vacuity this exists
+#       to end.
 #   77  reserved as a ROW's skip signal; never this driver's own exit status
 #
 # Why 3 rather than 0 on a partial skip: this driver is the mandatory gate the
@@ -182,6 +188,19 @@ fi
 if [ ! -r "$LIB" ] && [ -r "$SCRIPT_DIR/lib/e2e-common.sh" ]; then
     LIB="$SCRIPT_DIR/lib/e2e-common.sh"
 fi
+
+# QUM-1118: fail loudly and DISTINCTLY (not a skip, not a row failure) before
+# any row runs if the environment cannot host the run — see the 2026-08-06
+# incident this exists to prevent, where 13 of 19 rows died inside `go build`
+# with ENOSPC and were reported as ordinary FAILs. Sourced at driver level
+# (not only inside run_row's subshell) so the check runs and can `exit`
+# straight out of the driver before the selection banner below is even
+# printed. e2e_check_disk_space is re-invoked at the top of the per-row loop
+# too, so exhaustion arising mid-run is reported through this exact same path
+# rather than surfacing as an unrelated cascade of row failures.
+# shellcheck disable=SC1090
+. "$LIB"
+e2e_check_disk_space
 
 run_row() {
     local name="$1"
@@ -280,6 +299,12 @@ reset_skip_sentinel() {
 }
 
 for name in "${selected[@]}"; do
+    # QUM-1118: re-check before EVERY row, not just once at the top of this
+    # file. A long run can exhaust disk between rows; this call aborts the
+    # whole driver (exit 5, see e2e_check_disk_space) rather than letting the
+    # next row run and fail for a reason that has nothing to do with it.
+    e2e_check_disk_space
+
     # Truncate PER ROW, and REFUSE TO CONTINUE if that fails. A stale sentinel
     # would launder the next row's failure into a skip (exit 3 instead of 1),
     # hiding a real failure — so a truncation error leaves classification

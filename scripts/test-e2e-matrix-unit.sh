@@ -137,7 +137,21 @@ FAIL=0
 # One pin removed = one assertion. Lowering a floor is the direction that hides
 # things, so it is stated here rather than left to be inferred from the number.
 # Re-measured on a FULL GREEN run.
-MIN_ASSERTIONS=498
+# 526 once QUM-1118 added section [20] (22 assertions: the disk-space
+# precondition — healthy/unfit verdicts for each filesystem checked
+# independently and both together, the boundary at the default 4096MB
+# threshold, the SPRAWL_E2E_MIN_FREE_MB override and its malformed-value
+# rejection, and two full driver-integration runs proving a startup-time and a
+# mid-run exhaustion each abort with exit 5 before/between rows rather than
+# reporting an ordinary row FAIL) PLUS 6 from [16]'s own machinery
+# auto-scaling with the two new SPRAWL_E2E_MATRIX_DEBUG_FREE_MB_TMP/_REPO
+# seams QUM-1118 registers (1 [16a] pass + 2 [16b] passes per seam x 2 seams).
+# Section [20] is pass/fail-invariant in the same way [17]/[18]/[19] are:
+# every arm is a symmetric assertion pair (positive result + its
+# distinguishing message content), so the count does not move when the
+# implementation's behaviour flips. Re-measured on a FULL GREEN run — 526
+# passed / 0 failed.
+MIN_ASSERTIONS=526
 # A [16b] nested child deliberately does NOT re-run section [16] (recursing would
 # fork-bomb, and counting there would corrupt the parity comparison), so it asserts
 # strictly fewer things and needs its own floor. Measured at de22410: 237; 238 after
@@ -174,7 +188,12 @@ MIN_ASSERTIONS=498
 # UNIT_NESTED_SEAM_CHECK set: "491 passed / 1 failed", the one fail being 16c's.
 # 490 after the same QUM-1197 pin deletion (-1). Measured with
 # UNIT_NESTED_SEAM_CHECK set.
-MIN_ASSERTIONS_NESTED=490
+# 512 once QUM-1118 added section [20], which the child DOES run (+22, same as
+# the parent floor above — section [20] does not reference
+# UNIT_NESTED_SEAM_CHECK, so it behaves identically in a nested child).
+# Measured with UNIT_NESTED_SEAM_CHECK set: "512 passed / 1 failed", the one
+# fail being 16c's deliberate one, per the recipe above.
+MIN_ASSERTIONS_NESTED=512
 
 # Pin the temp root. This suite runs inside `make validate` and therefore inside
 # the pre-commit hook, so it must not inherit the committing agent's TMPDIR:
@@ -215,6 +234,18 @@ UNIT_SCRUBBED_VARS=(
 	# [18]'s empty-ledger negative controls go red for a reason that has nothing
 	# to do with the code under test.
 	E2E_CAPTURE_FAULT_FILE
+	# QUM-1118. Debug seams for e2e_check_disk_space's free-space reading — an
+	# inherited value here would make section [20]'s healthy-environment
+	# baselines (20a/20k) silently measure whatever the operator's shell
+	# happened to export instead of the code under test.
+	SPRAWL_E2E_MATRIX_DEBUG_FREE_MB_TMP
+	SPRAWL_E2E_MATRIX_DEBUG_FREE_MB_REPO
+	# QUM-1118. A production override, not a `_DEBUG_` seam (so [16a] will not
+	# auto-discover it), but it needs the same scrubbing for the same reason
+	# SPRAWL_E2E_SKIP_NO_CLAUDE does: an inherited value would flip section
+	# [20]'s negative controls (20a/20b/20d/20k, none of which set it) for a
+	# reason that has nothing to do with the code under test.
+	SPRAWL_E2E_MIN_FREE_MB
 )
 UNIT_SCRUB_ARGS=()
 for _v in "${UNIT_SCRUBBED_VARS[@]}"; do
@@ -556,6 +587,13 @@ else
 	else
 		mkdir -p "$FIXDIR/lib" "$FIXDIR/e2e-tests"
 		cp "$LIB" "$FIXDIR/lib/e2e-common.sh" 2>/dev/null
+		# QUM-957: e2e-common.sh sources capture-pane.sh as a sibling, so this
+		# hand-rolled fixture needs it too — same requirement _unit_mk_fixture_tree
+		# already documents. QUM-1118 is what surfaced this fixture's omission:
+		# once the driver top-level (not just each row's subshell) sources $LIB
+		# directly, a missing sibling here is no longer masked by run_row's `||`
+		# errexit-suppression and aborts the whole driver before any row runs.
+		cp "$REPO_ROOT/scripts/lib/capture-pane.sh" "$FIXDIR/lib/capture-pane.sh" 2>/dev/null
 		cp "$DRIVER" "$FIXDIR/e2e-matrix.sh" 2>/dev/null
 
 		# Fixture A: needs_claude=1 — should SKIP under SPRAWL_E2E_SKIP_NO_CLAUDE=1
@@ -5381,6 +5419,302 @@ if [ -n "$P19_FIX" ] && [ -d "$P19_FIX" ]; then
 	case "$P19_FIX" in
 		"$UNIT_TMP_ROOT"/e2e-matrix-unit-p19.*) rm -rf -- "$P19_FIX" ;;
 		*) echo "  NOTE: refusing to remove unexpected fixture dir '$P19_FIX'" >&2 ;;
+	esac
+fi
+
+# ----------------------------------------------------------------------------
+# 20. QUM-1118: a disk-space precondition that FAILS (never skips) when a
+#     filesystem the harness writes to is too full, distinct from BOTH a skip
+#     (3/77 — nothing measured, and that's fine) and an ordinary row failure
+#     (1 — the product is broken). Re-checked before every row, so exhaustion
+#     arising mid-run is reported through the SAME path rather than as a
+#     cascade of unrelated row FAILs.
+#
+#     20a-20g/20k drive e2e_check_disk_space directly, in a subshell, using the
+#     SPRAWL_E2E_MATRIX_DEBUG_FREE_MB_TMP/_REPO seams — never a real filled
+#     disk, per the repo's assertion-rigor rule. 20h/20i drive the REAL driver
+#     end to end through a fixture tree, because the startup-vs-mid-run
+#     distinction is a property of the LOOP in scripts/e2e-matrix.sh, not of
+#     the helper function alone: a test that only calls the helper cannot show
+#     row A ran, row B did not, and the abort is not misreported as row B
+#     FAILing.
+# ----------------------------------------------------------------------------
+echo "[20] QUM-1118 disk-space precondition"
+
+# 20a: healthy environment -> rc 0, nothing on stderr. This IS the negative
+# control for every other case in this section: if e2e_check_disk_space ever
+# printed its FATAL banner unconditionally, this is what would catch it.
+out=$(
+	(
+		export SPRAWL_E2E_MATRIX_DEBUG_FREE_MB_TMP=999999
+		export SPRAWL_E2E_MATRIX_DEBUG_FREE_MB_REPO=999999
+		# shellcheck disable=SC1090
+		. "$LIB" >/dev/null 2>&1 || exit 99
+		e2e_check_disk_space
+	) 2>&1
+)
+rc=$?
+if [ "$rc" -eq 0 ]; then
+	pass "20a: e2e_check_disk_space returns 0 when every filesystem is healthy"
+else
+	fail "20a: e2e_check_disk_space rc=$rc on a healthy environment (want 0); output: $out"
+fi
+if [ -z "$out" ]; then
+	pass "20a: a healthy run emits nothing at all (negative control for 20b/20d/20c/20e/20f/20h/20i)"
+else
+	fail "20a: a healthy run emitted output it should not have: $out"
+fi
+
+# 20b: unfit TMP filesystem -> exits exactly E2E_ENV_UNFIT_EXIT (5), and the
+# message names the path, the free MB, and the threshold MB.
+out=$(
+	(
+		export SPRAWL_E2E_MATRIX_DEBUG_FREE_MB_TMP=10
+		export SPRAWL_E2E_MATRIX_DEBUG_FREE_MB_REPO=999999
+		# shellcheck disable=SC1090
+		. "$LIB" >/dev/null 2>&1 || exit 99
+		e2e_check_disk_space
+	) 2>&1
+)
+rc=$?
+if [ "$rc" -eq 5 ]; then
+	pass "20b: an unfit tmp filesystem exits exactly 5 (E2E_ENV_UNFIT_EXIT), not 1/3/4/77"
+else
+	fail "20b: an unfit tmp filesystem exited rc=$rc, want 5; output: $out"
+fi
+case "$out" in
+	*"ENVIRONMENT UNFIT"*"/tmp"*"10MB"*"4096MB"*)
+		pass "20b: message names the path, the free MB, and the threshold MB"
+		;;
+	*)
+		fail "20b: message missing path/free/threshold detail; got: $out"
+		;;
+esac
+
+# 20c: BOTH filesystems unfit -> each gets its own FATAL line, not just the
+# first. A short-circuit-on-first-failure regression would leave the caller
+# unable to see the repo filesystem is also unfit.
+out=$(
+	(
+		export SPRAWL_E2E_MATRIX_DEBUG_FREE_MB_TMP=1
+		export SPRAWL_E2E_MATRIX_DEBUG_FREE_MB_REPO=1
+		# shellcheck disable=SC1090
+		. "$LIB" >/dev/null 2>&1 || exit 99
+		e2e_check_disk_space
+	) 2>&1
+)
+n=$(printf '%s\n' "$out" | grep -c "ENVIRONMENT UNFIT")
+if [ "$n" -eq 2 ]; then
+	pass "20c: both unfit filesystems are each named in their own FATAL line, not just the first"
+else
+	fail "20c: expected 2 'ENVIRONMENT UNFIT' lines when both filesystems are unfit, got $n; out=$out"
+fi
+
+# 20d: unfit REPO filesystem (tmp healthy) -> also exits 5, message names it.
+out=$(
+	(
+		export SPRAWL_E2E_MATRIX_DEBUG_FREE_MB_TMP=999999
+		export SPRAWL_E2E_MATRIX_DEBUG_FREE_MB_REPO=5
+		# shellcheck disable=SC1090
+		. "$LIB" >/dev/null 2>&1 || exit 99
+		e2e_check_disk_space
+	) 2>&1
+)
+rc=$?
+if [ "$rc" -eq 5 ]; then
+	pass "20d: an unfit REPO filesystem (tmp healthy) also exits 5"
+else
+	fail "20d: repo-unfit rc=$rc, want 5; out=$out"
+fi
+case "$out" in
+	*"ENVIRONMENT UNFIT"*"5MB"*"4096MB"*)
+		pass "20d: message names the repo path's free MB and threshold"
+		;;
+	*)
+		fail "20d: message missing repo-path detail; got: $out"
+		;;
+esac
+
+# 20e: SPRAWL_E2E_MIN_FREE_MB actually changes the verdict (an otherwise-unfit
+# 100MB passes once the threshold is lowered to 50), and is logged loudly —
+# naming both the override value and the default it replaced, unconditionally.
+out=$(
+	(
+		export SPRAWL_E2E_MATRIX_DEBUG_FREE_MB_TMP=100
+		export SPRAWL_E2E_MATRIX_DEBUG_FREE_MB_REPO=999999
+		export SPRAWL_E2E_MIN_FREE_MB=50
+		# shellcheck disable=SC1090
+		. "$LIB" >/dev/null 2>&1 || exit 99
+		e2e_check_disk_space
+	) 2>&1
+)
+rc=$?
+if [ "$rc" -eq 0 ]; then
+	pass "20e: SPRAWL_E2E_MIN_FREE_MB override actually changes the pass/fail verdict"
+else
+	fail "20e: override did not take effect; rc=$rc out=$out"
+fi
+case "$out" in
+	*"WARN"*"SPRAWL_E2E_MIN_FREE_MB=50"*"default 4096"*)
+		pass "20e: the override is logged loudly, naming both the override value and the default"
+		;;
+	*)
+		fail "20e: override was not logged (or not loudly); out=$out"
+		;;
+esac
+
+# 20f: a non-numeric override fails LOUDLY rather than silently falling back
+# to the default — a typo'd override must not quietly re-enable (or disable)
+# the check it was meant to relax (or tighten).
+out=$(
+	(
+		export SPRAWL_E2E_MATRIX_DEBUG_FREE_MB_TMP=999999
+		export SPRAWL_E2E_MATRIX_DEBUG_FREE_MB_REPO=999999
+		export SPRAWL_E2E_MIN_FREE_MB=not-a-number
+		# shellcheck disable=SC1090
+		. "$LIB" >/dev/null 2>&1 || exit 99
+		e2e_check_disk_space
+	) 2>&1
+)
+rc=$?
+if [ "$rc" -eq 5 ]; then
+	pass "20f: a non-numeric SPRAWL_E2E_MIN_FREE_MB override fails loudly (exit 5) rather than silently defaulting"
+else
+	fail "20f: malformed override rc=$rc, want 5; out=$out"
+fi
+
+# 20k: boundary at the default threshold. >= threshold is fit; one MB under is
+# not — the off-by-one direction that would otherwise let the exact failure
+# point of the 2026-08-06 incident (which this section's constant is derived
+# from) slip through as "fit".
+out=$(
+	(
+		export SPRAWL_E2E_MATRIX_DEBUG_FREE_MB_TMP=4096
+		export SPRAWL_E2E_MATRIX_DEBUG_FREE_MB_REPO=999999
+		# shellcheck disable=SC1090
+		. "$LIB" >/dev/null 2>&1 || exit 99
+		e2e_check_disk_space
+	) 2>&1
+)
+rc=$?
+if [ "$rc" -eq 0 ]; then
+	pass "20k: exactly the default threshold (4096MB) is treated as fit"
+else
+	fail "20k: exactly-at-threshold rc=$rc, want 0; out=$out"
+fi
+out=$(
+	(
+		export SPRAWL_E2E_MATRIX_DEBUG_FREE_MB_TMP=4095
+		export SPRAWL_E2E_MATRIX_DEBUG_FREE_MB_REPO=999999
+		# shellcheck disable=SC1090
+		. "$LIB" >/dev/null 2>&1 || exit 99
+		e2e_check_disk_space
+	) 2>&1
+)
+rc=$?
+if [ "$rc" -eq 5 ]; then
+	pass "20k: one MB below the default threshold (4095MB) is treated as unfit"
+else
+	fail "20k: one-below-threshold rc=$rc, want 5; out=$out"
+fi
+
+# 20h: driver-integration, STARTUP. An unfit environment before any row runs
+# exits 5, no row's marker is written, the row-selection banner is never
+# printed, and no pass/fail summary line is printed (that summary means a run
+# completed; this run never started).
+P20_FIX=$(mktemp -d "$UNIT_TMP_ROOT/e2e-matrix-unit-p20.XXXXXX" 2>/dev/null)
+if [ -n "$P20_FIX" ] && _unit_mk_fixture_tree "$P20_FIX"; then
+	_unit_mk_marker_row "$P20_FIX/e2e-tests" rowA 0
+	_unit_mk_marker_row "$P20_FIX/e2e-tests" rowB 0
+	_unit_run_env "$P20_FIX" "$P20_FIX/markers" \
+		"SPRAWL_E2E_MATRIX_DEBUG_FREE_MB_TMP=10 SPRAWL_E2E_MATRIX_DEBUG_FREE_MB_REPO=999999" \
+		rowA rowB
+	if [ "$_RC" -eq 5 ]; then
+		pass "20h: a startup-unfit driver run exits exactly 5"
+	else
+		fail "20h: startup-unfit driver run exited $_RC, want 5; out=$_OUT err=$_ERR"
+	fi
+	_unit_assert_ran "$P20_FIX/markers" rowA no "20h: row A never ran (environment unfit before any row)"
+	_unit_assert_ran "$P20_FIX/markers" rowB no "20h: row B never ran (environment unfit before any row)"
+	_unit_assert_no_summary "$_OUT$_ERR" "20h: no pass/fail summary line printed on a startup environment-unfit abort"
+	case "$_OUT" in
+		*"running 2 row(s)"*)
+			fail "20h: the row-selection banner was printed even though the environment was unfit before any row ran"
+			;;
+		*)
+			pass "20h: the row-selection banner is never reached when the environment is unfit at startup"
+			;;
+	esac
+else
+	fail "20h: could not build the fixture tree — startup-unfit path was not exercised"
+	fail "20h: could not build the fixture tree — no-row-ran assertion (rowA) was not exercised"
+	fail "20h: could not build the fixture tree — no-row-ran assertion (rowB) was not exercised"
+	fail "20h: could not build the fixture tree — no-summary assertion was not exercised"
+	fail "20h: could not build the fixture tree — banner-not-printed assertion was not exercised"
+fi
+if [ -n "$P20_FIX" ] && [ -d "$P20_FIX" ]; then
+	case "$P20_FIX" in
+		"$UNIT_TMP_ROOT"/e2e-matrix-unit-p20.*) rm -rf -- "$P20_FIX" ;;
+		*) echo "  NOTE: refusing to remove unexpected fixture dir '$P20_FIX'" >&2 ;;
+	esac
+fi
+
+# 20i: driver-integration, MID-RUN. Row A starts while the environment is
+# healthy, runs to completion and leaves its marker — then, as its LAST
+# action, rewrites a seam FILE to a too-low value. The seam is a file (not a
+# bare env-var number) specifically so a value can change BETWEEN two checks
+# in the same long-lived driver PROCESS without ever touching real disk space:
+# row A runs in run_row's subshell, but the file it writes is real, so the
+# PARENT driver's next e2e_check_disk_space call (before row B) reads it
+# fresh. Row B must never run, and must never be reported as an ordinary FAIL
+# — the whole point of QUM-1118 is that this is environment-unfit, not a row
+# failure.
+P20B_FIX=$(mktemp -d "$UNIT_TMP_ROOT/e2e-matrix-unit-p20b.XXXXXX" 2>/dev/null)
+if [ -n "$P20B_FIX" ] && _unit_mk_fixture_tree "$P20B_FIX"; then
+	mkdir -p "$P20B_FIX/markers"
+	SEAM20B="$P20B_FIX/free-mb-tmp-seam"
+	echo 999999 >"$SEAM20B"
+	cat >"$P20B_FIX/e2e-tests/rowA.sh" <<EOF
+MIN_ASSERTIONS=1
+test_metadata() { echo ""; }
+test_run() {
+	: >"\${UNIT_MARKER_DIR:?UNIT_MARKER_DIR unset}/rowA"
+	pass "rowA ran"
+	echo 1 >"$SEAM20B"
+	e2e_print_results
+}
+EOF
+	_unit_mk_marker_row "$P20B_FIX/e2e-tests" rowB 0
+	_unit_run_env "$P20B_FIX" "$P20B_FIX/markers" \
+		"SPRAWL_E2E_MATRIX_DEBUG_FREE_MB_TMP=$SEAM20B SPRAWL_E2E_MATRIX_DEBUG_FREE_MB_REPO=999999" \
+		rowA rowB
+	if [ "$_RC" -eq 5 ]; then
+		pass "20i: mid-run exhaustion (between row A and row B) exits exactly 5, same code as a startup-time failure"
+	else
+		fail "20i: mid-run exhaustion exited $_RC, want 5; out=$_OUT err=$_ERR"
+	fi
+	_unit_assert_ran "$P20B_FIX/markers" rowA yes "20i: row A, which ran while the environment was still healthy, ran and left its marker"
+	_unit_assert_ran "$P20B_FIX/markers" rowB no "20i: row B never ran once the environment went unfit between rows"
+	case "$_OUT" in
+		*"FAIL rowB"*)
+			fail "20i: row B was reported as an ordinary FAIL rather than environment-unfit"
+			;;
+		*)
+			pass "20i: row B is never classified as an ordinary row FAIL — the abort preempts classification entirely"
+			;;
+	esac
+	_unit_assert_no_summary "$_OUT$_ERR" "20i: no pass/fail summary line printed when disk exhaustion is detected mid-run"
+else
+	fail "20i: could not build the fixture tree — mid-run exhaustion path was not exercised"
+	fail "20i: could not build the fixture tree — row-A-ran assertion was not exercised"
+	fail "20i: could not build the fixture tree — row-B-never-ran assertion was not exercised"
+	fail "20i: could not build the fixture tree — not-classified-as-FAIL assertion was not exercised"
+	fail "20i: could not build the fixture tree — no-summary assertion was not exercised"
+fi
+if [ -n "$P20B_FIX" ] && [ -d "$P20B_FIX" ]; then
+	case "$P20B_FIX" in
+		"$UNIT_TMP_ROOT"/e2e-matrix-unit-p20b.*) rm -rf -- "$P20B_FIX" ;;
+		*) echo "  NOTE: refusing to remove unexpected fixture dir '$P20B_FIX'" >&2 ;;
 	esac
 fi
 
