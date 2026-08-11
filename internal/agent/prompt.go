@@ -299,8 +299,8 @@ func envContextBlock(branchName string, env EnvConfig) string {
 func BuildResearcherPrompt(agentName, parentName, branchName string, env EnvConfig) string {
 	sections := []string{
 		researcherIdentitySection(agentName, parentName, branchName),
-		childSystemSection,
 		researcherDocumentingSection(agentName),
+		childSystemSection,
 		researcherExecutingActionsSection(),
 		researcherReflectionSection,
 		researcherRulesBlock(parentName),

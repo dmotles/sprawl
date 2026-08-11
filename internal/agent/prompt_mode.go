@@ -157,10 +157,11 @@ files or configuration, investigate before deleting or overwriting. Measure
 twice, cut once.`
 
 // childExtraCautionExamplesBlock is the optional "extra caution" paragraph
-// passed as {{EXTRA_CAUTION_BLOCK}}. Roles that operate a raw shell directly
-// (engineer, researcher, qa) get it; the manager, which orchestrates only
-// through MCP tools and never runs raw destructive git/shell commands
-// itself, does not.
+// passed as {{EXTRA_CAUTION_BLOCK}}. engineer/researcher/qa get it; manager
+// does not, because manager's pre-QUM-1129 section never carried it and
+// AC-4 requires manager's assembled prompt to stay byte-identical — not
+// because manager's own actions (it merges, which is exactly force-push /
+// visible-to-others territory) are somehow less risky.
 const childExtraCautionExamplesBlock = `Examples of actions that require extra caution:
 - Destructive operations: deleting branches, killing processes, rm -rf, overwriting uncommitted changes
 - Hard-to-reverse operations: force-pushing, git reset --hard, amending published commits
@@ -193,23 +194,30 @@ use your best judgment. If you're unsure whether an action is safe, send a
 message to your parent before proceeding.`
 
 // researcherOpeningBlock mirrors engineerOpeningBlock's shape: a researcher's
-// local, reversible actions are reading code, running commands, and writing
-// findings/docs into its own worktree, not editing production code or tests.
+// local, reversible actions are reading code, running READ-ONLY commands, and
+// writing findings/docs into its own worktree, not editing production code or
+// tests. Deliberately narrower than "running commands" (which a researcher —
+// the role most often pointed at unfamiliar territory, per QUM-1129's own
+// motivation — could otherwise read as blanket permission): the freely
+// allowed set stays bounded to what RESEARCH APPROACH above actually asks it
+// to do.
 const researcherOpeningBlock = `Carefully consider the reversibility and blast radius of actions. You can freely
-take local, reversible actions like reading code, running commands, or writing
-findings and docs in your worktree. But for actions that are hard to reverse or
-affect shared systems beyond your worktree, use your best judgment. If you're
-unsure whether an action is safe, send a message to your manager before
-proceeding.`
+take local, reversible actions like reading code, running read-only commands,
+or writing findings and docs in your worktree. But for actions that are hard
+to reverse or affect shared systems beyond your worktree, use your best
+judgment. If you're unsure whether an action is safe, send a message to your
+manager before proceeding.`
 
-// qaOpeningBlock mirrors managerOpeningBlock's shape: QA runs validation
-// commands and checks status, and (like manager, unlike engineer/researcher)
-// writes no production code — only findings markdown.
+// qaOpeningBlock mirrors managerOpeningBlock's shape, but the freely-allowed
+// set is QA's own VERIFICATION PROTOCOL below: running validation commands,
+// inspecting the engineer's diff, and writing findings markdown — QA writes
+// no production code, unlike engineer/researcher.
 const qaOpeningBlock = `Carefully consider the reversibility and blast radius of actions. You can freely
-take local, reversible actions like running validation commands or checking
-status. But for actions that are hard to reverse or affect shared systems
-beyond your worktree, use your best judgment. If you're unsure whether an
-action is safe, send a message to your manager before proceeding.`
+take local, reversible actions like running validation commands, inspecting
+diffs, or writing findings in your worktree. But for actions that are hard to
+reverse or affect shared systems beyond your worktree, use your best
+judgment. If you're unsure whether an action is safe, send a message to your
+manager before proceeding.`
 
 // engineerExecutingActionsSection returns the "Executing actions with care"
 // section for the engineer prompt. Byte-identical to the pre-QUM-1129 const

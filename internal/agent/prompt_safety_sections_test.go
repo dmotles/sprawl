@@ -26,9 +26,16 @@ import (
 // heading, or the end of the prompt. ok is false if heading does not occur.
 // This is what makes the guardrail scanner below a real per-section
 // membership check rather than a whole-prompt substring search: a phrase
-// that occurs in some unrelated section must NOT satisfy it.
+// that occurs in some unrelated section must NOT satisfy it. The marker must
+// start a line — matching mid-line prose that happens to contain the literal
+// heading text would scope the extraction to the wrong span.
 func extractHeadingSection(prompt, heading string) (string, bool) {
-	idx := strings.Index(prompt, heading)
+	idx := -1
+	if strings.HasPrefix(prompt, heading) {
+		idx = 0
+	} else if lineIdx := strings.Index(prompt, "\n"+heading); lineIdx != -1 {
+		idx = lineIdx + 1
+	}
 	if idx == -1 {
 		return "", false
 	}
@@ -95,19 +102,31 @@ func scanQAConcurrencyGuidance(prompt string) []string {
 
 // --- Tests over the real prompts ---
 
-// childRoleCases are every rendered case that must receive the full shared
-// safety section set: engineer, researcher, manager, and qa, in both plain
-// and subagent form where applicable.
-var childSafetyRoleCases = map[string]bool{
-	"engineer": true, "engineer-subagent": true,
-	"researcher": true,
-	"manager":    true, "manager-subagent": true,
-	"qa": true,
+// rootPromptCases are the only render cases that must NOT receive the shared
+// safety sections (root has its own copy, deliberately incomplete — see the
+// negative-control tests below). Kept as the allowlist, rather than listing
+// child roles, so that a newly added child render case is covered by
+// childSafetyRoleCases automatically: the failure mode QUM-1129 fixes is a
+// new role silently born with no safety text, and an opt-in child allowlist
+// reproduces exactly that risk for any case nobody remembered to add to it.
+var rootPromptCases = map[string]bool{"root": true, "root-no-cli": true}
+
+// childSafetyRoleCases are every rendered case that must receive the full
+// shared safety section set — every case except the root ones.
+func childSafetyRoleCases() map[string]bool {
+	cases := map[string]bool{}
+	for _, tc := range allPromptRenderCases() {
+		if !rootPromptCases[tc.name] {
+			cases[tc.name] = true
+		}
+	}
+	return cases
 }
 
 func TestPromptRenderers_ChildRolesHaveExecutingActionsGuardrail(t *testing.T) {
+	cases := childSafetyRoleCases()
 	for _, tc := range allPromptRenderCases() {
-		if !childSafetyRoleCases[tc.name] {
+		if !cases[tc.name] {
 			continue
 		}
 		t.Run(tc.name, func(t *testing.T) {
@@ -126,9 +145,8 @@ func TestPromptRenderers_ChildRolesHaveExecutingActionsGuardrail(t *testing.T) {
 // its own "Executing actions with care" section, just without the
 // destructive-var guardrail.
 func TestPromptRenderers_RootExecutingActionsSectionLacksGuardrail(t *testing.T) {
-	roots := map[string]bool{"root": true, "root-no-cli": true}
 	for _, tc := range allPromptRenderCases() {
-		if !roots[tc.name] {
+		if !rootPromptCases[tc.name] {
 			continue
 		}
 		t.Run(tc.name, func(t *testing.T) {
@@ -144,8 +162,9 @@ func TestPromptRenderers_RootExecutingActionsSectionLacksGuardrail(t *testing.T)
 }
 
 func TestPromptRenderers_ChildRolesTeachPromptInjectionEscalation(t *testing.T) {
+	cases := childSafetyRoleCases()
 	for _, tc := range allPromptRenderCases() {
-		if !childSafetyRoleCases[tc.name] {
+		if !cases[tc.name] {
 			continue
 		}
 		t.Run(tc.name, func(t *testing.T) {
@@ -161,9 +180,8 @@ func TestPromptRenderers_ChildRolesTeachPromptInjectionEscalation(t *testing.T) 
 // prompt-injection sentence (flag it to the user directly), which must NOT
 // satisfy a scanner keyed on the child-role escalation phrasing.
 func TestPromptRenderers_RootDoesNotEscalatePromptInjectionToManagerAndWeave(t *testing.T) {
-	roots := map[string]bool{"root": true, "root-no-cli": true}
 	for _, tc := range allPromptRenderCases() {
-		if !roots[tc.name] {
+		if !rootPromptCases[tc.name] {
 			continue
 		}
 		t.Run(tc.name, func(t *testing.T) {
@@ -184,8 +202,9 @@ func TestPromptRenderers_RootDoesNotEscalatePromptInjectionToManagerAndWeave(t *
 // judge red/green under fleet load), so asserting its presence against
 // engineer/researcher/manager MUST fail.
 func TestPromptRenderers_QATeachesConcurrencyGuidance(t *testing.T) {
+	cases := childSafetyRoleCases()
 	for _, tc := range allPromptRenderCases() {
-		if !childSafetyRoleCases[tc.name] {
+		if !cases[tc.name] {
 			continue
 		}
 		t.Run(tc.name, func(t *testing.T) {
@@ -195,7 +214,7 @@ func TestPromptRenderers_QATeachesConcurrencyGuidance(t *testing.T) {
 					t.Errorf("qa prompt: %s", f)
 				}
 			} else if len(findings) == 0 {
-				t.Errorf("%s prompt: scanQAConcurrencyGuidance stayed quiet, but this guidance is QA-specific — the assertion must fail on non-qa roles", tc.name)
+				t.Errorf("%s prompt: scanQAConcurrencyGuidance stayed quiet — this guidance is QA-specific by design at QUM-1129; if a later change deliberately gave this role the same guidance, update this control rather than reading the failure as a defect", tc.name)
 			}
 		})
 	}
