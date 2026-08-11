@@ -146,12 +146,17 @@ FAIL=0
 # reporting an ordinary row FAIL) PLUS 6 from [16]'s own machinery
 # auto-scaling with the two new SPRAWL_E2E_MATRIX_DEBUG_FREE_MB_TMP/_REPO
 # seams QUM-1118 registers (1 [16a] pass + 2 [16b] passes per seam x 2 seams).
-# Section [20] is pass/fail-invariant in the same way [17]/[18]/[19] are:
-# every arm is a symmetric assertion pair (positive result + its
-# distinguishing message content), so the count does not move when the
-# implementation's behaviour flips. Re-measured on a FULL GREEN run — 526
-# passed / 0 failed.
-MIN_ASSERTIONS=526
+# 532 after code review (F1-F9 in .sprawl/agents/ratz/findings/qum-1118-1119-review.md)
+# fixed a real regression (F1: driver-level sourcing of $LIB silently disabled
+# cross-row fault-ledger isolation) and its 3 new assertions (20j), plus F2's
+# fix (seams now warn-and-refuse-to-guess rather than silently falling back to
+# real df) restructured 20a into a proper positive+negative pair and added a
+# true no-seam negative control (20a2), net +3. Section [20] is pass/fail-
+# invariant in the same way [17]/[18]/[19] are: every arm is a symmetric
+# assertion pair (positive result + its distinguishing message content), so
+# the count does not move when the implementation's behaviour flips.
+# Re-measured on a FULL GREEN run — 532 passed / 0 failed.
+MIN_ASSERTIONS=532
 # A [16b] nested child deliberately does NOT re-run section [16] (recursing would
 # fork-bomb, and counting there would corrupt the parity comparison), so it asserts
 # strictly fewer things and needs its own floor. Measured at de22410: 237; 238 after
@@ -193,7 +198,11 @@ MIN_ASSERTIONS=526
 # UNIT_NESTED_SEAM_CHECK, so it behaves identically in a nested child).
 # Measured with UNIT_NESTED_SEAM_CHECK set: "512 passed / 1 failed", the one
 # fail being 16c's deliberate one, per the recipe above.
-MIN_ASSERTIONS_NESTED=512
+# 518 after the same code-review fixes as the parent floor above (+6, the
+# child DOES run [20]). Measured directly (UNIT_NESTED_SEAM_CHECK set to a
+# valid nonce, not via [16b]'s deliberate-bad-nonce recipe): "518 passed / 0
+# failed".
+MIN_ASSERTIONS_NESTED=518
 
 # Pin the temp root. This suite runs inside `make validate` and therefore inside
 # the pre-commit hook, so it must not inherit the committing agent's TMPDIR:
@@ -586,15 +595,21 @@ else
 		fail "could not mktemp fixture dir"
 	else
 		mkdir -p "$FIXDIR/lib" "$FIXDIR/e2e-tests"
-		cp "$LIB" "$FIXDIR/lib/e2e-common.sh" 2>/dev/null
+		if ! cp "$LIB" "$FIXDIR/lib/e2e-common.sh" 2>/dev/null; then
+			fail "[10] setup: could not copy e2e-common.sh into the fixture"
+		fi
 		# QUM-957: e2e-common.sh sources capture-pane.sh as a sibling, so this
 		# hand-rolled fixture needs it too — same requirement _unit_mk_fixture_tree
-		# already documents. QUM-1118 is what surfaced this fixture's omission:
-		# once the driver top-level (not just each row's subshell) sources $LIB
-		# directly, a missing sibling here is no longer masked by run_row's `||`
-		# errexit-suppression and aborts the whole driver before any row runs.
-		cp "$REPO_ROOT/scripts/lib/capture-pane.sh" "$FIXDIR/lib/capture-pane.sh" 2>/dev/null
-		cp "$DRIVER" "$FIXDIR/e2e-matrix.sh" 2>/dev/null
+		# already documents. A missing sibling here aborts the whole fixture
+		# driver with an opaque "No such file or directory" rather than a named
+		# cause, so a failed copy is checked (code review finding) rather than
+		# left to surface as an unrelated-looking failure three tests later.
+		if ! cp "$REPO_ROOT/scripts/lib/capture-pane.sh" "$FIXDIR/lib/capture-pane.sh" 2>/dev/null; then
+			fail "[10] setup: could not copy capture-pane.sh into the fixture"
+		fi
+		if ! cp "$DRIVER" "$FIXDIR/e2e-matrix.sh" 2>/dev/null; then
+			fail "[10] setup: could not copy e2e-matrix.sh into the fixture"
+		fi
 
 		# Fixture A: needs_claude=1 — should SKIP under SPRAWL_E2E_SKIP_NO_CLAUDE=1
 		cat >"$FIXDIR/e2e-tests/_unit_fixture_claude.sh" <<'EOF'
@@ -5441,9 +5456,14 @@ fi
 # ----------------------------------------------------------------------------
 echo "[20] QUM-1118 disk-space precondition"
 
-# 20a: healthy environment -> rc 0, nothing on stderr. This IS the negative
-# control for every other case in this section: if e2e_check_disk_space ever
-# printed its FATAL banner unconditionally, this is what would catch it.
+# 20a: healthy environment (via debug seams) -> rc 0. The seams are now
+# logged unconditionally when they resolve successfully (code-review finding:
+# a seam that can silently defeat the whole precondition must never do so
+# with no trace, same rule as the SPRAWL_E2E_MIN_FREE_MB override) — so this
+# run does NOT emit nothing, but it must emit ONLY those two WARN lines and
+# never the FATAL/ENVIRONMENT UNFIT banner. That FATAL-banner absence is the
+# negative control for every other case in this section: if
+# e2e_check_disk_space ever printed it unconditionally, this would catch it.
 out=$(
 	(
 		export SPRAWL_E2E_MATRIX_DEBUG_FREE_MB_TMP=999999
@@ -5459,10 +5479,43 @@ if [ "$rc" -eq 0 ]; then
 else
 	fail "20a: e2e_check_disk_space rc=$rc on a healthy environment (want 0); output: $out"
 fi
-if [ -z "$out" ]; then
-	pass "20a: a healthy run emits nothing at all (negative control for 20b/20d/20c/20e/20f/20h/20i)"
+case "$out" in
+	*FATAL* | *"ENVIRONMENT UNFIT"*)
+		fail "20a: a healthy run emitted a FATAL/ENVIRONMENT UNFIT line it should not have: $out"
+		;;
+	*)
+		pass "20a: a healthy run never emits FATAL/ENVIRONMENT UNFIT (negative control for 20b/20d/20c/20e/20f/20h/20i)"
+		;;
+esac
+n=$(printf '%s\n' "$out" | grep -c "WARN.*debug seam")
+if [ "$n" -eq 2 ]; then
+	pass "20a: both active debug seams are logged (never silently defeat the precondition)"
 else
-	fail "20a: a healthy run emitted output it should not have: $out"
+	fail "20a: expected exactly 2 seam-usage WARN lines, got $n; out=$out"
+fi
+
+# 20a2: TRUE negative control — no seam set at all, so e2e_free_mb falls
+# through to the REAL df on this host (which, per make validate's own
+# preconditions, has well above the 4096MB default free on both filesystems).
+# This is the case that must emit NOTHING: no seam WARN (none is active) and
+# no FATAL (the real host is healthy).
+out=$(
+	(
+		# shellcheck disable=SC1090
+		. "$LIB" >/dev/null 2>&1 || exit 99
+		e2e_check_disk_space
+	) 2>&1
+)
+rc=$?
+if [ "$rc" -eq 0 ]; then
+	pass "20a2: with no seam set, a real (unfaked) healthy filesystem returns 0"
+else
+	fail "20a2: rc=$rc with no seam set on the real host (want 0 — is this host actually below 4096MB free? out=$out)"
+fi
+if [ -z "$out" ]; then
+	pass "20a2: with no seam active, nothing is printed at all (no seam to warn about, no unfit filesystem to report)"
+else
+	fail "20a2: expected empty output with no seam set, got: $out"
 fi
 
 # 20b: unfit TMP filesystem -> exits exactly E2E_ENV_UNFIT_EXIT (5), and the
@@ -5715,6 +5768,77 @@ if [ -n "$P20B_FIX" ] && [ -d "$P20B_FIX" ]; then
 	case "$P20B_FIX" in
 		"$UNIT_TMP_ROOT"/e2e-matrix-unit-p20b.*) rm -rf -- "$P20B_FIX" ;;
 		*) echo "  NOTE: refusing to remove unexpected fixture dir '$P20B_FIX'" >&2 ;;
+	esac
+fi
+
+# 20j: REGRESSION TEST for a defect found in code review of this very section
+# (QUM-1118) — an earlier revision sourced $LIB directly at driver top level
+# so e2e_check_disk_space's own `exit` could propagate without a subshell.
+# e2e-common.sh's re-source guard and capture-pane.sh's per-owner ledger vars
+# (E2E_CAPTURE_FAULT_FILE / E2E_CAPTURE_LEDGER_OWNER) are plain shell
+# variables, so a `( . "$LIB"; ... )` subshell forked from a driver that had
+# ALREADY sourced $LIB inherits them — and inherits them live, so run_row's
+# own `. "$LIB"` returns at the guard with NOTHING re-initialised. The thing
+# that stops happening is capture-pane.sh's source-time TRUNCATION of the
+# capture-fault ledger, and every row shares the same default ledger path (see
+# capture-pane.sh's own comment on `$$` staying constant across `( )`
+# subshells) — so row A's fault would fail every row after it, the exact
+# misattributed-FAIL class QUM-1118 exists to end.
+#
+# Row A deliberately logs one fault to $E2E_CAPTURE_FAULT_FILE (which
+# correctly fails row A itself — it really did fault) and row B makes none of
+# its own. Row B must still see a CLEAN ledger, because a correct driver
+# re-truncates it fresh for row B's own subshell.
+P20J_FIX=$(mktemp -d "$UNIT_TMP_ROOT/e2e-matrix-unit-p20j.XXXXXX" 2>/dev/null)
+if [ -n "$P20J_FIX" ] && _unit_mk_fixture_tree "$P20J_FIX"; then
+	mkdir -p "$P20J_FIX/markers"
+	cat >"$P20J_FIX/e2e-tests/rowA.sh" <<'EOF'
+MIN_ASSERTIONS=1
+test_metadata() { echo ""; }
+test_run() {
+	pass "rowA ran"
+	echo "SIMULATED capture fault from row A" >>"$E2E_CAPTURE_FAULT_FILE"
+	e2e_print_results
+}
+EOF
+	cat >"$P20J_FIX/e2e-tests/rowB.sh" <<'EOF'
+MIN_ASSERTIONS=1
+test_metadata() { echo ""; }
+test_run() {
+	: >"${UNIT_MARKER_DIR:?UNIT_MARKER_DIR unset}/rowB"
+	pass "rowB ran"
+	e2e_print_results
+}
+EOF
+	_unit_run_env "$P20J_FIX" "$P20J_FIX/markers" "" rowA rowB
+	_unit_assert_ran "$P20J_FIX/markers" rowB yes "20j: row B ran at all (a false FAIL and a never-ran row look different in the marker, so this pins which one happened)"
+	case "$_OUT" in
+		*"PASS rowB"*)
+			pass "20j: row B, which made no capture fault of its own, is NOT failed by row A's fault (ledger isolation across rows)"
+			;;
+		*"FAIL rowB"*)
+			fail "20j: row B was FAILed — row A's capture fault leaked across rows via an unisolated ledger; out=$_OUT"
+			;;
+		*)
+			fail "20j: no PASS/FAIL verdict line for rowB at all; out=$_OUT err=$_ERR"
+			;;
+	esac
+	case "$_OUT" in
+		*"FAIL rowA"*)
+			pass "20j: row A, which DID fault, is correctly FAILed itself (the fixture's own fault is real, not a false negative)"
+			;;
+		*)
+			fail "20j: row A was not FAILed despite deliberately logging a fault — the fixture's positive control didn't fire; out=$_OUT"
+			;;
+	esac
+else
+	fail "20j: could not build the fixture tree — ledger cross-row isolation was not exercised"
+	fail "20j: could not build the fixture tree — row A's own-fault positive control was not exercised"
+fi
+if [ -n "$P20J_FIX" ] && [ -d "$P20J_FIX" ]; then
+	case "$P20J_FIX" in
+		"$UNIT_TMP_ROOT"/e2e-matrix-unit-p20j.*) rm -rf -- "$P20J_FIX" ;;
+		*) echo "  NOTE: refusing to remove unexpected fixture dir '$P20J_FIX'" >&2 ;;
 	esac
 fi
 

@@ -214,24 +214,49 @@ E2E_MIN_FREE_MB_DEFAULT=4096
 # the next e2e_check_disk_space call (in the parent driver, not the row's
 # subshell) will read the new value. This never touches disk SPACE, only a
 # tiny marker file's contents, so it is not "actually filling the disk".
+#
+# A SET-BUT-UNUSABLE seam (a typo, an unwritten/empty file, a nonexistent
+# path) returns 2 rather than silently falling back to measuring the real
+# filesystem — the same "refuse to guess" rule e2e_check_disk_space applies to
+# SPRAWL_E2E_MIN_FREE_MB. Silently measuring reality here would make the
+# healthy-path assertions pass for a reason they do not name: the operator's
+# real (usually healthy) disk, not the seam under test. A successfully
+# resolved seam is logged unconditionally too, for the same reason the
+# threshold override is: an active seam can defeat this whole precondition,
+# and that must never happen with no trace.
 e2e_free_mb() {
-    local kind="$1" path="$2" kb var val
+    local kind="$1" path="$2" kb var raw val
     case "$kind" in
         tmp) var=SPRAWL_E2E_MATRIX_DEBUG_FREE_MB_TMP ;;
         repo) var=SPRAWL_E2E_MATRIX_DEBUG_FREE_MB_REPO ;;
         *) var= ;;
     esac
     if [ -n "$var" ] && [ -n "${!var:-}" ]; then
-        val="${!var}"
+        raw="${!var}"
+        # Trim surrounding whitespace so " 10" / "10 " / a trailing newline
+        # left by a naive file writer are treated as plain numbers.
+        val="$raw"
+        val="${val#"${val%%[![:space:]]*}"}"
+        val="${val%"${val##*[![:space:]]}"}"
         case "$val" in
-            *[!0-9]*)
+            '' | *[!0-9]*)
                 # Not a bare number — try it as a seam FILE, first line only.
-                [ -r "$val" ] && val=$(head -n1 "$val" 2>/dev/null)
+                if [ -r "$raw" ]; then
+                    val=$(head -n1 "$raw" 2>/dev/null)
+                    val="${val#"${val%%[![:space:]]*}"}"
+                    val="${val%"${val##*[![:space:]]}"}"
+                else
+                    val=""
+                fi
                 ;;
         esac
         case "$val" in
-            '' | *[!0-9]*) : ;; # neither a number nor a readable numeric file: fall through to real df
+            '' | *[!0-9]*)
+                echo "FATAL: \$$var='$raw' is neither a whole number of MB nor a readable file containing one — refusing to silently measure the real filesystem instead of the seam under test (QUM-1118)" >&2
+                return 2
+                ;;
             *)
+                echo "WARN: disk-space precondition '$kind' reading overridden by debug seam \$$var (resolved to ${val}MB; real df bypassed) — QUM-1118" >&2
                 echo "$val"
                 return 0
                 ;;
@@ -258,6 +283,18 @@ e2e_free_mb() {
 # loudly rather than silently falling back to the default: a typo'd override
 # must not quietly re-enable the check it was meant to relax (or disable one
 # meant to tighten it).
+#
+# DRIVER-LEVEL ONLY (code review finding): this function `exit`s the process
+# it runs in. scripts/e2e-matrix.sh calls it in its own subshell and
+# propagates the status explicitly (`( . "$LIB"; e2e_check_disk_space ) ||
+# exit $?`) — it is never sourced directly into the driver's own namespace,
+# because e2e-common.sh's re-source guard and capture-pane.sh's per-owner
+# ledger vars are plain shell variables that would otherwise make every
+# row's own `. "$LIB"` a silent no-op. If a ROW ever called this directly,
+# the `exit` would only terminate that row's own run_row subshell, and the
+# driver would bucket it as an ordinary FAIL (rc 5, no skip sentinel) —
+# exactly the misclassification this function exists to prevent. Do not call
+# it from inside a row.
 e2e_check_disk_space() {
     # df/awk are absent only when a caller has deliberately stripped PATH to
     # test something else entirely (this suite's own [10]/[15] preflight
@@ -284,7 +321,7 @@ e2e_check_disk_space() {
 
     local tmp_path="${TMPDIR:-/tmp}"
     local repo_path="${REPO_ROOT:-$E2E_COMMON_REPO_ROOT}"
-    local kind path free unfit=0
+    local kind path free unfit=0 kind_path
     for kind_path in "tmp:$tmp_path" "repo:$repo_path"; do
         kind="${kind_path%%:*}"
         path="${kind_path#*:}"

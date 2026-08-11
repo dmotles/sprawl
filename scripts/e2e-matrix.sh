@@ -192,15 +192,23 @@ fi
 # QUM-1118: fail loudly and DISTINCTLY (not a skip, not a row failure) before
 # any row runs if the environment cannot host the run — see the 2026-08-06
 # incident this exists to prevent, where 13 of 19 rows died inside `go build`
-# with ENOSPC and were reported as ordinary FAILs. Sourced at driver level
-# (not only inside run_row's subshell) so the check runs and can `exit`
-# straight out of the driver before the selection banner below is even
-# printed. e2e_check_disk_space is re-invoked at the top of the per-row loop
-# too, so exhaustion arising mid-run is reported through this exact same path
-# rather than surfacing as an unrelated cascade of row failures.
-# shellcheck disable=SC1090
-. "$LIB"
-e2e_check_disk_space
+# with ENOSPC and were reported as ordinary FAILs. e2e_check_disk_space is
+# re-invoked at the top of the per-row loop too, so exhaustion arising mid-run
+# is reported through this exact same path rather than surfacing as an
+# unrelated cascade of row failures.
+#
+# Run in its OWN subshell — deliberately never sourced into the driver's own
+# top-level namespace — and its exit status propagated explicitly.
+# e2e-common.sh's re-source guard (_E2E_COMMON_SH) and its sibling fault-
+# ledger lib's per-owner tracking vars are plain shell variables; sourcing
+# $LIB directly at driver level made every later `. "$LIB"` inside run_row's
+# subshell (which inherits the driver's exported vars) a silent no-op, which
+# in turn disabled the QUM-957 per-row fault-ledger TRUNCATION — a fault
+# recorded in row A then failed every row after it, exactly the
+# misattributed-FAIL class QUM-1118 exists to end. Confirmed with a 2-row
+# fixture before landing this form: row A poisons the ledger, row B FAILed
+# sourcing directly, PASSes here.
+( . "$LIB"; e2e_check_disk_space ) || exit $?
 
 run_row() {
     local name="$1"
@@ -303,7 +311,9 @@ for name in "${selected[@]}"; do
     # file. A long run can exhaust disk between rows; this call aborts the
     # whole driver (exit 5, see e2e_check_disk_space) rather than letting the
     # next row run and fail for a reason that has nothing to do with it.
-    e2e_check_disk_space
+    # Subshelled for the same reason as the startup check above — never
+    # sourced into the driver's own namespace.
+    ( . "$LIB"; e2e_check_disk_space ) || exit $?
 
     # Truncate PER ROW, and REFUSE TO CONTINUE if that fails. A stale sentinel
     # would launder the next row's failure into a skip (exit 3 instead of 1),

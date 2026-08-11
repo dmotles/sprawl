@@ -28,6 +28,13 @@ because an unrecorded departure makes the provenance claim above a lie:
    argument was `CLAUDE.md`. After the cut that command returns zero rows while
    looking like an answer. Both halves were repointed at this file.
 
+**One further departure, this time a genuine CONTENT update rather than a
+move artifact** — recorded separately from the two above for that reason:
+QUM-1118 added a driver capability (a disk-space precondition) that did not
+exist at `c7093cc`, and its exit code is documented in the "Driver exit
+codes:" line below (`5`, between `4` and `77`). An unrecorded edit to a
+document claiming to be verbatim is worse than no verbatim claim at all.
+
 5. **Mandatory-test e2e harness.** When you touch any file listed in the table below, run `make test-e2e-matrix-<row>` for the corresponding row (or `make test-e2e-matrix` to run all rows).
 
    **Derive the row set from the table; never from a list someone handed you (QUM-1081).** The obligation is *every* row whose named files or functions your diff touches — the **union** of both greps over the table as it stands at the commit you are making. Take `git diff --name-only`, grep the table for each path, then grep again for the functions you edited. A row's function list tells you *why* it covers you; it never narrows a path match. And a literal path grep will not match the ten files-column entries that are **globs** rather than literal paths (`internal/supervisor/*.go` and similar) — a grep for `runtime_launcher.go` misses the row that covers it via `internal/supervisor/*.go` — so check the glob rows by hand. **A green run against the wrong rows is indistinguishable from coverage.**
@@ -77,7 +84,7 @@ because an unrecorded departure makes the provenance claim above a lie:
 
    The first line is the QUM-947 contract and is unchanged — `passed` means *actually executed and passed*, so a skip now shows up there as a shortfall. Note that **`=== Matrix: ` is not a unique prefix**: the selection banner (`=== Matrix: running N row(s): …`) and the failed-rows / skipped-rows lines share it. If you scrape, anchor on `^=== Matrix: [0-9]+/[0-9]+ passed ===$` (exactly one per run) or `^=== Matrix breakdown: `. The breakdown line is the only place the skip count appears, and `passed + failed + skipped == requested` always (a violation is an internal error, exit 4, printed *instead of* any summary). Skipped rows are additionally named on stderr in a `!!! … SKIPPED` banner with each row's reason.
 
-   Driver exit codes: `0` every requested row executed and passed · `1` ≥1 row failed (dominates skips) · `2` usage/argument error, nothing ran · `3` ≥1 row skipped, none failed · `4` internal invariant violation. `77` is reserved as an individual *row's* skip signal (the autotools convention) and is never the driver's own exit status.
+   Driver exit codes: `0` every requested row executed and passed · `1` ≥1 row failed (dominates skips) · `2` usage/argument error, nothing ran · `3` ≥1 row skipped, none failed · `4` internal invariant violation · `5` environment unfit (QUM-1118: a disk-space precondition failed, before any row ran or mid-run between rows — distinct from both 3, nothing measured and that's fine, and 1, a row genuinely failed, because here nothing was measured and that is NOT acceptable). `77` is reserved as an individual *row's* skip signal (the autotools convention) and is never the driver's own exit status.
 
    **Per-row assertion floor (QUM-1029).** A skip is not the only way a row can assert nothing. Until QUM-1029, `e2e_print_results` returned non-zero only when `FAIL_COUNT > 0`, so a row that recorded neither a pass nor a fail printed `0 passed, 0 failed`, returned 0, and landed in `passed` and in the `Matrix: N/N passed` line — the second way that line has overstated coverage. Every row now declares a top-level `MIN_ASSERTIONS=<n>` and the shared aggregator fails the row when the declaration is **missing, zero, non-numeric, or unmet**. A breach is an ordinary failure (row rc 1, driver exit 1) — deliberately not a skip (3) or an internal invariant violation (4): a row that asserted nothing is a defect in the row, not an unmet precondition and not a driver fault.
 

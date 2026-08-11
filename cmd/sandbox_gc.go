@@ -56,7 +56,9 @@ var sandboxGCCmd = &cobra.Command{
 	Short: "Reap leaked sandbox tmux sockets, /tmp dirs, and orphan claude processes",
 	Long: `Janitor for QUM-458 e2e sandbox leaks. Sweeps:
   - /tmp/tmux-*/sprawl-* sockets with no live sessions
-  - /tmp/sprawl-*-e2e-* and /tmp/sprawl-test-* dirs older than --max-age
+  - /tmp/sprawl-* dirs containing a ".sprawl" marker directly inside them
+    (QUM-1119: any prefix a row picks, not an enumerated list), older than
+    --max-age
   - claude processes whose --system-prompt-file is under /tmp/sprawl-* and
     whose ppid is 1 (orphaned by host death)
 
@@ -112,6 +114,7 @@ func runSandboxGC(deps *sandboxGCDeps, dryRun bool, maxAge time.Duration) error 
 	socketsSwept := 0
 	dirsSwept := 0
 	procsKilled := 0
+	pathsRefused := 0
 
 	// 1. Sweep stale sockets.
 	sockets, err := deps.listSockets()
@@ -144,6 +147,7 @@ func runSandboxGC(deps *sandboxGCDeps, dryRun bool, maxAge time.Duration) error 
 			// the output.
 			if !isSandboxRootPath(dir) {
 				fmt.Fprintf(deps.out, "%sREFUSING to remove unexpected path %s (not a direct /tmp/sprawl-* child)\n", prefix, dir)
+				pathsRefused++
 				continue
 			}
 			mtime, dErr := deps.dirInfo(dir)
@@ -200,6 +204,14 @@ func runSandboxGC(deps *sandboxGCDeps, dryRun bool, maxAge time.Duration) error 
 
 	fmt.Fprintf(deps.out, "%s%s %d stale tmux socket(s), %d stale dir(s), %d orphan claude proc(s).\n",
 		prefix, verb, socketsSwept, dirsSwept, procsKilled)
+	// QUM-1119 code review: a refusal must be visible to a caller that only
+	// reads the one-line summary (the Makefile invokes this as `... || true`,
+	// so rc alone tells it nothing either). Folded into the summary rather
+	// than only the per-path lines above it, and only when non-zero so the
+	// common all-clean case keeps its existing shape.
+	if pathsRefused > 0 {
+		fmt.Fprintf(deps.out, "%sREFUSED %d unexpected path(s) — see lines above; nothing outside /tmp/sprawl-* was touched.\n", prefix, pathsRefused)
+	}
 	if dryRun {
 		fmt.Fprintf(deps.out, "Next: re-run without --dry-run to apply, or 'sprawl sandbox-gc --max-age=10m' for tighter window.\n")
 	} else {
@@ -297,6 +309,13 @@ func defaultListTmpDirs() ([]string, error) {
 // capture-pane-liveness, replay-echo, recall-sendnow, as of QUM-1119) — those
 // never create the marker. That is a known, narrower gap than the prefix list
 // it replaces covered, not a claimed total fix; see QUM-1119's tracking notes.
+//
+// It also only globs DIRECT children of base. e2e_make_sandbox_root accepts
+// any path matching `case /tmp/*`, so an agent (or a future row) with a
+// non-default TMPDIR nested under /tmp (e.g. TMPDIR=/tmp/foo) produces a root
+// at /tmp/foo/sprawl-x-XXXXXX that this glob — and isSandboxRootPath's
+// direct-child check below — both refuse to see at all, leaking it silently.
+// The production default (TMPDIR unset, defaulting to /tmp) is unaffected.
 //
 // Retained backup artifacts observed in the QUM-1119 incident
 // (sprawl-*.bundle, sprawl-*.git, sprawl-agents-backup-*,

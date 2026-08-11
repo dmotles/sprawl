@@ -365,8 +365,15 @@ func TestSandboxGC_RefusesUnexpectedTmpDirPath(t *testing.T) {
 			if len(st.removedDirs) != 0 {
 				t.Errorf("removeAll called on unexpected path %s: %v", tt.path, st.removedDirs)
 			}
-			if !strings.Contains(strings.ToLower(buf.String()), "refus") {
-				t.Errorf("expected a loud refusal message for unexpected path %s, got: %s", tt.path, buf.String())
+			out := buf.String()
+			if !strings.Contains(strings.ToLower(out), "refus") {
+				t.Errorf("expected a loud refusal message for unexpected path %s, got: %s", tt.path, out)
+			}
+			// QUM-1119 code review: a refusal must be visible from the one-line
+			// summary too, since the Makefile invokes this as `... || true` and
+			// a caller reading only the last line would otherwise see nothing.
+			if !strings.Contains(out, "REFUSED 1 unexpected path") {
+				t.Errorf("expected the refusal count folded into the summary line for %s, got: %s", tt.path, out)
 			}
 		})
 	}
