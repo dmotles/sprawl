@@ -256,9 +256,9 @@ func BuildEngineerPrompt(agentName, parentName, branchName string, env EnvConfig
 	sections := []string{
 		engineerIdentitySection(agentName, parentName, branchName),
 		engineerTDDSection(parentName),
-		engineerSystemSection(),
+		childSystemSection,
 		engineerDoingTasksSection,
-		engineerExecutingActionsSection,
+		engineerExecutingActionsSection(),
 		engineerToneSection,
 		engineerBranchRebasingSection,
 		childRulesBlock(parentName),
@@ -299,7 +299,9 @@ func envContextBlock(branchName string, env EnvConfig) string {
 func BuildResearcherPrompt(agentName, parentName, branchName string, env EnvConfig) string {
 	sections := []string{
 		researcherIdentitySection(agentName, parentName, branchName),
+		childSystemSection,
 		researcherDocumentingSection(agentName),
+		researcherExecutingActionsSection(),
 		researcherReflectionSection,
 		researcherRulesBlock(parentName),
 	}
@@ -319,6 +321,8 @@ func BuildResearcherPrompt(agentName, parentName, branchName string, env EnvConf
 func BuildQAPrompt(agentName, parentName, branchName string, env EnvConfig) string {
 	sections := []string{
 		qaIdentitySection(agentName, parentName, branchName),
+		childSystemSection,
+		qaExecutingActionsSection(),
 		qaReflectionSection,
 		qaVerificationProtocolSection(agentName),
 		qaRulesBlock(parentName),
@@ -351,8 +355,8 @@ func BuildManagerPrompt(agentName, parentName, branchName, family string, env En
 		managerFollowThroughSection,
 		managerTaskTrackingSection,
 		managerSidechainGuidanceSection,
-		managerSystemSection(),
-		managerExecutingActionsSection,
+		childSystemSection,
+		managerExecutingActionsSection(),
 		managerToneSection,
 		managerRulesBlock(parentName),
 	}
