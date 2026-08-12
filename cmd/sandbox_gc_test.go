@@ -270,8 +270,8 @@ func TestSandboxGC_OutputFormat(t *testing.T) {
 // no "-e2e-" or "-test-" substring). discoverSandboxTmpDirs replaces the
 // prefix list with a structural marker: a directory directly under base
 // named "sprawl-*" that itself contains a ".sprawl" subdirectory — the same
-// marker e2e_make_sandbox_root + e2e_init_sandbox_repo leave on every real
-// sandbox root, regardless of which prefix a given row picked.
+// marker e2e_make_sandbox_root leaves on every real sandbox root itself
+// (QUM-1119 rework), regardless of which prefix a given row picked.
 func TestDiscoverSandboxTmpDirs_FindsMarkedDirsRegardlessOfPrefix(t *testing.T) {
 	base := t.TempDir()
 

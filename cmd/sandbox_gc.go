@@ -297,18 +297,16 @@ func defaultListTmpDirs() ([]string, error) {
 // e2e_make_sandbox_root (mostly "sprawl-qum<NNN>", with no "-e2e-"/"-test-"
 // substring), so it silently reaped almost nothing while reporting success.
 //
-// Every real sandbox root is created by e2e_make_sandbox_root (which always
-// names it "sprawl-<prefix>-XXXXXX" under /tmp) and then, for rows that boot
-// the TUI, e2e_init_sandbox_repo (which does `mkdir -p "$SPRAWL_ROOT/.sprawl"`
-// immediately inside it). A "sprawl-*" directory with a ".sprawl"
-// subdirectory directly inside it is therefore true for every prefix a row
-// picks, present or future, without enumerating any of them.
-//
-// This does NOT catch sandbox roots from rows that shell out to a bare
-// `claude` binary directly rather than through `sprawl enter` (attach-blocks,
-// capture-pane-liveness, replay-echo, recall-sendnow, as of QUM-1119) — those
-// never create the marker. That is a known, narrower gap than the prefix list
-// it replaces covered, not a claimed total fix; see QUM-1119's tracking notes.
+// Every real sandbox root is created by e2e_make_sandbox_root, which always
+// names it "sprawl-<prefix>-XXXXXX" under /tmp and creates the ".sprawl"
+// marker itself (QUM-1119 rework, per QA finding: an earlier revision left
+// the marker to the SEPARATE e2e_init_sandbox_repo call, which 9 of the ~40
+// rows never make — attach-blocks, capture-pane-liveness, drain-row-inject,
+// handoff, idle-interrupt-inject, merge-reuse, qum903-false-thinking,
+// recall-sendnow, replay-echo — so their roots had no marker and were
+// permanently unreapable at any age). A "sprawl-*" directory with a
+// ".sprawl" subdirectory directly inside it is therefore true for every
+// prefix AND every row, present or future, without enumerating either.
 //
 // It also only globs DIRECT children of base. e2e_make_sandbox_root accepts
 // any path matching `case /tmp/*`, so an agent (or a future row) with a

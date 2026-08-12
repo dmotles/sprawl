@@ -182,7 +182,17 @@ FAIL=0
 #   bash scripts/test-e2e-matrix-unit.sh  ->  "651 passed / 0 failed"
 # The `0 failed` half is load-bearing: a floor measured on a red run counts a
 # collapsed section's surviving assertions and licenses the loss.
-MIN_ASSERTIONS=651
+#
+# 652 after rebasing QUM-1119's marker fix (ratz) onto this branch: QA
+# (`sentry`) found QUM-1119's marker was created only by the SEPARATE
+# e2e_init_sandbox_repo call, which 9 of ~40 rows never make, so their roots
+# had no marker and were permanently unreapable at any age. Fix moved marker
+# creation into e2e_make_sandbox_root itself; [3b] pins it (+1), reproducing
+# the exact real repro QA used (e2e_make_sandbox_root alone, no
+# e2e_init_sandbox_repo). [3b] is independent of sections [21]-[23] (different
+# function, no seam interaction), so this is a straight sum, re-measured on a
+# FULL GREEN run after rebase — 652 passed / 0 failed.
+MIN_ASSERTIONS=652
 # A [16b] nested child deliberately does NOT re-run section [16] (recursing would
 # fork-bomb, and counting there would corrupt the parity comparison), so it asserts
 # strictly fewer things and needs its own floor. Measured at de22410: 237; 238 after
@@ -243,7 +253,11 @@ MIN_ASSERTIONS=651
 # (The older reading above recorded "542 passed / 1 failed" because it was taken
 # via the unbacked-value branch, which adds 16c's deliberate fail. This reading
 # is a full green, which is the stronger basis for a floor.)
-MIN_ASSERTIONS_NESTED=631
+#
+# 632 after rebasing QUM-1119's marker fix (ratz) onto this branch (+1, [3b]
+# is not gated on UNIT_NESTED_SEAM_CHECK so the child runs it too). Measured
+# directly with a valid nonce after rebase: "632 passed / 0 failed".
+MIN_ASSERTIONS_NESTED=632
 
 # Pin the temp root. This suite runs inside `make validate` and therefore inside
 # the pre-commit hook, so it must not inherit the committing agent's TMPDIR:
@@ -448,6 +462,35 @@ echo "[3] e2e_make_sandbox_root creates /tmp dir and exports SPRAWL_ROOT"
 case $? in
 	0) pass "e2e_make_sandbox_root: SPRAWL_ROOT under /tmp/ and dir exists" ;;
 	*) fail "e2e_make_sandbox_root: SPRAWL_ROOT misconfigured or missing" ;;
+esac
+
+# 3b. QUM-1119 rework (QA `sentry` finding): the ".sprawl" marker
+# cmd/sandbox_gc.go's discoverSandboxTmpDirs keys on must be created by
+# e2e_make_sandbox_root ITSELF, not left as a side effect of the SEPARATE
+# e2e_init_sandbox_repo call. Nine rows (attach-blocks, capture-pane-liveness,
+# drain-row-inject, handoff, idle-interrupt-inject, merge-reuse,
+# qum903-false-thinking, recall-sendnow, replay-echo) create a sandbox root
+# and never call e2e_init_sandbox_repo, so under the original QUM-1119 fix
+# their roots had no marker and were permanently unreapable at any age —
+# reproduced empirically by QA via a real e2e_make_sandbox_root call. Making
+# the marker a property of root CREATION, not of a downstream repo-init step,
+# closes the gap for every row structurally rather than by enumerating them.
+# Deliberately does NOT call e2e_init_sandbox_repo here — that is the whole
+# point of this control.
+(
+	# shellcheck disable=SC1090
+	. "$LIB" >/dev/null 2>&1 || exit 99
+	e2e_make_sandbox_root "matrix-unit-test-3b" >/dev/null 2>&1 || exit 1
+	[ -d "$SPRAWL_ROOT/.sprawl" ] || exit 3
+	case "$SPRAWL_ROOT" in
+		/tmp/*) rm -rf "$SPRAWL_ROOT" ;;
+	esac
+	exit 0
+)
+case $? in
+	0) pass "3b: e2e_make_sandbox_root alone (no e2e_init_sandbox_repo) creates the .sprawl marker discoverSandboxTmpDirs requires" ;;
+	3) fail "3b: e2e_make_sandbox_root did not create a .sprawl marker — a root from any row that skips e2e_init_sandbox_repo is permanently unreapable at any age (QUM-1119)" ;;
+	*) fail "3b: could not exercise e2e_make_sandbox_root (rc=$?)" ;;
 esac
 
 # ----------------------------------------------------------------------------

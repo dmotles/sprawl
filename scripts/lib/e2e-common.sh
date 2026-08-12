@@ -663,6 +663,18 @@ e2e_make_sandbox_root() {
     if [ -f "$REPO_ROOT/.env" ]; then
         cp -p "$REPO_ROOT/.env" "$SPRAWL_ROOT/.env"
     fi
+    # QUM-1119 rework (QA `sentry` finding): the ".sprawl" marker
+    # cmd/sandbox_gc.go's discoverSandboxTmpDirs keys on used to be created
+    # only by e2e_init_sandbox_repo below, a SEPARATE call nine rows never
+    # make (attach-blocks, capture-pane-liveness, drain-row-inject, handoff,
+    # idle-interrupt-inject, merge-reuse, qum903-false-thinking,
+    # recall-sendnow, replay-echo) — their roots had no marker and were
+    # permanently unreapable at any age. Creating it here instead makes the
+    # marker a true invariant of "a root e2e_make_sandbox_root created",
+    # closing the gap structurally for every row rather than by enumerating
+    # them. e2e_init_sandbox_repo's own `mkdir -p .sprawl` below is now a
+    # harmless no-op for callers that also init a repo.
+    mkdir -p "$SPRAWL_ROOT/.sprawl"
 }
 
 e2e_init_sandbox_repo() {
