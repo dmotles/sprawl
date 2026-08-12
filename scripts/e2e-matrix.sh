@@ -121,7 +121,24 @@ discover_rows() {
 #       nothing was measured and that is NOT acceptable. Never downgrade this to
 #       3 or 1 to "simplify" scraping — that is precisely the vacuity this exists
 #       to end.
+#   6   auth preflight failed (QUM-1108/QUM-1135/QUM-1045) — `claude` is
+#       installed but no usable credential reached it, so every needs_claude row
+#       would fail with 'Not logged in' and not one of those failures would be
+#       about the product. Same "nothing was measured and that is NOT
+#       acceptable" class as 5, and kept separate from it for the same reason 5
+#       is kept separate from 1: 5 says the HOST cannot host a run, 6 says the
+#       host is fine but the CREDENTIAL is not there. NO ROW IS REPORTED FAIL
+#       for this, and it is deliberately not a skip — converting a runnable
+#       batch into an all-skip is itself fail-toward-vacuous. Never downgrade
+#       it to 1 or 3.
 #   77  reserved as a ROW's skip signal; never this driver's own exit status
+#
+# NOTE ON THE BUCKET INVARIANT: `passed + failed + skipped == requested` holds
+# on any run that REACHES the summary. Exits 2, 5 and 6 abort before the loop,
+# so such a run prints NO `=== Matrix: N/M passed ===` line and NO
+# `=== Matrix breakdown: ` line at all. The ABSENCE of the breakdown line is
+# how you tell an aborted batch from a run with zero passes — never infer it
+# from the exit status alone.
 #
 # Why 3 rather than 0 on a partial skip: this driver is the mandatory gate the
 # CLAUDE.md touched-file table points at, and its exit status is the only signal
@@ -209,6 +226,27 @@ fi
 # fixture before landing this form: row A poisons the ledger, row B FAILed
 # sourcing directly, PASSes here.
 ( . "$LIB"; e2e_check_disk_space ) || exit $?
+
+# QUM-1108/QUM-1135/QUM-1045: ONE credential check per BATCH, before the first
+# row — the entire cost being removed is discovering the problem 13 rows and an
+# hour later. Subshelled and status-propagated for exactly the same reason the
+# disk check above is; see that comment before changing this form.
+#
+# It self-gates: no probe when no selected row declares needs_claude=1, and no
+# probe when `claude` is absent (that state stays owned by the per-row
+# needs_claude gate and by SPRAWL_E2E_SKIP_NO_CLAUDE, unchanged). So an
+# authenticated run is byte-identical to before this landed, and the only new
+# cost is one local credential read.
+#
+# Row FILE PATHS are passed, not row names: the scan lives with the probe,
+# where it is testable, rather than being duplicated here. Built with an
+# explicit loop rather than a `${selected[@]/#/...}` pattern expansion, which
+# prefixes but cannot also append the `.sh` suffix.
+selected_files=()
+for _sel in "${selected[@]}"; do
+    selected_files+=("$ROWS_DIR/$_sel.sh")
+done
+( . "$LIB"; e2e_check_claude_auth "${selected_files[@]}" ) || exit $?
 
 run_row() {
     local name="$1"
@@ -429,12 +467,14 @@ if [ "$skip_count" -gt 0 ]; then
         echo "!!! A skipped row asserts nothing and does NOT discharge a mandatory-gate"
         echo "!!! obligation. Re-run it with a real, AUTHENTICATED 'claude' before claiming"
         echo "!!! the touched-file matrix row was validated."
-        echo "!!! NOTE: this gate keys on claude being ABSENT and never probes auth. An"
-        echo "!!! installed-but-unauthenticated claude does NOT skip — the row runs and"
-        echo "!!! fails with 'Not logged in', which is an auth problem, not a product"
-        echo "!!! regression. SPRAWL_E2E_SKIP_NO_CLAUDE is not the remedy for that, and"
-        echo "!!! never hide claude from PATH to force a skip: that only buys this"
-        echo "!!! vacuous all-skip run."
+        echo "!!! NOTE: this gate keys on claude being ABSENT. An installed-but-"
+        echo "!!! unauthenticated claude is caught EARLIER, by the auth preflight, which"
+        echo "!!! aborts the whole batch with exit 6 before any row runs (QUM-1108) — so"
+        echo "!!! if you are reading this banner, that is not what happened here."
+        echo "!!! The preflight proves a credential is PRESENT, not VALID: an expired or"
+        echo "!!! revoked token still passes it and still fails rows with 'Not logged in'."
+        echo "!!! SPRAWL_E2E_SKIP_NO_CLAUDE is not the remedy for either, and never hide"
+        echo "!!! claude from PATH to force a skip: that only buys this vacuous all-skip run."
     } >&2
 fi
 

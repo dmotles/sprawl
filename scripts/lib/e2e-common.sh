@@ -222,6 +222,15 @@ e2e_skip_row() {
 # it gets its own exit code the driver never confuses with either.
 E2E_ENV_UNFIT_EXIT=5
 
+# QUM-1108/QUM-1135/QUM-1045: distinct again from all of the above. 5 means the
+# HOST cannot host a run (no disk); 6 means the host is fine but no usable
+# CREDENTIAL reached `claude`, so every needs_claude row would fail with
+# 'Not logged in' and none of those failures would be about the product.
+# Deliberately NOT 3 (a skip) and NOT 1 (a row failure): the whole point of
+# QUM-1108 is that a run which asserts nothing must not be reportable as
+# either. Never downgrade this to 3 or 1 to "simplify" scraping.
+E2E_AUTH_UNFIT_EXIT=6
+
 # Threshold basis (QUM-1118): the 2026-08-06 incident died with `/` at 3.4G
 # (3482MB) free, taking 13 of 19 concurrent rows down inside `go build` with
 # ENOSPC. Default is that failure point plus ~18% margin, rounded to a clean
@@ -371,6 +380,150 @@ e2e_check_disk_space() {
     return 0
 }
 
+# e2e_selected_rows_need_claude ROWFILE... — echo how many of the named row
+# files declare needs_claude=1; return 0 if that count is >0, 1 otherwise.
+#
+# A TEXTUAL scan, deliberately, not a `. "$row_file"; test_metadata`. Sourcing
+# rows at driver level is the exact fault recorded at scripts/e2e-matrix.sh's
+# disk-check call site: the lib's re-source guard and the capture-pane ledger
+# are plain shell variables, so a driver-level source makes every row's own
+# `. "$LIB"` a silent no-op and disables the QUM-957 per-row ledger truncation.
+# Pure bash builtins only (no grep): the driver's PATH-scrubbed preflight unit
+# fixtures run with PATH=/nonexistent, and this must not be the thing that
+# breaks there.
+#
+# Failure direction is deliberate. An over-match (the string in a comment)
+# costs one cheap local probe that was not strictly needed. An under-match
+# silently returns the harness to its pre-QUM-1108 behaviour. Over-matching is
+# the safe side, so this matches the string anywhere in the file.
+e2e_selected_rows_need_claude() {
+    local f line count=0
+    for f in "$@"; do
+        [ -r "$f" ] || continue
+        while IFS= read -r line || [ -n "$line" ]; do
+            case "$line" in
+                *needs_claude=1*)
+                    count=$((count + 1))
+                    break
+                    ;;
+            esac
+        done <"$f"
+    done
+    echo "$count"
+    [ "$count" -gt 0 ]
+}
+
+# e2e_check_claude_auth ROWFILE... — QUM-1108 Part 1 / QUM-1135 / QUM-1045.
+# ONE credential check per BATCH, before any row runs.
+#
+# WHAT THIS PROVES, AND WHAT IT DOES NOT. It proves a credential is PRESENT.
+# It does NOT prove the credential is VALID: measured on claude 2.1.226, a
+# garbage token reports `"loggedIn": true`. So this collapses the "no
+# credential reached the harness" class (a stripped agent subshell, a missing
+# .env, a detached launch severing the QUM-411 /proc ancestor walk) and
+# NARROWS the QUM-1108 misdiagnosis hazard without eliminating it — an expired
+# or revoked token still passes here and still fails rows with 'Not logged in'.
+# Do not let this function, its banner, or the docs claim otherwise.
+#
+# WHY IT ASSERTS ON CONTENT AND NOT JUST ON $?. `claude auth status`'s exit
+# convention is a CLI contract this repo does not own and can change under it.
+# A probe that trusts $? alone is inert the moment a CLI exits 0 while
+# reporting no credential — which is precisely QUM-1135's named case. Both are
+# checked, and the unit suite drives all four states through stubs.
+#
+# ORDER IS LOAD-BEARING: e2e_recover_oauth_token runs FIRST. Claude Code
+# strips CLAUDE_CODE_OAUTH_TOKEN from an agent's Bash subshell (QUM-518), so a
+# probe that asks before recovering reports "not logged in" on a perfectly
+# healthy host. Its stderr is suppressed here because at BATCH level this
+# function's own banner is the authoritative diagnostic; its per-ROW
+# enforcement at scripts/e2e-matrix.sh's needs_claude gate is untouched.
+#
+# DRIVER-LEVEL ONLY, for the same reason e2e_check_disk_space is: it `exit`s
+# the process it runs in. The driver calls it in its own subshell and
+# propagates the status. Never call it from inside a row.
+e2e_check_claude_auth() {
+    if [ "${SPRAWL_E2E_SKIP_AUTH_PROBE:-}" = "1" ]; then
+        echo "WARN: auth preflight DISABLED by SPRAWL_E2E_SKIP_AUTH_PROBE=1 — a 'Not logged in' row failure below is an auth problem, not a product regression (QUM-1108)" >&2
+        return 0
+    fi
+
+    local need total="$#"
+    need=$(e2e_selected_rows_need_claude "$@") || {
+        echo "=== Matrix: auth preflight not required (no selected row declares needs_claude=1) ==="
+        return 0
+    }
+
+    # claude ABSENT stays entirely owned by the per-row needs_claude gate and
+    # by SPRAWL_E2E_SKIP_NO_CLAUDE. Behaviour in that state is unchanged.
+    if ! command -v claude >/dev/null 2>&1; then
+        echo "=== Matrix: auth preflight skipped (no claude on PATH — the per-row needs_claude gate owns this case) ==="
+        return 0
+    fi
+
+    e2e_recover_oauth_token >/dev/null 2>&1 || true
+
+    local bin
+    if [ -n "${SPRAWL_E2E_MATRIX_DEBUG_AUTH_PROBE_BIN:-}" ]; then
+        bin="$SPRAWL_E2E_MATRIX_DEBUG_AUTH_PROBE_BIN"
+        echo "WARN: auth preflight probe binary overridden by debug seam \$SPRAWL_E2E_MATRIX_DEBUG_AUTH_PROBE_BIN (real claude bypassed) — QUM-1108" >&2
+    else
+        bin="${SPRAWL_CLAUDE:-$REPO_ROOT/scripts/run-claude}"
+        [ -x "$bin" ] || bin=claude
+    fi
+
+    # `--json` is pinned EXPLICITLY rather than trusted as a default: a default
+    # that can flip is not a contract.
+    #
+    # $out is NEVER echoed, on any path. It is the one variable in this
+    # function that can carry a credential, and this is a public repo. Only
+    # two derived facts leave here: the exit status, and which of three
+    # recognised shapes the output had.
+    local out rc=0
+    out=$(timeout 30 "$bin" auth status --json 2>&1) || rc=$?
+
+    local compact="${out//[[:space:]]/}"
+    if [ "$rc" -eq 0 ]; then
+        case "$compact" in
+            *'"loggedIn":true'*)
+                echo "=== Matrix: auth preflight OK (credential present; $need of $total selected row(s) declare needs_claude=1) ==="
+                return 0
+                ;;
+        esac
+    fi
+
+    local cause
+    if [ "$rc" -ne 0 ]; then
+        cause="the probe exited $rc — it could not report an auth status at all"
+        [ "$rc" -eq 124 ] && cause="$cause (124 = it timed out)"
+    elif [ -z "$compact" ]; then
+        cause="the probe exited 0 and produced no output at all"
+    else
+        cause="the probe exited 0 but reported NO credential — exit status alone is not evidence"
+    fi
+
+    {
+        echo "FATAL: AUTH PREFLIGHT FAILED — 'claude' is installed but no usable credential reached it (QUM-1108)"
+        echo "       cause: $cause"
+        echo "       This is NOT a skip (nothing was measured, and that is unacceptable) and NOT a"
+        echo "       row failure (the product was never exercised). Refusing to run $total row(s);"
+        echo "       exiting ${E2E_AUTH_UNFIT_EXIT}. No row is reported FAIL for this."
+        echo "       This is the state the per-row needs_claude gate cannot see: it keys on the"
+        echo "       binary being ABSENT, so a claude installed but unauthenticated never trips"
+        echo "       it. That is why this check exists and why it runs before any row."
+        echo "       NOTE: this proves a credential is PRESENT, not that it is VALID — an expired or"
+        echo "       revoked token still passes this preflight and still fails rows with 'Not logged in'."
+        echo "       Fix: export CLAUDE_CODE_OAUTH_TOKEN, or create a repo-root .env and run via"
+        echo "       scripts/run-claude / \$SPRAWL_CLAUDE. Check \$SPRAWL_ROOT: run-claude resolves"
+        echo "       .env from it when set and from the repo root otherwise, so an exported"
+        echo "       \$SPRAWL_ROOT changes which .env is read. A detached launch (setsid/nohup)"
+        echo "       severs the /proc ancestor chain the token recovery walks (QUM-973)."
+        echo "       Setup: .claude/skills/e2e-testing-sandboxing/SKILL.md"
+        echo "       Do NOT hide claude from PATH and do NOT set SPRAWL_E2E_SKIP_NO_CLAUDE — neither"
+        echo "       is the remedy for this state, and both only buy a vacuous all-skip run."
+    } >&2
+    exit "$E2E_AUTH_UNFIT_EXIT"
+}
+
 e2e_require_claude_or_skip() {
     local name=${1:-test}
     if command -v claude >/dev/null 2>&1; then
@@ -385,10 +538,15 @@ e2e_require_claude_or_skip() {
     echo "       Set SPRAWL_E2E_SKIP_NO_CLAUDE=1 to skip this test instead (the skip is" >&2
     echo "       reported as a skip, not a pass, and exits nonzero -- it does not" >&2
     echo "       discharge a mandatory-gate obligation)." >&2
-    echo "       This gate keys on ABSENCE only and never probes auth: if claude is" >&2
-    echo "       installed but unauthenticated the gate does not fire, the row runs, and" >&2
-    echo "       it fails with 'Not logged in'. The flag is not the remedy for that, and" >&2
-    echo "       never hide claude from PATH to force a skip." >&2
+    # QUM-1108: the auth blind-spot paragraph used to live HERE, inside the
+    # binary-absent branch — so it printed only when claude was missing, i.e.
+    # only when auth was NOT the problem. It now lives in
+    # e2e_check_claude_auth's banner, which fires in the state it describes.
+    # What remains below is the sentence that IS relevant to this branch.
+    echo "       Never hide claude from PATH to force a skip: that converts a" >&2
+    echo "       credential problem into this one and buys a vacuous all-skip run." >&2
+    echo "       A credential problem is stopped earlier, by the auth preflight" >&2
+    echo "       (exit 6), and never reaches this branch." >&2
     exit 1
 }
 

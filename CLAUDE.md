@@ -44,7 +44,9 @@ Read /testing-practices § Assertion Rigor before writing or reviewing any asser
 
 ## `Not logged in`
 
-A `claude` you launched from a Bash subshell failing with `Not logged in` means its auth env was stripped, not that the product regressed. The fix is the `scripts/run-claude` shim plus a repo-root `.env`; setup is in /e2e-testing-sandboxing. Do not work around it by hiding `claude` from PATH.
+A `claude` you launched from a Bash subshell failing with `Not logged in` means its auth env was stripped, not that the product regressed. The fix is the `scripts/run-claude` shim plus a repo-root `.env`; setup is in /e2e-testing-sandboxing. **The shim reads `$SPRAWL_ROOT/.env` when `$SPRAWL_ROOT` is set** — the e2e harness overrides it to a sandbox — so if the shim seems not to work, check `$SPRAWL_ROOT` first; that interaction is documented in the same skill. Do not work around it by hiding `claude` from PATH.
+
+`scripts/e2e-matrix.sh` runs one credential preflight per batch and **exits 6** if `claude` is installed but no credential reached it, so this fails fast instead of N rows deep. It proves a credential is *present*, not *valid*: an expired token still passes it and still fails rows. **Any e2e result you cite must state its `Not logged in` count, including when that count is zero** — an unmentioned zero is indistinguishable from never having checked.
 
 ## Public vs private repo hygiene
 

@@ -212,6 +212,30 @@ parent dir if `$SPRAWL_ROOT` is unset) and then `exec`s `claude`. The
 agent worktree (preserving `0600` mode via `cp -p`) so the shim works from
 inside worktrees too.
 
+**`$SPRAWL_ROOT` selects which `.env` the shim reads — and the e2e harness
+overrides it (QUM-1108 Part 2).** This is the interaction that made the
+documented remedy look broken. `e2e_make_sandbox_root` sets `SPRAWL_ROOT` to a
+fresh `/tmp` sandbox, so inside an e2e row the shim resolves
+`<sandbox>/.env`, **not** the repo root's. Historically that sandbox had no
+`.env`, so the shim found nothing and exec'd a bare `claude` — i.e. applying
+the documented fix produced the original symptom, which is worse than no
+advice at all.
+
+**What is true now:** `e2e_make_sandbox_root` copies `.env` into the sandbox
+root it creates (`cp -p`, preserving `0600`), so a sandbox `$SPRAWL_ROOT` now
+usually *does* carry one and the shim works there. Two consequences worth
+holding onto: an exported `$SPRAWL_ROOT` still silently changes which `.env`
+is read, so if auth fails inside a sandbox check `$SPRAWL_ROOT` first; and a
+sandbox created some other way still has no `.env`. Sourcing the token into
+the launching shell (`set -a; . ./.env; set +a`) bypasses the whole question,
+because the token is then inherited rather than resolved.
+
+Since QUM-1108, `scripts/e2e-matrix.sh` also runs **one credential preflight
+per batch** before the first row and aborts with **exit 6** if `claude` is
+installed but no credential reached it — so this class of misconfiguration now
+surfaces in one cheap check instead of N vacuous row failures. It proves the
+credential is *present*, not *valid*.
+
 `internal/agent/claude.go` honors `$SPRAWL_CLAUDE`: if set, it is used
 verbatim as the `claude` binary path; otherwise it falls back to a `PATH`
 lookup.

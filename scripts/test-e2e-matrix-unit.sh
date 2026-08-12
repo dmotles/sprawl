@@ -169,7 +169,20 @@ FAIL=0
 # new seam these sections register, SPRAWL_E2E_MATRIX_DEBUG_OAUTH_SCAN_PID (1
 # [16a] pass + 2 [16b] passes, same accounting QUM-1118's two seams used
 # above). Re-measured on a FULL GREEN run — 559 passed / 0 failed.
-MIN_ASSERTIONS=559
+#
+# QUM-1108/QUM-1135/QUM-1045 (zone): 559 -> 641, for section [23] (the batch
+# auth preflight) and the [16] machinery auto-scaling with the one new seam it
+# registers, SPRAWL_E2E_MATRIX_DEBUG_AUTH_PROBE_BIN. The sibling registry entry
+# SPRAWL_E2E_SKIP_AUTH_PROBE is not a `_DEBUG_` name, so [16] does not scale
+# with it and it contributes nothing here.
+#
+# MEASURED, NOT DERIVED — a reviewer caught exactly that mistake on the
+# preceding slice. The number below is a reading, taken after the section was
+# green:
+#   bash scripts/test-e2e-matrix-unit.sh  ->  "641 passed / 0 failed"
+# The `0 failed` half is load-bearing: a floor measured on a red run counts a
+# collapsed section's surviving assertions and licenses the loss.
+MIN_ASSERTIONS=641
 # A [16b] nested child deliberately does NOT re-run section [16] (recursing would
 # fork-bomb, and counting there would corrupt the parity comparison), so it asserts
 # strictly fewer things and needs its own floor. Measured at de22410: 237; 238 after
@@ -220,7 +233,17 @@ MIN_ASSERTIONS=559
 # in full). Measured directly (code review, zone): `UNIT_NESTED_SEAM_CHECK=<a
 # valid nonce> bash scripts/test-e2e-matrix-unit.sh` -> "542 passed / 1
 # failed", the one fail being 16c's deliberate one, per the recipe above.
-MIN_ASSERTIONS_NESTED=542
+# QUM-1108 (zone): 542 -> 621. Section [23] references UNIT_NESTED_SEAM_CHECK
+# nowhere, so a nested child runs it in full and gains the same assertions the
+# parent did; the child still skips [16], so it does NOT gain [16]'s seam
+# scaling. Measured, not derived, with a valid nonce:
+#   NONCE=$(mktemp /tmp/qum1108-nonce.XXXXXX); printf 'nested-seam-check\n' >"$NONCE"
+#   UNIT_NESTED_SEAM_CHECK=$NONCE bash scripts/test-e2e-matrix-unit.sh | tail -3
+#   -> "621 passed / 0 failed"
+# (The older reading above recorded "542 passed / 1 failed" because it was taken
+# via the unbacked-value branch, which adds 16c's deliberate fail. This reading
+# is a full green, which is the stronger basis for a floor.)
+MIN_ASSERTIONS_NESTED=621
 
 # Pin the temp root. This suite runs inside `make validate` and therefore inside
 # the pre-commit hook, so it must not inherit the committing agent's TMPDIR:
@@ -280,6 +303,19 @@ UNIT_SCRUBBED_VARS=(
 	# the code under test, and would falsely arm 21b/21d for the wrong pid
 	# in a caller's shell that happens to export it.
 	SPRAWL_E2E_MATRIX_DEBUG_OAUTH_SCAN_PID
+	# QUM-1108. Test-only seam pointing the batch auth preflight at a stand-in
+	# probe binary. [16a] auto-discovers SPRAWL_E2E_MATRIX_DEBUG_* out of the
+	# driver and lib and FAILS the run if one is unregistered, so this entry is
+	# mandatory rather than merely prudent: an inherited value points every
+	# run's preflight at a path that does not exist.
+	SPRAWL_E2E_MATRIX_DEBUG_AUTH_PROBE_BIN
+	# QUM-1108. A production escape hatch, not a `_DEBUG_` seam — so [16a] will
+	# NOT auto-discover it, exactly like SPRAWL_E2E_SKIP_NO_CLAUDE and
+	# SPRAWL_E2E_MIN_FREE_MB above, and exactly like them it is registered by
+	# hand. An operator with this exported disables the preflight for every run
+	# in this suite, which silently converts section [23]'s negative controls
+	# (23a2/23a3/23a4, none of which set it) into greens that measured nothing.
+	SPRAWL_E2E_SKIP_AUTH_PROBE
 )
 UNIT_SCRUB_ARGS=()
 for _v in "${UNIT_SCRUBBED_VARS[@]}"; do
@@ -1695,7 +1731,15 @@ else
 		# path (already-set, no walk needed), keeping this section's fixture
 		# decoupled from that unrelated precondition.
 		_unit_reset_markers "$MSK"
-		_unit_run_env "$FIXSKIP" "$MSK" "PATH=$STUBBIN CLAUDE_CODE_OAUTH_TOKEN=stub-token" _unit_fixture_needsclaude_ok
+		# SPRAWL_E2E_SKIP_AUTH_PROBE=1 (QUM-1108): $STUBBIN's fake claude is a
+		# bare `exit 0` that prints nothing, which the batch auth preflight
+		# correctly classifies as "produced no output at all" and aborts on
+		# with exit 6. This section isolates the QUM-952 SKIP BUCKET, not auth,
+		# so the preflight is disabled here rather than teaching the stub to
+		# answer `auth status` — coupling this fixture to the probe's expected
+		# output would make an unrelated section go red whenever that banner
+		# changes. Section [23] owns the preflight's own contract.
+		_unit_run_env "$FIXSKIP" "$MSK" "PATH=$STUBBIN CLAUDE_CODE_OAUTH_TOKEN=stub-token SPRAWL_E2E_SKIP_AUTH_PROBE=1" _unit_fixture_needsclaude_ok
 		if [ "$_RC" -eq 0 ]; then
 			pass "15n: needs_claude row with claude present exits 0"
 		else
@@ -6106,7 +6150,7 @@ EOF
 	# directory". An empty value is equivalent for this function's own
 	# `[ -n "${CLAUDE_CODE_OAUTH_TOKEN:-}" ]` check.
 	_unit_run_env "$P21D_FIX" "$P21D_FIX/markers" \
-		"PATH=$P21D_FIX/fakebin:$PATH CLAUDE_CODE_OAUTH_TOKEN= SPRAWL_E2E_MATRIX_DEBUG_OAUTH_SCAN_PID=1" \
+		"PATH=$P21D_FIX/fakebin:$PATH CLAUDE_CODE_OAUTH_TOKEN= SPRAWL_E2E_MATRIX_DEBUG_OAUTH_SCAN_PID=1 SPRAWL_E2E_SKIP_AUTH_PROBE=1" \
 		rowA rowB
 	_unit_assert_ran "$P21D_FIX/markers" rowA-launched-session no "21d: row A never reached past the failed recovery call (no session was launched)"
 	_unit_assert_ran "$P21D_FIX/markers" rowB yes "21d: row B still ran after row A's ordinary failure (the driver does not abort the whole run the way an environment-unfit exit does)"
@@ -6364,6 +6408,652 @@ case "$out" in
 		pass "22f: no .env was manufactured during the end-to-end run"
 		;;
 esac
+
+# ----------------------------------------------------------------------------
+echo "[23] QUM-1108/QUM-1135/QUM-1045 one-per-batch auth preflight"
+
+# WHY THIS SECTION IS BUILT FROM STUBS AND NOT FROM A REAL RED (QUM-1104).
+#
+# The defect's symptom is "row output contains 'Not logged in'". That string is
+# a property of the BROKEN state and stops being observable the moment auth
+# works — and on this host auth currently DOES work (measured: the QUM-411
+# ancestor walk recovers a real token and `claude auth status` reports
+# loggedIn:true). So there is no natural red to harvest, and a witness built
+# from the symptom would be untestable exactly when it matters.
+#
+# Instead the axis under test is the pair the probe actually constrains:
+# (exit status) x (output content). Four deliberate stub states drive it, and
+# the third — EXIT 0 WHILE REPORTING NO CREDENTIAL — is the one QUM-1135 names
+# as the assertion that matters, because a naive `$?`-only probe passes it.
+#
+# Recorded honestly: on `claude 2.1.226` `auth status` exits 1 (not 0) when
+# unauthenticated, so 23a3 is a state we STAGE rather than one we observed in
+# production. It is covered anyway for two reasons that survive that
+# correction: the exit convention is a CLI contract this repo does not own and
+# can flip under it, and a content-blind probe is inert against the whole
+# class. 23a3 is the positive control for that claim — see the M1 mutation
+# recorded on QUM-1108.
+#
+# The probe proves a credential is PRESENT, never that it is VALID: a garbage
+# token still reports loggedIn:true (measured). Nothing here asserts validity,
+# and the banner assertions below pin language that does not overclaim it.
+
+P23_FIX=""
+P23_SECRET=""
+if [ ! -r "$LIB" ] || [ ! -r "$DRIVER" ]; then
+	fail "23: setup — lib or driver missing; the whole auth-preflight fixture group (60 assertions) could not run"
+else
+	P23_FIX=$(mktemp -d "$UNIT_TMP_ROOT/e2e-matrix-unit-p23.XXXXXX" 2>/dev/null || true)
+	if [ -z "$P23_FIX" ] || [ ! -d "$P23_FIX" ]; then
+		fail "23: setup — could not mktemp the fixture tree; the whole auth-preflight fixture group (60 assertions) could not run"
+		P23_FIX=""
+	elif ! _unit_mk_fixture_tree "$P23_FIX"; then
+		fail "23: setup — could not build the fixture driver tree; the whole auth-preflight fixture group (60 assertions) could not run"
+	else
+		# The leak sentinel every stub prints on EVERY path, including its
+		# failure paths. If the probe ever echoes a byte of the command's
+		# output, this string surfaces — which is how 23d turns "we promise not
+		# to log the token" into a checked property rather than a claim.
+		P23_SECRET="QUM1108-PROBE-SECRET-$$"
+		P23_CALLS="$P23_FIX/probe-calls"
+
+		# Row fixtures. $1=name, $2=1 if the row declares needs_claude.
+		# Deliberately NOT _unit_mk_marker_row: that helper hardcodes an empty
+		# test_metadata, and needs_claude is the discriminator this section is
+		# about.
+		_p23_mk_row() {
+			cat >"$P23_FIX/e2e-tests/$1.sh" <<EOF
+MIN_ASSERTIONS=1
+test_metadata() { echo "$([ "$2" = 1 ] && echo 'needs_claude=1')"; }
+test_run() {
+	: >"\${UNIT_MARKER_DIR:?UNIT_MARKER_DIR unset}/$1"
+	pass "$1 ran"
+	e2e_print_results
+}
+EOF
+		}
+
+		# Stub probe binaries. Each RECORDS its own argv (so 23c can prove the
+		# driver invoked the real production argv, and prove it did so exactly
+		# once per batch) and prints the leak sentinel before its payload.
+		# $1=name, $2=exit code, $3=payload printed on stdout, $4=1 to OMIT
+		# the leak sentinel (needed only for the genuinely-silent stub, whose
+		# whole point is producing NO output — printing a sentinel there would
+		# make "empty output" untestable and would force the implementation to
+		# attach its empty-output diagnostic to a non-empty case, i.e. to print
+		# a falsehood in order to satisfy a test).
+		_p23_mk_stub() {
+			mkdir -p "$P23_FIX/stub" || return 1
+			{
+				printf '#!/usr/bin/env bash\n'
+				printf 'printf "%%s\\n" "$*" >>"%s"\n' "$P23_CALLS"
+				[ "${4:-0}" = 1 ] || printf 'printf "%%s\\n" "%s"\n' "$P23_SECRET"
+				[ -z "$3" ] || printf 'printf "%%s\\n" %q\n' "$3"
+				printf 'exit %s\n' "$2"
+			} >"$P23_FIX/stub/$1" || return 1
+			chmod +x "$P23_FIX/stub/$1" || return 1
+		}
+
+		# A row that PRINTS the sentinel, used only by 23d0 as the positive
+		# control on the OBSERVATION CHANNEL — see 23d.
+		_p23_mk_secret_row() {
+			cat >"$P23_FIX/e2e-tests/rowSecret.sh" <<EOF
+MIN_ASSERTIONS=1
+test_metadata() { echo "needs_claude=1"; }
+test_run() {
+	: >"\${UNIT_MARKER_DIR:?UNIT_MARKER_DIR unset}/rowSecret"
+	echo "$P23_SECRET"
+	pass "rowSecret ran"
+	e2e_print_results
+}
+EOF
+		}
+
+		p23_setup_ok=1
+		_p23_mk_row rowA 1 || p23_setup_ok=0
+		_p23_mk_row rowB 0 || p23_setup_ok=0
+		_p23_mk_row rowC 1 || p23_setup_ok=0
+		_p23_mk_secret_row || p23_setup_ok=0
+		# A fixture `claude` on PATH. Without this the section is
+		# HOST-DEPENDENT: every needs_claude row routes through
+		# e2e_require_claude_or_skip, which FATALs when the binary is absent,
+		# so on a host with no claude installed 23a1's rc/breakdown/marker arms
+		# would all go red for a reason that has nothing to do with the
+		# preflight. Pre-setting CLAUDE_CODE_OAUTH_TOKEN covers the TOKEN; this
+		# covers the BINARY. Both directions are now fixture-controlled: the
+		# cases that want it absent (23b2/23b2b) scrub PATH themselves.
+		if mkdir -p "$P23_FIX/bin" &&
+			printf '#!/usr/bin/env bash\nexit 0\n' >"$P23_FIX/bin/claude" &&
+			chmod +x "$P23_FIX/bin/claude"; then
+			:
+		else
+			p23_setup_ok=0
+		fi
+		# (a) healthy: exits 0 AND reports a credential. Pretty-printed with a
+		#     space after the colon, which is what the real CLI emits.
+		_p23_mk_stub good 0 '{"loggedIn": true, "authMethod": "oauth_token"}' || p23_setup_ok=0
+		# (a2) healthy, COMPACT. Without this, an implementation that greps the
+		#      exact literal `"loggedIn": true` (with the space) passes every
+		#      other assertion here and then fails in production the moment the
+		#      CLI emits compact JSON. The contract is whitespace-INSENSITIVE
+		#      containment, so it needs a subject whose whitespace differs.
+		_p23_mk_stub goodcompact 0 '{"loggedIn":true,"authMethod":"oauth_token"}' || p23_setup_ok=0
+		# (b) cannot report at all: nonzero exit.
+		_p23_mk_stub rcfail 7 '' || p23_setup_ok=0
+		# (b2) NONZERO EXIT BUT A HEALTHY-LOOKING PAYLOAD. Added after the M2
+		#      mutation (probe ignores $rc, trusts content) SURVIVED the whole
+		#      section: with only the `rcfail` stub above, a nonzero exit was
+		#      always paired with output that ALSO lacked the credential
+		#      string, so 23a2 could not tell which of the two conditions the
+		#      implementation was actually reading. This stub separates them —
+		#      it is the only subject on which an rc-ignoring probe gives a
+		#      different verdict from a correct one.
+		_p23_mk_stub rcfailok 7 '{"loggedIn": true, "authMethod": "oauth_token"}' || p23_setup_ok=0
+		# (c) THE ONE THAT MATTERS: exits 0 while reporting NO credential.
+		_p23_mk_stub zeroerr 0 '{"loggedIn": false, "authMethod": "none"}' || p23_setup_ok=0
+		# (d) exits 0 and says NOTHING AT ALL — the shape [15n]/[21d]'s real
+		#     `exit 0` fake claude binaries have. Sentinel deliberately omitted
+		#     (see _p23_mk_stub): this is the one stub whose output must be
+		#     genuinely empty, so it is the one stub not covered by the 23d
+		#     leak assertions. That trade is deliberate and recorded.
+		_p23_mk_stub silent 0 '' 1 || p23_setup_ok=0
+
+		if [ "$p23_setup_ok" -ne 1 ]; then
+			fail "23: setup — could not write the row fixtures and stub probes; the whole auth-preflight fixture group (60 assertions) could not run"
+		else
+			# Run the fixture driver with the probe pointed at a stub.
+			# $1=stub name ("" to leave the seam unset), $2=extra env,
+			# rest=rows. CLAUDE_CODE_OAUTH_TOKEN is pre-set for the same
+			# reason [15n] pre-sets it: it hits e2e_recover_oauth_token's
+			# already-set fast path, so this section's verdicts never depend on
+			# whether the HOST running the suite happens to have a token in its
+			# /proc ancestor chain.
+			_p23_run() {
+				local stub=$1 extra=$2 pathpfx=""
+				shift 2
+				# A caller that scrubs PATH on purpose (23b2/23b2b) owns it
+				# entirely; everyone else gets the fixture `claude`.
+				case " $extra " in
+					*" PATH="*) : ;;
+					*) pathpfx="PATH=$P23_FIX/bin:$PATH " ;;
+				esac
+				: >"$P23_CALLS"
+				_unit_reset_markers "$P23_FIX/markers"
+				_unit_run_env "$P23_FIX" "$P23_FIX/markers" \
+					"${pathpfx}CLAUDE_CODE_OAUTH_TOKEN=stub-token${stub:+ SPRAWL_E2E_MATRIX_DEBUG_AUTH_PROBE_BIN=$P23_FIX/stub/$stub}${extra:+ $extra}" \
+					"$@"
+			}
+
+			# Join the two captured streams with a NEWLINE, never by bare
+			# concatenation: "$_OUT$_ERR" can manufacture a match spanning the
+			# boundary between the last byte of stdout and the first of stderr.
+			_p23_both() { printf '%s\n%s\n' "$_OUT" "$_ERR"; }
+
+			# Did the probe binary actually get exec'd this run? The call log
+			# is the only UNFORGEABLE artifact here: every banner the driver
+			# prints is self-minted by the subject under test, so a driver that
+			# printed "auth preflight OK" and never exec'd anything would
+			# satisfy every string assertion in this section.
+			_p23_assert_probe_ran() {
+				if [ -s "$P23_CALLS" ]; then
+					pass "$1"
+				else
+					fail "$1 (the probe call log is empty — the probe binary was never exec'd)"
+				fi
+			}
+
+			_p23_assert_probe_did_not_run() {
+				if [ -s "$P23_CALLS" ]; then
+					fail "$1 (the probe call log is non-empty — a round-trip happened that should have been gated out)"
+				else
+					pass "$1"
+				fi
+			}
+
+			# rc is asserted EXACTLY, never merely nonzero: 1/2/3/4 are all
+			# nonzero and all mean something else, and a fixture that failed to
+			# build is nonzero too — so `-ne 0` would green this section having
+			# measured nothing.
+			_p23_assert_rc() {
+				if [ "$_RC" -eq "$1" ]; then
+					pass "$2"
+				else
+					fail "$2 (want rc=$1, got rc=$_RC) out=$_OUT err=$_ERR"
+				fi
+			}
+
+			# `--` before the pattern is NOT optional: grep parses a
+			# pattern beginning with a dash as an OPTION, so a bare
+			# `grep -qF "--json"` errors out and the assertion fails for a
+			# reason that has nothing to do with the subject.
+			_p23_assert_has() {
+				if printf '%s\n' "$1" | grep -qF -- "$2"; then
+					pass "$3"
+				else
+					fail "$3 (want to find '$2') text=$1"
+				fi
+			}
+
+			_p23_assert_lacks() {
+				if printf '%s\n' "$1" | grep -qF -- "$2"; then
+					fail "$3 (found '$2', which must not be there) text=$1"
+				else
+					pass "$3"
+				fi
+			}
+
+			# The full "the batch aborted before accounting began" shape. This
+			# is the ASSERTED form of the restated invariant: `passed + failed
+			# + skipped == requested` holds on any run that REACHES the
+			# summary, and exit 6 never reaches it. Its negative control is
+			# 23a1, the healthy run, where all three of these ARE present.
+			_p23_assert_aborted_before_rows() {
+				_unit_assert_no_summary "$_OUT" "$1: no 'N/M passed' summary — the batch aborted before any accounting"
+				_unit_assert_no_breakdown "$_OUT" "$1: no breakdown line — the batch aborted before any accounting"
+				_unit_assert_verdict_lines_any "$_OUT" 0 "$1: no PASS/FAIL/SKIP verdict line — no row was attributed this failure"
+			}
+
+			P23_FATAL="FATAL: AUTH PREFLIGHT FAILED"
+
+			# --- 23a1: healthy credential -> byte-identical to today ---------
+			# The load-bearing NEGATIVE control for the entire slice: a subject
+			# known clean, where the probe MUST stay quiet.
+			_p23_run good "" rowA rowB
+			_p23_assert_rc 0 "23a1: a healthy probe leaves the batch exit status at 0"
+			_unit_assert_breakdown "$_OUT" 2 0 0 2 "23a1: healthy probe leaves the accounting untouched (2 passed / 2 requested)"
+			_unit_assert_ran "$P23_FIX/markers" rowA yes "23a1: the needs_claude row still ran"
+			_unit_assert_ran "$P23_FIX/markers" rowB yes "23a1: the non-claude row still ran"
+			_p23_assert_lacks "$(_p23_both)" "$P23_FATAL" "23a1: no auth-preflight FATAL on a healthy run"
+			_p23_assert_has "$_OUT" "=== Matrix: auth preflight OK" "23a1: the healthy preflight announces itself on stdout"
+			# Without this, every assertion above is satisfied by a driver that
+			# prints the banner and never probes anything at all.
+			_p23_assert_probe_ran "23a1: the healthy path actually round-tripped to the probe binary"
+			# These two are the POSITIVE CONTROLS for
+			# _p23_assert_aborted_before_rows, whose three arms are all
+			# absence claims. Without a run where the summary IS printed and
+			# the verdict-line count IS non-zero, "no summary" and "0 verdict
+			# lines" are green for any run that produced neither for unrelated
+			# reasons.
+			_unit_assert_summary "$_OUT" 2 2 "23a1: the healthy run DOES print a summary line (control for the exit-6 absence arms)"
+			_unit_assert_verdict_lines_any "$_OUT" 2 "23a1: the healthy run DOES print 2 verdict lines (control for the exit-6 absence arms)"
+
+			# --- 23a2: probe cannot report at all (nonzero exit) --------------
+			_p23_run rcfail "" rowA rowB
+			_p23_assert_rc 6 "23a2: a probe that exits nonzero aborts the batch with exit 6"
+			_p23_assert_has "$_ERR" "$P23_FATAL" "23a2: the abort names itself as an auth-preflight failure"
+			_p23_assert_has "$_ERR" "the probe exited 7" "23a2: the abort reports the probe's actual exit status"
+			_unit_assert_ran "$P23_FIX/markers" rowA no "23a2: no row ran"
+			_unit_assert_ran "$P23_FIX/markers" rowB no "23a2: not even the non-claude row ran"
+			_p23_assert_aborted_before_rows 23a2
+
+			# --- 23a2b: nonzero exit WITH a healthy-looking payload ----------
+			# The other half of the "rc == 0 AND content says so" conjunction.
+			# 23a2 alone cannot see which condition the implementation reads,
+			# because its stub fails both at once. Here the content would
+			# satisfy a content-only probe, so the ONLY thing that can produce
+			# exit 6 is the implementation actually believing $rc.
+			_p23_run rcfailok "" rowA rowB
+			_p23_assert_rc 6 "23a2b: a nonzero exit is believed even when the payload looks healthy (the rc half of the check is real)"
+			_p23_assert_has "$_ERR" "the probe exited 7" "23a2b: the abort still reports the probe's actual exit status"
+			_unit_assert_ran "$P23_FIX/markers" rowA no "23a2b: no row ran despite the healthy-looking payload"
+
+			# --- 23a3: THE ONE THAT MATTERS - exit 0 while reporting nothing --
+			# A `$?`-only probe passes this stub. That is the whole point:
+			# this assertion is what the M1 mutation (probe checks rc only)
+			# is watched failing against.
+			_p23_run zeroerr "" rowA rowB
+			_p23_assert_rc 6 "23a3: a probe that EXITS 0 while reporting no credential still aborts with exit 6"
+			_p23_assert_has "$_ERR" "$P23_FATAL" "23a3: the exit-0-no-credential case names itself as an auth-preflight failure"
+			_p23_assert_has "$_ERR" "exit status alone is not evidence" "23a3: the diagnostic says why exit status was not believed"
+			_unit_assert_ran "$P23_FIX/markers" rowA no "23a3: no row ran on the exit-0-no-credential path"
+			_p23_assert_aborted_before_rows 23a3
+
+			# --- 23a4: exits 0 and says nothing ------------------------------
+			_p23_run silent "" rowA rowB
+			_p23_assert_rc 6 "23a4: a probe that exits 0 and prints nothing aborts with exit 6"
+			_p23_assert_has "$_ERR" "produced no output at all" "23a4: the empty-output case is reported distinctly from the no-credential case"
+			_unit_assert_ran "$P23_FIX/markers" rowA no "23a4: no row ran on the empty-output path"
+
+			# --- 23a5: healthy, but COMPACT JSON -----------------------------
+			# Same verdict as 23a1 from a payload whose only difference is
+			# whitespace. This is what stops the implementation from pinning
+			# the pretty-printed literal the one healthy stub happens to use.
+			_p23_run goodcompact "" rowA
+			_p23_assert_rc 0 "23a5: a compact-JSON healthy payload is accepted too (the match is whitespace-insensitive, not a literal pin)"
+			_p23_assert_has "$_OUT" "=== Matrix: auth preflight OK" "23a5: the compact payload produces the same success banner"
+			_p23_assert_probe_ran "23a5: the compact-payload run actually round-tripped to the probe binary"
+
+			# --- 23b1: the probe must not fire when no row needs claude -------
+			# Same FAILING stub as 23a2. The only difference is which row was
+			# selected — which is what proves the needs_claude gate, and not
+			# the stub, is the discriminator.
+			_p23_run rcfail "" rowB
+			_p23_assert_rc 0 "23b1: a batch whose rows do not declare needs_claude runs even when the probe would fail"
+			_p23_assert_has "$_OUT" "=== Matrix: auth preflight not required" "23b1: the driver says why it did not probe"
+			_unit_assert_ran "$P23_FIX/markers" rowB yes "23b1: the non-claude row ran"
+			_p23_assert_lacks "$(_p23_both)" "$P23_FATAL" "23b1: no auth FATAL for a batch that needs no auth"
+			# The cost claim QUM-1135 makes is that the round-trip is SKIPPED,
+			# not merely that its verdict is ignored.
+			_p23_assert_probe_did_not_run "23b1: no round-trip happened at all for a batch that declares no needs_claude row"
+
+			# --- 23b2: claude ABSENT is still owned by the per-row gate -------
+			# Constraint 5: unchanged behaviour. Exit 3 (skip), never 6.
+			_p23_run "" "PATH=/nonexistent SPRAWL_E2E_SKIP_NO_CLAUDE=1" rowA
+			_p23_assert_rc 3 "23b2: claude absent + SPRAWL_E2E_SKIP_NO_CLAUDE=1 still exits 3 (skip), not 6"
+			_unit_assert_skip_lines "$_OUT" 1 "23b2: the row still gets its SKIP verdict line"
+			_p23_assert_lacks "$(_p23_both)" "$P23_FATAL" "23b2: the preflight does not pre-empt the absent-binary skip path"
+
+			# --- 23b2b: claude absent WITHOUT the skip flag -------------------
+			_p23_run "" "PATH=/nonexistent" rowA
+			_p23_assert_rc 1 "23b2b: claude absent without the skip flag still exits 1 (ordinary FATAL), not 6"
+			_p23_assert_lacks "$(_p23_both)" "$P23_FATAL" "23b2b: the preflight does not pre-empt the absent-binary FATAL path"
+
+			# --- 23b3: the operator escape hatch ------------------------------
+			_p23_run rcfail "SPRAWL_E2E_SKIP_AUTH_PROBE=1" rowA
+			_p23_assert_rc 0 "23b3: SPRAWL_E2E_SKIP_AUTH_PROBE=1 lets the batch run despite a failing probe"
+			# The hatch recreates SPRAWL_E2E_SKIP_NO_CLAUDE's own misdiagnosis
+			# hazard, so the WARN is the mitigation — asserted, not assumed.
+			_p23_assert_has "$_ERR" "auth preflight DISABLED" "23b3: disabling the preflight warns loudly on stderr"
+			_unit_assert_ran "$P23_FIX/markers" rowA yes "23b3: the row ran with the preflight disabled"
+			_p23_assert_probe_did_not_run "23b3: the hatch skips the round-trip entirely rather than running it and ignoring the verdict"
+
+			# --- 23c1: ONE round-trip per BATCH, not per row ------------------
+			# Three needs_claude selections (rowA twice, deliberately: the
+			# driver does not deduplicate, so this is three ROW runs).
+			_p23_run good "" rowA rowC rowA
+			_p23_assert_rc 0 "23c1: the three-row batch passes"
+			# THE DENOMINATOR IS PART OF THIS ASSERTION. "exactly one probe
+			# call" is worthless without pinning how many rows actually ran:
+			# if the driver deduplicated `rowA rowA` or bailed after one row,
+			# a count of 1 is still satisfied and "once per BATCH" is
+			# unverified. The driver does not deduplicate by design (QUM-947),
+			# so three selections must be three row runs.
+			_unit_assert_breakdown "$_OUT" 3 0 0 3 "23c1: all three selected rows actually ran (the denominator the once-per-batch claim is measured against)"
+			# `grep -c` prints 0 AND EXITS 1 on no match, so
+			# `$(grep -c . f || echo 0)` yields the two-line string "0\n0" and
+			# every later `[ ... -eq ]` errors out with "integer expression
+			# expected" instead of comparing. awk has no such wart.
+			_p23_calls=$(awk 'END{print NR}' "$P23_CALLS" 2>/dev/null)
+			case "$_p23_calls" in '' | *[!0-9]*) _p23_calls=0 ;; esac
+			# Non-zero FIRST. A bare "-eq 1" is an at-most-one claim, and the
+			# strongest way to satisfy an at-most-one claim is to never run at
+			# all — so this arm is what stops a probe that was gated out
+			# entirely from reading as "one round-trip per batch".
+			if [ "$_p23_calls" -ge 1 ]; then
+				pass "23c1: the probe ran at least once for a 3-row needs_claude batch"
+			else
+				fail "23c1: the probe never ran for a 3-row needs_claude batch (log empty)"
+			fi
+			if [ "$_p23_calls" -eq 1 ]; then
+				pass "23c1: the probe ran EXACTLY once for a 3-row batch (one round-trip per batch, not per row)"
+			else
+				fail "23c1: the probe ran $_p23_calls times for a 3-row batch (want exactly 1 — QUM-1135 requires one round-trip per batch)"
+			fi
+
+			# --- 23c2: the production argv is under test, not replaced --------
+			# Deliberately reads $P23_CALLS from 23c1's run. Do not insert
+			# another _p23_run between them — it truncates the log.
+			if [ -s "$P23_CALLS" ]; then
+				_p23_argv=$(head -n1 "$P23_CALLS")
+				# Non-emptiness first: a bare substring match on "" would be
+				# satisfied by a stub that recorded nothing.
+				if [ -n "$_p23_argv" ]; then
+					pass "23c2: the probe recorded a non-empty argv"
+				else
+					fail "23c2: the probe recorded an EMPTY argv, so the argv assertions below prove nothing"
+				fi
+				_p23_assert_has "$_p23_argv" "auth status" "23c2: the probe asks claude for its auth status"
+				_p23_assert_has "$_p23_argv" "--json" "23c2: the probe pins --json explicitly rather than trusting a default that can flip"
+			else
+				fail "23c2: no probe argv was recorded, so the invocation shape is unverified"
+				fail "23c2: (consequently) the non-empty-argv control could not be checked"
+				fail "23c2: (consequently) the --json pin could not be checked"
+			fi
+
+			# --- 23d: no probe output may ever reach a log --------------------
+			# The token is the thing this must protect, but a token cannot be
+			# planted in a test without writing one down. So the stubs emit a
+			# SENTINEL on every path instead, and the property asserted is the
+			# strictly stronger one the implementation actually needs: the
+			# probe echoes NO byte of the command's output, ever.
+			# 23d0 — THE CONTROL ON THE OBSERVATION CHANNEL, and the one that
+			# makes 23d1/23d2 mean anything. Those two assert the sentinel is
+			# absent from $_OUT/$_ERR; that is green whenever the sentinel
+			# CANNOT REACH $_OUT/$_ERR at all — a broken capture, an empty
+			# variable, a misspelt grep. rowSecret prints the sentinel from
+			# inside a row, so the same string travels the same channel to the
+			# same variables and MUST be seen. Direction: this one must FIRE.
+			_p23_run good "" rowSecret
+			_p23_assert_has "$(_p23_both)" "$P23_SECRET" "23d0: positive control — the sentinel DOES reach the captured output when something prints it"
+			# Attribute the sighting to the ROW. Without this, 23d0 would also
+			# be green if the PREFLIGHT leaked the sentinel and then aborted —
+			# i.e. green because of the very defect 23d1/23d2 rule out.
+			_unit_assert_ran "$P23_FIX/markers" rowSecret yes "23d0: the sentinel came from the row actually running, not from a leak on an aborted path"
+
+			_p23_run good "" rowA
+			_p23_assert_lacks "$(_p23_both)" "$P23_SECRET" "23d1: a healthy probe echoes none of the command's output"
+			_p23_run zeroerr "" rowA
+			_p23_assert_lacks "$(_p23_both)" "$P23_SECRET" "23d2: a FAILING probe echoes none of the command's output either (the failure path is the one that leaks)"
+			# The nonzero-exit branch is the diagnostic most tempted to dump
+			# the command's output ("here is what it said"), so it gets its own
+			# leak assertion rather than being assumed covered by 23d2.
+			_p23_run rcfail "" rowA
+			_p23_assert_lacks "$(_p23_both)" "$P23_SECRET" "23d2b: the nonzero-exit branch echoes none of the command's output either"
+			# A second control, on a different thing: that the SEARCH STRING is
+			# non-empty and grep-able at all. 23d0 controls the channel; this
+			# controls the needle.
+			if [ -f "$P23_FIX/stub/zeroerr" ] && grep -qF "$P23_SECRET" "$P23_FIX/stub/zeroerr"; then
+				pass "23d3: positive control — the same sentinel search DOES match where the sentinel is known to be planted"
+			else
+				fail "23d3: positive control FAILED — the sentinel search matches nothing even where the sentinel is planted, so 23d1/23d2 prove nothing"
+			fi
+		fi
+	fi
+fi
+
+# --- 23e: the exit-code contract is reconciled in one place, not two ---------
+# The driver's EXIT CODES block is the authority; the skill file carries a
+# copy. Both are pinned, because a copy that drifts is how a documented
+# contract becomes a lie nobody notices.
+if [ -r "$DRIVER" ]; then
+	_p23_ec=$(sed -n '/^# EXIT CODES:/,/^#   77/p' "$DRIVER")
+	_p23_assert_has_f() {
+		if printf '%s\n' "$1" | grep -qE "$2"; then
+			pass "$3"
+		else
+			fail "$3 (no line matching /$2/)"
+		fi
+	}
+	# The extraction itself is controlled: an empty range means the block was
+	# renamed or reformatted, which must be diagnosed as "block not found"
+	# rather than silently reported as four missing exit codes.
+	if [ -n "$_p23_ec" ]; then
+		pass "23e: the driver's EXIT CODES block was located (control for the four pins below)"
+	else
+		fail "23e: the driver's EXIT CODES block could not be located — the pins below are searching an empty string and prove nothing"
+	fi
+	_p23_assert_has_f "$_p23_ec" '^#   6 ' "23e: the driver's EXIT CODES block documents exit 6"
+	_p23_assert_has_f "$_p23_ec" '^#   6 .*auth' "23e: the driver's exit-6 entry names it as the auth preflight"
+	# Neighbours must not drift while 6 is added.
+	_p23_assert_has_f "$_p23_ec" '^#   5 ' "23e: the driver still documents exit 5 (environment unfit)"
+	_p23_assert_has_f "$_p23_ec" '^#   77 ' "23e: the driver still reserves 77 as a row's skip signal"
+else
+	fail "23e: the driver is unreadable, so the exit-code contract could not be checked"
+	fail "23e: (consequently) the EXIT CODES block location control could not be checked"
+	fail "23e: (consequently) the exit-6 documentation could not be checked"
+	fail "23e: (consequently) the exit-6 names-the-preflight check could not be checked"
+	fail "23e: (consequently) the exit-5 no-drift check could not be checked"
+	fail "23e: (consequently) the 77-reserved no-drift check could not be checked"
+fi
+
+if [ -r "$REPO_ROOT/scripts/lib/e2e-common.sh" ]; then
+	if grep -qE '^E2E_AUTH_UNFIT_EXIT=6$' "$REPO_ROOT/scripts/lib/e2e-common.sh"; then
+		pass "23e: the lib defines E2E_AUTH_UNFIT_EXIT=6 as the single numeric source"
+	else
+		fail "23e: the lib does not define E2E_AUTH_UNFIT_EXIT=6"
+	fi
+else
+	fail "23e: the lib is unreadable, so E2E_AUTH_UNFIT_EXIT could not be checked"
+fi
+
+P23_SKILL="$REPO_ROOT/.claude/skills/e2e-matrix/SKILL.md"
+if [ -r "$P23_SKILL" ]; then
+	# Pin the ENTRY, not the digit. A bare "the line contains a 6" is satisfied
+	# by the explanatory prose further along the same line ("`5` and `6` are
+	# both the …"), so deleting the actual exit-6 entry left that check green —
+	# observed, via the M9 mutation. Requiring the entry's own phrasing is what
+	# makes the copy-drift assertion real.
+	if grep 'Driver exit codes:' "$P23_SKILL" | grep -q '`6` auth preflight'; then
+		pass "23e: the skill's exit-code line carries the exit-6 entry (not merely the digit 6 somewhere on the line)"
+	else
+		fail "23e: the skill's 'Driver exit codes:' line has no '\`6\` auth preflight' entry, so the copy has drifted from the driver"
+	fi
+else
+	fail "23e: the e2e-matrix skill is unreadable, so its exit-code copy could not be checked"
+fi
+
+# --- 23f: the driver no longer tells the operator it never probes auth -------
+# scripts/e2e-matrix.sh's skip banner asserted "this gate keys on claude being
+# ABSENT and never probes auth". The moment the preflight lands, that sentence
+# is the driver lying on its own stderr. Same for the lib's FATAL branch, where
+# the auth blind-spot warning is placed so it prints ONLY when the binary is
+# absent — i.e. only when auth is not the problem.
+if [ -r "$DRIVER" ]; then
+	if grep -q 'never probes auth' "$DRIVER"; then
+		fail "23f: the driver still claims it 'never probes auth' — it does now, so its own banner is stale"
+	else
+		pass "23f: the driver no longer claims it never probes auth"
+	fi
+	# Paired POSITIVE arm. A bare "the false string is gone" check stays green
+	# forever once deleted — including if the whole banner were deleted, or
+	# reworded into a different falsehood. This says what must be there now.
+	if grep -q 'auth preflight' "$DRIVER"; then
+		pass "23f: the driver's own prose now refers to the auth preflight"
+	else
+		fail "23f: the driver never mentions the auth preflight, so its skip banner still leaves the operator with no pointer to it"
+	fi
+else
+	fail "23f: the driver is unreadable, so its stale auth prose could not be checked"
+	fail "23f: (consequently) the driver's replacement auth-preflight prose could not be checked"
+fi
+
+if [ -r "$REPO_ROOT/scripts/lib/e2e-common.sh" ]; then
+	# The blind-spot paragraph must not sit inside e2e_require_claude_or_skip's
+	# binary-absent FATAL branch any more. The requirement is RELOCATED, not
+	# REMOVED — so three arms, not one.
+	_p23_absent_branch=$(sed -n '/^e2e_require_claude_or_skip()/,/^}/p' "$REPO_ROOT/scripts/lib/e2e-common.sh")
+	# (a) Control on the extraction. If the function were renamed the range is
+	#     empty, the grep below finds nothing, and "moved correctly" would be
+	#     indistinguishable from "function gone".
+	if printf '%s\n' "$_p23_absent_branch" | grep -q 'SKIP_NO_CLAUDE'; then
+		pass "23f: e2e_require_claude_or_skip was located (control for the relocation check below)"
+	else
+		fail "23f: e2e_require_claude_or_skip could not be located — the relocation check below is searching an empty string and proves nothing"
+	fi
+	# (b) It must not be in the absent-binary branch.
+	if printf '%s\n' "$_p23_absent_branch" | grep -q 'installed but unauthenticated'; then
+		fail "23f: the auth blind-spot warning is still inside the binary-absent branch, where it prints only when auth is NOT the problem"
+	else
+		pass "23f: the auth blind-spot warning no longer prints only from the binary-absent branch"
+	fi
+	# (c) But it must still exist SOMEWHERE — deleting the warning outright
+	#     would satisfy (b) and lose the information entirely.
+	if grep -q 'installed but unauthenticated' "$REPO_ROOT/scripts/lib/e2e-common.sh"; then
+		pass "23f: the auth blind-spot warning still exists in the lib — it was relocated, not deleted"
+	else
+		fail "23f: the auth blind-spot warning was DELETED rather than relocated to where it actually fires"
+	fi
+else
+	fail "23f: the lib is unreadable, so the misplaced blind-spot warning could not be checked"
+	fail "23f: (consequently) the extraction control could not be checked"
+	fail "23f: (consequently) the relocated-not-deleted check could not be checked"
+fi
+
+# --- 23g: Part 2 / Part 3 doc content ---------------------------------------
+if [ -r "$P23_SKILL" ]; then
+	if grep -q 'exit 6' "$P23_SKILL"; then
+		pass "23g: the skill's claude-state table documents the exit-6 preflight outcome"
+	else
+		fail "23g: the skill's claude-state table does not document the exit-6 preflight outcome"
+	fi
+	# The probe proves PRESENCE, not VALIDITY. The doc must say the hazard is
+	# narrowed rather than eliminated, or it overclaims exactly the way this
+	# whole issue is about.
+	if grep -qi 'narrowed, not eliminated' "$P23_SKILL"; then
+		pass "23g: the doc states the misdiagnosis hazard is narrowed, not eliminated (an expired token still passes a presence probe)"
+	else
+		fail "23g: the doc does not state that the hazard is only NARROWED — a presence probe cannot detect an expired or revoked token"
+	fi
+	# Part 3: the evidence rule, and CO-LOCATED with the state table. A
+	# file-wide grep would be satisfied by the sentence sitting hundreds of
+	# lines away from where anyone reads it.
+	_p23_tbl=$(grep -n '| claude state |' "$P23_SKILL" | head -n1 | cut -d: -f1)
+	_p23_rule=$(grep -n 'including when that count is zero' "$P23_SKILL" | head -n1 | cut -d: -f1)
+	if [ -n "$_p23_rule" ]; then
+		pass "23g: the Part 3 evidence rule is present and names the zero case explicitly"
+	else
+		fail "23g: the Part 3 evidence rule ('state the Not logged in count, including when it is zero') is missing"
+	fi
+	if [ -n "$_p23_tbl" ] && [ -n "$_p23_rule" ] && [ "$((_p23_rule > _p23_tbl ? _p23_rule - _p23_tbl : _p23_tbl - _p23_rule))" -le 25 ]; then
+		pass "23g: the evidence rule sits next to the claude-state table, where a reader of one sees the other"
+	else
+		fail "23g: the evidence rule is not co-located with the claude-state table (table line '$_p23_tbl', rule line '$_p23_rule')"
+	fi
+else
+	fail "23g: the e2e-matrix skill is unreadable, so the Part 2/Part 3 doc content could not be checked"
+	fail "23g: (consequently) the evidence rule could not be checked"
+	fail "23g: (consequently) the hazard-narrowing statement could not be checked"
+	fail "23g: (consequently) the evidence-rule co-location could not be checked"
+fi
+
+P23_SANDBOX="$REPO_ROOT/.claude/skills/e2e-testing-sandboxing/SKILL.md"
+if [ -r "$P23_SANDBOX" ]; then
+	# Part 2: the remedy text must state the $SPRAWL_ROOT-override interaction.
+	#
+	# Three INDEPENDENT file-wide greps would be near-vacuous here: the file
+	# already carries 18 hits for SPRAWL_ROOT and 42 for "sandbox", so such a
+	# check would flip green the moment anyone mentions the third token
+	# anywhere in the file — a code fence, an unrelated section. Bound the
+	# search to a window around the remedy heading instead, so what is
+	# asserted is that the remedy STATES the interaction, not that the file
+	# happens to contain the vocabulary.
+	_p23_rem=$(grep -n 'Running `claude` from agent bash subshells' "$P23_SANDBOX" | head -n1 | cut -d: -f1)
+	if [ -n "$_p23_rem" ]; then
+		pass "23g: the remedy section was located (control for the windowed checks below)"
+		_p23_win=$(sed -n "${_p23_rem},$((_p23_rem + 80))p" "$P23_SANDBOX")
+		# The claim, not the vocabulary: one region must tie $SPRAWL_ROOT to
+		# which .env is read.
+		if printf '%s\n' "$_p23_win" | grep -q 'SPRAWL_ROOT' &&
+			printf '%s\n' "$_p23_win" | grep -q '\.env'; then
+			pass "23g: the remedy states how \$SPRAWL_ROOT selects which .env run-claude reads"
+		else
+			fail "23g: the remedy does not tie \$SPRAWL_ROOT to which .env is read"
+		fi
+		# And it must state what is NOW true after the sandbox .env copy
+		# landed — stating yesterday's truth is the failure mode QUM-1108
+		# Part 2 is about.
+		if printf '%s\n' "$_p23_win" | grep -q 'e2e_make_sandbox_root'; then
+			pass "23g: the remedy names the sandbox .env copy, so it states what is true NOW rather than before that landed"
+		else
+			fail "23g: the remedy does not mention e2e_make_sandbox_root's .env copy, so it still describes the pre-slice-2 world"
+		fi
+	else
+		fail "23g: the remedy section heading could not be located, so the Part 2 correction is unverified"
+		fail "23g: (consequently) the \$SPRAWL_ROOT/.env interaction could not be checked"
+		fail "23g: (consequently) the sandbox .env copy statement could not be checked"
+	fi
+else
+	fail "23g: the sandboxing skill is unreadable, so the Part 2 remedy correction could not be checked"
+	fail "23g: (consequently) the \$SPRAWL_ROOT/.env interaction could not be checked"
+	fail "23g: (consequently) the sandbox .env copy statement could not be checked"
+fi
+
+if [ -n "$P23_FIX" ] && [ -d "$P23_FIX" ]; then
+	case "$P23_FIX" in
+		"$UNIT_TMP_ROOT"/e2e-matrix-unit-p23.*) rm -rf -- "$P23_FIX" ;;
+		*) echo "  NOTE: refusing to remove unexpected fixture dir '$P23_FIX'" >&2 ;;
+	esac
+fi
 
 # Summary
 # ----------------------------------------------------------------------------
