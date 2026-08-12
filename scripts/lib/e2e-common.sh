@@ -454,6 +454,13 @@ e2e_init_sandbox_repo() {
     git -C "$SPRAWL_ROOT" init -b main --quiet
     git -C "$SPRAWL_ROOT" config user.name "Test"
     git -C "$SPRAWL_ROOT" config user.email "test@test"
+    # Code review (zone, F3): e2e_make_sandbox_root may have already copied a
+    # real credential into $SPRAWL_ROOT/.env before this git repo exists. No
+    # row stages the sandbox tree wholesale today, but this repo is driven by
+    # a live claude agent — belt-and-suspenders so a future `git add -A`
+    # inside the sandbox cannot pick it up.
+    echo ".env" >> "$SPRAWL_ROOT/.gitignore"
+    git -C "$SPRAWL_ROOT" add .gitignore
     git -C "$SPRAWL_ROOT" commit --allow-empty -m "init" --quiet
     mkdir -p "$SPRAWL_ROOT/.sprawl"
     echo "weave" > "$SPRAWL_ROOT/.sprawl/root-name"
@@ -813,6 +820,11 @@ e2e_launch_tui() {
         echo "  FAIL: weave.lock still held before launching session $session — refusing to launch into a doomed acquire" >&2
         return 1
     fi
+    # Code review (zone, F2): SPRAWL_CLAUDE now resolves silently (a stale
+    # caller-exported value overrides the default with nothing logging which
+    # one won), so every row log records the binary the pane actually
+    # launches — the same reason SPRAWL_ROOT is already echoed by callers.
+    echo "  SPRAWL_CLAUDE=$claude_bin"
     _stmux new-session -d -s "$session" -x "$cols" -y "$rows" \
         "SPRAWL_ROOT='$SPRAWL_ROOT' SPRAWL_CLAUDE='$claude_bin'${extra_env:+ $extra_env} '$SPRAWL_BIN' enter 2>'$stderr_log'"
     _stmux set-option -t "$session" window-size manual >/dev/null

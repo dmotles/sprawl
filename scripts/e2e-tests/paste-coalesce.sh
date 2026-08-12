@@ -60,6 +60,11 @@ test_run() {
     # QUM-608: zero out tmux escape-time so the coalescer sees pastes as one
     # contiguous burst (a non-zero escape-time can cause tmux to split ESC
     # sequences across reads and defeat the burst-detection heuristic).
+    #
+    # Code review (zone, F8): this now runs AFTER the render wait instead of
+    # before it, since the wait moved inside e2e_launch_tui. Still correct —
+    # the option only has to be in place before Phase 1's paste, which is
+    # much later — but noted since this row's whole point is burst timing.
     _stmux set-option -t "$SESSION" escape-time 0 >/dev/null
 
     if capture_pane "$SESSION" | grep -q "trust this folder" 2>/dev/null; then

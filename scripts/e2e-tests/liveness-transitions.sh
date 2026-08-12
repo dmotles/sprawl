@@ -51,8 +51,6 @@ test_run() {
     e2e_init_sandbox_repo
     e2e_install_cleanup_traps
 
-    export SPRAWL_ENABLE_TEST_TOOLS=1
-
     local SESSION="sprawl-liveness-e2e-$(head -c4 /dev/urandom | xxd -p)"
     local BRANCH_SUFFIX
     BRANCH_SUFFIX="$(head -c4 /dev/urandom | xxd -p)"

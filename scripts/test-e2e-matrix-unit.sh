@@ -217,7 +217,9 @@ MIN_ASSERTIONS=559
 # failed".
 # 542 once sections [21]/[22] landed (+24, same as the parent floor above —
 # neither section references UNIT_NESTED_SEAM_CHECK, so the child runs both
-# in full).
+# in full). Measured directly (code review, zone): `UNIT_NESTED_SEAM_CHECK=<a
+# valid nonce> bash scripts/test-e2e-matrix-unit.sh` -> "542 passed / 1
+# failed", the one fail being 16c's deliberate one, per the recipe above.
 MIN_ASSERTIONS_NESTED=542
 
 # Pin the temp root. This suite runs inside `make validate` and therefore inside
@@ -6044,6 +6046,13 @@ if [ -n "$P21_PIDFILE" ]; then
 		fail "21c: could not observe the holder child's pid in time — regression control not exercised"
 		fail "21c: could not observe the holder child's pid in time — recovered-value assertion not exercised"
 	fi
+	# Code review (zone, F5): killing the holder does not kill the `sleep 30`
+	# it backgrounded (reparented once the holder exits), which otherwise
+	# lingers for up to 30s past this suite's own exit on every run — the
+	# suite runs inside the pre-commit hook, so that is 30s of stray process
+	# per commit. $P21_CHILD_PID is empty here on the "could not observe"
+	# branch above; kill on an empty/absent pid is a silent no-op via 2>/dev/null.
+	kill "${P21_CHILD_PID:-}" 2>/dev/null
 	kill "$P21_HOLDER_JOB" 2>/dev/null
 	wait "$P21_HOLDER_JOB" 2>/dev/null
 	rm -f "$P21_PIDFILE"
