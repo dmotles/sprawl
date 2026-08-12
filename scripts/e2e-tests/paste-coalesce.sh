@@ -29,13 +29,7 @@ test_run() {
     e2e_init_sandbox_repo
     e2e_install_cleanup_traps
 
-    # The run-claude shim relies on .env at the sandbox root (CLAUDE_CODE_OAUTH_TOKEN).
-    if [ -f "$REPO_ROOT/.env" ]; then
-        cp -p "$REPO_ROOT/.env" "$SPRAWL_ROOT/.env"
-    fi
-
     local SESSION="sprawl-paste-e2e-$(head -c4 /dev/urandom | xxd -p)"
-    local STDERR_LOG="$SPRAWL_ROOT/.sprawl/tui-stderr.log"
 
     # Deterministic 200-char payload: leading sentinel + 180×'a' filler +
     # trailing sentinel. The filler is all printable lowercase so the
@@ -55,25 +49,18 @@ test_run() {
     echo "  paste body length=${#PASTE_BODY}"
     echo ""
 
-    # --- Launch the TUI (custom launch — needs SPRAWL_CLAUDE shim) ---
+    # --- Launch the TUI (QUM-1181: converged onto the shared e2e_launch_tui
+    # helper, which now forwards SPRAWL_CLAUDE itself — this row no longer
+    # needs its own hand-rolled launch to get the auth shim). ---
     echo "=== Launching sprawl enter ==="
-    _stmux new-session -d -s "$SESSION" -x 240 -y 50 \
-        "SPRAWL_ROOT='$SPRAWL_ROOT' SPRAWL_CLAUDE='$REPO_ROOT/scripts/run-claude' '$SPRAWL_BIN' enter 2>'$STDERR_LOG'"
-    _stmux set-option -t "$SESSION" window-size manual >/dev/null
-    _stmux resize-window -t "$SESSION" -x 240 -y 50 >/dev/null
+    if ! e2e_launch_tui "$SESSION" 240 50; then
+        return 1
+    fi
+    pass "TUI rendered ('weave' root visible)"
     # QUM-608: zero out tmux escape-time so the coalescer sees pastes as one
     # contiguous burst (a non-zero escape-time can cause tmux to split ESC
     # sequences across reads and defeat the burst-detection heuristic).
     _stmux set-option -t "$SESSION" escape-time 0 >/dev/null
-
-    if wait_for_pattern "$SESSION" "weave \\(idle\\)" 45; then
-        pass "TUI rendered ('weave (idle)' visible)"
-    else
-        fail "TUI did not render within 45s"
-        capture_pane "$SESSION" | tail -30 >&2
-        [ -f "$STDERR_LOG" ] && tail -20 "$STDERR_LOG" >&2
-        return 1
-    fi
 
     if capture_pane "$SESSION" | grep -q "trust this folder" 2>/dev/null; then
         _stmux send-keys -t "$SESSION" "1" Enter

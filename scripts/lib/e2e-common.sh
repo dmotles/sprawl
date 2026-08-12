@@ -129,11 +129,31 @@ e2e_print_results() {
 
 # QUM-411: walk up to 8 ancestors via /proc/<pid>/stat parent field and try to
 # recover CLAUDE_CODE_OAUTH_TOKEN from each ancestor's environ. HARNESS-ONLY.
+#
+# QUM-974/QUM-973: the return status is meaningful. 0 iff a token is present
+# afterwards (already set, or recovered from an ancestor); nonzero when the
+# walk exhausted all 8 ancestors and found nothing. Every call site in
+# scripts/e2e-tests/ invokes this as a bare statement under the driver's
+# `set -euo pipefail` (scripts/e2e-matrix.sh:5, inherited into run_row's
+# subshell), so a nonzero return here aborts that row IMMEDIATELY, before it
+# launches any session — exactly the "fail loudly and immediately, do not
+# proceed to launch" QUM-973 requires, with no per-call-site `if` needed.
+# This is a hard hard-failure (ordinary row FAIL, driver exit 1), never a
+# skip: it does not call e2e_skip_row and never touches $E2E_SKIP_FILE, so it
+# cannot be laundered into the QUM-952 skip bucket.
+#
+# ${SPRAWL_E2E_MATRIX_DEBUG_OAUTH_SCAN_PID:-$$} is a QUM-974 test-only debug
+# seam (registered in scripts/test-e2e-matrix-unit.sh's UNIT_SCRUBBED_VARS)
+# letting the unit suite point the ancestor walk at a PID whose parent is
+# known (e.g. pid 1, whose /proc/1/stat parent field is 0) instead of this
+# process's REAL ancestor chain — which may or may not carry a token
+# depending on the host running the test, making the failure path otherwise
+# non-deterministic. Never set outside the unit suite.
 e2e_recover_oauth_token() {
     if [ -n "${CLAUDE_CODE_OAUTH_TOKEN:-}" ]; then
         return 0
     fi
-    local scan_pid=$$ parent recovered
+    local scan_pid=${SPRAWL_E2E_MATRIX_DEBUG_OAUTH_SCAN_PID:-$$} parent recovered
     for _ in 1 2 3 4 5 6 7 8; do
         parent=$(awk '{print $4}' "/proc/$scan_pid/stat" 2>/dev/null || true)
         if [ -z "$parent" ] || [ "$parent" = "0" ]; then
@@ -150,7 +170,16 @@ e2e_recover_oauth_token() {
         fi
         scan_pid=$parent
     done
-    return 0
+    echo "FATAL: could not recover CLAUDE_CODE_OAUTH_TOKEN from any of 8 ancestors (QUM-974)." >&2
+    echo "       This row will fail with 'Not logged in' rather than proceeding tokenless." >&2
+    echo "       This usually means the run was launched detached (setsid/nohup), which" >&2
+    echo "       reparents to init and severs the /proc ancestor chain this walk depends" >&2
+    echo "       on (QUM-973) — /proc/1/environ is unreadable by this user, so the walk" >&2
+    echo "       finds nothing once it reaches init." >&2
+    echo "       Fix: launch without setsid/nohup, or export CLAUDE_CODE_OAUTH_TOKEN" >&2
+    echo "       explicitly before invoking the harness (also required for a legitimate" >&2
+    echo "       detached run)." >&2
+    return 1
 }
 
 # QUM-325: dedicated tmux socket for sandbox isolation.
@@ -406,6 +435,19 @@ e2e_make_sandbox_root() {
     esac
     SPRAWL_ROOT="$real"
     export SPRAWL_ROOT
+    # QUM-1181: scripts/run-claude (the QUM-518 auth shim that e2e_launch_tui
+    # now points SPRAWL_CLAUDE at) resolves its env file as
+    # "${SPRAWL_ROOT:-<script-dir>}/.env" — i.e. the SANDBOX, not the repo.
+    # Centralizing the copy here means every row that calls this function
+    # gets a working shim without opting in per row. cp -p preserves the
+    # 0600 mode CLAUDE.md requires .env to carry. A repo with no .env leaves
+    # the sandbox with none too — deliberately: this must not manufacture a
+    # credential, only relay one that already exists (see the negative-
+    # direction AC on QUM-1181: no .env must still fail or skip loudly, not
+    # silently pass).
+    if [ -f "$REPO_ROOT/.env" ]; then
+        cp -p "$REPO_ROOT/.env" "$SPRAWL_ROOT/.env"
+    fi
 }
 
 e2e_init_sandbox_repo() {
@@ -751,6 +793,18 @@ e2e_launch_tui() {
     local session="$1"
     local cols="${2:-200}"
     local rows="${3:-50}"
+    # QUM-1181: extra "KEY=VAL" tokens (space-separated) inserted into the
+    # tmux command string ahead of the sprawl binary, for the handful of rows
+    # that need an additional env var in the launched pane (e.g.
+    # SPRAWL_ENABLE_TEST_TOOLS=1). Optional and empty by default so every
+    # existing caller is unaffected.
+    local extra_env="${4:-}"
+    # QUM-1181: default to the QUM-518 auth shim so every e2e_launch_tui
+    # caller authenticates without opting in. A caller that has already
+    # exported SPRAWL_CLAUDE (several rows do, to smuggle it into the tmux
+    # server's inherited environment) keeps that value; this makes the
+    # forwarding explicit and asserted instead of relying on that inheritance.
+    local claude_bin="${SPRAWL_CLAUDE:-$REPO_ROOT/scripts/run-claude}"
     local stderr_log="${SPRAWL_ROOT}/.sprawl/tui-stderr.log"
     # QUM-948: a relaunch on a root whose previous weave is still tearing down
     # would die with "another weave session is already running". Wait for the
@@ -760,7 +814,7 @@ e2e_launch_tui() {
         return 1
     fi
     _stmux new-session -d -s "$session" -x "$cols" -y "$rows" \
-        "SPRAWL_ROOT='$SPRAWL_ROOT' '$SPRAWL_BIN' enter 2>'$stderr_log'"
+        "SPRAWL_ROOT='$SPRAWL_ROOT' SPRAWL_CLAUDE='$claude_bin'${extra_env:+ $extra_env} '$SPRAWL_BIN' enter 2>'$stderr_log'"
     _stmux set-option -t "$session" window-size manual >/dev/null
     _stmux resize-window -t "$session" -x "$cols" -y "$rows" >/dev/null
     # QUM-656: tree migrated from a left-pane "weave (idle)" row into the

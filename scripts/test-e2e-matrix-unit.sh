@@ -156,7 +156,20 @@ FAIL=0
 # assertion pair (positive result + its distinguishing message content), so
 # the count does not move when the implementation's behaviour flips.
 # Re-measured on a FULL GREEN run — 532 passed / 0 failed.
-MIN_ASSERTIONS=532
+# 559 once QUM-974/QUM-973/QUM-1181 added sections [21] (15 assertions: the
+# e2e_recover_oauth_token return-contract fix — fast path, forced-failure
+# diagnostic content, a real-ancestor regression control, and a
+# driver-integration proof that a failed recovery aborts the row as an
+# ordinary FAIL rather than a QUM-952 skip) and [22] (9 assertions:
+# e2e_launch_tui's SPRAWL_CLAUDE default/override/extra-env forwarding,
+# e2e_make_sandbox_root's .env copy with mode preserved, its negative
+# direction — no .env manufactures none — and an end-to-end tie between both
+# fixes proving "no auth" still fails loudly rather than silently passing) —
+# 24 assertions — PLUS 3 from [16]'s own machinery auto-scaling with the one
+# new seam these sections register, SPRAWL_E2E_MATRIX_DEBUG_OAUTH_SCAN_PID (1
+# [16a] pass + 2 [16b] passes, same accounting QUM-1118's two seams used
+# above). Re-measured on a FULL GREEN run — 559 passed / 0 failed.
+MIN_ASSERTIONS=559
 # A [16b] nested child deliberately does NOT re-run section [16] (recursing would
 # fork-bomb, and counting there would corrupt the parity comparison), so it asserts
 # strictly fewer things and needs its own floor. Measured at de22410: 237; 238 after
@@ -202,7 +215,10 @@ MIN_ASSERTIONS=532
 # child DOES run [20]). Measured directly (UNIT_NESTED_SEAM_CHECK set to a
 # valid nonce, not via [16b]'s deliberate-bad-nonce recipe): "518 passed / 0
 # failed".
-MIN_ASSERTIONS_NESTED=518
+# 542 once sections [21]/[22] landed (+24, same as the parent floor above —
+# neither section references UNIT_NESTED_SEAM_CHECK, so the child runs both
+# in full).
+MIN_ASSERTIONS_NESTED=542
 
 # Pin the temp root. This suite runs inside `make validate` and therefore inside
 # the pre-commit hook, so it must not inherit the committing agent's TMPDIR:
@@ -255,6 +271,13 @@ UNIT_SCRUBBED_VARS=(
 	# [20]'s negative controls (20a/20b/20d/20k, none of which set it) for a
 	# reason that has nothing to do with the code under test.
 	SPRAWL_E2E_MIN_FREE_MB
+	# QUM-974. Test-only seam for e2e_recover_oauth_token's ancestor-walk
+	# starting pid — an inherited value here would make section [21]'s
+	# negative-direction cases (21b/21d, which explicitly set it to force a
+	# deterministic failure) fire for a reason that has nothing to do with
+	# the code under test, and would falsely arm 21b/21d for the wrong pid
+	# in a caller's shell that happens to export it.
+	SPRAWL_E2E_MATRIX_DEBUG_OAUTH_SCAN_PID
 )
 UNIT_SCRUB_ARGS=()
 for _v in "${UNIT_SCRUBBED_VARS[@]}"; do
@@ -1661,8 +1684,16 @@ else
 		# THIRD LEG OF THE TRUTH TABLE. Without it, an implementation that always
 		# skips satisfies every other assertion here — a strictly worse bug than
 		# the one being fixed, and one this suite must be able to see.
+		#
+		# CLAUDE_CODE_OAUTH_TOKEN=stub-token: QUM-974 centralized an auth-recovery
+		# check in run_row right after the claude-presence gate this section
+		# tests, and PATH here is scrubbed to ONLY $STUBBIN (no awk/tr/cut), so
+		# the /proc ancestor walk that check would otherwise attempt cannot run
+		# at all. Pre-setting the token hits e2e_recover_oauth_token's own fast
+		# path (already-set, no walk needed), keeping this section's fixture
+		# decoupled from that unrelated precondition.
 		_unit_reset_markers "$MSK"
-		_unit_run_env "$FIXSKIP" "$MSK" "PATH=$STUBBIN" _unit_fixture_needsclaude_ok
+		_unit_run_env "$FIXSKIP" "$MSK" "PATH=$STUBBIN CLAUDE_CODE_OAUTH_TOKEN=stub-token" _unit_fixture_needsclaude_ok
 		if [ "$_RC" -eq 0 ]; then
 			pass "15n: needs_claude row with claude present exits 0"
 		else
@@ -5841,6 +5872,489 @@ if [ -n "$P20J_FIX" ] && [ -d "$P20J_FIX" ]; then
 		*) echo "  NOTE: refusing to remove unexpected fixture dir '$P20J_FIX'" >&2 ;;
 	esac
 fi
+
+echo "[21] QUM-974/QUM-973 e2e_recover_oauth_token return contract"
+
+# 21a: CLAUDE_CODE_OAUTH_TOKEN already present -> returns 0 immediately,
+# without walking (the "(recovered ... from ancestor" line only fires when
+# the WALK finds it; printing it here would mean the fast path didn't take).
+out=$(
+	(
+		unset SPRAWL_E2E_MATRIX_DEBUG_OAUTH_SCAN_PID
+		export CLAUDE_CODE_OAUTH_TOKEN="qum974-preset-$$"
+		# shellcheck disable=SC1090
+		. "$LIB" >/dev/null 2>&1 || exit 99
+		e2e_recover_oauth_token
+		rc=$?
+		echo "TOKEN=$CLAUDE_CODE_OAUTH_TOKEN"
+		exit $rc
+	) 2>&1
+)
+rc=$?
+if [ "$rc" -eq 0 ]; then
+	pass "21a: a pre-set CLAUDE_CODE_OAUTH_TOKEN returns 0"
+else
+	fail "21a: rc=$rc with CLAUDE_CODE_OAUTH_TOKEN already set (want 0); out=$out"
+fi
+case "$out" in
+	*"recovered CLAUDE_CODE_OAUTH_TOKEN from ancestor"*)
+		fail "21a: the fast path printed the ancestor-recovery line — it walked when it should not have; out=$out"
+		;;
+	*)
+		pass "21a: the fast path does not walk (no ancestor-recovery line printed)"
+		;;
+esac
+case "$out" in
+	*"TOKEN=qum974-preset-$$"*)
+		pass "21a: the pre-set token value is left untouched"
+		;;
+	*)
+		fail "21a: the pre-set token value was altered; out=$out"
+		;;
+esac
+
+# 21b: CLAUDE_CODE_OAUTH_TOKEN unset and no ancestor carries one -> returns
+# NONZERO and prints a loud, actionable diagnostic (QUM-974/QUM-973). This
+# must not depend on this host's REAL ancestor chain, which may or may not
+# carry a token — SPRAWL_E2E_MATRIX_DEBUG_OAUTH_SCAN_PID (a test-only debug
+# seam, registered below) points the walk at pid 1 instead. /proc/1/stat's
+# parent field is 0, so the walk breaks on its first iteration having read no
+# environ at all — deterministic regardless of the host running this suite.
+# out is examined only for the sentinel words below, never for a raw token
+# value — CLAUDE_CODE_OAUTH_TOKEN must never reach a log, even a synthetic
+# one, on any path including this test's own failure messages.
+out=$(
+	(
+		unset CLAUDE_CODE_OAUTH_TOKEN
+		export SPRAWL_E2E_MATRIX_DEBUG_OAUTH_SCAN_PID=1
+		# shellcheck disable=SC1090
+		. "$LIB" >/dev/null 2>&1 || exit 99
+		e2e_recover_oauth_token
+		rc=$?
+		if [ -z "${CLAUDE_CODE_OAUTH_TOKEN:-}" ]; then
+			echo "TOKEN_STATE=unset"
+		else
+			echo "TOKEN_STATE=SET-BUG"
+		fi
+		exit $rc
+	) 2>&1
+)
+rc=$?
+if [ "$rc" -ne 0 ]; then
+	pass "21b: no available token returns nonzero (rc=$rc)"
+else
+	fail "21b: rc=0 with no ancestor carrying a token — a failed recovery must not report success; out=$out"
+fi
+case "$out" in
+	*"FATAL"*"could not recover CLAUDE_CODE_OAUTH_TOKEN"*"8 ancestors"*)
+		pass "21b: the diagnostic names the failure and the 8-ancestor walk"
+		;;
+	*)
+		fail "21b: no loud diagnostic naming the failed walk; out=$out"
+		;;
+esac
+case "$out" in
+	*"setsid"*"nohup"*)
+		pass "21b: the diagnostic names the detached-launch cause (setsid/nohup — QUM-973)"
+		;;
+	*)
+		fail "21b: the diagnostic does not name setsid/nohup as the likely cause; out=$out"
+		;;
+esac
+case "$out" in
+	*"Not logged in"*)
+		pass "21b: the diagnostic names the downstream symptom ('Not logged in') so a reader does not misdiagnose it as a product regression"
+		;;
+	*)
+		fail "21b: the diagnostic does not name 'Not logged in'; out=$out"
+		;;
+esac
+case "$out" in
+	*"TOKEN_STATE=unset"*)
+		pass "21b: a failed recovery leaves CLAUDE_CODE_OAUTH_TOKEN unset rather than exporting a bogus value"
+		;;
+	*)
+		fail "21b: CLAUDE_CODE_OAUTH_TOKEN was set despite a failed recovery; out=$out"
+		;;
+esac
+
+# 21c: regression control — the walk still recovers a token from a REAL
+# ancestor's environ when the chain is intact (unchanged behavior from
+# QUM-411). The holder is a freshly EXEC'd process (`env VAR=val bash -c`,
+# not a forked-then-exported subshell): /proc/<pid>/environ reflects a
+# process's environment as of its last execve(2) and is NOT guaranteed to
+# pick up an `export` a live, never-re-exec'd process performs on itself
+# afterward, so a fork+export holder is not a reliable fixture here. The
+# holder execs, then backgrounds a plain `sleep` as its own child; the seam
+# points the walk at that CHILD, so the walk's first iteration reads the
+# child's PARENT (the holder) — the same one-hop relationship the walk
+# exploits in production when a Bash-tool subshell's immediate parent still
+# carries the token. Never echoes the recovered value — only whether it
+# MATCHES the known fixture value — so a real token can never reach this
+# suite's output even if some other mechanism caused a mismatch.
+P21_TOK="qum974-positive-$$"
+P21_PIDFILE=$(mktemp "$UNIT_TMP_ROOT/e2e-matrix-unit-p21.XXXXXX" 2>/dev/null)
+if [ -n "$P21_PIDFILE" ]; then
+	env CLAUDE_CODE_OAUTH_TOKEN="$P21_TOK" bash -c '
+		sleep 30 &
+		echo $! >"$1"
+		wait
+	' _ "$P21_PIDFILE" &
+	P21_HOLDER_JOB=$!
+	P21_CHILD_PID=""
+	for _ in 1 2 3 4 5 6 7 8 9 10; do
+		if [ -s "$P21_PIDFILE" ]; then
+			P21_CHILD_PID=$(cat "$P21_PIDFILE")
+			break
+		fi
+		sleep 0.2
+	done
+	if [ -n "$P21_CHILD_PID" ] && [ -d "/proc/$P21_CHILD_PID" ]; then
+		out=$(
+			(
+				unset CLAUDE_CODE_OAUTH_TOKEN
+				export SPRAWL_E2E_MATRIX_DEBUG_OAUTH_SCAN_PID="$P21_CHILD_PID"
+				# shellcheck disable=SC1090
+				. "$LIB" >/dev/null 2>&1 || exit 99
+				e2e_recover_oauth_token
+				rc=$?
+				if [ "$CLAUDE_CODE_OAUTH_TOKEN" = "$P21_TOK" ]; then
+					echo "TOKEN_MATCH"
+				else
+					echo "TOKEN_MISMATCH"
+				fi
+				exit $rc
+			) 2>&1
+		)
+		rc=$?
+		if [ "$rc" -eq 0 ]; then
+			pass "21c: an intact ancestor chain still recovers a token (regression control for QUM-411)"
+		else
+			fail "21c: rc=$rc recovering from a live ancestor holding a token; out=$out"
+		fi
+		case "$out" in
+			*TOKEN_MATCH*)
+				pass "21c: the recovered value matches the ancestor's actual token"
+				;;
+			*)
+				fail "21c: recovered value did not match the fixture token (mismatch or something else was recovered)"
+				;;
+		esac
+	else
+		fail "21c: could not observe the holder child's pid in time — regression control not exercised"
+		fail "21c: could not observe the holder child's pid in time — recovered-value assertion not exercised"
+	fi
+	kill "$P21_HOLDER_JOB" 2>/dev/null
+	wait "$P21_HOLDER_JOB" 2>/dev/null
+	rm -f "$P21_PIDFILE"
+else
+	fail "21c: could not mktemp a pidfile — regression control not exercised"
+	fail "21c: could not mktemp a pidfile — recovered-value assertion not exercised"
+fi
+
+# 21d: driver-integration — a row declaring needs_claude=1, exactly like
+# every real row in scripts/e2e-tests/, is aborted by the CENTRALIZED check
+# in scripts/e2e-matrix.sh's run_row (right after e2e_require_claude_or_skip)
+# the instant recovery fails. This is NOT a bare-statement-plus-set-e effect:
+# run_row's whole subshell is invoked as `run_row "$name" || rc=$?` in the
+# main loop, and bash suspends errexit for the ENTIRE body of a command used
+# as the left operand of `||` — a bare failing call deep inside would NOT
+# abort anything on its own (verified: reverting run_row's explicit `if ! ...;
+# then exit 1; fi` back to a bare call reproduces exactly the false-continue
+# this section's fixture caught before the centralized fix landed). The
+# centralized check must use an explicit `exit`, which is why it does.
+#
+# Row B, an ordinary passing row, must still run afterward (an ordinary FAIL
+# does not abort the whole driver the way QUM-1118's environment-unfit exit
+# does), and row A must be reported as FAIL, never SKIP — QUM-973's AC that
+# this must not interact with the QUM-952 skip path.
+#
+# A fake `claude` on a fixture-private PATH prefix lets this run on any host
+# regardless of whether a real claude binary is installed — needs_claude=1
+# must reach e2e_require_claude_or_skip's SUCCESS branch (claude present) so
+# execution reaches the actual code this section tests; the absent-binary
+# path is already covered by [4].
+P21D_FIX=$(mktemp -d "$UNIT_TMP_ROOT/e2e-matrix-unit-p21d.XXXXXX" 2>/dev/null)
+if [ -n "$P21D_FIX" ] && _unit_mk_fixture_tree "$P21D_FIX"; then
+	mkdir -p "$P21D_FIX/markers" "$P21D_FIX/fakebin"
+	printf '#!/usr/bin/env bash\nexit 0\n' >"$P21D_FIX/fakebin/claude"
+	chmod +x "$P21D_FIX/fakebin/claude"
+	cat >"$P21D_FIX/e2e-tests/rowA.sh" <<'EOF'
+MIN_ASSERTIONS=1
+test_metadata() { echo "needs_claude=1"; }
+test_run() {
+	: >"${UNIT_MARKER_DIR:?UNIT_MARKER_DIR unset}/rowA-launched-session"
+	pass "unreachable — recovery should have aborted the row before test_run ran"
+	e2e_print_results
+}
+EOF
+	_unit_mk_marker_row "$P21D_FIX/e2e-tests" rowB 0
+	# CLAUDE_CODE_OAUTH_TOKEN= (empty), not `-u CLAUDE_CODE_OAUTH_TOKEN`: GNU
+	# env requires all -u/-i OPTIONS to precede any NAME=VALUE assignment, and
+	# _unit_run_env's own "TMPDIR=$fix" assignment (built in ahead of $envs)
+	# already ends option-parsing — a -u placed in $envs here would be taken
+	# as env's own COMMAND name and fail with "env: '-u': No such file or
+	# directory". An empty value is equivalent for this function's own
+	# `[ -n "${CLAUDE_CODE_OAUTH_TOKEN:-}" ]` check.
+	_unit_run_env "$P21D_FIX" "$P21D_FIX/markers" \
+		"PATH=$P21D_FIX/fakebin:$PATH CLAUDE_CODE_OAUTH_TOKEN= SPRAWL_E2E_MATRIX_DEBUG_OAUTH_SCAN_PID=1" \
+		rowA rowB
+	_unit_assert_ran "$P21D_FIX/markers" rowA-launched-session no "21d: row A never reached past the failed recovery call (no session was launched)"
+	_unit_assert_ran "$P21D_FIX/markers" rowB yes "21d: row B still ran after row A's ordinary failure (the driver does not abort the whole run the way an environment-unfit exit does)"
+	case "$_OUT$_ERR" in
+		*"FAIL rowA"*)
+			pass "21d: row A is reported as an ordinary FAIL"
+			;;
+		*)
+			fail "21d: row A was not reported as FAIL; out=$_OUT err=$_ERR"
+			;;
+	esac
+	case "$_OUT$_ERR" in
+		*"SKIP rowA"*)
+			fail "21d: row A was reported as SKIP — a failed recovery must never be laundered into the QUM-952 skip bucket; out=$_OUT err=$_ERR"
+			;;
+		*)
+			pass "21d: row A is never reported as SKIP"
+			;;
+	esac
+	if [ "$_RC" -eq 1 ]; then
+		pass "21d: the driver exits exactly 1 (an ordinary row failure), not a skip/usage/internal-invariant code"
+	else
+		fail "21d: driver exited $_RC, want 1; out=$_OUT err=$_ERR"
+	fi
+else
+	fail "21d: could not build the fixture tree — row-A-aborted assertion was not exercised"
+	fail "21d: could not build the fixture tree — row-B-still-ran assertion was not exercised"
+	fail "21d: could not build the fixture tree — FAIL-rowA assertion was not exercised"
+	fail "21d: could not build the fixture tree — not-SKIP assertion was not exercised"
+	fail "21d: could not build the fixture tree — driver-exit-code assertion was not exercised"
+fi
+if [ -n "$P21D_FIX" ] && [ -d "$P21D_FIX" ]; then
+	case "$P21D_FIX" in
+		"$UNIT_TMP_ROOT"/e2e-matrix-unit-p21d.*) rm -rf -- "$P21D_FIX" ;;
+		*) echo "  NOTE: refusing to remove unexpected fixture dir '$P21D_FIX'" >&2 ;;
+	esac
+fi
+
+echo "[22] QUM-1181 e2e_launch_tui SPRAWL_CLAUDE forwarding + sandbox .env copy"
+
+# A fake tmux that RECORDS the full "new-session" invocation (every argument,
+# including the trailing command string carrying the env-var prefix this
+# section is actually testing) to a log file, and answers "capture-pane"
+# with the "weave " token immediately so wait_for_pattern's internal poll
+# succeeds on its FIRST attempt — this section asserts the command string
+# e2e_launch_tui BUILDS, not real claude/tmux behavior, so it must not
+# actually wait out any real poll interval.
+_unit_mk_faketmux_launch() {
+	local dir=$1 logfile=$2
+	mkdir -p "$dir/bin" || return 1
+	cat >"$dir/bin/tmux" <<FAKETMUX || return 1
+#!/usr/bin/env bash
+if [ "\${1:-}" = "-L" ]; then shift 2; fi
+cmd=\${1:-}
+case "\$cmd" in
+	new-session)
+		printf '%s\n' "\$*" >> "$logfile"
+		exit 0
+		;;
+	capture-pane)
+		printf 'weave --o--\n'
+		exit 0
+		;;
+	*)
+		exit 0
+		;;
+esac
+FAKETMUX
+	chmod +x "$dir/bin/tmux" || return 1
+}
+
+# $1=extra e2e_launch_tui args appended after session/cols/rows (may be
+# empty), $2=SPRAWL_CLAUDE value to export before sourcing the lib (may be
+# empty to leave it unset). Result left in _LAUNCH_LOG (the recorded
+# new-session command line) and _LAUNCH_RC.
+_unit_run_launch_tui() {
+	local extra_args=$1 claude_val=$2
+	local fdir logfile
+	fdir=$(mktemp -d "$UNIT_TMP_ROOT/e2e-matrix-unit-p22.XXXXXX" 2>/dev/null) || return 1
+	logfile=$(mktemp "$UNIT_TMP_ROOT/e2e-matrix-unit-p22log.XXXXXX" 2>/dev/null) || return 1
+	_unit_mk_faketmux_launch "$fdir" "$logfile" || return 1
+	(
+		unset SPRAWL_TMUX_SOCKET
+		if [ -n "$claude_val" ]; then
+			export SPRAWL_CLAUDE="$claude_val"
+		else
+			unset SPRAWL_CLAUDE
+		fi
+		export SPRAWL_ROOT="$fdir"
+		export SPRAWL_BIN="/nonexistent-sprawl-binary-never-invoked"
+		PATH="$fdir/bin:$PATH"
+		export PATH
+		# shellcheck disable=SC1090
+		. "$LIB" >/dev/null 2>&1 || exit 99
+		# shellcheck disable=SC2086
+		e2e_launch_tui unit-p22-session 111 22 $extra_args
+	) >/dev/null 2>&1
+	_LAUNCH_RC=$?
+	_LAUNCH_LOG=$(cat "$logfile" 2>/dev/null)
+	rm -rf -- "$fdir" 2>/dev/null
+	rm -f -- "$logfile" 2>/dev/null
+}
+
+# 22a: SPRAWL_CLAUDE unset in the caller's environment -> the command string
+# defaults it to $REPO_ROOT/scripts/run-claude, the QUM-518 auth shim.
+_unit_run_launch_tui "" ""
+case "$_LAUNCH_LOG" in
+	*"SPRAWL_CLAUDE='$REPO_ROOT/scripts/run-claude'"*)
+		pass "22a: e2e_launch_tui defaults SPRAWL_CLAUDE to \$REPO_ROOT/scripts/run-claude when unset"
+		;;
+	*)
+		fail "22a: default SPRAWL_CLAUDE not found in the launch command; log=$_LAUNCH_LOG rc=$_LAUNCH_RC"
+		;;
+esac
+
+# 22b: SPRAWL_CLAUDE already exported by the caller -> that value is forwarded
+# VERBATIM, and the default path is NOT substituted in its place.
+_unit_run_launch_tui "" "/custom/qum1181/run-claude-override"
+case "$_LAUNCH_LOG" in
+	*"SPRAWL_CLAUDE='/custom/qum1181/run-claude-override'"*)
+		pass "22b: a caller-exported SPRAWL_CLAUDE is forwarded verbatim"
+		;;
+	*)
+		fail "22b: caller-exported SPRAWL_CLAUDE was not forwarded; log=$_LAUNCH_LOG rc=$_LAUNCH_RC"
+		;;
+esac
+case "$_LAUNCH_LOG" in
+	*"$REPO_ROOT/scripts/run-claude"*)
+		fail "22b: the default run-claude path leaked into the command even though the caller overrode SPRAWL_CLAUDE; log=$_LAUNCH_LOG"
+		;;
+	*)
+		pass "22b: the default path is not substituted when the caller already set SPRAWL_CLAUDE"
+		;;
+esac
+
+# 22c: the optional 4th arg (extra env tokens, e.g. for
+# SPRAWL_ENABLE_TEST_TOOLS=1) is inserted into the command string — this is
+# the mechanism that lets wake-live.sh / liveness-transitions.sh converge
+# onto this shared helper instead of hand-rolling their own launch.
+_unit_run_launch_tui "SPRAWL_ENABLE_TEST_TOOLS=1" ""
+case "$_LAUNCH_LOG" in
+	*"SPRAWL_ENABLE_TEST_TOOLS=1"*)
+		pass "22c: an extra-env token passed as e2e_launch_tui's 4th argument reaches the launch command"
+		;;
+	*)
+		fail "22c: the extra-env token did not reach the launch command; log=$_LAUNCH_LOG rc=$_LAUNCH_RC"
+		;;
+esac
+
+# 22d/22e: e2e_make_sandbox_root copies $REPO_ROOT/.env into the new
+# SPRAWL_ROOT with cp -p (mode preserved) when the repo has one — the
+# scripts/run-claude shim resolves its env file as
+# "${SPRAWL_ROOT:-...}/.env", i.e. the SANDBOX, not the repo, so this is the
+# other half of QUM-1181 alongside the SPRAWL_CLAUDE forwarding above.
+P22_REPO=$(mktemp -d "$UNIT_TMP_ROOT/e2e-matrix-unit-p22repo.XXXXXX" 2>/dev/null)
+if [ -n "$P22_REPO" ]; then
+	printf 'CLAUDE_CODE_OAUTH_TOKEN=qum1181-fixture-token\n' >"$P22_REPO/.env"
+	chmod 0600 "$P22_REPO/.env"
+	out=$(
+		(
+			export REPO_ROOT="$P22_REPO"
+			# shellcheck disable=SC1090
+			. "$LIB" >/dev/null 2>&1 || exit 99
+			e2e_make_sandbox_root "qum1181-p22"
+			echo "ROOT=$SPRAWL_ROOT"
+		) 2>&1
+	)
+	P22_ROOT=$(printf '%s\n' "$out" | sed -n 's/^ROOT=//p' | tail -1)
+	if [ -n "$P22_ROOT" ] && [ -f "$P22_ROOT/.env" ] && diff -q "$P22_REPO/.env" "$P22_ROOT/.env" >/dev/null 2>&1; then
+		pass "22d: e2e_make_sandbox_root copies a present .env into the new SPRAWL_ROOT byte-for-byte"
+	else
+		fail "22d: .env was not copied into the sandbox root (or its content differs); root=$P22_ROOT out=$out"
+	fi
+	if [ -n "$P22_ROOT" ] && [ -f "$P22_ROOT/.env" ]; then
+		P22_MODE=$(stat -c '%a' "$P22_ROOT/.env" 2>/dev/null)
+		if [ "$P22_MODE" = "600" ]; then
+			pass "22d: the copied .env preserves the 0600 mode CLAUDE.md requires (cp -p, not a plain cp)"
+		else
+			fail "22d: copied .env mode is '$P22_MODE', want 600; root=$P22_ROOT"
+		fi
+	else
+		fail "22d: copied .env is missing — mode assertion not exercised"
+	fi
+	[ -n "$P22_ROOT" ] && [ -d "$P22_ROOT" ] && case "$P22_ROOT" in
+		/tmp/*) rm -rf -- "$P22_ROOT" ;;
+	esac
+else
+	fail "22d: could not build the fixture repo — .env-copy assertion was not exercised"
+	fail "22d: could not build the fixture repo — mode-preservation assertion was not exercised"
+fi
+rm -rf -- "$P22_REPO" 2>/dev/null
+
+# 22e (negative direction, QUM-1181's own AC): a repo with NO .env leaves the
+# sandbox with none too. This function must relay a credential that already
+# exists, never manufacture one — the failure mode this issue exists to
+# prevent is a fix that makes every row pass regardless of whether auth is
+# actually configured.
+P22_REPO_NOENV=$(mktemp -d "$UNIT_TMP_ROOT/e2e-matrix-unit-p22noenv.XXXXXX" 2>/dev/null)
+if [ -n "$P22_REPO_NOENV" ]; then
+	out=$(
+		(
+			export REPO_ROOT="$P22_REPO_NOENV"
+			# shellcheck disable=SC1090
+			. "$LIB" >/dev/null 2>&1 || exit 99
+			e2e_make_sandbox_root "qum1181-p22-noenv"
+			echo "ROOT=$SPRAWL_ROOT"
+		) 2>&1
+	)
+	P22N_ROOT=$(printf '%s\n' "$out" | sed -n 's/^ROOT=//p' | tail -1)
+	if [ -n "$P22N_ROOT" ] && [ ! -e "$P22N_ROOT/.env" ]; then
+		pass "22e: a repo with no .env leaves the sandbox root with none — no credential is manufactured"
+	else
+		fail "22e: a .env appeared in the sandbox despite the repo having none; root=$P22N_ROOT out=$out"
+	fi
+	[ -n "$P22N_ROOT" ] && [ -d "$P22N_ROOT" ] && case "$P22N_ROOT" in
+		/tmp/*) rm -rf -- "$P22N_ROOT" ;;
+	esac
+else
+	fail "22e: could not build the no-.env fixture repo — negative-direction assertion was not exercised"
+fi
+rm -rf -- "$P22_REPO_NOENV" 2>/dev/null
+
+# 22f: end-to-end tie between QUM-1181 and QUM-974/QUM-973 — a host with no
+# .env AND no ancestor-recoverable token still fails LOUDLY, exactly like a
+# real row's shape (e2e_make_sandbox_root then e2e_recover_oauth_token).
+# This is the concrete demonstration of QUM-1181's own AC: "a run on a host
+# with no .env still fails or skips loudly — it must not silently pass."
+out=$(
+	(
+		unset CLAUDE_CODE_OAUTH_TOKEN
+		export SPRAWL_E2E_MATRIX_DEBUG_OAUTH_SCAN_PID=1
+		export REPO_ROOT="$UNIT_TMP_ROOT"
+		P22G=$(mktemp -d "$UNIT_TMP_ROOT/e2e-matrix-unit-p22g.XXXXXX") || exit 98
+		# shellcheck disable=SC1090
+		. "$LIB" >/dev/null 2>&1 || exit 99
+		e2e_make_sandbox_root "qum1181-p22g"
+		[ -e "$SPRAWL_ROOT/.env" ] && echo "UNEXPECTED_ENV_PRESENT"
+		e2e_recover_oauth_token
+		rc=$?
+		rm -rf -- "$SPRAWL_ROOT" "$P22G" 2>/dev/null
+		exit $rc
+	) 2>&1
+)
+rc=$?
+if [ "$rc" -ne 0 ]; then
+	pass "22f: no .env + no ancestor token still fails loudly end-to-end (rc=$rc), never silently passes"
+else
+	fail "22f: end-to-end no-auth path returned 0 — this is the exact vacuous-pass failure mode QUM-1181 warns against; out=$out"
+fi
+case "$out" in
+	*UNEXPECTED_ENV_PRESENT*)
+		fail "22f: a .env appeared from nowhere in the sandbox during the end-to-end run; out=$out"
+		;;
+	*)
+		pass "22f: no .env was manufactured during the end-to-end run"
+		;;
+esac
 
 # Summary
 # ----------------------------------------------------------------------------

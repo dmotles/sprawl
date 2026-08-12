@@ -227,7 +227,28 @@ run_row() {
         local meta
         meta=$(test_metadata 2>/dev/null || true)
         case " $meta " in
-            *" needs_claude=1 "*) e2e_require_claude_or_skip "$name" ;;
+            *" needs_claude=1 "*)
+                e2e_require_claude_or_skip "$name"
+                # QUM-974/QUM-973: centralized here, not left opt-in per row.
+                # This is an EXPLICIT check with an EXPLICIT exit, not a bare
+                # statement relying on `set -e` — this whole subshell is
+                # invoked as `run_row "$name" || rc=$?` in the loop below, and
+                # bash suspends errexit for the ENTIRE body of a command used
+                # as the left operand of `||` (POSIX/bash documented
+                # behavior), so a bare failing call here would NOT abort the
+                # row on its own. Every row in scripts/e2e-tests/ still calls
+                # e2e_recover_oauth_token itself as its own first statement
+                # (harmless once this succeeds — CLAUDE_CODE_OAUTH_TOKEN is
+                # now exported, so that call hits the fast path and returns 0
+                # immediately), so this centralizes ENFORCEMENT without
+                # requiring 33 files to add their own explicit check. A
+                # failure here is an ordinary row FAIL (exit 1), never routed
+                # through e2e_skip_row — QUM-973's AC that this must not
+                # interact with the QUM-952 skip path.
+                if ! e2e_recover_oauth_token; then
+                    exit 1
+                fi
+                ;;
         esac
         case " $meta " in
             *" needs_tmux=1 "*) e2e_require_tmux ;;

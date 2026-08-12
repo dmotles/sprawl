@@ -140,17 +140,11 @@ test_run() {
     e2e_init_sandbox_repo
     e2e_install_cleanup_traps
 
-    if [ -f "$REPO_ROOT/.env" ]; then
-        cp -p "$REPO_ROOT/.env" "$SPRAWL_ROOT/.env"
-    fi
-
     export SPRAWL_ENABLE_TEST_TOOLS=1
-    export SPRAWL_CLAUDE="$REPO_ROOT/scripts/run-claude"
 
     local SUFFIX
     SUFFIX="$(head -c4 /dev/urandom | xxd -p)"
     local SESSION="sprawl-wake-e2e-${SUFFIX}"
-    local STDERR_LOG="$SPRAWL_ROOT/.sprawl/tui-stderr.log"
     local SPAWN_PROMPT_TEMPLATE
     SPAWN_PROMPT_TEMPLATE="Call mcp__sprawl__spawn with family='engineering', type='engineer', branch='__BRANCH__', and prompt set to exactly: 'You are an automated QUM-744 wake-lifecycle probe. Call mcp__sprawl__send_message with to=\"weave\", body=\"WAKE-PROBE-READY-${SUFFIX}\". Then stop and wait. Do nothing else until you receive a message.'"
 
@@ -159,25 +153,18 @@ test_run() {
     echo "  SESSION=$SESSION"
     echo "  SUFFIX=$SUFFIX"
 
-    # Custom launch (not e2e_launch_tui) so we can inject SPRAWL_CLAUDE /
-    # SPRAWL_ENABLE_TEST_TOOLS into the spawned shell — needed for S1's
-    # build-tag-gated _test_induce_wedge MCP tool.
+    # QUM-1181: converged onto the shared e2e_launch_tui helper, which now
+    # forwards SPRAWL_CLAUDE itself and takes an extra-env token for
+    # SPRAWL_ENABLE_TEST_TOOLS (needed for S1's build-tag-gated
+    # _test_induce_wedge MCP tool) — this row no longer needs its own
+    # hand-rolled launch.
     echo ""
     echo "=== Launching sprawl enter ==="
-    _stmux new-session -d -s "$SESSION" -x 200 -y 50 \
-        "SPRAWL_ROOT='$SPRAWL_ROOT' SPRAWL_CLAUDE='$SPRAWL_CLAUDE' SPRAWL_ENABLE_TEST_TOOLS=1 '$SPRAWL_BIN' enter 2>'$STDERR_LOG'"
-    _stmux set-option -t "$SESSION" window-size manual >/dev/null
-    _stmux resize-window -t "$SESSION" -x 200 -y 50 >/dev/null
-
-    if wait_for_pattern "$SESSION" "weave " 45; then
-        pass "TUI rendered (weave root visible)"
-    else
-        fail "TUI did not render within 45s"
-        capture_pane "$SESSION" | tail -30 >&2
-        [ -f "$STDERR_LOG" ] && tail -20 "$STDERR_LOG" >&2
+    if ! e2e_launch_tui "$SESSION" 200 50 "SPRAWL_ENABLE_TEST_TOOLS=1"; then
         e2e_print_results
         return 1
     fi
+    pass "TUI rendered (weave root visible)"
     if capture_pane "$SESSION" | grep -q "trust this folder" 2>/dev/null; then
         _stmux send-keys -t "$SESSION" "1" Enter
         sleep 1

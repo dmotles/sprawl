@@ -51,16 +51,9 @@ test_run() {
     e2e_init_sandbox_repo
     e2e_install_cleanup_traps
 
-    # Copy .env so scripts/run-claude can rehydrate auth in subshells.
-    if [ -f "$REPO_ROOT/.env" ]; then
-        cp -p "$REPO_ROOT/.env" "$SPRAWL_ROOT/.env"
-    fi
-
     export SPRAWL_ENABLE_TEST_TOOLS=1
-    export SPRAWL_CLAUDE="$REPO_ROOT/scripts/run-claude"
 
     local SESSION="sprawl-liveness-e2e-$(head -c4 /dev/urandom | xxd -p)"
-    local STDERR_LOG="$SPRAWL_ROOT/.sprawl/tui-stderr.log"
     local BRANCH_SUFFIX
     BRANCH_SUFFIX="$(head -c4 /dev/urandom | xxd -p)"
 
@@ -70,31 +63,18 @@ test_run() {
 
     echo ""
     echo "=== Launching sprawl enter ==="
-    _stmux new-session -d -s "$SESSION" -x 200 -y 50 \
-        "SPRAWL_ROOT='$SPRAWL_ROOT' SPRAWL_CLAUDE='$SPRAWL_CLAUDE' SPRAWL_ENABLE_TEST_TOOLS=1 '$SPRAWL_BIN' enter 2>'$STDERR_LOG'"
-    _stmux set-option -t "$SESSION" window-size manual >/dev/null
-    _stmux resize-window -t "$SESSION" -x 200 -y 50 >/dev/null
-
-    # QUM-1186 lane 5 (defect PRE-DATES this slice — QUM-656): this gate waited
-    # for the literal `weave (idle)`. QUM-656 moved the tree out of a left-pane
-    # "weave (idle)" row into the header orbital row rendered as `weave --*`,
-    # so that string has been unrenderable ever since and this row has failed at
-    # launch every time it ran. The shared e2e_launch_tui helper was updated for
-    # QUM-656 and waits for the root token `weave ` (see its comment); these two
-    # rows do their own launch because they need extra env on the command line,
-    # and the fix never reached them.
-    #
-    # Same class as the rest of this lane — a probe whose subject was deleted —
-    # but a different cause, so it is called out rather than folded in.
-    if wait_for_pattern "$SESSION" "weave " 45; then
-        pass "TUI rendered ('weave' root visible in header tree)"
-    else
-        fail "TUI did not render within 45s"
-        capture_pane "$SESSION" | tail -30 >&2
-        [ -f "$STDERR_LOG" ] && tail -20 "$STDERR_LOG" >&2
+    # QUM-1181: converged onto the shared e2e_launch_tui helper, which now
+    # forwards SPRAWL_CLAUDE itself and takes an extra-env token for
+    # SPRAWL_ENABLE_TEST_TOOLS. This row and wake-live.sh used to hand-roll
+    # their own launch specifically to inject that extra env var, which is
+    # also why the QUM-656 "weave " wait-pattern fix landed in e2e_launch_tui
+    # but never reached either of them (see the historical note this replaces
+    # in git blame) — converging fixes that stale-pattern defect too.
+    if ! e2e_launch_tui "$SESSION" 200 50 "SPRAWL_ENABLE_TEST_TOOLS=1"; then
         e2e_print_results
         return 1
     fi
+    pass "TUI rendered ('weave' root visible in header tree)"
     if capture_pane "$SESSION" | grep -q "trust this folder" 2>/dev/null; then
         _stmux send-keys -t "$SESSION" "1" Enter
         sleep 1
