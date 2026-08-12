@@ -216,6 +216,19 @@ inside worktrees too.
 verbatim as the `claude` binary path; otherwise it falls back to a `PATH`
 lookup.
 
+**`scripts/run-claude -p '...'` does NOT validate harness auth (QUM-973).**
+It sources `$SPRAWL_ROOT/.env` directly and never exercises
+`e2e_recover_oauth_token`'s `/proc` ancestor walk — the mechanism the e2e
+harness actually depends on. A `-p` check passing tells you `.env` is
+readable; it tells you nothing about whether a harness row, launched
+detached (`setsid`/`nohup`) or otherwise, can recover a token via the
+ancestor chain. During a real 2026-07-25 investigation this check passed
+while every harness run was failing to authenticate, and reading it as
+"auth is healthy" delayed the diagnosis by roughly an hour. Harness auth is
+confirmed only by the `(recovered CLAUDE_CODE_OAUTH_TOKEN from ancestor
+pid=...)` line a row's own `e2e_recover_oauth_token` call prints, or by an
+explicitly exported `CLAUDE_CODE_OAUTH_TOKEN`.
+
 ## Tips
 
 - If a command hangs or behaves unexpectedly, check that you're using `$SPRAWL_BIN` (not a globally installed `sprawl`).
