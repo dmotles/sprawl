@@ -413,6 +413,39 @@ e2e_selected_rows_need_claude() {
     [ "$count" -gt 0 ]
 }
 
+# _e2e_auth_preflight_fatal CAUSE ROWCOUNT [EXTRA] — the single exit-6 banner.
+# Factored out so the two failure classes (no token reached the harness at all;
+# the probe could not confirm a credential) cannot drift into two differently
+# worded contracts. NOTHING derived from the probe's OUTPUT is ever passed in
+# here: $cause is built from the exit status and a three-way shape
+# classification only. This is a public repo and that output can carry a
+# credential.
+_e2e_auth_preflight_fatal() {
+    local cause="$1" total="$2" extra="${3:-}"
+    {
+        echo "FATAL: AUTH PREFLIGHT FAILED — 'claude' is installed but no usable credential reached it (QUM-1108)"
+        echo "       cause: $cause"
+        [ -n "$extra" ] && echo "       note:  $extra"
+        echo "       This is NOT a skip (nothing was measured, and that is unacceptable) and NOT a"
+        echo "       row failure (the product was never exercised). Refusing to run $total row(s);"
+        echo "       exiting ${E2E_AUTH_UNFIT_EXIT}. No row is reported FAIL for this."
+        echo "       This is the state the per-row needs_claude gate cannot see: it keys on the"
+        echo "       binary being ABSENT, so a claude installed but unauthenticated never trips"
+        echo "       it. That is why this check exists and why it runs before any row."
+        echo "       NOTE: this proves a credential is PRESENT, not that it is VALID — an expired or"
+        echo "       revoked token still passes this preflight and still fails rows with 'Not logged in'."
+        echo "       Fix: export CLAUDE_CODE_OAUTH_TOKEN, or create a repo-root .env and run via"
+        echo "       scripts/run-claude / \$SPRAWL_CLAUDE. Check \$SPRAWL_ROOT: run-claude resolves"
+        echo "       .env from it when set and from the repo root otherwise, so an exported"
+        echo "       \$SPRAWL_ROOT changes which .env is read. A detached launch (setsid/nohup)"
+        echo "       severs the /proc ancestor chain the token recovery walks (QUM-973)."
+        echo "       Setup: .claude/skills/e2e-testing-sandboxing/SKILL.md"
+        echo "       Do NOT hide claude from PATH and do NOT set SPRAWL_E2E_SKIP_NO_CLAUDE — neither"
+        echo "       is the remedy for this state, and both only buy a vacuous all-skip run."
+    } >&2
+    exit "$E2E_AUTH_UNFIT_EXIT"
+}
+
 # e2e_check_claude_auth ROWFILE... — QUM-1108 Part 1 / QUM-1135 / QUM-1045.
 # ONE credential check per BATCH, before any row runs.
 #
@@ -460,14 +493,54 @@ e2e_check_claude_auth() {
         return 0
     fi
 
-    e2e_recover_oauth_token >/dev/null 2>&1 || true
+    # RECOVERY FAILURE IS A PREFLIGHT FAILURE, and this arm is not optional.
+    #
+    # Found by running a detached (setsid) batch live: without this, the
+    # preflight printed "credential present" and the first row aborted anyway.
+    # The two were measuring DIFFERENT auth paths. The probe binary is
+    # scripts/run-claude, which sources .env directly; every needs_claude row
+    # instead depends on this ancestor walk, which a detached launch severs
+    # (QUM-973) — and the driver's per-row needs_claude gate hard-fails a row
+    # whose recovery returns nonzero, BEFORE it launches anything. So when
+    # recovery fails, every needs_claude row is already doomed no matter what
+    # the probe would say, and reporting OK is a false all-clear in precisely
+    # the scenario this preflight exists to catch.
+    #
+    # Checking it here converts N doomed rows into one cheap check, which is
+    # the entire cost this issue set out to remove. Its own stderr is
+    # suppressed because the banner below is the batch-level diagnostic; the
+    # per-row call and its return contract (QUM-974/QUM-973) are untouched.
+    local recovered=1
+    e2e_recover_oauth_token >/dev/null 2>&1 && recovered=0
+    if [ "$recovered" -ne 0 ]; then
+        _e2e_auth_preflight_fatal \
+            "no token reached the harness — the QUM-411 /proc ancestor walk found none in 8 ancestors and CLAUDE_CODE_OAUTH_TOKEN is unset" \
+            "$total" \
+            "A detached launch (setsid/nohup) reparents to init and severs the ancestor chain the recovery walks (QUM-973). Every needs_claude row would abort on this individually; this stops the batch once instead."
+    fi
 
     local bin
     if [ -n "${SPRAWL_E2E_MATRIX_DEBUG_AUTH_PROBE_BIN:-}" ]; then
         bin="$SPRAWL_E2E_MATRIX_DEBUG_AUTH_PROBE_BIN"
         echo "WARN: auth preflight probe binary overridden by debug seam \$SPRAWL_E2E_MATRIX_DEBUG_AUTH_PROBE_BIN (real claude bypassed) — QUM-1108" >&2
+    elif [ -n "${SPRAWL_CLAUDE:-}" ]; then
+        # An explicitly set $SPRAWL_CLAUDE is honoured VERBATIM and never
+        # substituted (code review, F1). Falling back to a bare `claude` here
+        # would make the preflight probe a binary NO ROW WILL RUN —
+        # e2e_launch_tui resolves `${SPRAWL_CLAUDE:-…}` with no such fallback —
+        # so a typo'd or stale path would produce a green preflight over a
+        # harness that cannot launch anything. That is the misconfiguration
+        # class this check exists to catch, so it is fatal rather than papered
+        # over.
+        bin="$SPRAWL_CLAUDE"
+        if [ ! -x "$bin" ]; then
+            _e2e_auth_preflight_fatal \
+                "\$SPRAWL_CLAUDE is set to '$bin', which is not executable — refusing to substitute a different binary, because no row would run the substitute" \
+                "$total" \
+                "Rows resolve \$SPRAWL_CLAUDE with no fallback, so probing PATH 'claude' instead would green this misconfiguration. Fix or unset \$SPRAWL_CLAUDE."
+        fi
     else
-        bin="${SPRAWL_CLAUDE:-$REPO_ROOT/scripts/run-claude}"
+        bin="$REPO_ROOT/scripts/run-claude"
         [ -x "$bin" ] || bin=claude
     fi
 
@@ -495,33 +568,17 @@ e2e_check_claude_auth() {
     if [ "$rc" -ne 0 ]; then
         cause="the probe exited $rc — it could not report an auth status at all"
         [ "$rc" -eq 124 ] && cause="$cause (124 = it timed out)"
+        # 127 is a TOOLING gap, not a credential one, and the remedy block
+        # below is entirely about credentials — say so, or the reader follows
+        # six lines of .env advice for a missing binary (code review, F2).
+        [ "$rc" -eq 127 ] && cause="$cause (127 = the probe binary or \`timeout\` was not found — a TOOLING problem, not a credential one)"
     elif [ -z "$compact" ]; then
         cause="the probe exited 0 and produced no output at all"
     else
         cause="the probe exited 0 but reported NO credential — exit status alone is not evidence"
     fi
 
-    {
-        echo "FATAL: AUTH PREFLIGHT FAILED — 'claude' is installed but no usable credential reached it (QUM-1108)"
-        echo "       cause: $cause"
-        echo "       This is NOT a skip (nothing was measured, and that is unacceptable) and NOT a"
-        echo "       row failure (the product was never exercised). Refusing to run $total row(s);"
-        echo "       exiting ${E2E_AUTH_UNFIT_EXIT}. No row is reported FAIL for this."
-        echo "       This is the state the per-row needs_claude gate cannot see: it keys on the"
-        echo "       binary being ABSENT, so a claude installed but unauthenticated never trips"
-        echo "       it. That is why this check exists and why it runs before any row."
-        echo "       NOTE: this proves a credential is PRESENT, not that it is VALID — an expired or"
-        echo "       revoked token still passes this preflight and still fails rows with 'Not logged in'."
-        echo "       Fix: export CLAUDE_CODE_OAUTH_TOKEN, or create a repo-root .env and run via"
-        echo "       scripts/run-claude / \$SPRAWL_CLAUDE. Check \$SPRAWL_ROOT: run-claude resolves"
-        echo "       .env from it when set and from the repo root otherwise, so an exported"
-        echo "       \$SPRAWL_ROOT changes which .env is read. A detached launch (setsid/nohup)"
-        echo "       severs the /proc ancestor chain the token recovery walks (QUM-973)."
-        echo "       Setup: .claude/skills/e2e-testing-sandboxing/SKILL.md"
-        echo "       Do NOT hide claude from PATH and do NOT set SPRAWL_E2E_SKIP_NO_CLAUDE — neither"
-        echo "       is the remedy for this state, and both only buy a vacuous all-skip run."
-    } >&2
-    exit "$E2E_AUTH_UNFIT_EXIT"
+    _e2e_auth_preflight_fatal "$cause" "$total"
 }
 
 e2e_require_claude_or_skip() {

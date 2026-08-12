@@ -170,7 +170,7 @@ FAIL=0
 # [16a] pass + 2 [16b] passes, same accounting QUM-1118's two seams used
 # above). Re-measured on a FULL GREEN run — 559 passed / 0 failed.
 #
-# QUM-1108/QUM-1135/QUM-1045 (zone): 559 -> 641, for section [23] (the batch
+# QUM-1108/QUM-1135/QUM-1045 (zone): 559 -> 651, for section [23] (the batch
 # auth preflight) and the [16] machinery auto-scaling with the one new seam it
 # registers, SPRAWL_E2E_MATRIX_DEBUG_AUTH_PROBE_BIN. The sibling registry entry
 # SPRAWL_E2E_SKIP_AUTH_PROBE is not a `_DEBUG_` name, so [16] does not scale
@@ -179,10 +179,10 @@ FAIL=0
 # MEASURED, NOT DERIVED — a reviewer caught exactly that mistake on the
 # preceding slice. The number below is a reading, taken after the section was
 # green:
-#   bash scripts/test-e2e-matrix-unit.sh  ->  "641 passed / 0 failed"
+#   bash scripts/test-e2e-matrix-unit.sh  ->  "651 passed / 0 failed"
 # The `0 failed` half is load-bearing: a floor measured on a red run counts a
 # collapsed section's surviving assertions and licenses the loss.
-MIN_ASSERTIONS=641
+MIN_ASSERTIONS=651
 # A [16b] nested child deliberately does NOT re-run section [16] (recursing would
 # fork-bomb, and counting there would corrupt the parity comparison), so it asserts
 # strictly fewer things and needs its own floor. Measured at de22410: 237; 238 after
@@ -233,17 +233,17 @@ MIN_ASSERTIONS=641
 # in full). Measured directly (code review, zone): `UNIT_NESTED_SEAM_CHECK=<a
 # valid nonce> bash scripts/test-e2e-matrix-unit.sh` -> "542 passed / 1
 # failed", the one fail being 16c's deliberate one, per the recipe above.
-# QUM-1108 (zone): 542 -> 621. Section [23] references UNIT_NESTED_SEAM_CHECK
+# QUM-1108 (zone): 542 -> 631. Section [23] references UNIT_NESTED_SEAM_CHECK
 # nowhere, so a nested child runs it in full and gains the same assertions the
 # parent did; the child still skips [16], so it does NOT gain [16]'s seam
 # scaling. Measured, not derived, with a valid nonce:
 #   NONCE=$(mktemp /tmp/qum1108-nonce.XXXXXX); printf 'nested-seam-check\n' >"$NONCE"
 #   UNIT_NESTED_SEAM_CHECK=$NONCE bash scripts/test-e2e-matrix-unit.sh | tail -3
-#   -> "621 passed / 0 failed"
+#   -> "631 passed / 0 failed"
 # (The older reading above recorded "542 passed / 1 failed" because it was taken
 # via the unbacked-value branch, which adds 16c's deliberate fail. This reading
 # is a full green, which is the stronger basis for a floor.)
-MIN_ASSERTIONS_NESTED=621
+MIN_ASSERTIONS_NESTED=631
 
 # Pin the temp root. This suite runs inside `make validate` and therefore inside
 # the pre-commit hook, so it must not inherit the committing agent's TMPDIR:
@@ -6441,14 +6441,14 @@ echo "[23] QUM-1108/QUM-1135/QUM-1045 one-per-batch auth preflight"
 P23_FIX=""
 P23_SECRET=""
 if [ ! -r "$LIB" ] || [ ! -r "$DRIVER" ]; then
-	fail "23: setup — lib or driver missing; the whole auth-preflight fixture group (60 assertions) could not run"
+	fail "23: setup — lib or driver missing; the whole auth-preflight fixture group (70 assertions) could not run"
 else
 	P23_FIX=$(mktemp -d "$UNIT_TMP_ROOT/e2e-matrix-unit-p23.XXXXXX" 2>/dev/null || true)
 	if [ -z "$P23_FIX" ] || [ ! -d "$P23_FIX" ]; then
-		fail "23: setup — could not mktemp the fixture tree; the whole auth-preflight fixture group (60 assertions) could not run"
+		fail "23: setup — could not mktemp the fixture tree; the whole auth-preflight fixture group (70 assertions) could not run"
 		P23_FIX=""
 	elif ! _unit_mk_fixture_tree "$P23_FIX"; then
-		fail "23: setup — could not build the fixture driver tree; the whole auth-preflight fixture group (60 assertions) could not run"
+		fail "23: setup — could not build the fixture driver tree; the whole auth-preflight fixture group (70 assertions) could not run"
 	else
 		# The leak sentinel every stub prints on EVERY path, including its
 		# failure paths. If the probe ever echoes a byte of the command's
@@ -6559,7 +6559,7 @@ EOF
 		_p23_mk_stub silent 0 '' 1 || p23_setup_ok=0
 
 		if [ "$p23_setup_ok" -ne 1 ]; then
-			fail "23: setup — could not write the row fixtures and stub probes; the whole auth-preflight fixture group (60 assertions) could not run"
+			fail "23: setup — could not write the row fixtures and stub probes; the whole auth-preflight fixture group (70 assertions) could not run"
 		else
 			# Run the fixture driver with the probe pointed at a stub.
 			# $1=stub name ("" to leave the seam unset), $2=extra env,
@@ -6722,6 +6722,57 @@ EOF
 			_p23_assert_rc 0 "23a5: a compact-JSON healthy payload is accepted too (the match is whitespace-insensitive, not a literal pin)"
 			_p23_assert_has "$_OUT" "=== Matrix: auth preflight OK" "23a5: the compact payload produces the same success banner"
 			_p23_assert_probe_ran "23a5: the compact-payload run actually round-tripped to the probe binary"
+
+			# --- 23a6: the preflight must measure the ROW's auth path ---------
+			# Found by running a DETACHED (setsid) batch live, which is the
+			# real QUM-973 condition and the likeliest cause of the original
+			# 13-row vacuous run. Observed: the preflight printed
+			# "auth preflight OK (credential present)" and the row then aborted
+			# anyway, because the two measure DIFFERENT paths — the probe binary
+			# is scripts/run-claude, which sources .env directly, while every
+			# needs_claude row depends on e2e_recover_oauth_token's /proc
+			# ancestor walk (severed by setsid). A preflight that passes while
+			# every row is doomed is a false all-clear in exactly the scenario
+			# this issue exists to catch, so recovery failure IS a preflight
+			# failure.
+			#
+			# The seam pins the ancestor walk at pid 1 (whose /proc parent field
+			# is 0), making the failure deterministic instead of dependent on
+			# whether the host running this suite happens to have a token in its
+			# real ancestor chain. Same seam and rationale as [21].
+			_p23_run good "CLAUDE_CODE_OAUTH_TOKEN= SPRAWL_E2E_MATRIX_DEBUG_OAUTH_SCAN_PID=1" rowA rowB
+			_p23_assert_rc 6 "23a6: recovery failure aborts the batch at the preflight (exit 6), rather than letting every row discover it one at a time"
+			_p23_assert_has "$_ERR" "$P23_FATAL" "23a6: the recovery-failure abort names itself as an auth-preflight failure"
+			_p23_assert_has "$_ERR" "ancestor" "23a6: the diagnostic names the ancestor-walk recovery as the thing that failed"
+			_unit_assert_ran "$P23_FIX/markers" rowA no "23a6: no row ran — this is the fail-fast the whole issue is about"
+			_p23_assert_aborted_before_rows 23a6
+
+			# --- 23a7: a set-but-broken $SPRAWL_CLAUDE must not be papered over
+			# Code review (chip, F1). The resolver used to fall back to a bare
+			# `claude` on PATH when the resolved shim was not executable — and
+			# that fallback fired for an EXPLICITLY SET $SPRAWL_CLAUDE too. An
+			# operator with a typo'd or stale $SPRAWL_CLAUDE would then get a
+			# preflight that probed the real authenticated claude on PATH,
+			# printed OK, and handed the batch to rows which resolve the binary
+			# WITHOUT that fallback (e2e_launch_tui) and launch the broken path.
+			# The preflight would have been reporting green over precisely the
+			# misconfiguration class it exists to catch, by substituting a
+			# binary no row will run.
+			#
+			# No seam here: $SPRAWL_CLAUDE is the production input under test.
+			_p23_run "" "SPRAWL_CLAUDE=$P23_FIX/nonexistent-shim" rowA
+			_p23_assert_rc 6 "23a7: a set-but-not-executable \$SPRAWL_CLAUDE aborts the batch rather than silently probing a different binary"
+			# The CAUSE, not the exit code, is the discriminator here. Both the
+			# broken-shim path and the old silent-fallback path end in exit 6 on
+			# this fixture (the fallback lands on the fixture `claude`, which
+			# prints nothing, so the probe fails anyway) — and the generic FATAL
+			# banner mentions the string "SPRAWL_CLAUDE" in its remedy text
+			# regardless. Both of those made an earlier version of this
+			# assertion pass for the wrong reason. Only the specific cause
+			# distinguishes "we refused to substitute a binary" from "we
+			# substituted one and it happened to fail too".
+			_p23_assert_has "$_ERR" "is not executable" "23a7: the diagnostic names the non-executable shim as the cause, rather than reporting a generic credential failure"
+			_unit_assert_ran "$P23_FIX/markers" rowA no "23a7: no row ran on the broken-shim path"
 
 			# --- 23b1: the probe must not fire when no row needs claude -------
 			# Same FAILING stub as 23a2. The only difference is which row was

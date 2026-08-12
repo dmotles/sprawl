@@ -69,7 +69,7 @@ document claiming to be verbatim is worse than no verbatim claim at all.
 
    | claude state | per-row gate fires? | auth preflight | outcome |
    |---|---|---|---|
-   | absent | yes | **not run** — the per-row gate owns this case | `SPRAWL_E2E_SKIP_NO_CLAUDE` consulted; row **skipped**, exit 3 (or hard `FATAL`, exit 1, without the flag) |
+   | absent | yes | **does not probe** — it self-gates and prints a `skipped` banner; the per-row gate owns this case | `SPRAWL_E2E_SKIP_NO_CLAUDE` consulted; row **skipped**, exit 3 (or hard `FATAL`, exit 1, without the flag) |
    | present, **no credential** | no | **fires** | whole batch aborts **before any row runs**, **exit 6**; no row is reported FAIL |
    | present, credential **present but invalid** (expired/revoked) | no | fires and **passes** | row runs and fails with `Not logged in` — **the hazard is narrowed, not eliminated** |
    | present + valid credential | no | fires and passes | real run |
@@ -91,7 +91,7 @@ document claiming to be verbatim is worse than no verbatim claim at all.
    === Matrix breakdown: 2 passed, 0 failed, 1 skipped / 3 requested ===
    ```
 
-   The first line is the QUM-947 contract and is unchanged — `passed` means *actually executed and passed*, so a skip now shows up there as a shortfall. Note that **`=== Matrix: ` is not a unique prefix**: the selection banner (`=== Matrix: running N row(s): …`) and the failed-rows / skipped-rows lines share it. If you scrape, anchor on `^=== Matrix: [0-9]+/[0-9]+ passed ===$` (exactly one per run) or `^=== Matrix breakdown: `. The breakdown line is the only place the skip count appears. Skipped rows are additionally named on stderr in a `!!! … SKIPPED` banner with each row's reason.
+   The first line is the QUM-947 contract and is unchanged — `passed` means *actually executed and passed*, so a skip now shows up there as a shortfall. Note that **`=== Matrix: ` is not a unique prefix**: the selection banner (`=== Matrix: running N row(s): …`), the three auth-preflight banners (`… auth preflight OK/not required/skipped`) and the failed-rows / skipped-rows lines all share it. If you scrape, anchor on `^=== Matrix: [0-9]+/[0-9]+ passed ===$` (exactly one per run) or `^=== Matrix breakdown: `. The breakdown line is the only place the skip count appears. Skipped rows are additionally named on stderr in a `!!! … SKIPPED` banner with each row's reason.
 
    **The bucket invariant, stated precisely.** `passed + failed + skipped == requested` holds **on any run that reaches the summary** (a violation is an internal error, exit 4, printed *instead of* any summary). Exits `2`, `5` and `6` abort **before the row loop**, so such a run prints **no** `=== Matrix: N/M passed ===` line and **no** `=== Matrix breakdown: ` line at all. **The absence of the breakdown line is how you tell an aborted batch from a run with zero passes** — never infer it from the exit status alone. (This paragraph previously said the sum holds "always", which was already wrong for exit 5.)
 

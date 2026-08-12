@@ -243,8 +243,8 @@ fi
 # explicit loop rather than a `${selected[@]/#/...}` pattern expansion, which
 # prefixes but cannot also append the `.sh` suffix.
 selected_files=()
-for _sel in "${selected[@]}"; do
-    selected_files+=("$ROWS_DIR/$_sel.sh")
+for arg in "${selected[@]}"; do
+    selected_files+=("$ROWS_DIR/$arg.sh")
 done
 ( . "$LIB"; e2e_check_claude_auth "${selected_files[@]}" ) || exit $?
 
