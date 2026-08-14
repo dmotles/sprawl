@@ -1,7 +1,7 @@
-.PHONY: validate build hooks-armed proto-check proto-gen proto-gen-web hub-web fmt-check lint test clean install fmt hooks leak-scan test-notify-tui-e2e test-handoff-e2e test-bridge-lifecycle-e2e test-exit-code-preservation test-parallel-agent-viewport-e2e test-tui-e2e test-leak-resistance-e2e test-merge-reuse-e2e test-ask-user-question-e2e test-drain-row-inject-e2e test-wake-live-e2e test-paste-coalesce-e2e test-e2e-matrix test-e2e-matrix-unit test-hooks-e2e test-hub-bootstrap test-hub-e2e test-wirelog-helpers-unit test-e2e-lockwait-unit test-gitignore-classes test-race test-race-gate always-loaded-budget test-always-loaded-budget-unit
+.PHONY: test-lint-pin validate build hooks-armed proto-check proto-gen proto-gen-web hub-web fmt-check lint test clean install fmt hooks leak-scan test-notify-tui-e2e test-handoff-e2e test-bridge-lifecycle-e2e test-exit-code-preservation test-parallel-agent-viewport-e2e test-tui-e2e test-leak-resistance-e2e test-merge-reuse-e2e test-ask-user-question-e2e test-drain-row-inject-e2e test-wake-live-e2e test-paste-coalesce-e2e test-e2e-matrix test-e2e-matrix-unit test-hooks-e2e test-hub-bootstrap test-hub-e2e test-wirelog-helpers-unit test-e2e-lockwait-unit test-gitignore-classes test-race test-race-gate always-loaded-budget test-always-loaded-budget-unit
 
 # Default target — full quality gauntlet
-validate: build hooks-armed proto-check fmt-check lint test-race-gate test-race test-wirelog-helpers-unit test-e2e-lockwait-unit test-e2e-matrix-unit test-always-loaded-budget-unit always-loaded-budget test-gitignore-classes leak-scan
+validate: build hooks-armed proto-check fmt-check lint test-lint-pin test-race-gate test-race test-wirelog-helpers-unit test-e2e-lockwait-unit test-e2e-matrix-unit test-always-loaded-budget-unit always-loaded-budget test-gitignore-classes leak-scan
 
 BUF ?= buf
 
@@ -66,15 +66,47 @@ build:
 	go build -ldflags "$(LDFLAGS)" -o sprawl .
 	go build ./cmd/hubd
 
+# QUM-1223: golangci-lint is PINNED. A bare `golangci-lint` resolves via PATH,
+# which made `make validate` — the repo's gate, and what the pre-commit hook
+# runs — a function of whichever version the host happened to have installed.
+# That drift is only loud in one direction: the 2026-08-13 host migration made
+# the gate STRICTER and failed visibly, but the same drift the other way makes
+# it silently weaker and nobody notices. Measured, it is worse than version
+# drift: any executable named `golangci-lint` earlier on PATH that exits 0
+# takes over the gate entirely (a decoy printing nothing made `make lint` exit 0
+# over 6 real findings).
+#
+# `go run <pkg>@<version>` resolves in module-agnostic mode, so this pins the
+# tool WITHOUT adding it to the main module's graph. That matters: a `tool`
+# directive in go.mod makes MVS bump shipped product dependencies — measured,
+# it raised charm.land/lipgloss/v2 v2.0.2->v2.0.3 and
+# github.com/charmbracelet/x/ansi v0.11.6->v0.11.7, both TUI renderers. Do NOT
+# "simplify" this back to `go get -tool`; pinning a linter must not upgrade the
+# renderer inside the binary we ship.
+#
+# `golangci-lint fmt` reaches gofumpt and goimports as LIBRARIES compiled into
+# the binary, so this pins formatting behaviour too — confirmed by running
+# `fmt --diff` with gofumpt, goimports and golangci-lint all absent from PATH.
+# Guarded by scripts/test-lint-pin.sh, which runs inside `validate`.
+GOLANGCI_LINT_VERSION ?= v2.12.2
+GOLANGCI_LINT ?= go run github.com/golangci/golangci-lint/v2/cmd/golangci-lint@$(GOLANGCI_LINT_VERSION)
+
 fmt:
-	golangci-lint fmt ./...
+	$(GOLANGCI_LINT) fmt ./...
 
 fmt-check:
 	@echo "Checking formatting..."
-	@test -z "$$(golangci-lint fmt --diff ./...)" || (echo "Files need formatting. Run 'make fmt' to fix." && exit 1)
+	@test -z "$$($(GOLANGCI_LINT) fmt --diff ./...)" || (echo "Files need formatting. Run 'make fmt' to fix." && exit 1)
 
 lint:
-	golangci-lint run ./...
+	$(GOLANGCI_LINT) run ./...
+
+# QUM-1223: proves the pin above actually BINDS rather than merely being
+# written down. Pure bash + go, no claude/tmux. Its A2 leg puts a decoy
+# `golangci-lint` earlier on PATH and asserts the pinned binary still runs —
+# a green `make lint` alone cannot distinguish a working pin from no pin.
+test-lint-pin:
+	bash scripts/test-lint-pin.sh
 
 # The non-race convenience run. NOT what `validate` uses — see test-race.
 test:

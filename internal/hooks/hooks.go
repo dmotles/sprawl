@@ -154,7 +154,7 @@ func validateBranch(branch string) error {
 func managedBlock(hp hookPoint, branch string) string {
 	var b strings.Builder
 	b.WriteString(StartMarker + "\n")
-	b.WriteString(fmt.Sprintf("# Installed by `sprawl hooks install` (QUM-842). Protects branch: %s.\n", branch))
+	fmt.Fprintf(&b, "# Installed by `sprawl hooks install` (QUM-842). Protects branch: %s.\n", branch)
 	b.WriteString("# Remove with: sprawl hooks uninstall\n")
 	// Locate the Sprawl helper beside the running hook (works under
 	// core.hooksPath and from any worktree).

@@ -547,3 +547,62 @@ func TestUninstall_ManifestMissing_MarkerFallback(t *testing.T) {
 		t.Errorf("expected a manifest-missing warning, got: %q", errb.String())
 	}
 }
+
+// TestManagedBlock_ExactRendering pins the byte-exact block managedBlock
+// writes into a real git hook, for BOTH hook points. QUM-1223 converted its
+// b.WriteString(fmt.Sprintf(...)) call to fmt.Fprintf(&b, ...) for staticcheck
+// QF1012; before that change this function had no test at all (grep
+// "Installed by" across internal/hooks/*_test.go returned nothing), even
+// though it renders the QUM-808 main-commit guard and the
+// reference-transaction backstop that `--no-verify` cannot skip.
+//
+// Exact-match rather than Contains: the block is shell, so a lost newline
+// silently welds two commands onto one line.
+//
+// The want strings are spelled out as LITERALS rather than composed from
+// StartMarker / EndMarker / HelperCommitGuard / HelperLeakGuard /
+// HelperRefGuard. Composing
+// them from the subject's own constants would move both sides of the
+// comparison together when a constant's value changed, so the test could not
+// detect it — a characterization test whose expectation is a function of the
+// thing it characterises characterises nothing.
+func TestManagedBlock_ExactRendering(t *testing.T) {
+	wants := map[string]string{
+		"pre-commit": "# >>> sprawl-managed (do not edit) >>>\n" +
+			"# Installed by `sprawl hooks install` (QUM-842). Protects branch: main.\n" +
+			"# Remove with: sprawl hooks uninstall\n" +
+			`SPRAWL_HOOKS_DIR="$(cd "$(dirname "$(readlink -f "$0")")" && pwd)"` + "\n" +
+			"\"$SPRAWL_HOOKS_DIR\"/sprawl-guard-main-commit \"main\" || exit $?\n" +
+			"\"$SPRAWL_HOOKS_DIR\"/sprawl-guard-employer-leak || exit $?\n" +
+			"# <<< sprawl-managed <<<\n",
+		"reference-transaction": "# >>> sprawl-managed (do not edit) >>>\n" +
+			"# Installed by `sprawl hooks install` (QUM-842). Protects branch: main.\n" +
+			"# Remove with: sprawl hooks uninstall\n" +
+			`SPRAWL_HOOKS_DIR="$(cd "$(dirname "$(readlink -f "$0")")" && pwd)"` + "\n" +
+			"\"$SPRAWL_HOOKS_DIR\"/sprawl-guard-main-ref \"$@\" \"main\" || exit $?\n" +
+			"# <<< sprawl-managed <<<\n",
+	}
+
+	// Assertion floor. A bool cannot distinguish "one of two rows ran" from
+	// "both ran", and a COUNT cannot either: two hookPoints that both happened
+	// to be named "pre-commit" would give checked == len(wants) while
+	// reference-transaction was never rendered once (measured — the counter
+	// form passed under exactly that mutation). Track which keys were hit.
+	seen := map[string]bool{}
+	for _, hp := range hookPoints {
+		want, ok := wants[hp.file]
+		if !ok {
+			t.Errorf("hookPoint %q has no expected rendering in this test; add one — an unasserted hook point is an unguarded git hook", hp.file)
+			continue
+		}
+		seen[hp.file] = true
+		if got := managedBlock(hp, "main"); got != want {
+			t.Errorf("managedBlock(%s, main) rendered a different hook body than the guard\ncontract requires — this text becomes the executable git hook.\ngot  %q\nwant %q", hp.file, got, want)
+		}
+	}
+	for file := range wants {
+		if !seen[file] {
+			t.Fatalf("hook point %q was never rendered — this test measured less than it claims", file)
+		}
+	}
+}

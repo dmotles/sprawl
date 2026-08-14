@@ -404,6 +404,19 @@ func resolveEnterDeps() *enterDeps {
 				if root == "" {
 					return nil
 				}
+				// QUM-1223: G703 flags os.Getenv -> os.Stat as tainted-path
+				// traversal. Traversal needs a base directory to escape;
+				// SPRAWL_ROOT IS the base and is never joined onto anything,
+				// so there is nowhere for a "../" to escape TO. The result is
+				// used only as a boolean liveness signal ("has my sandbox root
+				// been torn down? then quit the TUI") — nothing here is opened,
+				// read, written or executed, so no file content can leak
+				// whatever the path names. The e2e harness sets this to
+				// arbitrary /tmp sandbox roots by design, and the value is at
+				// the process's own privilege: sprawl is a local, non-setuid,
+				// single-user CLI, so whoever can set this variable can already
+				// stat any path directly.
+				//#nosec G703 -- SPRAWL_ROOT is an operator-set sandbox root used only as an existence probe; no base dir to escape, no read, no exec
 				_, err := os.Stat(root)
 				return err
 			},

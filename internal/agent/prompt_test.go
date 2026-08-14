@@ -2073,3 +2073,145 @@ func TestPromptRenderers_NoResidualPlaceholderTokens(t *testing.T) {
 		})
 	}
 }
+
+// TestEnvContextBlock_ExactRendering pins the byte-exact output of
+// envContextBlock across its GATING branches. QUM-1223 converted its four
+// b.WriteString(fmt.Sprintf(...)) calls to fmt.Fprintf(&b, ...) to satisfy
+// staticcheck QF1012. The block is appended to the engineer, QA and manager
+// prompts — NOT the researcher prompt, which carries no "# Environment"
+// section at all (researcher_tui.golden contains zero occurrences of it).
+//
+// What this adds over the pre-existing coverage, stated precisely because the
+// first version of this comment got it wrong (QUM-1223): the
+// TestBuild*Prompt_TuiGolden suite ALREADY compares full builder output
+// byte-for-byte against testdata/*.golden, and it does catch a dropped
+// newline here — measured: dropping the "\n" after "- Git repository: yes"
+// fails TestBuildEngineerPrompt_TuiGolden, TestBuildManagerPrompt_TuiGolden
+// and TestBuildQAPrompt_TuiGolden. So newline detection is NOT this test's
+// contribution.
+//
+// The goldens only ever render testEnvConfig(), which sets WorkDir, Platform
+// and Shell all non-empty, so the three `if x != ""` gates have no byte-exact
+// coverage anywhere in the repo.
+//
+// Which rows are the unique contribution, measured rather than asserted:
+//   - the three SINGLETON rows — coupling two gates
+//     (`if env.Platform != "" && env.Shell != ""`) fails only
+//     .../platform_only and nothing else in the package;
+//   - the EMPTY BRANCH row — gating the branch line on `branchName != ""`
+//     fails only .../empty_branch_name.
+//
+// The other two rows are redundant and kept only to localise a failure to this
+// function instead of to a 20KB golden diff: the all-set row duplicates
+// engineer_tui.golden, and the all-empty row duplicates the pre-existing
+// TestBuild{Engineer,Manager,QA}Prompt_EnvironmentOmitsEmptyFields, which
+// already catch coarse gate removal (`if x != ""` -> `if true`).
+func TestEnvContextBlock_ExactRendering(t *testing.T) {
+	tests := []struct {
+		name   string
+		branch string
+		env    EnvConfig
+		want   string
+	}{
+		{
+			// TestMode/Subagent/ParentName are set here deliberately while
+			// want stays free of them: envContextBlock reads none of the
+			// three, and this pins that non-dependence for zero extra rows.
+			// It fails the day someone adds a TestMode-gated line to the
+			// block. (The sandbox warning and the sub-agent banner are the
+			// callers' business — see BuildEngineerPrompt.)
+			name:   "all optional fields populated",
+			branch: "dmotles/qum-1223",
+			env: EnvConfig{
+				WorkDir: "/tmp/worktrees/finn", Platform: "linux", Shell: "/bin/zsh",
+				TestMode: true, Subagent: true, ParentName: "weave",
+			},
+			want: "\n\n# Environment\n" +
+				"- Working directory: /tmp/worktrees/finn\n" +
+				"- Git repository: yes\n" +
+				"- Git branch: dmotles/qum-1223\n" +
+				"- Platform: linux\n" +
+				"- Shell: /bin/zsh\n",
+		},
+		{
+			// Pins the gating: only the two unconditional lines survive.
+			name:   "all optional fields empty",
+			branch: "main",
+			env:    EnvConfig{},
+			want: "\n\n# Environment\n" +
+				"- Git repository: yes\n" +
+				"- Git branch: main\n",
+		},
+		{
+			name:   "work dir only",
+			branch: "b",
+			env:    EnvConfig{WorkDir: "/w"},
+			want:   "\n\n# Environment\n- Working directory: /w\n- Git repository: yes\n- Git branch: b\n",
+		},
+		{
+			name:   "platform only",
+			branch: "b",
+			env:    EnvConfig{Platform: "darwin"},
+			want:   "\n\n# Environment\n- Git repository: yes\n- Git branch: b\n- Platform: darwin\n",
+		},
+		{
+			name:   "shell only",
+			branch: "b",
+			env:    EnvConfig{Shell: "/bin/bash"},
+			want:   "\n\n# Environment\n- Git repository: yes\n- Git branch: b\n- Shell: /bin/bash\n",
+		},
+		{
+			// Pins the rendered contract for values containing '%', which a
+			// worktree path or $SHELL can genuinely carry. This case is
+			// contract documentation, NOT the detection mechanism: the
+			// format-string class it was first written for is already covered
+			// by `go vet`, which `go test` runs. Measured (QUM-1223) — the
+			// botched conversion
+			// fmt.Fprintf(&b, "- Working directory: "+v+"\n") does not
+			// compile at all: "non-constant format string in call to
+			// fmt.Fprintf". No mutation was found that only this case
+			// catches, so it is kept as a cheap guard on a reachable input
+			// rather than credited with detection power it does not have.
+			name:   "values containing percent verbs",
+			branch: "feat/100%-done",
+			env:    EnvConfig{WorkDir: "/tmp/100%done", Platform: "%s%d", Shell: "/bin/z%vsh"},
+			want: "\n\n# Environment\n" +
+				"- Working directory: /tmp/100%done\n" +
+				"- Git repository: yes\n" +
+				"- Git branch: feat/100%-done\n" +
+				"- Platform: %s%d\n" +
+				"- Shell: /bin/z%vsh\n",
+		},
+		{
+			// The branch name is unconditional, so an empty one still renders
+			// the label. Pins that reachable shape; no other row covers it.
+			name:   "empty branch name",
+			branch: "",
+			env:    EnvConfig{WorkDir: "/w"},
+			want:   "\n\n# Environment\n- Working directory: /w\n- Git repository: yes\n- Git branch: \n",
+		},
+		{
+			// Same status as the percent-verbs row above: no mutation was
+			// found that only this case catches. Kept as a cheap guard on
+			// reachable inputs, not credited with detection power.
+			name:   "values containing newline and non-ascii",
+			branch: "br\nanch",
+			env:    EnvConfig{WorkDir: "/wörk\ndir", Platform: "líñux", Shell: "/bin/zsh\t"},
+			want: "\n\n# Environment\n" +
+				"- Working directory: /wörk\ndir\n" +
+				"- Git repository: yes\n" +
+				"- Git branch: br\nanch\n" +
+				"- Platform: líñux\n" +
+				"- Shell: /bin/zsh\t\n",
+		},
+	}
+
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			got := envContextBlock(tc.branch, tc.env)
+			if got != tc.want {
+				t.Errorf("envContextBlock rendered the environment block differently than the\nprompt contract requires — this text is appended to every agent's system prompt.\ngot  %q\nwant %q", got, tc.want)
+			}
+		})
+	}
+}

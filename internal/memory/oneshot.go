@@ -57,6 +57,16 @@ func NewCLIInvoker() *CLIInvoker {
 // regenerate/consolidate paths honor the same override as the rest of sprawl.
 func resolveClaudeBinary() (string, error) {
 	if override := os.Getenv("SPRAWL_CLAUDE"); override != "" {
+		// QUM-1223: same judgment as internal/agent/claude.go's
+		// RealLauncher.FindBinary, which this function deliberately mirrors —
+		// see the fuller reasoning there. In short: SPRAWL_CLAUDE IS the path
+		// rather than a component joined onto a base, so there is no
+		// confinement boundary for a "../" to escape; the value is at the
+		// process's own privilege in a local non-setuid CLI, so there is no
+		// privilege boundary either; and this stat is a pre-flight existence
+		// check on a path that is subsequently EXECUTED (G204 territory, not
+		// G703, and unaffected by this directive).
+		//#nosec G703 -- SPRAWL_CLAUDE is the operator-supplied path to the binary sprawl will exec (QUM-518 shim); mirrors internal/agent/claude.go
 		if _, err := os.Stat(override); err != nil {
 			return "", fmt.Errorf("SPRAWL_CLAUDE=%q: %w", override, err)
 		}

@@ -282,15 +282,15 @@ func envContextBlock(branchName string, env EnvConfig) string {
 	var b strings.Builder
 	b.WriteString("\n\n# Environment\n")
 	if env.WorkDir != "" {
-		b.WriteString(fmt.Sprintf("- Working directory: %s\n", env.WorkDir))
+		fmt.Fprintf(&b, "- Working directory: %s\n", env.WorkDir)
 	}
 	b.WriteString("- Git repository: yes\n")
-	b.WriteString(fmt.Sprintf("- Git branch: %s\n", branchName))
+	fmt.Fprintf(&b, "- Git branch: %s\n", branchName)
 	if env.Platform != "" {
-		b.WriteString(fmt.Sprintf("- Platform: %s\n", env.Platform))
+		fmt.Fprintf(&b, "- Platform: %s\n", env.Platform)
 	}
 	if env.Shell != "" {
-		b.WriteString(fmt.Sprintf("- Shell: %s\n", env.Shell))
+		fmt.Fprintf(&b, "- Shell: %s\n", env.Shell)
 	}
 	return b.String()
 }
