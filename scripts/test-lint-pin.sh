@@ -51,6 +51,17 @@ MIN_ASSERTIONS=10
 PASS=0
 FAIL=0
 
+# A2b and A3 each run `make lint`, and golangci-lint's lock is MACHINE-WIDE
+# across every worktree and agent on this host (see /false-red § "parallel
+# golangci-lint is running"). Linting ./... three more times per `make validate`
+# would widen the window in which every other agent's validate hits that lock —
+# i.e. it would manufacture a known false-red for everyone else.
+#
+# So these two assertions lint ONE small package instead. That costs them
+# nothing: both ask WHICH BINARY ran, not what it found, and neither claim
+# depends on the scope. `validate`'s own `lint` prerequisite still covers ./...
+LINT_SCOPE=${LINT_SCOPE:-./internal/hooks/...}
+
 pass() {
 	PASS=$((PASS + 1))
 	echo "  PASS: $1"
@@ -61,7 +72,14 @@ fail() {
 }
 
 # Expected pinned version, read from the Makefile so this suite cannot drift
-# from it silently. A1 then asserts the resolved binary actually reports it.
+# from it silently.
+#
+# NOTE what A1 does and does not do: it compares this against the recipe TEXT
+# from `make -n lint`, and both sides therefore come from the same Makefile
+# line. A1 is not vacuous — reverting `lint:` to a bare `golangci-lint` empties
+# RESOLVED and fails it — but it is a check on the WIRING, not a check that the
+# resolved binary reports this version. A7 is the one that actually executes the
+# pinned binary.
 EXPECTED_VERSION=$(sed -n 's/^GOLANGCI_LINT_VERSION ?= v\(.*\)$/\1/p' "$MAKEFILE" | head -1)
 
 command -v go >/dev/null 2>&1 || {
@@ -77,7 +95,14 @@ command -v go >/dev/null 2>&1 || {
 echo "=== lint-pin gate (expected golangci-lint v$EXPECTED_VERSION) ==="
 
 # ---------------------------------------------------------------------------
-# A1: the version the Makefile's pin actually resolves to.
+# A1: the version the Makefile's pin resolves to in the recipe.
+#
+# Both GOLANGCI_LINT and GOLANGCI_LINT_VERSION use `?=`, so the environment CAN
+# override the pin (`GOLANGCI_LINT=golangci-lint make validate` restores the old
+# PATH behaviour). That is a deliberate escape hatch for a one-off experiment,
+# and it is not a hole in the gate: A1 runs `make -n lint` in the SAME
+# environment, so an override that un-pins the recipe is reported here rather
+# than silently honoured.
 # ---------------------------------------------------------------------------
 RESOLVED=$(make -s -f "$MAKEFILE" -n lint 2>/dev/null | grep -o 'golangci-lint@v[0-9.]*' | head -1)
 if [ "$RESOLVED" = "golangci-lint@v$EXPECTED_VERSION" ]; then
@@ -115,7 +140,7 @@ else
 fi
 
 # A2b — with the decoy first on PATH, `make lint` must NOT run it.
-LINT_OUT=$(cd "$REPO_ROOT" && PATH="$DECOY_DIR:$PATH" make lint 2>&1)
+LINT_OUT=$(cd "$REPO_ROOT" && PATH="$DECOY_DIR:$PATH" make lint LINT_SCOPE="$LINT_SCOPE" 2>&1)
 LINT_RC=$?
 if echo "$LINT_OUT" | grep -q 'SPRAWL-LINT-PIN-DECOY-SENTINEL'; then
 	fail "A2b make lint ran the PATH decoy instead of the pinned binary — the pin does not bind"
@@ -128,30 +153,51 @@ else
 	fail "A2c make lint returned $LINT_RC with the decoy on PATH; expected 0"
 fi
 
-# A2d — same for fmt-check, which is a separate target with its own
-# invocation. A decoy that exits 0 silently satisfies `test -z`, so an
-# unpinned fmt-check is a false green in exactly the same way as lint.
+# A2d — same for fmt-check, which is a separate target with its own invocation.
+#
+# Deliberately asserts ONLY on the exit status, with no sentinel-in-output
+# branch. fmt-check's recipe is `@test -z "$$($(GOLANGCI_LINT) fmt --diff ...)"`,
+# so the linter's stdout is captured by the INNER $( ) and consumed by
+# `test -z`; it never reaches an outer capture. A sentinel branch here would be
+# unreachable code masquerading as an assertion — measured in a scratch dir with
+# an unpinned recipe and the decoy on PATH: rc=2, and the sentinel was INVISIBLE
+# in the captured output.
+#
+# The exit status is a sound discriminator anyway, and note WHY it is not the
+# same tautology as A2c: the decoy prints a line to stdout and exits 0, so under
+# an unpinned fmt-check `test -z` sees NON-empty output and fails the target.
+# So an unpinned fmt-check is red here, a pinned one green.
 FMT_OUT=$(cd "$REPO_ROOT" && PATH="$DECOY_DIR:$PATH" make fmt-check 2>&1)
 FMT_RC=$?
-if echo "$FMT_OUT" | grep -q 'SPRAWL-LINT-PIN-DECOY-SENTINEL'; then
-	fail "A2d make fmt-check ran the PATH decoy instead of the pinned binary"
-elif [ "$FMT_RC" -eq 0 ]; then
+if [ "$FMT_RC" -eq 0 ]; then
 	pass "A2d make fmt-check ignored the PATH decoy and passed"
 else
-	fail "A2d make fmt-check returned $FMT_RC with the decoy on PATH; expected 0"
+	fail "A2d make fmt-check returned $FMT_RC with the decoy on PATH; expected 0. Either the pin does not bind for fmt-check, or the tree genuinely needs formatting: $(printf '%s' "$FMT_OUT" | tail -2)"
 fi
 
 # ---------------------------------------------------------------------------
 # A3: no dependence on $HOME/go/bin. The dotfiles add only ~/.local/bin, so a
 # pin that quietly needed go/bin would break for the next operator.
 # ---------------------------------------------------------------------------
-SCRUBBED=$(printf '%s' "$PATH" | tr ':' '\n' | grep -v "^$HOME/go/bin$" | grep -v "^$HOME/.local/bin$" | paste -sd: -)
-SCRUB_RC_OUT=$(cd "$REPO_ROOT" && env PATH="$SCRUBBED" make lint 2>&1)
-SCRUB_RC=$?
-if [ "$SCRUB_RC" -eq 0 ]; then
-	pass "A3 make lint passes with \$HOME/go/bin and \$HOME/.local/bin off PATH"
+# $HOME must be non-empty or the scrub patterns degrade to "^/go/bin$" and
+# "^/.local/bin$", which match nothing — leaving A3 asserting "make lint passes
+# with the normal PATH", a green that measures nothing. Same shape as the two
+# false-greens already found in this file, so it gets a guard rather than a
+# comment.
+if [ -z "${HOME:-}" ]; then
+	fail "A3 \$HOME is empty, so the PATH scrub would match nothing and this assertion would measure nothing"
 else
-	fail "A3 make lint failed (rc=$SCRUB_RC) with \$HOME/go/bin and \$HOME/.local/bin off PATH: $(printf '%s' "$SCRUB_RC_OUT" | tail -3)"
+	# Also scrubs $HOME/.local/bin, which is where this host's golangci-lint
+	# actually lives — stronger than the AC's go/bin-only requirement, and it is
+	# what gives A3 its power here.
+	SCRUBBED=$(printf '%s' "$PATH" | tr ':' '\n' | grep -v "^$HOME/go/bin$" | grep -v "^$HOME/.local/bin$" | paste -sd: -)
+	SCRUB_RC_OUT=$(cd "$REPO_ROOT" && env PATH="$SCRUBBED" make lint LINT_SCOPE="$LINT_SCOPE" 2>&1)
+	SCRUB_RC=$?
+	if [ "$SCRUB_RC" -eq 0 ]; then
+		pass "A3 make lint passes with \$HOME/go/bin and \$HOME/.local/bin off PATH"
+	else
+		fail "A3 make lint failed (rc=$SCRUB_RC) with \$HOME/go/bin and \$HOME/.local/bin off PATH: $(printf '%s' "$SCRUB_RC_OUT" | tail -3)"
+	fi
 fi
 
 # ---------------------------------------------------------------------------
@@ -195,11 +241,22 @@ fi
 # the regression that re-introduces the whole defect, and it is a one-word
 # edit away at all times.
 # ---------------------------------------------------------------------------
-BARE=$(sed -n '/^fmt:/,/^test:/p' "$MAKEFILE" | grep -nE '(^|[^$(])(\s|^)golangci-lint ' || true)
+# Implemented by DELETING every $(GOLANGCI_LINT) from the range and failing on
+# any surviving `golangci-lint`, rather than by a regex that tries to describe
+# what a bare invocation looks like. The earlier regex form —
+#   grep -nE '(^|[^$(])(\s|^)golangci-lint '
+# required whitespace or line-start immediately before the name, and so missed
+# BOTH real unpinned shapes: `$$(golangci-lint fmt --diff` (preceded by `(`,
+# which is the literal pre-QUM-1223 fmt-check line) and `@golangci-lint`
+# (preceded by `@`, idiomatic throughout this Makefile). Measured: reverting
+# only fmt-check to the bare form left that grep returning rc=1, i.e. the
+# regression undetected and A6 printing PASS. Only recipe lines (tab-indented)
+# are considered, so the explanatory comments above may name the tool freely.
+BARE=$(sed -n '/^fmt:/,/^test:/p' "$MAKEFILE" | grep '^	' | sed 's/\$(GOLANGCI_LINT)//g' | grep -n 'golangci-lint' || true)
 if [ -z "$BARE" ]; then
-	pass "A6 fmt/fmt-check/lint recipes contain no bare golangci-lint invocation"
+	pass "A6 fmt/fmt-check/lint recipes invoke only the pinned \$(GOLANGCI_LINT)"
 else
-	fail "A6 a bare golangci-lint invocation is back in the Makefile:"
+	fail "A6 a bare golangci-lint invocation is back in the Makefile recipes:"
 	printf '%s\n' "$BARE" | sed 's/^/        /'
 fi
 
@@ -209,10 +266,19 @@ fi
 # requirement durable instead of a one-time observation.
 # ---------------------------------------------------------------------------
 FORMATTERS=$(cd "$REPO_ROOT" && go run "github.com/golangci/golangci-lint/v2/cmd/golangci-lint@v$EXPECTED_VERSION" formatters 2>/dev/null)
-if printf '%s' "$FORMATTERS" | grep -q 'gofumpt' && printf '%s' "$FORMATTERS" | grep -q 'goimports'; then
-	pass "A7 pinned binary reports gofumpt and goimports as enabled formatters"
+# Scoped to the "Enabled by your configuration" block. `formatters` prints an
+# Enabled block AND a Disabled block, so an unscoped grep cannot tell them
+# apart — measured: an A7-shaped grep over the whole output matches gci, gofmt,
+# golines and swaggo, all of which are DISABLED here. That made the old A7 a
+# false green: a .golangci.yml edit that disabled gofumpt would have left it
+# passing while printing "reports ... as enabled formatters".
+ENABLED=$(printf '%s\n' "$FORMATTERS" | sed -n '/^Enabled/,/^Disabled/p' | grep -v '^Disabled')
+if [ -z "$ENABLED" ]; then
+	fail "A7 could not parse an Enabled block out of \`formatters\` output — the scan is not measuring anything"
+elif printf '%s\n' "$ENABLED" | grep -q '^gofumpt:' && printf '%s\n' "$ENABLED" | grep -q '^goimports:'; then
+	pass "A7 pinned binary reports gofumpt and goimports as ENABLED formatters (so the pin pins formatting)"
 else
-	fail "A7 pinned binary did not report both gofumpt and goimports as enabled"
+	fail "A7 pinned binary did not report both gofumpt and goimports in its Enabled block"
 fi
 
 # ---------------------------------------------------------------------------

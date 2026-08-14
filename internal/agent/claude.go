@@ -28,13 +28,18 @@ func (r *RealLauncher) FindBinary() (string, error) {
 		// whole path, by design and by the doc comment above, and it is never
 		// joined onto a root.
 		//
-		// Stated plainly rather than understated: this stat is a PRE-FLIGHT
-		// EXISTENCE CHECK on a path that the caller then EXECUTES (the return
-		// value becomes argv[0]). Executing an operator-named binary is a
-		// larger thing than statting one, and it is the accepted, documented
-		// design of the QUM-518 auth shim — not something this suppression
-		// waves through. That is exec-argument territory (G204), not G703, and
-		// it is unaffected by this directive.
+		// On what happens to the path afterwards, stated for THIS tree rather
+		// than for the obvious assumption: nothing. `agent.Launcher` and
+		// `RealLauncher` have no production callers — `git grep FindBinary`
+		// returns the interface declaration, this method, and its own tests,
+		// and nothing else. So the returned path is not exec'd anywhere here;
+		// it is currently unreferenced in-tree. The LIVE mirror of this logic,
+		// where the resolved path really does reach exec.CommandContext, is
+		// internal/memory/oneshot.go's resolveClaudeBinary.
+		//
+		// Where the path IS exec'd, that is the accepted, documented design of
+		// the QUM-518 auth shim, and it is exec-argument territory (G204), not
+		// G703 — unaffected by this directive either way.
 		//
 		// The taint source is at the process's own privilege: anyone who can
 		// set SPRAWL_CLAUDE in sprawl's environment can already run any binary

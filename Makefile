@@ -98,8 +98,14 @@ fmt-check:
 	@echo "Checking formatting..."
 	@test -z "$$($(GOLANGCI_LINT) fmt --diff ./...)" || (echo "Files need formatting. Run 'make fmt' to fix." && exit 1)
 
+# LINT_SCOPE exists so scripts/test-lint-pin.sh can exercise WHICH BINARY runs
+# without linting ./... three extra times per validate — golangci-lint's lock is
+# machine-wide across all worktrees on this host, so widening that window
+# manufactures false-reds for other agents. Default is the full tree.
+LINT_SCOPE ?= ./...
+
 lint:
-	$(GOLANGCI_LINT) run ./...
+	$(GOLANGCI_LINT) run $(LINT_SCOPE)
 
 # QUM-1223: proves the pin above actually BINDS rather than merely being
 # written down. Pure bash + go, no claude/tmux. Its A2 leg puts a decoy

@@ -63,9 +63,12 @@ func resolveClaudeBinary() (string, error) {
 		// rather than a component joined onto a base, so there is no
 		// confinement boundary for a "../" to escape; the value is at the
 		// process's own privilege in a local non-setuid CLI, so there is no
-		// privilege boundary either; and this stat is a pre-flight existence
-		// check on a path that is subsequently EXECUTED (G204 territory, not
-		// G703, and unaffected by this directive).
+		// privilege boundary either.
+		//
+		// Unlike the claude.go mirror, this site IS live: the path returned
+		// here reaches CLIInvoker.cmdFactory (= exec.CommandContext) and is
+		// EXECUTED. That is G204 territory, not G703, and is the accepted
+		// QUM-518 auth-shim design — unaffected by this directive.
 		//#nosec G703 -- SPRAWL_CLAUDE is the operator-supplied path to the binary sprawl will exec (QUM-518 shim); mirrors internal/agent/claude.go
 		if _, err := os.Stat(override); err != nil {
 			return "", fmt.Errorf("SPRAWL_CLAUDE=%q: %w", override, err)
