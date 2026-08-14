@@ -1868,17 +1868,47 @@ func agentCreatedAt(sprawlRoot, agentName string) (time.Time, bool) {
 	return t, true
 }
 
-// sendMessageBodyMaxRunes caps an agent-to-agent message body (QUM-1186 D7).
+// The agent-to-agent message body cap (QUM-1186 D7) is TWO numbers, and they
+// DIFFER ON PURPOSE (QUM-1216, operator decision).
 //
-// RUNE-counted, following the toastTextMaxRunes precedent — a byte cap would
-// reject a legitimate 300-character message that happens to contain non-ASCII.
-// Enforced by HARD ERROR, never truncation: truncation silently loses content,
-// which is the failure class QUM-1185 exists to eliminate.
+//   - sendMessageBodyDocumentedMaxRunes is what agents are TOLD: the tool
+//     description, every prompt template, and every error string. It is the only
+//     one of the two that may ever reach a string a caller reads.
+//   - sendMessageBodyHardMaxRunes is what actually rejects. It appears in exactly
+//     one expression — the comparison below — and nowhere else.
+//
+// The gap is DELIBERATE SLACK. A model cannot count characters, so 300 is a
+// number it can only approximate; measured, ~60% of the attempts genuinely
+// aiming at the cap overshot it, several by one to six characters. Rejecting at
+// the documented number converts every one of those approximation errors into a
+// wasted round trip on a hot coordination path. Rejecting at 500 absorbs the
+// near-miss while still refusing the essays the cap exists to refuse.
+//
+// The overage reported to a caller therefore always cites the DOCUMENTED limit,
+// never the hard one: "body is 560 characters, the limit is 300". The actual
+// length is real because it tells the caller how much to cut; the denominator
+// stays the budget we want them aiming at.
+//
+// DO NOT "FIX" THIS MISMATCH. Aligning the two numbers in either direction
+// deletes the feature: raise the documented one and agents start aiming at 500,
+// which re-opens messaging as a place to put the work record; lower the hard one
+// and the near-miss round trips come back. The deception is aimed at the model —
+// the code stays honest to you. Enforced by
+// real_send_message_body_cap_test.go's OverCapErrorCitesDocumentedLimit_NotHardLimit
+// and AreADeliberatelyUnequalPair.
+//
+// Both are RUNE-counted, following the toastTextMaxRunes precedent — a byte cap
+// would reject a legitimate message that happens to contain non-ASCII. Enforced
+// by HARD ERROR, never truncation: truncation silently loses content, which is
+// the failure class QUM-1185 exists to eliminate.
 //
 // Deliberately NOT applied to spawn prompts. The cap exists to push substantive
 // briefs into the project's issue tracker, where they outlive the message; a
 // spawn prompt is the agent's whole charter and has nowhere else to go.
-const sendMessageBodyMaxRunes = 300
+const (
+	sendMessageBodyDocumentedMaxRunes = 300
+	sendMessageBodyHardMaxRunes       = 500
+)
 
 // SendMessage is the canonical messaging tool (QUM-550) that replaces
 // send_async + send_interrupt. now=false: cooperative wake, ClassAsync,
@@ -1895,11 +1925,12 @@ func (r *Real) SendMessage(ctx context.Context, to, body string, now, wakeIfOffl
 	// D7 requires it above WrapForDeadTarget at minimum (or the routed-up prefix
 	// escapes the cap); placing it at the very top is strictly stronger and makes
 	// "nothing was persisted" structural rather than incidental.
-	if n := utf8.RuneCountInString(body); n > sendMessageBodyMaxRunes {
+	// Rejects at the HARD limit, reports the DOCUMENTED one. See the constants.
+	if n := utf8.RuneCountInString(body); n > sendMessageBodyHardMaxRunes {
 		return nil, fmt.Errorf("send_message: body is %d characters, the limit is %d. Nothing was queued and nothing was delivered. "+
 			"Next action: send a %d-character summary instead and put the detail where it outlives the message — "+
 			"an issue in the project's tracker, or a file in the recipient's worktree that you name in the summary",
-			n, sendMessageBodyMaxRunes, sendMessageBodyMaxRunes)
+			n, sendMessageBodyDocumentedMaxRunes, sendMessageBodyDocumentedMaxRunes)
 	}
 	if err := agentpkg.ValidateName(to); err != nil {
 		return nil, err

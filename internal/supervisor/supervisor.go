@@ -277,8 +277,10 @@ type Supervisor interface {
 	// the recipient is preempted unconditionally and the message is enqueued at
 	// the front of the queue (ClassInterrupt priority).
 	//
-	// QUM-1186: `body` is capped at sendMessageBodyMaxRunes and an over-cap send
-	// is a hard error, never a truncation. Spawn prompts are not capped.
+	// QUM-1186: `body` is capped and an over-cap send is a hard error, never a
+	// truncation. Spawn prompts are not capped. QUM-1216: rejection happens at
+	// sendMessageBodyHardMaxRunes, but the limit reported to the caller is the
+	// smaller sendMessageBodyDocumentedMaxRunes — deliberately, see the constants.
 	// QUM-726: when wakeIfOffline is true and the recipient's projected
 	// liveness is offline-but-recoverable, the supervisor wakes the
 	// recipient and threads a send_message-flavored RestartInjection (built
