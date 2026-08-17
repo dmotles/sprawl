@@ -1,4 +1,4 @@
-.PHONY: test-lint-pin validate build hooks-armed proto-check proto-gen proto-gen-web hub-web fmt-check lint test clean install fmt hooks leak-scan test-notify-tui-e2e test-handoff-e2e test-bridge-lifecycle-e2e test-exit-code-preservation test-parallel-agent-viewport-e2e test-tui-e2e test-leak-resistance-e2e test-merge-reuse-e2e test-ask-user-question-e2e test-drain-row-inject-e2e test-wake-live-e2e test-paste-coalesce-e2e test-e2e-matrix test-e2e-matrix-unit test-hooks-e2e test-hub-bootstrap test-hub-e2e test-wirelog-helpers-unit test-e2e-lockwait-unit test-gitignore-classes test-race test-race-gate always-loaded-budget test-always-loaded-budget-unit
+.PHONY: lint-cache-dir test-lint-pin validate build hooks-armed proto-check proto-gen proto-gen-web hub-web fmt-check lint test clean install fmt hooks leak-scan test-notify-tui-e2e test-handoff-e2e test-bridge-lifecycle-e2e test-exit-code-preservation test-parallel-agent-viewport-e2e test-tui-e2e test-leak-resistance-e2e test-merge-reuse-e2e test-ask-user-question-e2e test-drain-row-inject-e2e test-wake-live-e2e test-paste-coalesce-e2e test-e2e-matrix test-e2e-matrix-unit test-hooks-e2e test-hub-bootstrap test-hub-e2e test-wirelog-helpers-unit test-e2e-lockwait-unit test-gitignore-classes test-race test-race-gate always-loaded-budget test-always-loaded-budget-unit
 
 # Default target — full quality gauntlet
 validate: build hooks-armed proto-check fmt-check lint test-lint-pin test-race-gate test-race test-wirelog-helpers-unit test-e2e-lockwait-unit test-e2e-matrix-unit test-always-loaded-budget-unit always-loaded-budget test-gitignore-classes leak-scan
@@ -91,6 +91,45 @@ build:
 GOLANGCI_LINT_VERSION ?= v2.12.2
 GOLANGCI_LINT ?= go run github.com/golangci/golangci-lint/v2/cmd/golangci-lint@$(GOLANGCI_LINT_VERSION)
 
+# QUM-1232: ONE CACHE PER WORKTREE. The linter's default cache is
+# os.UserCacheDir()/golangci-lint — a single namespace shared by every worktree
+# and every agent on this host. Two worktrees of this repo with identical content
+# hash to IDENTICAL cache keys (paths in the key are relativized to the module
+# path) while the cached issue keeps the ABSOLUTE filename of whichever worktree
+# produced it. Measured consequence: your own real finding comes back as
+# `../<other-agent>/main.go:3:6` and appears ZERO times at any path in your tree.
+# You cannot fix it, and nobody can see that it happened — that is a false green
+# wearing a false red's clothes. Deleting the sibling worktree makes it worse:
+# the entries outlive the files, and post-cache exclusion processing then
+# degrades silently.
+#
+# Derived from $(MAKEFILE_LIST), NOT from $(CURDIR): the value must key on the
+# tree being linted, not on the directory make was invoked from. $(abspath) is
+# required — a relative value is fatal ("build cache is required, but could not
+# be located: GOLANGCI_LINT_CACHE is not an absolute path"), not a fallback to
+# the default.
+#
+# `:=` and not `?=`: isolation is a safety property, not an operator preference.
+# A stale GOLANGCI_LINT_CACHE inherited from a parent process or an old
+# experiment must not be able to silently un-isolate every target here, and a
+# make assignment beats the environment. `export` is what carries it to the
+# linter child at all — without it this variable is decoration.
+#
+# Reaped for free: the dir lives inside the worktree and is gitignored, and
+# `git worktree remove` deletes a worktree containing a populated ignored
+# directory (measured, with and without --force). So every teardown path already
+# reaps it and `worktree.teardown` stays empty.
+#
+# Cost, MEASURED on this host rather than estimated: each active worktree now
+# warms its own cache instead of sharing one. First `make lint` in a fresh
+# worktree is cold — 18.6s wall, against 1.6s warm — and the cache settles at
+# 33M (the old shared one measured 34M/8142 files). The linter self-trims entries
+# unused for >5 days on close, so this is self-bounding, and a removed worktree
+# takes its cache with it. Guarded by A8/A8b/A9/A10/A11 in
+# scripts/test-lint-pin.sh.
+GOLANGCI_LINT_CACHE := $(abspath $(dir $(firstword $(MAKEFILE_LIST))))/.golangci-cache
+export GOLANGCI_LINT_CACHE
+
 fmt:
 	$(GOLANGCI_LINT) fmt ./...
 
@@ -106,6 +145,14 @@ LINT_SCOPE ?= ./...
 
 lint:
 	$(GOLANGCI_LINT) run $(LINT_SCOPE)
+
+# Introspection seam for scripts/test-lint-pin.sh A8, in the same spirit as
+# LINT_SCOPE above. Prints the SHELL value ($$GOLANGCI_LINT_CACHE), not the make
+# value, so the assertion sees what a recipe's child process actually gets —
+# printing $(GOLANGCI_LINT_CACHE) would look identical with the `export` above
+# deleted, which is exactly the regression A8 exists to catch.
+lint-cache-dir:
+	@printf '%s\n' "$$GOLANGCI_LINT_CACHE"
 
 # QUM-1223: proves the pin above actually BINDS rather than merely being
 # written down. Pure bash + go, no claude/tmux. Its A2 leg puts a decoy

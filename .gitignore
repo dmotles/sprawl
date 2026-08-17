@@ -105,6 +105,28 @@ bootstrap.env
 # both the ignore and the two over-match directions (`*scratch*`, `scratch*/`).
 scratch/
 
+# Per-worktree golangci-lint cache (QUM-1232). The Makefile now points
+# GOLANGCI_LINT_CACHE at <worktree>/.golangci-cache so sibling worktrees cannot
+# poison each other's findings; this line is what makes that placement safe.
+#
+# NOT cosmetic. Ignoring it is a PRECONDITION for teardown: `git worktree remove`
+# deletes a worktree containing a populated *ignored* directory (measured, with
+# and without --force), but ~30M of untracked cache files would make it refuse,
+# and every reaper (agentops/gc.go, agentops/helpers.go, the supervisor's spawn
+# rollback) would start failing on a path nobody would think to look at.
+#
+# DIRECTORY-ANCHORED on purpose, and narrow on purpose. A pattern with no
+# interior slash matches a whole path component, so `.golangci-cache/` matches a
+# directory of exactly that name and leaves `.golangci-cache-notes.md` and — the
+# one that matters — `.golangci.yml` alone. Widening this to `.golangci*` would
+# silently un-track the linter config itself; scripts/test-lint-pin.sh A9b0/A9b
+# pin both directions, A9b0 by making the over-match arm fire under a
+# deliberately widened pattern.
+#
+# Nothing is tracked under this path (A9c asserts it, with a positive control on
+# `git ls-files`), so the ignore cannot strand a real file.
+.golangci-cache/
+
 # Tool/build/apply logs (QUM-989). Deliberately BROAD. `terraform apply` and
 # `az acr build` emit ad-hoc logs (apply4.log, acrbuild2.log) whose names nobody
 # can enumerate in advance, and this repo is PUBLIC — such logs routinely carry

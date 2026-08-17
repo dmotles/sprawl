@@ -1,6 +1,6 @@
 ---
 name: false-red
-description: Read this when a build, `make validate`, a test, or a merge just failed and you are about to blame your diff. Matches a failure against known environment-caused failures on this host — disk exhaustion, lint lock contention, stripped auth, a test-harness cleanup race, and a merge that un-commits work. Look here BEFORE reverting, retrying with a bypass, or filing a regression.
+description: Read this when a build, `make validate`, a test, or a merge just failed and you are about to blame your diff. Matches a failure against known environment-caused failures on this host — disk exhaustion, lint lock contention, a shared lint cache reporting findings in other agents' worktrees, stripped auth, a test-harness cleanup race, and a merge that un-commits work. Look here BEFORE reverting, retrying with a bypass, or filing a regression.
 user-invocable: true
 ---
 
@@ -84,9 +84,62 @@ suppresses the guard rather than the contention, and what a parallel run then
 does to shared state is not something this file has established — which is
 itself the reason not to use it to get green.
 
-> **This could become a signal too**: a distinct exit status for lock
-> contention, or a bounded retry-with-backoff in the Makefile, would remove the
-> judgement call. Not filed.
+> **This could become a signal too**: a bounded retry-with-backoff in the
+> Makefile would remove the judgement call. Not filed. A distinct exit status is
+> not needed — **contention already exits 3** (measured 2026-08-17 with a held
+> lock; note `go run` collapses it to 1, so read the message, not the number).
+>
+> The lock lives at `$TMPDIR/golangci-lint.lock` (`pkg/commands/run.go:492` in
+> v2.12.2), **not** in the cache — so it is a different mechanism from the cache
+> entry below, and per-worktree caches change nothing about it. A tool that needs
+> to lint without contending can relocate the lock with a private `TMPDIR`.
+
+---
+
+## `make lint` names files in someone else's worktree
+
+Symptoms, any of which is enough:
+
+- a finding whose path is `../<other-agent>/internal/...`, or points into
+  `.sprawl/worktrees/<someone-else>/`, or into the main checkout
+  (`../../../internal/...`) when you are in a worktree
+- a finding in a file that **does not exist on disk**, sometimes with
+  `failed to get doc (strict) of file ...: no such file or directory`
+- `Can't process results by generated_file_filter processor: ... no such file or
+  directory`, or `[runner/source_code] Failed to get line N`
+- `make validate` failing on files you never touched, with a clean `git status`
+
+**Not your diff, and — this is the part that matters — not only a false red.**
+The same mechanism can report *your* real finding against *someone else's* path,
+where you cannot fix it and nobody can see that it happened. Reproduced
+2026-08-17: two sibling worktrees with identical content, one shared cache, and
+the second worktree's own violation came back **only** as `../wtA/main.go:3:6`
+and **zero times** at any path inside it.
+
+**Mechanism, verified** in golangci-lint v2.12.2 source: the cache defaults to
+`os.UserCacheDir()/golangci-lint`, one namespace for the whole host. Paths inside
+a cache key are relativized to the module path
+(`internal/cache/cache.go:157-181`), so two worktrees of this repo with identical
+content hash to **identical keys** — while the cached issue keeps the **absolute**
+filename of whichever worktree produced it
+(`pkg/goanalysis/runners_cache.go:41-50`).
+
+**Remedy.** Check `make lint-cache-dir`: it must print a path inside your own
+worktree. If it does, this entry is not your failure — the findings are real, read
+them again. If it prints a path under `$HOME` (or nothing at all), you are on a
+tree from before QUM-1232; lint with `GOLANGCI_LINT_CACHE=$PWD/.golangci-cache
+make lint`, and rebase onto a tree that has the fix.
+
+`golangci-lint cache clean` is a **reset, not a remedy**: it clears the shared
+cache for every agent on the host, and the next cross-worktree run re-poisons it.
+The original clear did not stop this recurring. Do not disable a linter, and do
+not `|| true`, to make a misattributed finding go away — you would be silencing a
+real finding that belongs to someone.
+
+Guarded by `scripts/test-lint-pin.sh` A8–A11: A8/A8b pin the per-worktree value
+and its `export`, A10b reproduces the misattribution as the positive control, and
+A10c/A11a-b pin that isolation defeats it and that a warm cache does not replay a
+stale clean.
 
 ---
 
@@ -404,7 +457,8 @@ part — the mechanisms and issue states are not.**
 | entry | symptom string | mechanism |
 |---|---|---|
 | `no space left on device` | **observed** — quoted in an incident report and in a delivered agent message describing most rows of a matrix run dying in `go build` | **verified** — the two filesystems measured as distinct devices; the build-cache misattribution is recorded in QUM-1118 itself |
-| `parallel golangci-lint is running` | **verified** — present in the installed `golangci-lint` binary; contention **observed** by two agents on this host | machine-wide scope **observed** (cross-worktree); both Makefile call sites read directly. What a parallel run does to shared state: **not established** |
+| `parallel golangci-lint is running` | **verified** — present in the installed `golangci-lint` binary; contention **observed** by two agents on this host, and **reproduced on demand** 2026-08-17 by holding the lock file (exit 3) | **verified** as of 2026-08-17: the lock is `filepath.Join(os.TempDir(), "golangci-lint.lock")` at `pkg/commands/run.go:492` (v2.12.2), read from the pinned tool's source, so machine-wide scope is now read rather than inferred, and `TMPDIR` relocates it (measured both directions). What a parallel run does to shared state: still **not established** |
+| `make lint` names files in someone else's worktree | **observed** three times: two agents on 2026-08-14 (`../finn/internal/...`, then 18 issues after a rebase), a cold repro on clean `main` 2026-08-17 where all 14 findings cited a **deleted** worktree, and a **constructed** repro 2026-08-17 (two sibling trees, one shared cache → `../wtA/main.go:3:6`, and zero findings at any local path). The constructed form runs every `make validate` as `test-lint-pin.sh` A10b, so this row cannot go stale silently | **verified** — key-path relativization at `internal/cache/cache.go:157-181` and the absolute `issue.Pos` at `pkg/goanalysis/runners_cache.go:41-50`, both read in v2.12.2 source; the 0-vs-18 and 0-vs-14 private-cache controls were run on byte-identical trees. **One claim in QUM-1232 was NOT reproduced and should not be repeated as fact:** a literal replayed `0 issues.` over code with real findings. Cache keys include content hashes of every package file plus all deps, and the plausible narrow-scope route was tested and falsified. The demonstrated false green is misattribution, not a replayed clean |
 | `Not logged in` | **verified** — verbatim in a captured payload under `docs/research/` and in an e2e script | **verified** — stated in `scripts/run-claude`'s own header comment and CLAUDE.md; skip-flag inertness quoted verbatim from the harness |
 | `TempDir RemoveAll cleanup:` | **observed repeatedly and independently, by four agents across two days** — 2026-08-07 on `TestQUM1072_SenderMCPCallReturns_WhileRecipientWedged` under 4-way host contention; 2026-08-10 on `TestAgentRuntime_FaultChain_DoneClosesAndLivenessReachesFaulted` at 99% disk; again 2026-08-10 on that same test at 52% disk, in the pre-commit hook of the commit adding this row; and 2026-08-10 **four sightings by one agent in a single day** across all three instances, including the first direct sighting of instance 1 (overlap with the three above was never established — the rate is the datum, not a total). All during `make validate`, discriminator applied each time | **still reported only.** All three named tests **are** present in the tree and do reach `t.TempDir()` (verified: `qum1072_child_drain_bounded_write_test.go`; `runtime_fault_chain_test.go:118`; `weave_handle_test.go:601` via `newWeaveHandleForTest` at `:53`), and the absent-assertion discriminator is **verified** on every captured run (one `testing.go:` frame, zero `_test.go:` frames each). Instance 1 is now **named from a direct sighting** rather than from the secondhand description that opened this entry — but that is the SYMPTOM being observed, not the cause. The *cause* remains untraced by anyone: the `drainPendingToStdin` correlation is still an unconfirmed lead scoped to instance 2, and no later sighting confirms or extends it. **Two things ARE established rather than reported:** the 99%-full disk is **not necessary** — the same test reproduced with 9.1G free, a falsified hypothesis rather than a mechanism; and the failure surfaces **inside the pre-commit hook**, blocking commits, which is observed rather than inferred. **Load correlates with every sighting and explains none** — a condition, not a mechanism |
 | `has uncommitted changes in worktree` | **verified** — literal string in `internal/agentops/merge.go` | **verified** — the un-undone `reset --soft` is readable in `internal/merge/merge.go`; the incident is described in the fix commit's own message; recovery **observed** to work twice |
