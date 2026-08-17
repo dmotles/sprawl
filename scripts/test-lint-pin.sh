@@ -47,7 +47,7 @@ GOLANGCI_CONFIG="$REPO_ROOT/.golangci.yml"
 # suite measures — a floor computed from the corpus it checks is satisfied by an
 # empty corpus, which is the exact false-green it exists to stop. Update it in
 # the same commit as any change to the number of assertions below.
-MIN_ASSERTIONS=22
+MIN_ASSERTIONS=24
 
 PASS=0
 FAIL=0
@@ -279,7 +279,14 @@ fi
 # golangci-lint pins formatting too. Makes the "confirm, don't assume"
 # requirement durable instead of a one-time observation.
 # ---------------------------------------------------------------------------
-FORMATTERS=$(cd "$REPO_ROOT" && go run "github.com/golangci/golangci-lint/v2/cmd/golangci-lint@v$EXPECTED_VERSION" formatters 2>/dev/null)
+# GOLANGCI_LINT_CACHE is set explicitly because this leg invokes the tool
+# DIRECTLY rather than through make: run as `bash scripts/test-lint-pin.sh` it
+# would otherwise fall back to the machine-wide shared cache (QUM-1232). Nothing
+# is analysed here — `formatters` only prints configuration — so there is no
+# poisoning path either way; this keeps the file's premise ("no leg touches the
+# shared cache") literally true.
+FORMATTERS=$(cd "$REPO_ROOT" && env GOLANGCI_LINT_CACHE="$REPO_ROOT/.golangci-cache" \
+	go run "github.com/golangci/golangci-lint/v2/cmd/golangci-lint@v$EXPECTED_VERSION" formatters 2>/dev/null)
 # Scoped to the "Enabled by your configuration" block. `formatters` prints an
 # Enabled block AND a Disabled block, so an unscoped grep cannot tell them
 # apart — measured: an A7-shaped grep over the whole output matches gci, gofmt,
@@ -404,9 +411,11 @@ scratch_lint() {
 #    start: "build cache is required, but could not be located:
 #    GOLANGCI_LINT_CACHE is not an absolute path".
 #  * It runs from /tmp, NOT from $REPO_ROOT. This script cd's to $REPO_ROOT at
-#    the top, so a `$(CURDIR)`-based derivation would resolve to exactly the
-#    wanted string from here and pass — the bug being excluded is a cache keyed
-#    to where make was INVOKED rather than to which tree it is linting.
+#    the top, so a `$(CURDIR)`-based derivation would resolve to the wanted
+#    string if this leg ran from $REPO_ROOT, and would pass while being wrong —
+#    the bug being excluded is a cache keyed to where make was INVOKED rather
+#    than to which tree it is linting. From /tmp that form yields
+#    /tmp/.golangci-cache and fails, which is the point.
 #    (`make -C` would not discriminate either: -C resets CURDIR too.)
 #  * It runs with a HOSTILE inherited GOLANGCI_LINT_CACHE. Isolation here is a
 #    safety property, not an operator preference: a stale value in the
@@ -447,6 +456,32 @@ else
 fi
 
 # ---------------------------------------------------------------------------
+# A8c: an inherited $MAKEFILES cannot move the cache out of the worktree.
+#
+# A8's hostile value only poisons GOLANGCI_LINT_CACHE, and `:=` beats that. This
+# is the OTHER inherited variable, and it wins against a naive derivation: GNU
+# make prepends every file named in $MAKEFILES to MAKEFILE_LIST, so a
+# `firstword` form resolves to that file's directory instead — measured, it
+# printed /tmp/.../extra.mk's dir, i.e. outside the worktree, un-isolated again
+# (two worktrees with the same $MAKEFILES re-share) and outside the free-reaping
+# story too. The decoy is asserted to have been READ (A8c-a), so its failure to
+# move the cache is evidence rather than a no-op.
+# ---------------------------------------------------------------------------
+MAKEFILES_DECOY_DIR="$DECOY_DIR/makefiles-decoy"
+mkdir -p "$MAKEFILES_DECOY_DIR"
+printf 'SPRAWL_MAKEFILES_DECOY := yes\ndecoy-probe:\n\t@printf %%s "$(SPRAWL_MAKEFILES_DECOY)"\n' \
+	>"$MAKEFILES_DECOY_DIR/Makefile"
+DECOY_READ=$(cd /tmp && env MAKEFILES="$MAKEFILES_DECOY_DIR/Makefile" make -s -f "$MAKEFILE" decoy-probe 2>/dev/null | tail -1)
+POISONED_CACHE=$(cd /tmp && env MAKEFILES="$MAKEFILES_DECOY_DIR/Makefile" make -s -f "$MAKEFILE" lint-cache-dir 2>/dev/null | tail -1)
+if [ "$DECOY_READ" != "yes" ]; then
+	fail "A8c-a the \$MAKEFILES decoy was not read by make (got '$DECOY_READ'), so the result below is not evidence of anything"
+elif [ "$POISONED_CACHE" = "$REPO_ROOT/.golangci-cache" ]; then
+	pass "A8c an inherited \$MAKEFILES (read: proven) does not move the cache out of the worktree"
+else
+	fail "A8c an inherited \$MAKEFILES moved the cache to '$POISONED_CACHE' — worktrees sharing that env var share a cache again, and it escapes 'git worktree remove' reaping. Derive from \$(lastword \$(filter %Makefile,\$(MAKEFILE_LIST)))"
+fi
+
+# ---------------------------------------------------------------------------
 # A9: the cache dir is ignored, and reaping therefore needs no new code.
 #
 # WHY THIS IS THE WHOLE REAPING STORY. Measured: `git worktree remove` succeeds
@@ -458,11 +493,25 @@ fi
 # the precondition that makes that free: un-ignore the dir and `git worktree
 # remove` starts refusing, which is a much worse failure than a stale cache.
 # ---------------------------------------------------------------------------
-if git -C "$REPO_ROOT" check-ignore -q --no-index .golangci-cache/x 2>/dev/null; then
-	pass "A9a .golangci-cache/ is gitignored (so git worktree remove still reaps the worktree)"
-else
-	fail "A9a .golangci-cache/ is NOT gitignored — its files become untracked and 'git worktree remove' will refuse"
-fi
+#
+# Asserted through `-v`, which names the SOURCE of the match, because a plain
+# `-q` cannot tell the tracked `.gitignore` from this host's global
+# core.excludesFile or `.git/info/exclude`. On a host whose global excludes
+# happened to carry this pattern, deleting the `.gitignore` block would leave a
+# `-q` form green while the shipped tree was unprotected — passing with the
+# defect present.
+A9A_SOURCE=$(git -C "$REPO_ROOT" check-ignore -v --no-index .golangci-cache/x 2>/dev/null)
+case "$A9A_SOURCE" in
+.gitignore:*)
+	pass "A9a .golangci-cache/ is ignored by the tracked .gitignore (${A9A_SOURCE%%	*}), so git worktree remove still reaps the worktree"
+	;;
+"")
+	fail "A9a .golangci-cache/ is NOT ignored at all — its files become untracked and 'git worktree remove' will refuse"
+	;;
+*)
+	fail "A9a .golangci-cache/ is ignored, but by '${A9A_SOURCE%%	*}' rather than the tracked .gitignore — that protects this host only, not the shipped tree"
+	;;
+esac
 
 # A9b0 — CONTROL for A9b, aimed in both directions, because A9b's own green is
 # otherwise indistinguishable from a probe that can never fire:
@@ -509,6 +558,21 @@ elif [ -z "$(git -C "$REPO_ROOT" ls-files .golangci-cache)" ]; then
 	pass "A9c nothing is tracked under .golangci-cache (control: ls-files does see .golangci.yml)"
 else
 	fail "A9c files ARE tracked under .golangci-cache; the ignore rule would strand them: $(git -C "$REPO_ROOT" ls-files .golangci-cache | head -3 | tr '\n' ' ')"
+fi
+
+# A9d — the cache is excluded from the DOCKER BUILD CONTEXT too. `.dockerignore`
+# is independent of `.gitignore`, and the hub Dockerfiles do `COPY . .` with the
+# repo root as context: without this line, ~33M of cache entries carrying
+# serialized issue text and absolute host paths get sent to the daemon and baked
+# into a leakable build layer. A text assertion, because there is no cheap way to
+# ask docker without a daemon — the failure it guards is a deleted line, which
+# text catches.
+if [ ! -f "$REPO_ROOT/.dockerignore" ]; then
+	fail "A9d no .dockerignore at the repo root, so this leg cannot check the build context (did the file move?)"
+elif grep -qxF '.golangci-cache/' "$REPO_ROOT/.dockerignore"; then
+	pass "A9d .dockerignore excludes .golangci-cache/ from the docker build context"
+else
+	fail "A9d .dockerignore does NOT exclude .golangci-cache/ — the hub Dockerfiles COPY . . from the repo root, so the cache and its absolute host paths enter the build layer"
 fi
 
 # ---------------------------------------------------------------------------

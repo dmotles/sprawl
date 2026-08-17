@@ -18,6 +18,15 @@
 sprawl
 hubd
 
+# Per-worktree golangci-lint cache (QUM-1232; see the GOLANGCI_LINT_CACHE block
+# in the Makefile). ~33M / ~8k files in any tree where `make lint` has run, and
+# the entries carry serialized issue text with ABSOLUTE host paths — the exact
+# class of host-layout material this file exists to keep out of a leakable build
+# layer. `.gitignore` does not cover this: the two files are independent, and the
+# build context is assembled from the filesystem, not from git. Asserted by
+# scripts/test-lint-pin.sh A9d.
+.golangci-cache/
+
 # Node / SPA build inputs (the embedded SPA seam is empty this slice).
 **/node_modules/
 

@@ -109,6 +109,15 @@ GOLANGCI_LINT ?= go run github.com/golangci/golangci-lint/v2/cmd/golangci-lint@$
 # be located: GOLANGCI_LINT_CACHE is not an absolute path"), not a fallback to
 # the default.
 #
+# `lastword` of the `%Makefile` entries, not `firstword` of everything. Two
+# measured reasons, both of which move the cache OUT of the worktree and silently
+# re-share it: GNU make PREPENDS every file named in the `MAKEFILES` environment
+# variable to MAKEFILE_LIST (measured: MAKEFILES=/tmp/x/extra.mk made a
+# firstword form resolve to /tmp/x/.golangci-cache), and an `include` added above
+# this line would make a plain `lastword` resolve to the included file's
+# directory. The filter survives both, including a MAKEFILES entry itself named
+# `Makefile` — verified. A8/A8c pin it.
+#
 # `:=` and not `?=`: isolation is a safety property, not an operator preference.
 # A stale GOLANGCI_LINT_CACHE inherited from a parent process or an old
 # experiment must not be able to silently un-isolate every target here, and a
@@ -127,7 +136,7 @@ GOLANGCI_LINT ?= go run github.com/golangci/golangci-lint/v2/cmd/golangci-lint@$
 # unused for >5 days on close, so this is self-bounding, and a removed worktree
 # takes its cache with it. Guarded by A8/A8b/A9/A10/A11 in
 # scripts/test-lint-pin.sh.
-GOLANGCI_LINT_CACHE := $(abspath $(dir $(firstword $(MAKEFILE_LIST))))/.golangci-cache
+GOLANGCI_LINT_CACHE := $(abspath $(dir $(lastword $(filter %Makefile,$(MAKEFILE_LIST)))))/.golangci-cache
 export GOLANGCI_LINT_CACHE
 
 fmt:
