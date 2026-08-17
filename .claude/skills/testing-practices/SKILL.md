@@ -1872,6 +1872,49 @@ message, which made it green both pre- and post-fix — inert while looking like
 the physical-row check. The assertion has to be anchored to the thing that
 actually scrolls.
 
+### A diagnostic surface must never render a number it did not measure
+
+An unmeasured reading renders as `not measured`; a check that is switched off
+renders as `disabled`. Never as `0`, never as an empty cell, and never as a dash
+that could be mistaken for one. **A plausible zero is worse than a blank,
+because a reader reasons from it** — a blank prompts "why is there no number
+here?", whereas `0 orphans` / `0 misses` / `0 failures` is indistinguishable
+from a real, reassuring measurement and terminates the investigation.
+
+The consequence for the data model: any status a surface renders needs a
+`Checked`/`Measured` companion field separating *measured, and it was nothing*
+from *never measured*. Guard it on the way IN, at the type that carries the
+reading, rather than hoping every render site remembers to special-case a zero.
+The mirror error is just as dishonest — a surface that ignores a "this
+observation was taken in a state where the invariant does not hold" flag will
+alarm on healthy operation, and a check that cries wolf gets disabled, which is
+worse than not having it.
+
+Applies to test harnesses and validation scripts as much as to UI: a summary
+line reading `0 failed` when the run never executed is the same defect, and it
+is why an aggregator needs an assertion-count floor (above).
+
+### Never derive a detector's "is this state legitimate?" flag from the data the bug corrupts
+
+A detector usually needs a suppressor — a flag saying "right now the invariant
+is not expected to hold, so stay quiet." Source that flag from an **independent**
+authority. If you derive it from the same per-item state the defect corrupts,
+the detector goes silent under its own bug.
+
+The worked instance: a render-cache defeat leaves items stranded in an
+unfinished state. A `Streaming` suppressor derived from "are any items
+unfinished?" reads *true* — or a companion orphan count derived the same way
+reads ~zero — in **exactly the stranded state the check exists to catch**. The
+suppressor fires hardest precisely when the alarm is needed. Take `Streaming`
+from the runtime's own turn state instead; that authority is not downstream of
+the pathology.
+
+Generalisation of "an instrument only measures what it was designed to catch":
+when you add a suppression condition, ask which of its inputs the target defect
+can move, and assume the defect will move them the convenient way. The same
+question applies to a test's skip condition — a `t.Skip` guarded by a value the
+bug under test can set is a test that disables itself on failure.
+
 ### The honest limit
 
 Those instances are spread **near-evenly across four strata — committed harness
