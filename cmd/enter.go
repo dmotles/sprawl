@@ -513,14 +513,6 @@ func supervisorMCPBridge(sup supervisor.Supervisor) backend.ToolBridge {
 	return bridge
 }
 
-// buildSessionEnv returns the environment variables for the Claude Code subprocess.
-func buildSessionEnv() []string {
-	return append(os.Environ(),
-		"CLAUDE_CODE_EMIT_SESSION_STATE_EVENTS=1",
-		"SPRAWL_AGENT_IDENTITY=weave",
-	)
-}
-
 // defaultNewSession launches a Claude Code subprocess wrapped in a
 // UnifiedRuntime + TUIAdapter and returns it as a tui.SessionBackend.
 //

@@ -204,74 +204,6 @@ func TestMarkDelivered_UnknownID_ReturnsError(t *testing.T) {
 	}
 }
 
-func TestCleanupPending_RemovesOrphanTmpFiles(t *testing.T) {
-	root := t.TempDir()
-	pending := PendingDir(root, testAgent)
-	if err := os.MkdirAll(pending, 0o755); err != nil {
-		t.Fatalf("mkdir: %v", err)
-	}
-	tmpPath := filepath.Join(pending, ".tmp-abc123")
-	if err := os.WriteFile(tmpPath, []byte("junk partial"), 0o644); err != nil {
-		t.Fatalf("writing tmp: %v", err)
-	}
-
-	if err := CleanupPending(root, testAgent); err != nil {
-		t.Fatalf("CleanupPending: %v", err)
-	}
-
-	if _, err := os.Stat(tmpPath); !os.IsNotExist(err) {
-		t.Errorf("tmp file still present: err=%v", err)
-	}
-}
-
-func TestCleanupPending_DedupesAgainstDelivered(t *testing.T) {
-	root := t.TempDir()
-	stored, err := Enqueue(root, testAgent, sampleEntry("dup", ClassAsync))
-	if err != nil {
-		t.Fatalf("Enqueue: %v", err)
-	}
-	if err := MarkDelivered(root, testAgent, stored.ID); err != nil {
-		t.Fatalf("MarkDelivered: %v", err)
-	}
-
-	// Simulate a redelivery race: a pending file with the same id reappears.
-	dupName := fmt.Sprintf("%010d-%s-%s.json", stored.Seq, stored.Class, stored.ID)
-	dupPath := filepath.Join(PendingDir(root, testAgent), dupName)
-	data, err := json.Marshal(stored)
-	if err != nil {
-		t.Fatalf("marshal: %v", err)
-	}
-	if err := os.MkdirAll(PendingDir(root, testAgent), 0o755); err != nil {
-		t.Fatalf("mkdir: %v", err)
-	}
-	if err := os.WriteFile(dupPath, data, 0o644); err != nil {
-		t.Fatalf("write dup: %v", err)
-	}
-
-	if err := CleanupPending(root, testAgent); err != nil {
-		t.Fatalf("CleanupPending: %v", err)
-	}
-
-	if _, err := os.Stat(dupPath); !os.IsNotExist(err) {
-		t.Errorf("duplicate pending still present: err=%v", err)
-	}
-	delivered := listFiles(t, DeliveredDir(root, testAgent))
-	if len(delivered) != 1 {
-		t.Errorf("delivered = %v, want 1 entry", delivered)
-	}
-}
-
-func TestCleanupPending_IdempotentOnEmptyDirs(t *testing.T) {
-	root := t.TempDir()
-	if err := CleanupPending(root, testAgent); err != nil {
-		t.Fatalf("CleanupPending on fresh dir: %v", err)
-	}
-	// calling twice should still be fine
-	if err := CleanupPending(root, testAgent); err != nil {
-		t.Fatalf("second CleanupPending: %v", err)
-	}
-}
-
 func TestEnqueue_CrashSafety_NoPartialFileVisible(t *testing.T) {
 	root := t.TempDir()
 	pending := PendingDir(root, testAgent)
@@ -294,13 +226,6 @@ func TestEnqueue_CrashSafety_NoPartialFileVisible(t *testing.T) {
 	}
 	if len(got) != 0 {
 		t.Errorf("expected empty list, got %d entries", len(got))
-	}
-
-	if err := CleanupPending(root, testAgent); err != nil {
-		t.Fatalf("CleanupPending: %v", err)
-	}
-	if _, err := os.Stat(tmpPath); !os.IsNotExist(err) {
-		t.Errorf("tmp still present after cleanup: err=%v", err)
 	}
 }
 

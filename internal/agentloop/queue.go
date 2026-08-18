@@ -13,7 +13,6 @@ import (
 	"regexp"
 	"sort"
 	"strconv"
-	"strings"
 	"syscall"
 	"time"
 
@@ -162,6 +161,10 @@ func Enqueue(sprawlRoot, agentName string, e Entry) (Entry, error) {
 	}
 
 	finalName := fmt.Sprintf("%010d-%s-%s.json", e.Seq, e.Class, e.ID)
+	// Every error path below removes tmpPath. A hard crash between OpenFile and
+	// Rename can still orphan one; nothing sweeps those, by design. They are
+	// invisible to every reader (canonicalName never matches ".tmp-*") and are
+	// reaped wholesale when the agent dir is deleted on retire or orphan GC.
 	tmpPath := filepath.Join(pending, ".tmp-"+e.ID)
 	finalPath := filepath.Join(pending, finalName)
 
@@ -305,84 +308,6 @@ func MarkDelivered(sprawlRoot, agentName, entryID string) error {
 
 	if err := os.Rename(filepath.Join(pending, name), filepath.Join(delivered, name)); err != nil {
 		return fmt.Errorf("moving to delivered: %w", err)
-	}
-	return nil
-}
-
-// CleanupPending removes orphaned .tmp-* files in pending/ and any pending
-// entries whose ID already exists in delivered/ (duplicate redelivery).
-// Missing directories are not an error.
-func CleanupPending(sprawlRoot, agentName string) error {
-	queueDir := QueueDir(sprawlRoot, agentName)
-	pending := PendingDir(sprawlRoot, agentName)
-	delivered := DeliveredDir(sprawlRoot, agentName)
-
-	if _, err := os.Stat(queueDir); os.IsNotExist(err) {
-		return nil
-	}
-
-	unlock, err := acquireQueueLock(queueDir)
-	if err != nil {
-		return err
-	}
-	defer unlock()
-
-	// Build set of delivered IDs.
-	deliveredIDs := make(map[string]bool)
-	if dEntries, err := os.ReadDir(delivered); err == nil {
-		for _, e := range dEntries {
-			if e.IsDir() || !canonicalName.MatchString(e.Name()) {
-				continue
-			}
-			data, err := os.ReadFile(filepath.Join(delivered, e.Name())) //nolint:gosec // G304
-			if err != nil {
-				continue
-			}
-			var entry Entry
-			if err := json.Unmarshal(data, &entry); err != nil {
-				continue
-			}
-			deliveredIDs[entry.ID] = true
-		}
-	} else if !os.IsNotExist(err) {
-		return fmt.Errorf("reading delivered: %w", err)
-	}
-
-	pEntries, err := os.ReadDir(pending)
-	if err != nil {
-		if os.IsNotExist(err) {
-			return nil
-		}
-		return fmt.Errorf("reading pending: %w", err)
-	}
-	for _, e := range pEntries {
-		if e.IsDir() {
-			continue
-		}
-		name := e.Name()
-		path := filepath.Join(pending, name)
-		if strings.HasPrefix(name, ".tmp-") {
-			if err := os.Remove(path); err != nil && !os.IsNotExist(err) {
-				return fmt.Errorf("removing tmp file %s: %w", name, err)
-			}
-			continue
-		}
-		if !canonicalName.MatchString(name) {
-			continue
-		}
-		data, err := os.ReadFile(path) //nolint:gosec // G304
-		if err != nil {
-			continue
-		}
-		var entry Entry
-		if err := json.Unmarshal(data, &entry); err != nil {
-			continue
-		}
-		if deliveredIDs[entry.ID] {
-			if err := os.Remove(path); err != nil && !os.IsNotExist(err) {
-				return fmt.Errorf("removing duplicate %s: %w", name, err)
-			}
-		}
 	}
 	return nil
 }

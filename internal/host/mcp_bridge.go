@@ -1,3 +1,7 @@
+// Package host provides the MCP bridge for the Claude Code Agent SDK host
+// protocol: it tunnels JSON-RPC between SDK-managed MCP servers and Claude
+// Code. The transport, control-message router and session manager that once
+// lived here were superseded by internal/backend and have been deleted.
 package host
 
 import (

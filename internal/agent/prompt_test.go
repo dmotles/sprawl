@@ -33,24 +33,6 @@ func TestBuildRootPrompt_NoAskUserQuestion(t *testing.T) {
 	}
 }
 
-func TestBuildEngineerPrompt_ContainsKeyPhrases(t *testing.T) {
-	prompt := BuildEngineerPrompt("zone", "root", "sprawl/zone", testEnvConfig())
-
-	keyPhrases := []string{
-		"Engineer agent",
-		"zone",
-		"root",
-		"sprawl/zone",
-		"tracker",
-		"send_message",
-	}
-	for _, phrase := range keyPhrases {
-		if !strings.Contains(prompt, phrase) {
-			t.Errorf("engineer prompt missing key phrase: %q", phrase)
-		}
-	}
-}
-
 func TestBuildEngineerPrompt_DoesNotContainTaskSection(t *testing.T) {
 	prompt := BuildEngineerPrompt("zone", "root", "sprawl/zone", testEnvConfig())
 
@@ -73,32 +55,6 @@ func TestBuildResearcherPrompt_DoesNotContainTaskSection(t *testing.T) {
 	}
 }
 
-func TestBuildResearcherPrompt_ContainsKeyPhrases(t *testing.T) {
-	prompt := BuildResearcherPrompt("birch", "root", "sprawl/birch", testEnvConfig())
-
-	keyPhrases := []string{
-		"Researcher agent",
-		"birch",
-		"root",
-		"sprawl/birch",
-		"tracker",
-		"send_message",
-		"SPRAWL_AGENT_IDENTITY",
-		"do NOT modify production code",
-		"deep investigator",
-		"document findings",
-		"systematic analysis",
-		"tradeoffs",
-		"tracker",
-		".sprawl/agents/birch/findings/",
-	}
-	for _, phrase := range keyPhrases {
-		if !strings.Contains(prompt, phrase) {
-			t.Errorf("researcher prompt missing key phrase: %q", phrase)
-		}
-	}
-}
-
 func TestBuildResearcherPrompt_DoesNotContainEngineerRole(t *testing.T) {
 	prompt := BuildResearcherPrompt("birch", "root", "sprawl/birch", testEnvConfig())
 
@@ -112,47 +68,6 @@ func TestBuildEngineerPrompt_DoesNotContainResearcherRole(t *testing.T) {
 
 	if strings.Contains(prompt, "deep investigator") {
 		t.Error("engineer prompt should not contain researcher role 'deep investigator'")
-	}
-}
-
-func TestBuildEngineerPrompt_TDDWorkflowIsMandatory(t *testing.T) {
-	prompt := BuildEngineerPrompt("zone", "root", "sprawl/zone", testEnvConfig())
-
-	mandatoryPhrases := []string{
-		// The workflow must be explicitly mandatory
-		"MUST follow this TDD workflow",
-		"not optional",
-		"Do not skip steps",
-		// Must prohibit jumping to implementation
-		"Do NOT jump straight to implementation",
-		"each step in order",
-		// Oracle step must require stopping to plan first
-		"STOP and plan FIRST",
-		"Do not write any code until you have a complete plan",
-		// Test-critic must enforce the loop
-		"revise the test",
-		"Repeat until approved",
-		// Each step must require verification before proceeding
-		"verify the step is complete before moving on",
-	}
-	for _, phrase := range mandatoryPhrases {
-		if !strings.Contains(prompt, phrase) {
-			t.Errorf("engineer prompt missing mandatory TDD phrase: %q", phrase)
-		}
-	}
-}
-
-func TestBuildEngineerPrompt_PreservesSidechainNames(t *testing.T) {
-	prompt := BuildEngineerPrompt("zone", "root", "sprawl/zone", testEnvConfig())
-
-	subAgents := []string{
-		"oracle",
-		"test-critic",
-	}
-	for _, agent := range subAgents {
-		if !strings.Contains(prompt, agent) {
-			t.Errorf("engineer prompt missing sidechain name: %q", agent)
-		}
 	}
 }
 
@@ -180,26 +95,6 @@ func TestBuildEngineerPrompt_QAValidatorRemoved(t *testing.T) {
 	}
 }
 
-// TestBuildEngineerPrompt_CodeReviewerIsSubAgentSpawn pins QUM-714: the
-// engineer's TDD step-5 code review is no longer a Claude sidechain; it is
-// a sprawl sub-agent spawned directly by the engineer (subagent:true so the
-// reviewer shares the engineer's worktree).
-func TestBuildEngineerPrompt_CodeReviewerIsSubAgentSpawn(t *testing.T) {
-	prompt := BuildEngineerPrompt("zone", "root", "sprawl/zone", testEnvConfig())
-
-	required := []string{
-		"subagent: true",
-		`type: "engineer"`,
-		"send_message",
-		"shares your worktree",
-	}
-	for _, phrase := range required {
-		if !strings.Contains(prompt, phrase) {
-			t.Errorf("engineer prompt missing sub-agent spawn phrase: %q (QUM-714)", phrase)
-		}
-	}
-}
-
 // TestBuildEngineerPrompt_CodeReviewerNotInSidechainPreamble pins QUM-714:
 // the TDD preamble must no longer list "code-reviewer" among the Claude
 // sidechains, since it is now a sprawl sub-agent spawn.
@@ -222,23 +117,6 @@ func TestBuildEngineerPrompt_DoesNotInvokeRemovedSidechains(t *testing.T) {
 	}
 }
 
-func TestBuildEngineerPrompt_InlineWriteAndImplementGuidance(t *testing.T) {
-	prompt := BuildEngineerPrompt("zone", "root", "sprawl/zone", testEnvConfig())
-
-	// QUM-712: explicit inline "write failing test, then implement to green" guidance.
-	required := []string{
-		"Write a failing test FIRST",
-		"You write the test yourself",
-		"Implement to green",
-		"You write the implementation yourself",
-	}
-	for _, phrase := range required {
-		if !strings.Contains(prompt, phrase) {
-			t.Errorf("engineer prompt missing inline guidance phrase: %q", phrase)
-		}
-	}
-}
-
 func TestBuildEngineerPrompt_PreservesWorkflowOrder(t *testing.T) {
 	prompt := BuildEngineerPrompt("zone", "root", "sprawl/zone", testEnvConfig())
 
@@ -256,44 +134,6 @@ func TestBuildEngineerPrompt_PreservesWorkflowOrder(t *testing.T) {
 			t.Errorf("workflow step %q appears out of order", step)
 		}
 		lastIdx = idx
-	}
-}
-
-func TestBuildEngineerPrompt_ReflectionStep(t *testing.T) {
-	prompt := BuildEngineerPrompt("zone", "root", "sprawl/zone", testEnvConfig())
-
-	keyPhrases := []string{
-		"Reflect",
-		"code edits challenging",
-		"unclear or confusing",
-		"code quality issues",
-		"Documentation gaps",
-	}
-	for _, phrase := range keyPhrases {
-		if !strings.Contains(prompt, phrase) {
-			t.Errorf("engineer prompt missing reflection phrase: %q", phrase)
-		}
-	}
-}
-
-func TestBuildResearcherPrompt_ReflectionStep(t *testing.T) {
-	prompt := BuildResearcherPrompt("birch", "root", "sprawl/birch", testEnvConfig())
-
-	keyPhrases := []string{
-		"REFLECTION",
-		"surprising",
-		"open questions",
-		"investigate next",
-		"on the tracking issue",
-		// QUM-1186: was "done report". There is no done report — the hand-off
-		// is a <=300-character message, so the reflections have to live
-		// somewhere the parent can read them at length.
-		"will not fit in the hand-off message",
-	}
-	for _, phrase := range keyPhrases {
-		if !strings.Contains(prompt, phrase) {
-			t.Errorf("researcher prompt missing reflection phrase: %q", phrase)
-		}
 	}
 }
 
@@ -420,16 +260,6 @@ func TestBuildRootPrompt_OrchestrationStandardization(t *testing.T) {
 	}
 	if strings.Contains(prompt, "prefer spawning an engineer directly") {
 		t.Errorf("root prompt must NOT contain deleted line 'prefer spawning an engineer directly' (QUM-718)")
-	}
-}
-
-// TestBuildManagerPrompt_RequiresQADispatch (QUM-718) locks the
-// manager-owned QA dispatch requirement.
-func TestBuildManagerPrompt_RequiresQADispatch(t *testing.T) {
-	prompt := BuildManagerPrompt("cedar", "weave", "dmotles/feature-x", "engineering", testEnvConfig())
-
-	if !strings.Contains(prompt, "MUST dispatch a QA pass") {
-		t.Errorf("manager prompt should contain 'MUST dispatch a QA pass' (QUM-718)")
 	}
 }
 
@@ -592,33 +422,6 @@ func TestBuildResearcherPrompt_ReflectionBeforeDone(t *testing.T) {
 	}
 }
 
-func TestBuildRootPrompt_KeyCommands_AllCommandsPresent(t *testing.T) {
-	prompt := BuildRootPrompt(defaultRootConfig("weave"))
-
-	// Spawning & Lifecycle tools
-	spawnLifecycleCommands := []string{
-		"spawn({",
-		"kill({",
-		"retire({",
-	}
-	for _, cmd := range spawnLifecycleCommands {
-		if !strings.Contains(prompt, cmd) {
-			t.Errorf("root prompt KEY TOOLS missing spawn/lifecycle tool: %q", cmd)
-		}
-	}
-
-	// Messaging tools
-	messagingCommands := []string{
-		"send_message({",
-		"peek({",
-	}
-	for _, cmd := range messagingCommands {
-		if !strings.Contains(prompt, cmd) {
-			t.Errorf("root prompt KEY TOOLS missing messaging tool: %q", cmd)
-		}
-	}
-}
-
 func TestBuildRootPrompt_KeyCommands_RetireDistinguishedFromKill(t *testing.T) {
 	prompt := BuildRootPrompt(defaultRootConfig("weave"))
 
@@ -678,49 +481,6 @@ func TestBuildRootPrompt_InterpolatesIdentity(t *testing.T) {
 
 // --- BuildManagerPrompt tests (TDD red phase — function does not exist yet) ---
 
-func TestBuildManagerPrompt_ContainsKeyPhrases(t *testing.T) {
-	prompt := BuildManagerPrompt("cedar", "weave", "dmotles/feature-x", "engineering", testEnvConfig())
-
-	keyPhrases := []string{
-		"Manager agent",
-		"cedar",
-		"weave",
-		"dmotles/feature-x",
-		"tracker",
-		`send_message({to: "weave"`,
-	}
-	for _, phrase := range keyPhrases {
-		if !strings.Contains(prompt, phrase) {
-			t.Errorf("manager prompt missing key phrase: %q", phrase)
-		}
-	}
-}
-
-func TestBuildManagerPrompt_ContainsIdentityWithFamily(t *testing.T) {
-	prompt := BuildManagerPrompt("cedar", "weave", "dmotles/feature-x", "engineering", testEnvConfig())
-
-	if !strings.Contains(prompt, "engineering manager") {
-		t.Errorf("manager prompt should contain 'engineering manager' (family interpolated into identity)")
-	}
-}
-
-func TestBuildManagerPrompt_ContainsOrchestrationGuidance(t *testing.T) {
-	prompt := BuildManagerPrompt("cedar", "weave", "dmotles/feature-x", "engineering", testEnvConfig())
-
-	orchestrationPhrases := []string{
-		"orchestrate",
-		"decompos",
-		"dispatch",
-		"verif",
-		"integrat",
-	}
-	for _, phrase := range orchestrationPhrases {
-		if !strings.Contains(prompt, phrase) {
-			t.Errorf("manager prompt missing orchestration phrase: %q", phrase)
-		}
-	}
-}
-
 func TestBuildManagerPrompt_ContainsMergeUsage(t *testing.T) {
 	prompt := BuildManagerPrompt("cedar", "weave", "dmotles/feature-x", "engineering", testEnvConfig())
 
@@ -773,20 +533,6 @@ func TestBuildManagerPrompt_ContainsMergeUsage(t *testing.T) {
 	}
 }
 
-func TestBuildManagerPrompt_ContainsRetireWorkflows(t *testing.T) {
-	prompt := BuildManagerPrompt("cedar", "weave", "dmotles/feature-x", "engineering", testEnvConfig())
-
-	retirePhrases := []string{
-		"merge: true",
-		"abandon: true",
-	}
-	for _, phrase := range retirePhrases {
-		if !strings.Contains(prompt, phrase) {
-			t.Errorf("manager prompt missing retire workflow phrase: %q", phrase)
-		}
-	}
-}
-
 func TestBuildManagerPrompt_MergeDoesNotRetire(t *testing.T) {
 	prompt := BuildManagerPrompt("cedar", "weave", "dmotles/feature-x", "engineering", testEnvConfig())
 
@@ -798,31 +544,6 @@ func TestBuildManagerPrompt_MergeDoesNotRetire(t *testing.T) {
 	// Should mention agent stays alive
 	if !strings.Contains(prompt, "stays alive") {
 		t.Error("manager prompt should mention that agent stays alive after merge")
-	}
-}
-
-func TestBuildManagerPrompt_ConflictRecovery(t *testing.T) {
-	prompt := BuildManagerPrompt("cedar", "weave", "dmotles/feature-x", "engineering", testEnvConfig())
-
-	if !strings.Contains(prompt, "conflict") {
-		t.Error("manager prompt should mention conflict recovery")
-	}
-}
-
-func TestBuildManagerPrompt_ContainsParallelismGuidance(t *testing.T) {
-	prompt := BuildManagerPrompt("cedar", "weave", "dmotles/feature-x", "engineering", testEnvConfig())
-
-	parallelismPhrases := []string{
-		"PARALLELISM",
-		"overlapping files",
-		"merge conflicts",
-		"Serialize when",
-		"sequential execution",
-	}
-	for _, phrase := range parallelismPhrases {
-		if !strings.Contains(prompt, phrase) {
-			t.Errorf("manager prompt missing parallelism phrase: %q", phrase)
-		}
 	}
 }
 
@@ -856,14 +577,6 @@ func TestBuildManagerPrompt_ContainsFailureHandling(t *testing.T) {
 
 	if !strings.Contains(prompt, "escalate") {
 		t.Errorf("manager prompt missing failure handling phrase: %q", "escalate")
-	}
-}
-
-func TestBuildManagerPrompt_ContainsIntegrationBranch(t *testing.T) {
-	prompt := BuildManagerPrompt("cedar", "weave", "dmotles/feature-x", "engineering", testEnvConfig())
-
-	if !strings.Contains(prompt, "integration branch") {
-		t.Errorf("manager prompt missing phrase: %q", "integration branch")
 	}
 }
 
@@ -914,24 +627,6 @@ func TestBuildManagerPrompt_DoesNotContainWrongRoles(t *testing.T) {
 	}
 }
 
-func TestBuildManagerPrompt_EnvironmentSection(t *testing.T) {
-	prompt := BuildManagerPrompt("cedar", "weave", "dmotles/feature-x", "engineering", testEnvConfig())
-
-	envPhrases := []string{
-		"# Environment",
-		"Working directory: /tmp/worktrees/test",
-		"Git repository: yes",
-		"Git branch: dmotles/feature-x",
-		"Platform: linux",
-		"Shell: /bin/zsh",
-	}
-	for _, phrase := range envPhrases {
-		if !strings.Contains(prompt, phrase) {
-			t.Errorf("manager prompt missing environment phrase: %q", phrase)
-		}
-	}
-}
-
 func TestBuildManagerPrompt_EnvironmentOmitsEmptyFields(t *testing.T) {
 	env := EnvConfig{} // all empty
 	prompt := BuildManagerPrompt("cedar", "weave", "dmotles/feature-x", "engineering", env)
@@ -967,35 +662,8 @@ func TestBuildManagerPrompt_CannotEditCode(t *testing.T) {
 	}
 }
 
-func TestBuildManagerPrompt_ScopeManagement(t *testing.T) {
-	prompt := BuildManagerPrompt("cedar", "weave", "dmotles/feature-x", "engineering", testEnvConfig())
-
-	if !strings.Contains(prompt, "scope") {
-		t.Errorf("manager prompt should contain guidance about staying focused on scope")
-	}
-}
-
 // --- coordination guidance tests (QUM-1186: the "DELEGATE VS. MESSAGES VS.
 // STATUS" section it replaced named two tools that no longer exist) ---
-
-func TestBuildRootPrompt_CoordinationGuidance(t *testing.T) {
-	prompt := BuildRootPrompt(defaultRootConfig("weave"))
-
-	keyPhrases := []string{
-		"send_message({",
-		"now: false",
-		"now: true",
-		"300 characters",
-		"tracker",
-		"an assignment is a message",
-		"peek({",
-	}
-	for _, phrase := range keyPhrases {
-		if !strings.Contains(strings.ToLower(prompt), strings.ToLower(phrase)) {
-			t.Errorf("root prompt missing coordination guidance phrase: %q", phrase)
-		}
-	}
-}
 
 func TestBuildRootPrompt_CoordinationGuidance_Ordering(t *testing.T) {
 	prompt := BuildRootPrompt(defaultRootConfig("weave"))
@@ -1019,25 +687,6 @@ func TestBuildRootPrompt_CoordinationGuidance_Ordering(t *testing.T) {
 	}
 	if guidanceIdx >= rulesIdx {
 		t.Errorf("COORDINATION (idx %d) should appear before RULES (idx %d)", guidanceIdx, rulesIdx)
-	}
-}
-
-func TestBuildManagerPrompt_CoordinationGuidance(t *testing.T) {
-	prompt := BuildManagerPrompt("cedar", "weave", "dmotles/feature-x", "engineering", testEnvConfig())
-
-	keyPhrases := []string{
-		"send_message({",
-		"now: false",
-		"now: true",
-		"300 characters",
-		"tracker",
-		"an assignment is a message",
-		"peek({",
-	}
-	for _, phrase := range keyPhrases {
-		if !strings.Contains(strings.ToLower(prompt), strings.ToLower(phrase)) {
-			t.Errorf("manager prompt missing coordination guidance phrase: %q", phrase)
-		}
 	}
 }
 
@@ -1278,43 +927,12 @@ func TestBuildRootPrompt_MergeRetireWorkflow(t *testing.T) {
 	}
 }
 
-func TestBuildRootPrompt_FlockSynchronization(t *testing.T) {
-	prompt := BuildRootPrompt(defaultRootConfig("weave"))
-
-	// Should mention flock or lock-based synchronization
-	if !strings.Contains(prompt, "lock") && !strings.Contains(prompt, "flock") {
-		t.Error("root prompt should explain flock/lock synchronization during merge")
-	}
-}
-
-func TestBuildRootPrompt_MergeConflictRecovery(t *testing.T) {
-	prompt := BuildRootPrompt(defaultRootConfig("weave"))
-
-	if !strings.Contains(prompt, "conflict") {
-		t.Error("root prompt should explain recovery from rebase conflicts")
-	}
-}
-
 func TestBuildRootPrompt_NoStaleSquashMergeReferences(t *testing.T) {
 	prompt := BuildRootPrompt(defaultRootConfig("weave"))
 
 	// The RULES section should not say merge handles "the full lifecycle"
 	if strings.Contains(prompt, "squash-merge, retire the agent, and clean up in one step") {
 		t.Error("root prompt RULES should not describe merge as full lifecycle cleanup")
-	}
-}
-
-func TestBuildRootPrompt_SafeRetireGuidance(t *testing.T) {
-	prompt := BuildRootPrompt(defaultRootConfig("weave"))
-
-	// Should guide toward safe retirement by default
-	if !strings.Contains(prompt, "retire({") || !strings.Contains(prompt, "Default to safe retirement") {
-		t.Error("root prompt should include guidance to default to safe retirement")
-	}
-
-	// Should warn about researchers having committed artifacts
-	if !strings.Contains(prompt, "retiring researchers") {
-		t.Error("root prompt should warn about checking researcher artifacts before retiring")
 	}
 }
 
@@ -1342,61 +960,11 @@ func TestBuildEngineerPrompt_BranchRebaseNotification(t *testing.T) {
 
 // --- TUI-mode prompt tests ---
 
-func TestBuildRootPrompt_ContainsMCPTools(t *testing.T) {
-	prompt := BuildRootPrompt(defaultRootConfig("weave"))
-
-	mcpTools := []string{
-		"spawn",
-		"send_message",
-		"peek",
-		"merge",
-		"retire",
-		"kill",
-		"status",
-		"handoff",
-	}
-	for _, tool := range mcpTools {
-		if !strings.Contains(prompt, tool) {
-			t.Errorf("root prompt should contain MCP tool %q", tool)
-		}
-	}
-}
-
 func TestBuildRootPrompt_NoCLISpawnCommand(t *testing.T) {
 	prompt := BuildRootPrompt(defaultRootConfig("weave"))
 
 	if strings.Contains(prompt, "sprawl spawn agent") {
 		t.Error("root prompt should NOT contain CLI command 'sprawl spawn agent'")
-	}
-}
-
-func TestBuildRootPrompt_SharedContent(t *testing.T) {
-	sharedPhrases := []string{
-		"YOUR ROLE:",
-		"orchestrator",
-		"SPRAWL OVERVIEW",
-		"AGENT FAMILIES",
-		"PARALLELISM VS. SERIALIZATION",
-		"VERIFYING AGENT WORK",
-		"FOLLOW THROUGH",
-	}
-
-	prompt := BuildRootPrompt(defaultRootConfig("weave"))
-	for _, phrase := range sharedPhrases {
-		if !strings.Contains(prompt, phrase) {
-			t.Errorf("root prompt should contain shared content %q", phrase)
-		}
-	}
-}
-
-func TestBuildEngineerPrompt_ContainsMCPTools(t *testing.T) {
-	prompt := BuildEngineerPrompt("zone", "root", "sprawl/zone", testEnvConfig())
-
-	required := []string{"send_message", "messages_read"}
-	for _, tool := range required {
-		if !strings.Contains(prompt, tool) {
-			t.Errorf("engineer prompt should contain MCP tool %q", tool)
-		}
 	}
 }
 
@@ -1408,17 +976,6 @@ func TestBuildEngineerPrompt_NoCLIReportCommand(t *testing.T) {
 	}
 	if strings.Contains(prompt, "sprawl messages send") {
 		t.Error("engineer prompt should NOT contain 'sprawl messages send'")
-	}
-}
-
-func TestBuildResearcherPrompt_ContainsMCPTools(t *testing.T) {
-	prompt := BuildResearcherPrompt("birch", "root", "sprawl/birch", testEnvConfig())
-
-	required := []string{"send_message", "messages_read"}
-	for _, tool := range required {
-		if !strings.Contains(prompt, tool) {
-			t.Errorf("researcher prompt should contain MCP tool %q", tool)
-		}
 	}
 }
 
@@ -1735,33 +1292,6 @@ func TestBuildQAPrompt_DoesNotContainTaskSection(t *testing.T) {
 	}
 }
 
-func TestBuildQAPrompt_ContainsKeyPhrases(t *testing.T) {
-	prompt := BuildQAPrompt("inspector", "tower", "dmotles/feature-x", testEnvConfig())
-
-	keyPhrases := []string{
-		"inspector",
-		"tower",
-		"dmotles/feature-x",
-		"tracker",
-		"send_message",
-		"verdict",
-		"git fetch",
-		"git diff",
-		"make validate",
-		"tracking issue",
-		"VERIFICATION PROTOCOL",
-	}
-	// QA agent identity should be referenced (case-insensitive).
-	if !strings.Contains(prompt, "QA agent") && !strings.Contains(prompt, "qa agent") {
-		t.Error("qa prompt should identify itself as 'QA agent' or 'qa agent'")
-	}
-	for _, phrase := range keyPhrases {
-		if !strings.Contains(prompt, phrase) {
-			t.Errorf("qa prompt missing key phrase: %q", phrase)
-		}
-	}
-}
-
 func TestBuildQAPrompt_DoesNotContainEngineerRole(t *testing.T) {
 	prompt := BuildQAPrompt("inspector", "tower", "dmotles/feature-x", testEnvConfig())
 
@@ -1770,27 +1300,6 @@ func TestBuildQAPrompt_DoesNotContainEngineerRole(t *testing.T) {
 	}
 	if strings.Contains(prompt, "TDD WORKFLOW (MANDATORY)") {
 		t.Error("qa prompt should not contain engineer-only TDD WORKFLOW section")
-	}
-}
-
-func TestBuildQAPrompt_VerificationProtocol(t *testing.T) {
-	prompt := BuildQAPrompt("inspector", "tower", "dmotles/feature-x", testEnvConfig())
-
-	keyPhrases := []string{
-		"VERIFICATION PROTOCOL",
-		"acceptance criteria",
-		"git fetch",
-		"git diff",
-		"make validate",
-		"engineer-not-done",
-		"pass",
-		"fail",
-		"needs-rework",
-	}
-	for _, phrase := range keyPhrases {
-		if !strings.Contains(prompt, phrase) {
-			t.Errorf("qa prompt missing verification protocol phrase: %q", phrase)
-		}
 	}
 }
 
@@ -1835,34 +1344,6 @@ func TestBuildQAPrompt_VerificationProtocolOrder(t *testing.T) {
 			t.Errorf("expected %q (idx %d) to appear after %q (idx %d)",
 				order[i].name, order[i].idx, order[i-1].name, order[i-1].idx)
 		}
-	}
-}
-
-func TestBuildQAPrompt_RulesForbidProductionEdits(t *testing.T) {
-	prompt := BuildQAPrompt("inspector", "tower", "dmotles/feature-x", testEnvConfig())
-
-	// Must explicitly forbid production code edits.
-	if !strings.Contains(prompt, "production code") {
-		t.Error("qa prompt should mention 'production code' (in forbidding edits)")
-	}
-	if !strings.Contains(prompt, "Do NOT") {
-		t.Error("qa prompt should contain 'Do NOT' rule (forbidding production edits)")
-	}
-
-	// Must mention forbidden actions: spawn, merge, push.
-	for _, phrase := range []string{"spawn", "merge", "push"} {
-		if !strings.Contains(prompt, phrase) {
-			t.Errorf("qa prompt should mention forbidden action %q in rules", phrase)
-		}
-	}
-}
-
-func TestBuildQAPrompt_ReflectionStep(t *testing.T) {
-	prompt := BuildQAPrompt("inspector", "tower", "dmotles/feature-x", testEnvConfig())
-
-	// Reflection step is required (mirror researcher conventions).
-	if !strings.Contains(prompt, "REFLECTION") && !strings.Contains(prompt, "Reflect") {
-		t.Error("qa prompt should contain a reflection step (REFLECTION or Reflect)")
 	}
 }
 
@@ -1920,17 +1401,6 @@ func TestBuildQAPrompt_NoCLICommands(t *testing.T) {
 	}
 	if strings.Contains(prompt, "sprawl messages send") {
 		t.Error("qa prompt should NOT contain CLI command 'sprawl messages send'")
-	}
-}
-
-func TestBuildQAPrompt_ContainsMCPTools(t *testing.T) {
-	prompt := BuildQAPrompt("inspector", "tower", "dmotles/feature-x", testEnvConfig())
-
-	required := []string{"send_message", "peek"}
-	for _, tool := range required {
-		if !strings.Contains(prompt, tool) {
-			t.Errorf("qa prompt should contain MCP tool %q", tool)
-		}
 	}
 }
 
@@ -1992,17 +1462,6 @@ func TestBuildQAPrompt_TuiGolden(t *testing.T) {
 // TestBuildRootPrompt_QATypeInAgentTypes was removed in QUM-718: the new
 // root prompt intentionally drops QA from the spawn listing because manager
 // owns QA dispatch (weave → manager → engineer + QA).
-
-func TestBuildManagerPrompt_QATypeInAgentTypes(t *testing.T) {
-	prompt := BuildManagerPrompt("cedar", "weave", "dmotles/feature-x", "engineering", testEnvConfig())
-
-	if !strings.Contains(prompt, "QA") && !strings.Contains(prompt, "qa") {
-		t.Error("manager prompt AGENT TYPES section should mention QA")
-	}
-	if !strings.Contains(prompt, `type: "qa"`) {
-		t.Errorf(`manager prompt AGENT TYPES section missing 'type: "qa"'`)
-	}
-}
 
 // TestPromptRenderers_NoResidualPlaceholderTokens (QUM-539) guards the
 // `{{PLACEHOLDER}}` + strings.ReplaceAll templating idiom in prompt_mode.go

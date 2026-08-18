@@ -9,15 +9,6 @@ import (
 	"github.com/dmotles/sprawl/internal/state"
 )
 
-// ShutdownDeps is intentionally empty in the same-process runtime model.
-// Live child runtimes are stopped by supervisor-owned runtime handles.
-type ShutdownDeps struct{}
-
-// GracefulShutdown is retained as a compatibility no-op for same-process
-// runtime cleanup paths. Offline lifecycle commands only operate on persisted
-// state after the owning weave session has stopped.
-func GracefulShutdown(_ *ShutdownDeps, _ string, _ *state.AgentState, _ bool) {}
-
 // RetireDeps holds the dependencies for RetireAgent.
 type RetireDeps struct {
 	WorktreeRemove func(repoRoot, worktreePath string, force bool) error

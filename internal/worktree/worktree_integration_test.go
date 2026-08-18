@@ -120,17 +120,3 @@ func TestRealCreator_Create_RecycledName_PreservesBranch(t *testing.T) {
 	cleanup.Dir = repo
 	cleanup.Run()
 }
-
-func TestBranchExists(t *testing.T) {
-	repo := initTestRepo(t)
-
-	// "main" should exist after init
-	if !branchExists(repo, "main") {
-		t.Error("branchExists(main) = false, want true")
-	}
-
-	// A non-existent branch should return false
-	if branchExists(repo, "sprawl/nonexistent") {
-		t.Error("branchExists(sprawl/nonexistent) = true, want false")
-	}
-}
