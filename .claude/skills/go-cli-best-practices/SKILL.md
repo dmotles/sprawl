@@ -82,10 +82,10 @@ var mergeCmd = &cobra.Command{
 
 ```go
 func init() {
-    retireCmd.Flags().BoolVar(&retireCascade, "cascade", false, "Retire agent and all descendants bottom-up")
-    retireCmd.Flags().BoolVar(&retireForce, "force", false, "Skip dirty worktree check and orphan children")
-    retireCmd.Flags().BoolVar(&retireMerge, "merge", false, "Merge the agent's work into your branch before retiring")
-    rootCmd.AddCommand(retireCmd)
+    gcCmd.Flags().BoolVar(&gcApply, "apply", false, "Actually remove orphan dirs and worktrees (default is dry-run)")
+    gcCmd.Flags().IntVar(&gcLogRetentionDays, "log-retention-days", 30, "Remove session wire logs older than N days")
+    gcCmd.Flags().IntVar(&gcPremergeRetentionDays, "premerge-retention-days", 14, "Prune premerge recovery refs (refs/sprawl/premerge/) older than N days")
+    rootCmd.AddCommand(gcCmd)
 }
 ```
 
@@ -117,17 +117,17 @@ This codebase stores flag values in package-level vars, bound in `init()` (real 
 
 ```go
 var (
+    defaultGCDeps           *gcDeps
     gcApply                 bool
     gcLogRetentionDays      int
-    retireMerge   bool
-    retireYes     bool
+    gcPremergeRetentionDays int
 )
 
 func init() {
-    retireCmd.Flags().BoolVar(&retireCascade, "cascade", false, "Retire agent and all descendants bottom-up")
-    retireCmd.Flags().BoolVar(&retireForce, "force", false, "Skip dirty worktree check and orphan children")
-    retireCmd.Flags().BoolVar(&retireMerge, "merge", false, "Merge the agent's work into your branch before retiring")
-    rootCmd.AddCommand(retireCmd)
+    gcCmd.Flags().BoolVar(&gcApply, "apply", false, "Actually remove orphan dirs and worktrees (default is dry-run)")
+    gcCmd.Flags().IntVar(&gcLogRetentionDays, "log-retention-days", 30, "Remove session wire logs older than N days")
+    gcCmd.Flags().IntVar(&gcPremergeRetentionDays, "premerge-retention-days", 14, "Prune premerge recovery refs (refs/sprawl/premerge/) older than N days")
+    rootCmd.AddCommand(gcCmd)
 }
 ```
 
@@ -268,29 +268,27 @@ This codebase uses **one function per test case**, not table-driven tests. Each 
 func TestMerge_HappyPath(t *testing.T) {
     deps, tmpDir := newTestMergeDeps(t)
     // ... seed agent state via state.SaveAgent ...
-    if err := runRetire(deps, "alice", false, false, false, false, false); err != nil {
-        t.Fatalf("runRetire() error: %v", err)
+    if err := runMerge(context.Background(), deps, "alice", "", false, false); err != nil {
+        t.Fatalf("runMerge() error: %v", err)
     }
-    if _, err := state.LoadAgent(tmpDir, "alice"); err == nil {
-        t.Fatal("expected agent state to be deleted")
-    }
+    // ... assert on the resulting state under tmpDir ...
 }
 
-func TestRetire_InvalidAgentNameReturnsError(t *testing.T) {
-    deps, _ := newTestRetireDeps(t)
-    err := runRetire(deps, "../evil", false, false, false, false, false)
+func TestMerge_InvalidAgentNameReturnsError(t *testing.T) {
+    deps, _ := newTestMergeDeps(t)
+    err := runMerge(context.Background(), deps, "../evil", "", false, false)
     if err == nil {
-        t.Fatal("expected invalid agent name error")
+        t.Fatal("expected error for invalid agent name")
     }
     if !strings.Contains(err.Error(), "invalid agent name") {
-        t.Fatalf("error = %q, want invalid agent name", err)
+        t.Errorf("error should mention 'invalid agent name', got: %v", err)
     }
 }
 ```
 
 ### Test Naming Convention
 
-`Test<Command>_<Scenario>` — e.g., `TestRetire_HappyPathDeletesState`, `TestRetire_DirtyWorktree_Refuses`, `TestMessagesSend_HappyPath`.
+`Test<Command>_<Scenario>` — e.g., `TestMerge_HappyPath`, `TestMerge_InvalidAgentNameReturnsError`, `TestMerge_SubagentRejected`.
 
 ### Error Assertions
 

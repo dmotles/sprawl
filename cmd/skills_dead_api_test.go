@@ -323,8 +323,11 @@ func TestToolNameDeclRE(t *testing.T) {
 // deleted by QUM-1186, while every test in this file stayed green.
 //
 // STATED BLIND SPOTS — do not read a green run as more than it is:
-//   - Symbols are not checked. `newTestRetireDeps` and `defaultMessagesDeps`
-//     are dead names inside live files; nothing here catches them.
+//   - Symbols are not checked BY THIS ORACLE. `runRetire` and `retireCmd` are
+//     dead names that can sit inside a live file, invisible here. That gap is
+//     covered separately by bannedGoSymbols below — added after a review found
+//     three surviving `retire` code blocks in go-cli-best-practices that this
+//     path oracle was structurally unable to see.
 //   - Line numbers are not checked. `cmd/merge.go:15` asserts only that the
 //     file exists, never that line 15 says what the prose claims.
 //   - Bare filenames in a subdirectory (`session.go` in a tree sketch) produce
@@ -344,7 +347,12 @@ func TestToolNameDeclRE(t *testing.T) {
 // one is what separates a citation from a directory or a prose fragment:
 // `internal/...`, `scripts/test-` and `web/src/wire/` all produce no token,
 // with no allowlist entry needed.
-const skillPathExtensions = `go|sh|md|ya?ml|json|proto|ts|tsx`
+//
+// ORDERED LONGEST-FIRST within each family (`tsx` before `ts`, `yaml` before
+// `yml`). Go's regexp is leftmost-FIRST, not leftmost-longest, so `ts|tsx` makes
+// `web/src/app.tsx` match as `web/src/app.ts` — a citation that resolves to
+// nothing and reports a false alarm on correct prose.
+const skillPathExtensions = `go|sh|md|yaml|yml|json|proto|tsx|ts`
 
 // skillPathRuntimePrefixes are path prefixes that describe a LIVE AGENT'S
 // WORKSPACE rather than the repo. `.sprawl/config.yaml` is tracked and must
@@ -417,7 +425,19 @@ func skillPathRE(dirs, files []string) *regexp.Regexp {
 	for _, f := range files {
 		quoted = append(quoted, regexp.QuoteMeta(f))
 	}
-	return regexp.MustCompile(`(?:^|[^A-Za-z0-9_.\-])(` + strings.Join(quoted, "|") + `)`)
+	// The TRAILING class is outside group 1 and excludes word characters and `-`,
+	// so a longer token cannot be truncated into a shorter valid-looking path:
+	// `docs/x.yamlish` and `cmd/merge.golden` produce no citation at all rather
+	// than `docs/x.yaml` (false alarm) and `cmd/merge.go` (silent miss).
+	//
+	// `.` is deliberately ALLOWED to follow, so an unbackticked sentence-final
+	// `see cmd/merge.go.` is still checked. The cost is that `state.go.tmpl`
+	// yields `state.go`; that direction is a miss on a path that resolves, which
+	// is the safe way to be wrong here.
+	//
+	// Consuming the trailing character is safe because scanSkillPaths advances by
+	// the END OF GROUP 1, not the end of the match.
+	return regexp.MustCompile(`(?:^|[^A-Za-z0-9_.\-])(` + strings.Join(quoted, "|") + `)(?:[^A-Za-z0-9_-]|$)`)
 }
 
 type skillPathCitation struct {
@@ -493,14 +513,29 @@ const maxSkillPathExceptions = 3
 // while go-cli-best-practices OR testing-practices — the two documents this
 // oracle exists for — went completely dark. Measured, not supposed.
 //
-// Only documents with a substantial citation count are floored; the rest cite
-// one or two paths and a floor on them would just be noise.
+// SELECTION RULE, applied consistently: every document citing 5 or more distinct
+// paths is floored. The earlier set was picked by eye and was inconsistent —
+// e2e-testing-sandboxing (9) was floored while false-red (7) and git-recovery
+// (6) were not, at the same order of magnitude.
+//
+// Each floor is ~80% of the count measured on this tree, which leaves room for a
+// legitimate edit to drop a citation or two without a false alarm, while still
+// catching a document that stops being scanned. The earlier numbers were as much
+// as 60% slack: sprawl-internals could have lost 9 of its 15 citations and
+// stayed green.
+//
+// Measured 2026-08-18 (distinct paths): e2e-matrix 74, testing-practices 32,
+// sprawl-internals 15, go-cli-best-practices 14, e2e-testing-sandboxing 9,
+// false-red 7, git-recovery 6. Re-measure when you change these; do not scale
+// them by guess.
 var minSkillPathCitations = map[string]int{
-	".claude/skills/e2e-matrix/SKILL.md":             50,
-	".claude/skills/testing-practices/SKILL.md":      20,
-	".claude/skills/go-cli-best-practices/SKILL.md":  8,
-	".claude/skills/sprawl-internals/SKILL.md":       6,
-	".claude/skills/e2e-testing-sandboxing/SKILL.md": 6,
+	".claude/skills/e2e-matrix/SKILL.md":             59,
+	".claude/skills/testing-practices/SKILL.md":      25,
+	".claude/skills/sprawl-internals/SKILL.md":       12,
+	".claude/skills/go-cli-best-practices/SKILL.md":  11,
+	".claude/skills/e2e-testing-sandboxing/SKILL.md": 7,
+	".claude/skills/false-red/SKILL.md":              5,
+	".claude/skills/git-recovery/SKILL.md":           4,
 }
 
 // TestSkillPathExceptionsAreDead guards the exception list itself, in the same
@@ -605,13 +640,17 @@ func TestScanSkillPaths(t *testing.T) {
 		{"comment inside a code fence still matches", "\t// cmd/retire.go", []string{"cmd/retire.go"}},
 		{"scan continues past the first citation on a line", "`cmd/retire.go` and `cmd/spawn.go` both", []string{"cmd/retire.go", "cmd/spawn.go"}},
 		{"unknown extension is not a citation", "cmd/retire.txt", nil},
+		{"tsx is not truncated to ts", "see web/src/app.tsx now", []string{"web/src/app.tsx"}},
+		{"longer word after extension is not a citation", "docs/x.yamlish is not a file", nil},
+		{"golden fixture is not truncated to .go", "see cmd/merge.golden fixture", nil},
+		{"sentence-final period still yields the path", "see cmd/merge.go.", []string{"cmd/merge.go"}},
 		{"top-level bare file is covered", "as `CLAUDE.md` states, and the `Makefile`", []string{"CLAUDE.md", "Makefile"}},
 		{"dot-leading top dir is covered", "see `.claude/skills/false-red/SKILL.md`", []string{".claude/skills/false-red/SKILL.md"}},
 		{"sibling-worktree prefix is matched against THIS tree", "../weave/cmd/retire.go", []string{"cmd/retire.go"}},
 	}
 
-	if len(cases) < 17 {
-		t.Fatalf("assertion-count floor: expected at least 17 extractor cases, have %d", len(cases))
+	if len(cases) < 21 {
+		t.Fatalf("assertion-count floor: expected at least 21 extractor cases, have %d", len(cases))
 	}
 
 	for _, tc := range cases {
@@ -624,5 +663,107 @@ func TestScanSkillPaths(t *testing.T) {
 				t.Errorf("scanSkillPaths(%q) = %v, want %v", tc.in, got, tc.want)
 			}
 		})
+	}
+}
+
+// ---------------------------------------------------------------------------
+// Dead Go SYMBOL oracle.
+//
+// Added because the path oracle above, on its own, was not enough. A review of
+// the QUM-1238 doc fixes found THREE surviving `retire` code blocks in
+// go-cli-best-practices — a mandatory skill — that every test in this file
+// passed over, including one that had been half-converted into a chimera:
+// prose reading "real example: `cmd/gc.go`" sitting directly above a `func
+// init()` body that registered `retireCmd` and bound `&retireCascade`. An agent
+// following it would write code that does not compile, against a command that
+// does not exist, while the sentence above pointed at a real file.
+//
+// The path oracle cannot see any of that: those blocks contain no path token.
+// So symbols get their own list, in the same shape as bannedMCPTools, with the
+// same guard — every entry is checked against the tree, so a symbol that comes
+// back fails this test rather than leaving a stale ban in place.
+
+// bannedGoSymbols are Go identifiers QUM-1186 deleted. A skill naming one is
+// teaching from a command that no longer exists.
+//
+// Scope note: these are matched anywhere in a skill document, INCLUDING inside
+// ```go fences, because a fenced code block is exactly where this rot hid.
+//
+// `newTestRetireDeps` is deliberately NOT here: it looks dead and is not —
+// `internal/agent/retire_test.go` still declares it. The guard below caught that
+// on the first run, which is the point of having a guard on the list rather than
+// trusting the list.
+var bannedGoSymbols = []string{
+	"retireCmd",
+	"runRetire",
+	"resolveRetireDeps",
+	"retireCascade",
+	"retireForce",
+	"messagesDeps",
+	"resolveMessagesDeps",
+	"defaultMessagesDeps",
+}
+
+// goSymbolDeclRE matches a Go declaration of the symbol, so the guard below
+// keys on the identifier actually being DEFINED somewhere in the tree rather
+// than merely mentioned in a comment recording its deletion.
+func goSymbolDeclRE(name string) *regexp.Regexp {
+	return regexp.MustCompile(`(?m)^(?:func|var|type|\t)?\s*` + regexp.QuoteMeta(name) + `\b\s*(?:=|:=|\()`)
+}
+
+// goSourceFiles returns every tracked .go file's contents, keyed by path.
+func goSourceFiles(t *testing.T) map[string]string {
+	t.Helper()
+
+	root := repoRootFromTest(t)
+	out, err := exec.Command("git", "-C", root, "ls-files", "-z", "*.go").Output()
+	if err != nil {
+		t.Fatalf("git ls-files *.go: %v", err)
+	}
+	files := map[string]string{}
+	for _, p := range strings.Split(strings.TrimRight(string(out), "\x00"), "\x00") {
+		if p == "" {
+			continue
+		}
+		b, err := os.ReadFile(filepath.Join(root, filepath.FromSlash(p)))
+		if err != nil {
+			t.Fatalf("read %s: %v", p, err)
+		}
+		files[p] = string(b)
+	}
+	if len(files) < 100 {
+		t.Fatalf("control failed: found %d tracked .go files, expected at least 100 — the walk is broken, so the ban-list guard below would pass vacuously", len(files))
+	}
+	return files
+}
+
+// TestSkillsGoSymbolBanListIsDead guards the ban list itself: a symbol banned
+// here that is declared again in the tree means this test, not the skills, is
+// stale. Same contract as TestSkillsBanListMatchesLiveTools.
+func TestSkillsGoSymbolBanListIsDead(t *testing.T) {
+	if len(bannedGoSymbols) < 5 {
+		t.Fatalf("assertion-count floor: expected at least 5 banned symbols, have %d", len(bannedGoSymbols))
+	}
+	src := goSourceFiles(t)
+	for _, name := range bannedGoSymbols {
+		re := goSymbolDeclRE(name)
+		for path, content := range src {
+			if re.MatchString(content) {
+				t.Errorf("%q is declared in %s; it is not dead, so remove it from bannedGoSymbols", name, path)
+			}
+		}
+	}
+}
+
+// TestSkillsDoNotNameDeadGoSymbols is the primary guard for the symbol class.
+func TestSkillsDoNotNameDeadGoSymbols(t *testing.T) {
+	for path, content := range skillDocs(t) {
+		for i, line := range strings.Split(content, "\n") {
+			for _, name := range bannedGoSymbols {
+				if bannedRefRE(name).MatchString(line) {
+					t.Errorf("%s:%d: names %q, a Go identifier deleted by QUM-1186 — the skill is teaching from code that does not exist", path, i+1, name)
+				}
+			}
+		}
 	}
 }

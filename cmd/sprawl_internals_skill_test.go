@@ -428,6 +428,58 @@ func TestSprawlInternalsAgentsStubPointsAtClaudeSkill(t *testing.T) {
 // validatePrereqRE captures `validate`'s prerequisite list from the Makefile.
 var validatePrereqRE = regexp.MustCompile(`(?m)^validate:[ \t]*(.*)$`)
 
+// namesMakeTarget reports whether md names the target as a WHOLE TOKEN.
+//
+// This was `strings.Contains` and that was a demonstrated false green: three of
+// the fifteen prerequisites are substrings of another prerequisite, so their
+// assertion could not fail on its own.
+//
+//	lint                 ⊂ test-lint-pin
+//	test-race            ⊂ test-race-gate
+//	always-loaded-budget ⊂ test-always-loaded-budget-unit
+//
+// Deleting the `make always-loaded-budget` line from the skill left this test
+// GREEN — and always-loaded-budget is the exact target W1b was about, so the
+// most load-bearing assertion here was the one that could not fire.
+//
+// The boundary class excludes `-` as well as word characters, which is what
+// separates `always-loaded-budget` from `test-always-loaded-budget-unit`; Go's
+// `\b` treats `-` as a boundary and would still match. Targets are matched
+// anywhere in the section rather than only on `^make <target>` lines, because
+// `proto-check` and `leak-scan` are legitimately named only in the prerequisite
+// comment list.
+func namesMakeTarget(md, target string) bool {
+	return regexp.MustCompile(`(?:^|[^A-Za-z0-9_-])` + regexp.QuoteMeta(target) + `(?:[^A-Za-z0-9_-]|$)`).MatchString(md)
+}
+
+// TestNamesMakeTarget is the control on the matcher above, and its substring
+// cases are the regression that motivated it: each MUST be false, or the
+// prerequisite assertion silently stops being able to fail.
+func TestNamesMakeTarget(t *testing.T) {
+	cases := []struct {
+		md, target string
+		want       bool
+	}{
+		{"make lint         # run golangci-lint", "lint", true},
+		{"make test-lint-pin   # proves the pin binds", "lint", false},
+		{"make test-always-loaded-budget-unit  # fixture-only", "always-loaded-budget", false},
+		{"make always-loaded-budget        # the LIVE gate", "always-loaded-budget", true},
+		{"make test-race-gate  # shell unit test", "test-race", false},
+		{"make test-race    # go test -race ./...", "test-race", true},
+		{"#   build hooks-armed proto-check fmt-check lint", "proto-check", true},
+		{"make build        # builds ./sprawl binary", "build", true},
+		{"it builds the binary", "build", false},
+	}
+	if len(cases) < 9 {
+		t.Fatalf("assertion-count floor: expected at least 9 cases, have %d", len(cases))
+	}
+	for _, tc := range cases {
+		if got := namesMakeTarget(tc.md, tc.target); got != tc.want {
+			t.Errorf("namesMakeTarget(%q, %q) = %v, want %v", tc.md, tc.target, got, tc.want)
+		}
+	}
+}
+
 // TestSprawlInternalsSkillBuildTargetsMatchMakefile replaces the byte-equality
 // arm retired above with an assertion whose subject is the BUILD, not a frozen
 // copy of a document. CLAUDE.md warns agents that "the Makefile is authoritative
@@ -463,7 +515,7 @@ func TestSprawlInternalsSkillBuildTargetsMatchMakefile(t *testing.T) {
 	}
 
 	for _, p := range prereqs {
-		if !strings.Contains(skillSection, p) {
+		if !namesMakeTarget(skillSection, p) {
 			t.Errorf("%s ## Build & Test: does not name %q, a `validate` prerequisite per Makefile — an agent reading this under-counts what validate runs",
 				sprawlInternalsSkill, p)
 		}
@@ -478,7 +530,7 @@ func TestSprawlInternalsSkillBuildTargetsMatchMakefile(t *testing.T) {
 	// Scoped per BULLET rather than per section, so a true exclusion claim
 	// about a genuinely excluded target (`test-e2e-matrix`) cannot taint a
 	// bullet about an included one.
-	for _, bullet := range strings.Split(stripFencedBlocks(skillSection), "\n- ") {
+	for _, bullet := range strings.Split(stripFencedBlocks(skillSection, t), "\n- ") {
 		if !excludedFromValidateRE.MatchString(bullet) {
 			continue
 		}
@@ -495,8 +547,15 @@ func TestSprawlInternalsSkillBuildTargetsMatchMakefile(t *testing.T) {
 // a CLAIM that a target is excluded from validate, and a claim is prose: the
 // command-listing fence merely names targets, so leaving it in made every target
 // it lists inherit the exclusion sentence that follows the fence.
-func stripFencedBlocks(md string) string {
+func stripFencedBlocks(md string, t *testing.T) string {
+	t.Helper()
 	parts := strings.Split(md, "```")
+	// An odd number of fence markers means an unterminated block, which would
+	// silently INVERT which halves are kept — prose dropped, code scanned.
+	// Fail loudly rather than scanning the wrong text.
+	if len(parts)%2 == 0 {
+		t.Fatalf("control failed: unbalanced ``` fences (%d segments) — stripFencedBlocks would keep the wrong halves", len(parts))
+	}
 	var out []string
 	for i := 0; i < len(parts); i += 2 {
 		out = append(out, parts[i])
@@ -596,7 +655,12 @@ func TestSprawlInternalsSkillDependencyInjectionIsLive(t *testing.T) {
 			t.Fatalf("control failed: internal/agentops/%s now has a resolve-style accessor; re-check the claim below before trusting it", f)
 		}
 	}
-	if strings.Contains(section, "nil-defaulting accessors (`internal/agentops") {
-		t.Errorf("%s ## Code Patterns: still places the nil-defaulting accessors in internal/agentops; they live in cmd/ as resolveXxxDeps", sprawlInternalsSkill)
+	// Asserted POSITIVELY. The earlier form was a literal-string tripwire on the
+	// exact bytes that shipped the defect, which only a verbatim retype could
+	// trip — any reworded reintroduction of the same error passed it, so it was
+	// an assertion nobody could ever watch fail.
+	if !strings.Contains(section, "The nil-defaulting lives in `cmd/`, not in `internal/agentops`") {
+		t.Errorf("%s ## Code Patterns: must state plainly where the nil-defaulting lives (`cmd/`, not `internal/agentops`) — the paragraph previously misplaced it, and a positive claim is what keeps it correct",
+			sprawlInternalsSkill)
 	}
 }
