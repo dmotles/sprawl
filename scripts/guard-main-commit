@@ -4,7 +4,7 @@
 #
 # Refuses a `git commit` on the protected branch when the committing process is
 # a non-root sprawl agent. Identity is read from $SPRAWL_AGENT_IDENTITY:
-#   - "weave" (the root agent, see cmd/enter.go buildSessionEnv) => allowed.
+#   - "weave" (the root agent; set by backend/claude/adapter.go buildEnv) => allowed.
 #   - any other non-empty value (a child agent)                  => BLOCKED.
 #   - unset/empty (a human running git directly)                 => allowed.
 # Any branch other than the protected branch is always allowed.

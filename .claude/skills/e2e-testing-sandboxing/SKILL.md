@@ -236,9 +236,10 @@ installed but no credential reached it — so this class of misconfiguration now
 surfaces in one cheap check instead of N vacuous row failures. It proves the
 credential is *present*, not *valid*.
 
-`internal/agent/claude.go` honors `$SPRAWL_CLAUDE`: if set, it is used
-verbatim as the `claude` binary path; otherwise it falls back to a `PATH`
-lookup.
+`internal/memory/oneshot.go`'s `resolveClaudeBinary` honors `$SPRAWL_CLAUDE`:
+if set, it is used verbatim as the `claude` binary path; otherwise it falls
+back to a `PATH` lookup. (This said `internal/agent/claude.go` until QUM-1227
+deleted that file's never-called copy of the same logic.)
 
 **`scripts/run-claude -p '...'` does NOT validate harness auth (QUM-973).**
 It sources `$SPRAWL_ROOT/.env` directly and never exercises

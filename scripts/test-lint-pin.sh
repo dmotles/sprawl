@@ -242,7 +242,7 @@ BAD_NOSEC=$(printf '%s\n' "$NOSEC_HITS" | grep '//#nosec' | grep -vE '//#nosec [
 if [ -z "$NOSEC_HITS" ]; then
 	# Not a pass: this suite exists partly to police these directives, and a
 	# scan that finds none has probably stopped scanning.
-	fail "A5 found NO //#nosec directives at all — the scan is not measuring anything (QUM-1223 added three)"
+	fail "A5 found NO //#nosec directives at all — the scan is not measuring anything (QUM-1223 added three; QUM-1227 deleted one with internal/agent/claude.go, leaving two)"
 elif [ -z "$BAD_NOSEC" ]; then
 	pass "A5 every //#nosec names a rule ID and gives a reason ($(printf '%s\n' "$NOSEC_HITS" | grep -c '//#nosec') found)"
 else

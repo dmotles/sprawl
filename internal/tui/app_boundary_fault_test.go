@@ -331,8 +331,8 @@ func TestAppModel_BoundaryInterruptWithoutFault_StaysCleanInRootPane(t *testing.
 // a production invariant: the deferred notify at session.go:643-647 is gated on
 // `cur.autonomous`, and in production EVERY turnFrame is autonomous — the only
 // non-autonomous path is session.StartTurn, whose sole caller is
-// internal/host/session.go:43 (host.Session), which production never constructs
-// (cmd/enter.go builds only host.NewMCPBridge). So a real mid-turn fault also
+// nothing in the tree (host.Session, its only caller, was deleted as dead code;
+// cmd/enter.go builds only host.NewMCPBridge). So a real mid-turn fault also
 // gets the teardown and yields two surfaces. Omitting the teardown here is what
 // keeps this test from enshrining that double-publish shape as desired while
 // still failing loudly for the translator wrong fix. The double publish itself

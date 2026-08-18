@@ -33,6 +33,20 @@ func TestBuildRootPrompt_NoAskUserQuestion(t *testing.T) {
 	}
 }
 
+// TestBuildEngineerPrompt_InterpolatesIdentity uses a name and branch that
+// deliberately differ from the golden tuple ("zone"/"sprawl/zone"). The goldens
+// pin literal strings, so on their own they cannot distinguish interpolation
+// from a hardcoded name. Carried over from the deleted claude_test.go, which
+// was the only place that built this prompt with a different name.
+func TestBuildEngineerPrompt_InterpolatesIdentity(t *testing.T) {
+	prompt := BuildEngineerPrompt("frank", "root", "sprawl/frank", testEnvConfig())
+	for _, want := range []string{"frank", "sprawl/frank"} {
+		if !strings.Contains(prompt, want) {
+			t.Errorf("engineer prompt should interpolate %q", want)
+		}
+	}
+}
+
 func TestBuildEngineerPrompt_DoesNotContainTaskSection(t *testing.T) {
 	prompt := BuildEngineerPrompt("zone", "root", "sprawl/zone", testEnvConfig())
 
@@ -213,6 +227,21 @@ func defaultRootConfig(name string) PromptConfig {
 	return PromptConfig{
 		RootName: name,
 		AgentCLI: "claude-code",
+	}
+}
+
+// TestBuildRootPrompt_DoesNotContainRemovedTypes moved here from the deleted
+// claude_test.go (QUM-1227). It is a NEGATIVE guard and must not be treated as
+// golden-subsumed: TestGenerateGoldenFiles rewrites every golden wholesale, so a
+// reintroduced "tester" type would be blessed into the golden rather than caught
+// by it. "tester" is still live vocabulary in this package (see names.go's
+// NamePools), so this is not hypothetical.
+func TestBuildRootPrompt_DoesNotContainRemovedTypes(t *testing.T) {
+	prompt := BuildRootPrompt(defaultRootConfig("weave"))
+	for _, removed := range []string{`type: "tester"`, "--type tester"} {
+		if strings.Contains(prompt, removed) {
+			t.Errorf("root system prompt should not contain removed type: %q", removed)
+		}
 	}
 }
 

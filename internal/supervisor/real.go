@@ -203,7 +203,7 @@ type Real struct {
 }
 
 // realGitRevParseHEAD shells out to `git -C <dir> rev-parse HEAD`. stdio is
-// redirected to io.Discard (mirroring internal/worktree/worktree.go:branchExists)
+// redirected to io.Discard (mirroring internal/agentops/helpers.go:RealBranchExists)
 // so a missing ref / not-a-repo error cannot inherit the parent's FD 2 in TUI
 // mode. See QUM-330/QUM-304/QUM-342.
 func realGitRevParseHEAD(dir string) (string, error) {

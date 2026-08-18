@@ -12,8 +12,9 @@
 # before the fix the pending-zone entry (QUM-833) never settled and a dim
 # `› /status` row sat in the prompt area indefinitely.
 #
-# DO NOT substitute `/perf` here: QUM-934 will register it in sprawl, which makes
-# the reproduction vanish without fixing anything. DO NOT substitute `/help` (it
+# DO NOT substitute `/perf` here: it was DELETED in QUM-934 and will never be
+# registered, so it is not a stable example of an unknown command for a future
+# reader to reason from. DO NOT substitute `/help` (it
 # IS registered locally) or `/model` / `/context` / `/cost` (the CLI ACCEPTS those,
 # they echo, and they settled correctly before the fix — an assertion written
 # against them is green pre-fix and exercises nothing). `/model` appears below only

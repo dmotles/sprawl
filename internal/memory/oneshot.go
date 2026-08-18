@@ -52,24 +52,24 @@ func NewCLIInvoker() *CLIInvoker {
 // resolveClaudeBinary locates the claude binary. If $SPRAWL_CLAUDE is set and
 // non-empty it is used verbatim (typically the scripts/run-claude auth shim
 // that re-hydrates CLAUDE_CODE_OAUTH_TOKEN — see CLAUDE.md and QUM-518); the
-// path must exist. Otherwise it falls back to PATH lookup. Mirrors
-// internal/agent/claude.go's RealLauncher.FindBinary so the memory
-// regenerate/consolidate paths honor the same override as the rest of sprawl.
+// path must exist. Otherwise it falls back to PATH lookup.
+//
+// This was one of two copies of this logic. The other, agent.RealLauncher's
+// FindBinary, was deleted in QUM-1227: it never had a production caller, so
+// this is now the only implementation, not a mirror of one.
 func resolveClaudeBinary() (string, error) {
 	if override := os.Getenv("SPRAWL_CLAUDE"); override != "" {
-		// QUM-1223: same judgment as internal/agent/claude.go's
-		// RealLauncher.FindBinary, which this function deliberately mirrors —
-		// see the fuller reasoning there. In short: SPRAWL_CLAUDE IS the path
-		// rather than a component joined onto a base, so there is no
-		// confinement boundary for a "../" to escape; the value is at the
-		// process's own privilege in a local non-setuid CLI, so there is no
-		// privilege boundary either.
+		// QUM-1223: G703 flags os.Getenv -> os.Stat as tainted-path traversal.
+		// SPRAWL_CLAUDE IS the path rather than a component joined onto a base,
+		// so there is no confinement boundary for a "../" to escape; the value
+		// is at the process's own privilege in a local non-setuid CLI, so there
+		// is no privilege boundary either.
 		//
-		// Unlike the claude.go mirror, this site IS live: the path returned
-		// here reaches CLIInvoker.cmdFactory (= exec.CommandContext) and is
-		// EXECUTED. That is G204 territory, not G703, and is the accepted
-		// QUM-518 auth-shim design — unaffected by this directive.
-		//#nosec G703 -- SPRAWL_CLAUDE is the operator-supplied path to the binary sprawl will exec (QUM-518 shim); mirrors internal/agent/claude.go
+		// This site is live: the path returned here reaches
+		// CLIInvoker.cmdFactory (= exec.CommandContext) and is EXECUTED. That
+		// is G204 territory, not G703, and is the accepted QUM-518 auth-shim
+		// design — unaffected by this directive.
+		//#nosec G703 -- SPRAWL_CLAUDE is the operator-supplied path to the binary sprawl will exec (QUM-518 shim); the variable IS the path, so there is no base dir to confine it to
 		if _, err := os.Stat(override); err != nil {
 			return "", fmt.Errorf("SPRAWL_CLAUDE=%q: %w", override, err)
 		}

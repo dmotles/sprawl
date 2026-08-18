@@ -228,6 +228,14 @@ func TestSession_InitializeSendsInitSpecAndAwaitsHandshake(t *testing.T) {
 			return
 		}
 
+		// QUM-257: the system prompt travels via --system-prompt-file, so
+		// sending it here too would duplicate the whole thing. This absence
+		// guard came from the deleted internal/host/session_test.go, which
+		// asserted it against this same payload through a 4-line delegate.
+		if _, has := request["system_prompt"]; has {
+			t.Errorf("initialize request must omit system_prompt (QUM-257); got %v", request)
+		}
+
 		servers, ok := request["sdkMcpServers"].([]any)
 		if !ok {
 			t.Error("sdkMcpServers not present")

@@ -1,14 +1,15 @@
 package agentloop
 
-// flush.go is a thin re-export of internal/inboxprompt, so the prompt-shape
-// tests live there. Only the case with no twin in that package survives here:
-// it exercises internal/messages ID resolution, which inboxprompt cannot
-// import.
+// The prompt-shape tests live in internal/inboxprompt. This case cannot: it
+// exercises internal/messages ID resolution, and inboxprompt cannot import
+// messages. It stays in this package for that reason alone, and calls
+// inboxprompt directly — agentloop's re-export shim was deleted as dead.
 
 import (
 	"regexp"
 	"testing"
 
+	"github.com/dmotles/sprawl/internal/inboxprompt"
 	"github.com/dmotles/sprawl/internal/messages"
 )
 
@@ -32,7 +33,7 @@ func TestBuildQueueFlushPrompt_HintIDResolvesViaMessages(t *testing.T) {
 	}
 
 	entries := []Entry{{ID: "uuid-irrelevant", ShortID: shortID, From: "weave", Subject: "subj", Body: "body"}}
-	p := BuildQueueFlushPrompt(entries)
+	p := inboxprompt.BuildQueueFlushPrompt(entries)
 
 	re := regexp.MustCompile(`mcp__sprawl__messages_read\(id=([^)]+)\)`)
 	m := re.FindStringSubmatch(p)
