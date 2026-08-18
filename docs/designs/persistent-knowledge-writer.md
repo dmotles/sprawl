@@ -4,7 +4,7 @@
 **Scope:** `internal/memory`'s persistent-knowledge write path, invoked by `handoff`
 at session end.
 **Provenance:** follows the memory-store correction passes recorded in
-`docs/audits/2026-08-06-docs-restructure/memory-corrections/README.md`, which is
+`docs/archive/memory-corrections/README.md`, which is
 where the incident evidence lives. Read §II.0 there for how the loss was found.
 
 ---

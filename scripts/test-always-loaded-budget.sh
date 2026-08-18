@@ -8,7 +8,7 @@
 # anything if it has been WATCHED FAILING. The red-first evidence — which
 # assertion was watched failing, against what partial implementation, and what
 # it printed — is recorded in
-# docs/audits/2026-08-06-docs-restructure/budget-resolver.md, not claimed here.
+# docs/archive/budget-resolver.md, not claimed here.
 #
 # HARD BOUNDARY: this suite reads NOTHING from the real tree. Every assertion
 # runs against a throwaway git fixture, and CLAUDE_CONFIG_DIR is always pointed

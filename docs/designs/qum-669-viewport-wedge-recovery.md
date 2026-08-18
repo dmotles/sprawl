@@ -1,7 +1,7 @@
 # QUM-669 — TUI viewport wedge recovery after EventBus drops
 
-**Status:** rev 1 — design pass, awaiting impl-site selection (forge) once
-  citadel weighs in on B4's preferred landing.
+**Status:** shipped — see `internal/tui/messages.go:981`, `items.go:16`, and
+  `app.go:869` for the landing site.
 **Author:** ghost
 **Date:** 2026-06-03
 **Branch:** `dmotles/qum-669-design`

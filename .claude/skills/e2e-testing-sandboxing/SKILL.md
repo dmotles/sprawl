@@ -300,10 +300,7 @@ every `kill -9` of an agent mid-e2e leaked a sandbox deterministically. That is
 what the layers above exist for — and it is why the answer is `sprawl sandbox-gc`,
 never a bare `kill-server`.
 
-Longer analysis in `docs/research/qum-458-e2e-leak-analysis.md`. A docs
-restructure in flight relocates that file under an archive directory; if the path
-above stops resolving, search the tree for the leak analysis by name rather than
-assuming it was deleted.
+Longer analysis in `docs/archive/research/qum-458-e2e-leak-analysis.md`.
 
 ## Why this matters
 

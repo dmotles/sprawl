@@ -21,7 +21,7 @@ is a bug.
 | `reference/` | External facts the tree cannot re-derive: protocol surfaces, client behaviour, third-party contracts. Say which version you observed. | Anything about *our* code. That is `architecture/`. |
 | `audits/` | Dated decision records for an in-flight restructure. Carries an **exit** criterion: when its decisions are executed or superseded, it moves to `archive/`. | Ongoing work tracking. Linear is the tracker. |
 | `archive/` | Was true once. A one-way door — nothing exits. | Anything you want someone to rely on. |
-| `research/` | **Transitional — do not add to it.** It holds one file that states part of the security trust model and is held live until QUM-1138 records that model durably. The directory disappears when QUM-1138 lands. | Everything. New investigation goes to `.sprawl/agents/<name>/findings/`, or to `archive/` if it is worth keeping. |
+| `research/` | **Transitional — do not add to it.** It holds two entries — a file and an `open-source-readiness/` directory — that state part of the security trust model and are held live until QUM-1138 records that model durably. The directory disappears when QUM-1138 lands. | Everything. New investigation goes to `.sprawl/agents/<name>/findings/`, or to `archive/` if it is worth keeping. |
 
 ## If you are reading a file under `docs/archive/`
 
@@ -70,9 +70,12 @@ substantial share of this tree carries a last-modified date from a mechanical
 one-word edit or a rebase squash, reflecting no content change at all.
 
 **This rule is applied to its own authors.** The audit documents that produced
-this restructure enumerate a 144-file directory tree, so they live in
-`docs/archive/`, not in `docs/audits/`. A rule whose authors exempted themselves
-is not a rule.
+this restructure enumerated a 144-file directory tree, so on this restructure's
+own terms they had an exit criterion, not a home in `docs/audits/`: on
+2026-08-17 they were executed and removed — two relocated to `docs/archive/`
+(`budget-resolver.md`, `memory-corrections/README.md`), the rest deleted, since
+git history is the durable record of a completed decision. A rule whose authors
+exempted themselves is not a rule.
 
 ## Deliberately not here
 

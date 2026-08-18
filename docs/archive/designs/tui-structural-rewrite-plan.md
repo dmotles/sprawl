@@ -5,9 +5,10 @@ folded in; ready to file as Linear issues.
 **Author:** ghost
 **Date:** 2026-06-03 (rev 2)
 **Branch:** `dmotles/tui-structural-rewrite-planning`
-**Successor to:** `docs/designs/tui-redesign-research.md` (rev 3) — Phase 3
-of that plan is what this document re-decomposes after the QUM-650/658/659
-cutover was reverted.
+**Successor to:** `tui-redesign-research.md` (rev 3, deleted 2026-08-17 along
+with the rest of the uncited archive — see git history for its content) —
+Phase 3 of that plan is what this document re-decomposes after the
+QUM-650/658/659 cutover was reverted.
 
 **Rev 2 changes:**
 - All 7 open questions resolved by dmotles; §5 reworked from
