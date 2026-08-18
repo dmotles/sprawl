@@ -2088,9 +2088,12 @@ The `make validate` pipeline does NOT cover the live supervisor / TUI integratio
 
 ```bash
 make test-handoff-e2e          # supervisor + MCP handoff round-trip (QUM-329)
-make test-notify-tui-e2e       # TUI inbox-notifier delivery (QUM-311/312)
 make test-tui-e2e              # general TUI rendering smoke
 ```
+
+TUI inbox-notifier delivery (QUM-311/312) has no standalone `make` target any
+more — `make test-notify-tui-e2e` was deleted by QUM-1183 once the `notify-tui`
+matrix row proved flake-free; run `make test-e2e-matrix-notify-tui` instead.
 
 Each target requires a real `claude` binary on `PATH`; set `SPRAWL_E2E_SKIP_NO_CLAUDE=1` to skip in environments without one. They are **mandatory** before merging changes that touch the file lists called out in `CLAUDE.md` ("TUI-notifier changes are mandatory-tested" / "Handoff-path changes are mandatory-tested").
 

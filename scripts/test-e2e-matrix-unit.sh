@@ -192,7 +192,26 @@ FAIL=0
 # e2e_init_sandbox_repo). [3b] is independent of sections [21]-[23] (different
 # function, no seam interaction), so this is a straight sum, re-measured on a
 # FULL GREEN run after rebase — 652 passed / 0 failed.
-MIN_ASSERTIONS=652
+#
+# 652 -> 654 once QUM-1183 deleted the six tombstoned standalone drivers and
+# rewrote [19e] from "must exist and skip" to "must be gone, coherently" (see
+# the P19_EXCLUDE comment above and [19e] itself): same 2-assertions-per-script
+# loop shape (12, unchanged) plus 3 new controls (existence-check positive,
+# Makefile-coherence positive, Makefile-coherence negative).
+#
+# 654 -> 656 after code review (F1-F4 in
+# .sprawl/agents/finn/findings/qum-1183-review.md) found the [19e] controls
+# shared no code with the real predicate and could not detect the loop
+# iterating zero subjects. Fix: factored the predicate into
+# `_p19_makefile_references` (used by both the loop and its controls), widened
+# it past a bare recipe/path match to catch a stale `.PHONY` entry or bare
+# prerequisite (F3's two reported near-misses), added those two as new
+# positive controls, and added an iteration-count control pinning the loop at
+# exactly 6 subjects (F4) in place of the old control that tested bash's `-e`
+# against $MAKEFILE and shared no state with the loop. Net effect: +1 control
+# (3 -> 4) +1 iteration-count arm = +2. Re-measured on a FULL GREEN run — 656
+# passed / 0 failed.
+MIN_ASSERTIONS=656
 # A [16b] nested child deliberately does NOT re-run section [16] (recursing would
 # fork-bomb, and counting there would corrupt the parity comparison), so it asserts
 # strictly fewer things and needs its own floor. Measured at de22410: 237; 238 after
@@ -257,7 +276,13 @@ MIN_ASSERTIONS=652
 # 632 after rebasing QUM-1119's marker fix (ratz) onto this branch (+1, [3b]
 # is not gated on UNIT_NESTED_SEAM_CHECK so the child runs it too). Measured
 # directly with a valid nonce after rebase: "632 passed / 0 failed".
-MIN_ASSERTIONS_NESTED=632
+#
+# 632 -> 636 for the same QUM-1183 [19e] rewrite and its code-review follow-up
+# documented at the parent MIN_ASSERTIONS above (+2, then +2 again, unchanged
+# from the parent deltas): [19e] does not reference UNIT_NESTED_SEAM_CHECK, so
+# a nested child runs it in full and gains the same net assertions the parent
+# did. Measured directly with a valid nonce: "636 passed / 0 failed".
+MIN_ASSERTIONS_NESTED=636
 
 # Pin the temp root. This suite runs inside `make validate` and therefore inside
 # the pre-commit hook, so it must not inherit the committing agent's TMPDIR:
@@ -4545,7 +4570,7 @@ else
 	pass "19c: positive control — the tree-corpus floor is non-zero, so it is not satisfied by an empty corpus"
 fi
 if [ "$_p19_tree_excluded" -eq "$P19_EXCLUDE_N" ]; then
-	pass "19c: the tree corpus applied all $P19_EXCLUDE_N exclusions (the inert standalone drivers and this suite)"
+	pass "19c: the tree corpus applied all $P19_EXCLUDE_N exclusions (this suite's own self-exclusion, per the P19_EXCLUDE comment above)"
 else
 	fail "19c: the tree corpus applied $_p19_tree_excluded of $P19_EXCLUDE_N exclusions — the exclusion list is not the set this section believes it is"
 fi
@@ -5401,59 +5426,97 @@ _p19_is_skipping_driver() {
 }
 
 echo "[19e] the pre-matrix standalone drivers are deleted, coherently"
+# Single predicate shared by the loop below AND its controls (code review,
+# F2: a hand-typed duplicate in the controls proves only that a regex the
+# author typed by hand matches a fixture the author typed by hand). Widened
+# past a bare recipe-line/path match (code review, F3: a half-revert that
+# drops the recipe but leaves the script's name in .PHONY, or as a bare
+# prerequisite on another target, is a real stale reference and the original
+# anchored pattern missed both) to a word-boundary scan for the bare target
+# name anywhere in the file, plus the literal script path.
+_p19_makefile_references() {  # $1 = makefile path, $2 = script basename
+	local _mk="$1" _base="$2" _tgt="${2%.sh}"
+	grep -qE "(^|[[:space:]])${_tgt}([[:space:]]|:|\$)|scripts/${_base}\b" "$_mk"
+}
 _p19_standalones='test-ask-user-question-e2e.sh:ask-user-question
 test-notify-tui-e2e.sh:notify-tui
 test-drain-row-inject-e2e.sh:drain-row-inject
 test-wake-live-e2e.sh:wake-live
 test-bridge-lifecycle-e2e.sh:wake-live
 test-merge-reuse-e2e.sh:merge-reuse'
+_p19_seen=0
 while IFS=: read -r _s _row; do
 	[ -n "$_s" ] || continue
+	_p19_seen=$((_p19_seen + 1))
 	_sp="$REPO_ROOT/scripts/$_s"
-	_starget=${_s%.sh}
 	if [ -e "$_sp" ]; then
 		fail "19e: $_s still exists on disk — QUM-1183 deleted it; a stray copy or an unstaged revert would silently resurrect dead code that duplicates matrix row \`$_row\`"
 		fail "19e: $_s's Makefile coherence is unverified (file still present)"
 		continue
 	fi
 	pass "19e: $_s is gone from scripts/ (coverage lives in matrix row \`$_row\`)"
-	if grep -qE "(^${_starget}:|scripts/${_s}\b)" "$MAKEFILE"; then
-		fail "19e: $_s is deleted but the Makefile still references it (target \`$_starget\` or the script path) — stale target"
+	if _p19_makefile_references "$MAKEFILE" "$_s"; then
+		fail "19e: $_s is deleted but the Makefile still references it (target, .PHONY entry, prerequisite, or the script path) — stale reference"
 	else
-		pass "19e: no stale Makefile reference to $_s or its \`$_starget\` target"
+		pass "19e: no stale Makefile reference to $_s (target, .PHONY, prerequisite, or path)"
 	fi
 done <<P19STANDALONES
 $_p19_standalones
 P19STANDALONES
-# Controls for the two predicates the loop above rests on, planted rather
-# than waited for — the same reasoning [19e]'s other controls use.
+# Iteration-count control (code review, F4: the prior positive control tested
+# bash's `-e` builtin against $MAKEFILE, which shares no state with the loop
+# and cannot detect the loop's real vacuity mode — the heredoc coming back
+# empty, or a mangled `IFS=:` split silently iterating zero subjects, which
+# would make every one of the twelve assertions above disappear while every
+# other control here still passes).
+if [ "$_p19_seen" -eq 6 ]; then
+	pass "19e: the standalone-driver loop actually iterated all 6 subjects (not a silently empty run)"
+else
+	fail "19e: the standalone-driver loop iterated $_p19_seen subject(s), not 6 — the assertions above examined a different set than this section claims"
+fi
+# Controls for the shared predicate, planted rather than waited for — the
+# same reasoning [19e]'s other controls use. Same fixtures, one subject
+# (_p19_makefile_references), so a regression in the real predicate is what
+# these controls actually exercise.
 if [ -n "$P19_FIX" ]; then
-	# POSITIVE (existence check): a script path known to exist must be caught,
-	# proving the branch above is not vacuously true over an already-absent set.
-	if [ -e "$MAKEFILE" ]; then
-		pass "19e: positive control — the existence check fires on a subject known to be present ($MAKEFILE)"
-	else
-		fail "19e: positive control FAILED — \$MAKEFILE itself was not found, so the existence branch cannot be exercised"
-	fi
-	# POSITIVE (Makefile coherence): a fixture Makefile that DOES still
-	# reference a deleted driver's target must be caught.
+	# POSITIVE: a fixture Makefile with a live recipe for a deleted driver's
+	# target must be caught.
 	printf 'test-notify-tui-e2e: build\n\tbash scripts/test-notify-tui-e2e.sh\n' >"$P19_FIX/stale.mk"
-	if grep -qE '(^test-notify-tui-e2e:|scripts/test-notify-tui-e2e\.sh\b)' "$P19_FIX/stale.mk"; then
-		pass "19e: positive control — the Makefile-coherence check fires on a fixture that still references a deleted driver"
+	if _p19_makefile_references "$P19_FIX/stale.mk" test-notify-tui-e2e.sh; then
+		pass "19e: positive control — the Makefile-coherence check fires on a fixture with a live recipe for a deleted driver"
 	else
-		fail "19e: positive control FAILED — the Makefile-coherence check missed a fixture that plainly still references a deleted driver"
+		fail "19e: positive control FAILED — the Makefile-coherence check missed a fixture with a live recipe for a deleted driver"
 	fi
-	# NEGATIVE (Makefile coherence): a fixture with neither the target nor the
+	# POSITIVE (F3's failure scenario): a half-revert that drops the recipe
+	# but leaves the target in .PHONY must still be caught.
+	printf '.PHONY: build test-notify-tui-e2e\nbuild:\n\tgo build .\n' >"$P19_FIX/phony-only.mk"
+	if _p19_makefile_references "$P19_FIX/phony-only.mk" test-notify-tui-e2e.sh; then
+		pass "19e: positive control — the Makefile-coherence check fires on a .PHONY-only stale reference (F3's near-miss)"
+	else
+		fail "19e: positive control FAILED — the Makefile-coherence check missed a .PHONY-only stale reference, exactly F3's reported gap"
+	fi
+	# POSITIVE (F3's other failure scenario): the deleted target surviving as
+	# a bare prerequisite on another target must be caught too — this is the
+	# shape that makes `make validate` itself fail with "No rule to make
+	# target" if missed.
+	printf 'validate: build test-notify-tui-e2e\nbuild:\n\tgo build .\n' >"$P19_FIX/prereq-only.mk"
+	if _p19_makefile_references "$P19_FIX/prereq-only.mk" test-notify-tui-e2e.sh; then
+		pass "19e: positive control — the Makefile-coherence check fires on a bare-prerequisite stale reference (F3's other near-miss)"
+	else
+		fail "19e: positive control FAILED — the Makefile-coherence check missed a bare-prerequisite stale reference"
+	fi
+	# NEGATIVE: a fixture with neither the target (in any position) nor the
 	# script path must stay quiet.
 	printf 'build:\n\tgo build .\n' >"$P19_FIX/clean.mk"
-	if grep -qE '(^test-notify-tui-e2e:|scripts/test-notify-tui-e2e\.sh\b)' "$P19_FIX/clean.mk"; then
+	if _p19_makefile_references "$P19_FIX/clean.mk" test-notify-tui-e2e.sh; then
 		fail "19e: negative control FAILED — the Makefile-coherence check fired on a fixture with no reference to the deleted driver"
 	else
 		pass "19e: negative control — the Makefile-coherence check stays quiet on a fixture with no stale reference"
 	fi
 else
-	fail "19e: no fixture dir — the existence-check positive control did not run"
-	fail "19e: no fixture dir — the Makefile-coherence positive control did not run"
+	fail "19e: no fixture dir — the Makefile-coherence positive control (live recipe) did not run"
+	fail "19e: no fixture dir — the Makefile-coherence positive control (.PHONY-only) did not run"
+	fail "19e: no fixture dir — the Makefile-coherence positive control (bare prerequisite) did not run"
 	fail "19e: no fixture dir — the Makefile-coherence negative control did not run"
 fi
 

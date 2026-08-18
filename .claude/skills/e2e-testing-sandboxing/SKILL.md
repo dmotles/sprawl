@@ -281,10 +281,11 @@ The sandbox harness has a defense-in-depth lifecycle to prevent leaks (orphan
 5. **Janitor (Layer 4).** `sprawl sandbox-gc [--dry-run] [--max-age=DUR]`
    reaps stale tmux sockets, old `/tmp/sprawl-*` dirs, and orphan claude
    processes. Run it from cron, post-test hooks, or manually when in doubt.
-   The `make test-handoff-e2e`, `test-notify-tui-e2e`, `test-tui-e2e`,
-   and `test-parallel-agent-viewport-e2e` targets automatically invoke
+   The `make test-handoff-e2e`, `test-tui-e2e`, and
+   `test-parallel-agent-viewport-e2e` targets automatically invoke
    `./sprawl sandbox-gc --max-age=10m` after the script regardless of
-   pass/fail.
+   pass/fail (`test-notify-tui-e2e` was one of these before QUM-1183
+   deleted it once the `notify-tui` matrix row proved flake-free).
 
 Parent agents (e.g. weave) should periodically run
 `./sprawl sandbox-gc --max-age=2h` to catch anything that slipped past
