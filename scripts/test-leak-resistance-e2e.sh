@@ -150,8 +150,8 @@ run_case() {
 }
 
 run_case "test-handoff-e2e.sh"     "sprawl-handoff-e2e-"   "handoff-e2e"
-# QUM-1186 lane 5: repointed off scripts/test-notify-tui-e2e.sh, which now
-# exits 77 in milliseconds because a matrix row supersedes it. Left alone, this
+# QUM-1186 lane 5: repointed off scripts/test-notify-tui-e2e.sh, since deleted
+# (QUM-1183) because a matrix row supersedes it. Left alone, this
 # case would have SIGKILL'd nothing, found no /tmp sandbox, and been recorded by
 # the SETUP_FAIL guard below as "never ran" — a case whose every leak assertion
 # is an absence satisfied by a scenario that never started. Deleting the case

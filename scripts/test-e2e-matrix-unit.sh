@@ -3740,11 +3740,19 @@ fi
 echo "[18s] every capture_pane caller reaches a fault gate"
 _cap_ungated=""
 _cap_gated_seen=0
+# Floor deliberately lowered from 9 to 3 by QUM-1183, which deleted six of
+# the legacy scripts/test-*-e2e.sh drivers (their capture_pane calls were dead
+# code below an `exit 77` anyway) plus scripts/test-paste-coalesce-e2e.sh.
+# Re-measured against the surviving corpus at deletion time: exactly 3
+# (test-handoff-e2e.sh, test-tui-e2e.sh, test-parallel-agent-viewport-e2e.sh).
+# Lowered deliberately, per this suite's own floor-maintenance convention —
+# never left to silently ratchet down with the corpus, and never raised to
+# a number the current corpus cannot reach either.
 _cap_legacy_expected=$(ls "$REPO_ROOT"/scripts/test-*-e2e.sh 2>/dev/null | xargs -r grep -lE '(^|[^a-z_])capture_pane' 2>/dev/null | grep -c . )
-if [ "${_cap_legacy_expected:-0}" -ge 9 ]; then
+if [ "${_cap_legacy_expected:-0}" -ge 3 ]; then
 	pass "18s: found $_cap_legacy_expected legacy scripts/test-*-e2e.sh driver(s) that capture panes"
 else
-	fail "18s: only ${_cap_legacy_expected:-0} legacy driver(s) capture panes — expected at least 9, so the gate scan below would be vacuous"
+	fail "18s: only ${_cap_legacy_expected:-0} legacy driver(s) capture panes — expected at least 3, so the gate scan below would be vacuous"
 fi
 while IFS= read -r _f; do
 	[ -n "$_f" ] || continue
@@ -3767,10 +3775,10 @@ while IFS= read -r _f; do
 done <<CAPSITES
 $_cap_sites
 CAPSITES
-if [ "$_cap_gated_seen" -ge "${_cap_legacy_expected:-9}" ]; then
+if [ "$_cap_gated_seen" -ge "${_cap_legacy_expected:-3}" ]; then
 	pass "18s: $_cap_gated_seen standalone driver(s) gate on a capture-fault check at top level"
 else
-	fail "18s: only $_cap_gated_seen standalone driver(s) gate on a capture-fault check — expected at least ${_cap_legacy_expected:-9}"
+	fail "18s: only $_cap_gated_seen standalone driver(s) gate on a capture-fault check — expected at least ${_cap_legacy_expected:-3}"
 fi
 if [ -z "$_cap_ungated" ]; then
 	pass "18s: no capture_pane caller is left without a fault gate"
@@ -4131,20 +4139,19 @@ P19_NEVER_EXISTED='messages_send'
 
 # Scripts deliberately outside the corpus, matched on REPO-RELATIVE PATH rather
 # than basename — a basename exclusion would silently drop a future matrix row
-# that happened to share a name. tower's ruling on the pre-matrix standalone
-# duplicates (QUM-1186 lane 5) is that they exit 77 at the top rather than
-# being migrated twice or deleted in this slice: a script that runs nothing
-# cannot drift and cannot false-green, so its residual tokens are inert. [19e]
-# is what keeps that true. This suite excludes itself because its own fixtures
-# must contain the forbidden tokens in order to control the scan.
-P19_EXCLUDE='scripts/test-ask-user-question-e2e.sh
-scripts/test-notify-tui-e2e.sh
-scripts/test-drain-row-inject-e2e.sh
-scripts/test-wake-live-e2e.sh
-scripts/test-bridge-lifecycle-e2e.sh
-scripts/test-merge-reuse-e2e.sh
-scripts/test-e2e-matrix-unit.sh'
-P19_EXCLUDE_N=7
+# that happened to share a name. Until QUM-1183 this list also carried the six
+# pre-matrix standalone duplicates (ask-user-question, notify-tui,
+# drain-row-inject, wake-live, bridge-lifecycle, merge-reuse): tower's earlier
+# ruling (QUM-1186 lane 5) was that they exit 77 at the top rather than being
+# migrated twice or deleted in that slice, and [19e] asserted they stayed
+# present and inert. QUM-1183 is the follow-up that actually deletes them, so
+# they are gone from disk now and have no reason to remain in an exclusion
+# list — an entry that can never match a real file is exactly the kind of
+# assertion that cannot fail. Only this suite's self-exclusion remains: it
+# excludes itself because its own fixtures must contain the forbidden tokens
+# in order to control the scan.
+P19_EXCLUDE='scripts/test-e2e-matrix-unit.sh'
+P19_EXCLUDE_N=1
 
 # Both scans report an unreadable file ON THE SAME CHANNEL as a violation,
 # rather than bumping a counter. The counter form was a defect: the scans are
@@ -5365,21 +5372,22 @@ else
 fi
 
 # --- 19e: the pre-matrix standalone duplicates skip loudly ------------------
-# tower's ruling (QUM-1186 lane 5): the six pre-matrix standalone drivers are
-# not migrated twice and not deleted in this slice — they exit 77 at the top,
-# naming the matrix row that supersedes them. A script that runs nothing cannot
-# drift out of sync with the row it duplicates and cannot false-green.
+# tower's earlier ruling (QUM-1186 lane 5) was that the six pre-matrix
+# standalone drivers were not migrated twice and not deleted in that slice —
+# they exit 77 at the top, naming the matrix row that supersedes them. A
+# script that runs nothing cannot drift out of sync with the row it
+# duplicates and cannot false-green. QUM-1183 is the follow-up that actually
+# deletes them, so this section's expectation flips: it now asserts the six
+# are GONE, and gone COHERENTLY — no stale Makefile target left pointing at a
+# deleted script, mirroring section [12]'s treatment of test-merge-reuse-e2e.sh.
 #
-# The skip message is pinned on a FIXED PHRASE plus the row name, never the row
-# name alone: `test-notify-tui-e2e.sh` contains the substring "notify-tui" in
-# its own banner, so the bare-name check PASSED against the unmigrated script.
-# Measured on the red run — an assertion that could not fail, in the section
-# written to eliminate assertions that cannot fail.
-#
-# Execution is gated behind the static pin. These six build a binary, allocate
-# a /tmp sandbox and start tmux if they are NOT skipping, so running one to
-# find out whether it skips is the wrong order: the static check proves the
-# subject is on its millisecond path, and only then is it executed.
+# The skip message was pinned on a FIXED PHRASE plus the row name, never the
+# row name alone: `test-notify-tui-e2e.sh` contains the substring "notify-tui"
+# in its own banner, so the bare-name check PASSED against the unmigrated
+# script. That helper (`_p19_declares_supersede`) and its sibling
+# `_p19_is_skipping_driver` stay defined below — they are still exercised by
+# [19e]'s leak-resistance arm further down, which must keep detecting a
+# superseded-but-undeleted subject in general, not just these six by name.
 P19_SUPERSEDE_PHRASE='superseded by matrix row'
 
 # Does FILE advertise itself as superseded by matrix row $2? Factored out so
@@ -5392,7 +5400,7 @@ _p19_is_skipping_driver() {
 	grep -qF "$P19_SUPERSEDE_PHRASE" "$1" 2>/dev/null
 }
 
-echo "[19e] the pre-matrix standalone drivers exit 77 and name their successor row"
+echo "[19e] the pre-matrix standalone drivers are deleted, coherently"
 _p19_standalones='test-ask-user-question-e2e.sh:ask-user-question
 test-notify-tui-e2e.sh:notify-tui
 test-drain-row-inject-e2e.sh:drain-row-inject
@@ -5402,37 +5410,52 @@ test-merge-reuse-e2e.sh:merge-reuse'
 while IFS=: read -r _s _row; do
 	[ -n "$_s" ] || continue
 	_sp="$REPO_ROOT/scripts/$_s"
-	if [ ! -r "$_sp" ]; then
-		fail "19e: $_s is missing — expected it present and skipping, per tower's ruling that deleting these is a separate issue"
-		fail "19e: $_s's skip is unverified (file missing)"
+	_starget=${_s%.sh}
+	if [ -e "$_sp" ]; then
+		fail "19e: $_s still exists on disk — QUM-1183 deleted it; a stray copy or an unstaged revert would silently resurrect dead code that duplicates matrix row \`$_row\`"
+		fail "19e: $_s's Makefile coherence is unverified (file still present)"
 		continue
 	fi
-	if _p19_declares_supersede "$_sp" "$_row"; then
-		pass "19e: $_s names the matrix row that supersedes it (\`$_row\`)"
+	pass "19e: $_s is gone from scripts/ (coverage lives in matrix row \`$_row\`)"
+	if grep -qE "(^${_starget}:|scripts/${_s}\b)" "$MAKEFILE"; then
+		fail "19e: $_s is deleted but the Makefile still references it (target \`$_starget\` or the script path) — stale target"
 	else
-		fail "19e: $_s does not carry the phrase \"$P19_SUPERSEDE_PHRASE '$_row'\" — a reader told the coverage is gone is not told where it went"
-		fail "19e: $_s was NOT executed to confirm it exits 77 — without the skip header it would build a binary and allocate a sandbox from inside make validate"
-		continue
+		pass "19e: no stale Makefile reference to $_s or its \`$_starget\` target"
 	fi
-	# `-k 5`: these spawn tmux servers and a built binary that outlive a bare
-	# SIGTERM. `</dev/null` so a subject that grows a `read` cannot eat the
-	# remaining rows of this loop's here-doc and silently shorten it.
-	_out=$(timeout -k 5 20 bash "$_sp" 2>&1 </dev/null)
-	_rc=$?
-	case "$_rc" in
-		77)
-			pass "19e: $_s exits 77 (skip), so it cannot false-green and cannot drift from $_row"
-			;;
-		124 | 137)
-			fail "19e: $_s carries the skip header but did NOT exit within 20s (rc=$_rc) — it is doing real work despite advertising a skip"
-			;;
-		*)
-			fail "19e: $_s exited $_rc, not 77 — a floorless duplicate of $_row with no aggregator behind it, or a failure for an unrelated reason"
-			;;
-	esac
 done <<P19STANDALONES
 $_p19_standalones
 P19STANDALONES
+# Controls for the two predicates the loop above rests on, planted rather
+# than waited for — the same reasoning [19e]'s other controls use.
+if [ -n "$P19_FIX" ]; then
+	# POSITIVE (existence check): a script path known to exist must be caught,
+	# proving the branch above is not vacuously true over an already-absent set.
+	if [ -e "$MAKEFILE" ]; then
+		pass "19e: positive control — the existence check fires on a subject known to be present ($MAKEFILE)"
+	else
+		fail "19e: positive control FAILED — \$MAKEFILE itself was not found, so the existence branch cannot be exercised"
+	fi
+	# POSITIVE (Makefile coherence): a fixture Makefile that DOES still
+	# reference a deleted driver's target must be caught.
+	printf 'test-notify-tui-e2e: build\n\tbash scripts/test-notify-tui-e2e.sh\n' >"$P19_FIX/stale.mk"
+	if grep -qE '(^test-notify-tui-e2e:|scripts/test-notify-tui-e2e\.sh\b)' "$P19_FIX/stale.mk"; then
+		pass "19e: positive control — the Makefile-coherence check fires on a fixture that still references a deleted driver"
+	else
+		fail "19e: positive control FAILED — the Makefile-coherence check missed a fixture that plainly still references a deleted driver"
+	fi
+	# NEGATIVE (Makefile coherence): a fixture with neither the target nor the
+	# script path must stay quiet.
+	printf 'build:\n\tgo build .\n' >"$P19_FIX/clean.mk"
+	if grep -qE '(^test-notify-tui-e2e:|scripts/test-notify-tui-e2e\.sh\b)' "$P19_FIX/clean.mk"; then
+		fail "19e: negative control FAILED — the Makefile-coherence check fired on a fixture with no reference to the deleted driver"
+	else
+		pass "19e: negative control — the Makefile-coherence check stays quiet on a fixture with no stale reference"
+	fi
+else
+	fail "19e: no fixture dir — the existence-check positive control did not run"
+	fail "19e: no fixture dir — the Makefile-coherence positive control did not run"
+	fail "19e: no fixture dir — the Makefile-coherence negative control did not run"
+fi
 
 # The one place tower's option (b) can still produce a vacuous green:
 # scripts/test-leak-resistance-e2e.sh drives drivers as subjects and asserts an

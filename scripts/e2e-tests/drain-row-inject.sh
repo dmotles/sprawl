@@ -1,6 +1,7 @@
 #!/usr/bin/env bash
 # scripts/e2e-tests/drain-row-inject.sh — QUM-569 regression guard.
-# Migrated from scripts/test-drain-row-inject-e2e.sh (which remains in place).
+# Migrated from scripts/test-drain-row-inject-e2e.sh, which was deleted once
+# this row proved flake-free (QUM-1183).
 # Drives a real claude child to call mcp__sprawl__send_message so the
 # Send → defaultNotifier → WakeForDelivery → claude prompt-inject →
 # drain-row citation pipeline is exercised end-to-end.

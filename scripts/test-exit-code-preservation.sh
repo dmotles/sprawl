@@ -19,9 +19,9 @@ fail() { FAIL_COUNT=$((FAIL_COUNT + 1)); echo "  FAIL: $1" >&2; }
 
 REPO_ROOT="$(cd "$(dirname "$0")/.." && pwd)"
 
-# --- Test 1: test-notify-tui-e2e.sh cleanup preserves non-zero exit ---
+# --- Test 1: shared e2e-common.sh cleanup preserves non-zero exit ---
 
-echo "=== Test 1: test-notify-tui-e2e.sh cleanup preserves exit code ==="
+echo "=== Test 1: e2e-common.sh cleanup preserves exit code ==="
 
 # Extract and test the actual cleanup pattern from the script by
 # running a minimal harness that sources the same trap shape.
@@ -36,8 +36,8 @@ set -euo pipefail
 SPRAWL_ROOT="'"$TMPDIR_TEST"'"
 SESSION="qum328-fake-session-does-not-exist"
 
-# This is the cleanup function from test-notify-tui-e2e.sh.
-# Source the actual script pattern:
+# This is the cleanup function shared by the e2e matrix rows via
+# scripts/lib/e2e-common.sh (its _e2e_cleanup). Source the actual pattern:
 cleanup() {
     local rc=$?
     if tmux has-session -t "$SESSION" 2>/dev/null; then
@@ -105,16 +105,16 @@ fi
 
 echo "=== Test 3: grep for exit-code-preserving cleanup pattern in real scripts ==="
 
-for script_name in test-notify-tui-e2e.sh test-handoff-e2e.sh; do
-    SCRIPT="$REPO_ROOT/scripts/$script_name"
+for script_path in scripts/lib/e2e-common.sh scripts/test-handoff-e2e.sh; do
+    SCRIPT="$REPO_ROOT/$script_path"
     if [ ! -f "$SCRIPT" ]; then
-        fail "$script_name not found at $SCRIPT"
+        fail "$script_path not found at $SCRIPT"
     else
         # Check that the cleanup function captures $? and exits with it
         if grep -q 'local rc=\$?' "$SCRIPT" && grep -q 'exit "\$rc"' "$SCRIPT"; then
-            pass "$script_name cleanup captures and preserves exit code"
+            pass "$script_path cleanup captures and preserves exit code"
         else
-            fail "$script_name cleanup does NOT preserve exit code (missing 'local rc=\$?' or 'exit \"\$rc\"')"
+            fail "$script_path cleanup does NOT preserve exit code (missing 'local rc=\$?' or 'exit \"\$rc\"')"
         fi
     fi
 done

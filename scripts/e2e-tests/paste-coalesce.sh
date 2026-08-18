@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 # scripts/e2e-tests/paste-coalesce.sh — QUM-608 paste-coalescer regression
-# guard. Migrated from scripts/test-paste-coalesce-e2e.sh (which remains in
-# place until soak completes; do not edit the original — see QUM-616 Wave 2A).
+# guard. Migrated from scripts/test-paste-coalesce-e2e.sh (see QUM-616 Wave 2A),
+# which was deleted once this row proved flake-free (QUM-1183).
 #
 # Phase 1: inject a 200-char literal burst via `tmux send-keys -l` and assert
 #          the QUM608HEAD…QUM608TAIL payload lands in the pane within 5s

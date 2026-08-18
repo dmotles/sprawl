@@ -1,6 +1,7 @@
 #!/usr/bin/env bash
 # scripts/e2e-tests/merge-reuse.sh — QUM-511/QUM-489 regression guard.
-# Migrated from scripts/test-merge-reuse-e2e.sh (which remains in place).
+# Migrated from scripts/test-merge-reuse-e2e.sh, which was deleted once this
+# row proved flake-free (QUM-1183).
 # Pure shell — no claude required.
 
 # QUM-1029: the count of assertions a COMPLETE run makes. This row is

@@ -1,4 +1,4 @@
-.PHONY: lint-cache-dir test-lint-pin validate build hooks-armed proto-check proto-gen proto-gen-web hub-web fmt-check lint test clean install fmt hooks leak-scan test-notify-tui-e2e test-handoff-e2e test-bridge-lifecycle-e2e test-exit-code-preservation test-parallel-agent-viewport-e2e test-tui-e2e test-leak-resistance-e2e test-merge-reuse-e2e test-ask-user-question-e2e test-drain-row-inject-e2e test-wake-live-e2e test-paste-coalesce-e2e test-e2e-matrix test-e2e-matrix-unit test-hooks-e2e test-hub-bootstrap test-hub-e2e test-wirelog-helpers-unit test-e2e-lockwait-unit test-gitignore-classes test-race test-race-gate always-loaded-budget test-always-loaded-budget-unit
+.PHONY: lint-cache-dir test-lint-pin validate build hooks-armed proto-check proto-gen proto-gen-web hub-web fmt-check lint test clean install fmt hooks leak-scan test-handoff-e2e test-exit-code-preservation test-parallel-agent-viewport-e2e test-tui-e2e test-leak-resistance-e2e test-e2e-matrix test-e2e-matrix-unit test-hooks-e2e test-hub-bootstrap test-hub-e2e test-wirelog-helpers-unit test-e2e-lockwait-unit test-gitignore-classes test-race test-race-gate always-loaded-budget test-always-loaded-budget-unit
 
 # Default target — full quality gauntlet
 validate: build hooks-armed proto-check fmt-check lint test-lint-pin test-race-gate test-race test-wirelog-helpers-unit test-e2e-lockwait-unit test-e2e-matrix-unit test-always-loaded-budget-unit always-loaded-budget test-gitignore-classes leak-scan
@@ -308,20 +308,6 @@ hooks:
 	chmod +x .git/hooks/reference-transaction
 	@echo "Pre-commit and main-ref guard hooks installed."
 
-# SUPERSEDED — this target no longer tests anything. QUM-1186 deleted the
-# `report_status` tool and the state fields the script probed with, so
-# scripts/test-notify-tui-e2e.sh now exits 77 (skip) at the top rather than
-# false-greening on assertions whose subject is gone. The TUI-mode
-# parent-notification coverage (QUM-312) lives in matrix row `notify-tui`:
-#
-#     make test-e2e-matrix-notify-tui
-#
-# Deleting this target and its script is tracked separately (QUM-1186 lane 5
-# hand-off). Until then it is kept so an existing invocation gets the rc-77
-# skip and the pointer above rather than a "no rule to make target" error.
-test-notify-tui-e2e: build
-	bash scripts/test-notify-tui-e2e.sh; rc=$$?; ./sprawl sandbox-gc --max-age=10m || true; exit $$rc
-
 # Opt-in end-to-end regression guard for QUM-329: TUI handoff restart
 # must fire when weave calls `handoff` via MCP. Spins up an
 # isolated /tmp sandbox, launches `sprawl enter` in a detached tmux
@@ -337,21 +323,6 @@ test-notify-tui-e2e: build
 # HandoffRequestedMsg/SessionRestartingMsg/RestartSessionMsg handlers.
 test-handoff-e2e: build
 	bash scripts/test-handoff-e2e.sh; rc=$$?; ./sprawl sandbox-gc --max-age=10m || true; exit $$rc
-
-# Opt-in end-to-end regression guard for QUM-467: child agents must NOT
-# lose MCP connectivity when weave's claude subprocess is restarted.
-# Spins up an isolated /tmp sandbox, launches `sprawl enter`, plants a
-# synthetic child, has the child send a message to weave (asserts it
-# lands), drives weave to call mcp__sprawl__handoff (restart), then has
-# the SAME child send another message and asserts it ALSO lands. Pre-fix
-# the post-restart send fails with "stream closed" or the message
-# silently doesn't land in weave's maildir. Not part of `make validate`
-# — runs real subprocesses, launches real claude, interacts with tmux.
-# See scripts/test-bridge-lifecycle-e2e.sh. Mandatory before merging any
-# change to cmd/enter.go's bridge wiring or
-# internal/supervisor/runtime_launcher*.go's InitSpec capture.
-test-bridge-lifecycle-e2e: build
-	bash scripts/test-bridge-lifecycle-e2e.sh; rc=$$?; ./sprawl sandbox-gc --max-age=10m || true; exit $$rc
 
 # QUM-386: E2E test for parallel Agent tool call rendering in the TUI
 # viewport. Uses a fake claude binary (no real claude needed) to emit
@@ -375,89 +346,6 @@ test-leak-resistance-e2e: build
 # across cleanup traps. Lightweight (no claude/tmux/spawl needed).
 test-exit-code-preservation:
 	bash scripts/test-exit-code-preservation.sh
-
-# QUM-511 / QUM-489: end-to-end regression guard. When an agent's worktree
-# HEAD moves to a new branch but state.json still records the spawn-time
-# branch, `sprawl merge` must follow the worktree's actual current branch.
-# QUM-1186: this comment previously cited a "delegate-style branch swap".
-# That mechanism is deleted; the field still goes stale for the more general
-# reason above (any agent may check out or create a branch in its own
-# worktree), so the guard stays. This mirrors the note on the
-# `deps.CurrentBranch(agentState.Worktree)` resolution in
-# internal/agentops/merge.go. Pre-fix it silently no-ops because it
-# reads stale agentState.Branch. Pure shell — no claude required. See
-# scripts/test-merge-reuse-e2e.sh. Mandatory before merging any change to
-# internal/agentops/merge.go, internal/sprawlmcp/server.go (toolMerge),
-# cmd/merge.go, internal/supervisor/supervisor.go (Merge), or
-# internal/supervisor/real.go (Real.Merge / mergeFn).
-test-merge-reuse-e2e: build
-	bash scripts/test-merge-reuse-e2e.sh
-
-# QUM-527: end-to-end gate for the mcp__sprawl__ask_user_question
-# round-trip. Spins up an isolated /tmp sandbox, launches `sprawl enter`
-# in a detached tmux pane, drives root weave to call the MCP tool with
-# a single-select payload, asserts the modal indicator appears in the
-# status bar, sends Down+Enter to select option 2, and asserts the
-# viewport surfaces AUQ-ANSWER=<beta-sentinel> (proving the
-# QuestionResponse reached claude). Not part of `make validate` — runs
-# a real claude subprocess. See scripts/test-ask-user-question-e2e.sh.
-# Mandatory before merging any change to the ask-user-question path:
-# internal/supervisor/question.go, internal/supervisor/question_real.go,
-# internal/sprawlmcp/server.go (toolAskUserQuestion + eligibility gate),
-# internal/sprawlmcp/tools.go (ask_user_question schema),
-# internal/tui/question.go, internal/tui/app.go (modal+keys+View),
-# internal/tui/statusbar.go (SetPendingQuestions), or cmd/enter.go
-# (consumer registration + forwarder).
-test-ask-user-question-e2e: build
-	bash scripts/test-ask-user-question-e2e.sh; rc=$$?; ./sprawl sandbox-gc --max-age=10m || true; exit $$rc
-
-# Opt-in end-to-end smoke test for the drain-row prompt-inject path
-# (QUM-569). Drives a real claude child to call `mcp__sprawl__send_message`
-# to weave, then asserts that weave's TUI pane renders the drain-row
-# citation `From <child> — mcp__sprawl__messages_read(id=...)` within a
-# bounded timeout. Restores the e2e regression guard for the
-# Send → defaultNotifier → supervisor.WakeForDelivery → claude
-# prompt-inject pipeline that QUM-565 stripped from test-notify-tui-e2e
-# when it migrated off the deprecated CLI surface. Mandatory before
-# merging any change to the drain pipeline: internal/messages/messages.go,
-# internal/runtime/unified.go, internal/runtime/queue.go,
-# internal/supervisor/weave_handle.go, internal/supervisor/runtime.go,
-# internal/supervisor/runtime_launcher.go, internal/supervisor/real.go,
-# internal/inboxprompt/inboxprompt.go, internal/tui/messages.go,
-# internal/tui/viewport.go, or cmd/enter.go.
-test-drain-row-inject-e2e: build
-	bash scripts/test-drain-row-inject-e2e.sh; rc=$$?; ./sprawl sandbox-gc --max-age=10m || true; exit $$rc
-
-# QUM-606/QUM-724: end-to-end gate for `mcp__sprawl__wake` subprocess
-# survival. Builds the sprawl binary with `-tags sprawl_test` so the
-# `_test_induce_wedge` MCP tool is present, then drives a real claude
-# child through fault → wake → post-wake turn in an isolated /tmp
-# sandbox. Asserts that a new `claude … --resume` subprocess survives
-# the wake return AND that a sentinel sent via send_message lands in
-# the child's activity.ndjson — pre-QUM-606-fix the subprocess died
-# immediately and no frames arrived. See scripts/test-wake-live-e2e.sh.
-# Mandatory before merging any change to the wake path:
-# internal/supervisor/runtime.go, internal/supervisor/real.go,
-# internal/sprawlmcp/server.go (toolWake),
-# internal/backend/claude/adapter.go, internal/runtime/unified.go, or
-# internal/runtime/turnloop.go.
-test-wake-live-e2e:
-	cd $(CURDIR) && go build -tags sprawl_test -o sprawl-wake-e2e ./
-	SPRAWL_BIN=$(CURDIR)/sprawl-wake-e2e bash scripts/test-wake-live-e2e.sh; rc=$$?; \
-	    [ -x $(CURDIR)/sprawl ] && $(CURDIR)/sprawl sandbox-gc --max-age=10m || true; \
-	    rm -f $(CURDIR)/sprawl-wake-e2e; \
-	    exit $$rc
-
-# QUM-608 paste-coalescer e2e gate. Launches sprawl enter in an
-# isolated /tmp sandbox under tmux, injects a 200-char paste burst via
-# `tmux send-keys -l`, asserts the full payload appears in the input
-# panel within 5s (well below the typewriter-animation budget the bug
-# produces), then SIGINTs and asserts clean shutdown. See
-# scripts/test-paste-coalesce-e2e.sh. Mandatory before merging any
-# change to internal/inputcoalesce/ or the tea.NewProgram call site in
-# cmd/enter.go.
-test-paste-coalesce-e2e: build
-	bash scripts/test-paste-coalesce-e2e.sh; rc=$$?; ./sprawl sandbox-gc --max-age=10m || true; exit $$rc
 
 # QUM-842: CLI-level round-trip for `sprawl hooks install`/`uninstall`. Needs
 # only git + the built binary (no claude, no sandbox). Verifies install,

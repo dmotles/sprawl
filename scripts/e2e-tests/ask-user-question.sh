@@ -9,8 +9,8 @@
 #                      user selects option 2 (beta), response round-trips.
 #   Phase 2 (QUM-611): Esc-cancel unblocks the parked MCP call (un-wedge).
 #
-# The full original lives at scripts/test-ask-user-question-e2e.sh and is
-# untouched during soak.
+# The original standalone driver, scripts/test-ask-user-question-e2e.sh, was
+# deleted once this row proved flake-free (QUM-1183).
 
 # QUM-1029: the number of assertions a COMPLETE, PASSING run of this row
 # makes. Thirteen symmetric pass/fail gates, all on the green path. The spawn-detect while-loops hold no assertions — the gate sits after the loop, on a flag.

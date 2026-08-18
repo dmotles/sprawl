@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 # scripts/e2e-tests/notify-tui.sh — QUM-312/QUM-559/QUM-565/QUM-471 regression
-# guards. Migrated from scripts/test-notify-tui-e2e.sh (which remains in place
-# until soak completes; do not edit the original — see QUM-616 Wave 2A).
+# guards. Migrated from scripts/test-notify-tui-e2e.sh (see QUM-616 Wave 2A),
+# which was deleted once this row proved flake-free (QUM-1183).
 #
 # Test A: a state.json-only write. Asserts the TUI badge does NOT rise, no
 #         inbox banner surfaces, and no drain notification appears.
@@ -292,7 +292,7 @@ JSON
     # direct maildir-envelope write above exercises the TUI's maildir watcher
     # (banner + badge) but bypasses the internal/messages.Send()/WakeForDelivery
     # arm — so the drain row never lands. The drain pipeline is exercised live
-    # by scripts/test-drain-row-inject-e2e.sh and unit-tested in
+    # by matrix row scripts/e2e-tests/drain-row-inject.sh and unit-tested in
     # internal/runtime/unified_delivery_send_message_test.go.
 
     # QUM-465 / QUM-555: assert exactly ONE inbox banner was added by Test B.
