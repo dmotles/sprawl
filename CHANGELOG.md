@@ -34,6 +34,7 @@ not strictly semver while we are pre-1.0.
 
   Merge's mergeability precondition is now a closed Status allow-set — `{active, idle, suspended, complete}` — rather than a check that also consulted the deleted report axis. It deliberately still permits merging a stopped agent: a stopped worktree is *more* quiescent than a running one, not less.
 
+- **58 stale `docs/` files deleted, 2 relocated into `docs/archive/`** (QUM-1236) — the entire `docs/audits/2026-08-06-docs-restructure/` directory (its own exit criterion: executed decisions either move to `archive/` or are deleted), 34 of the 52 files under `docs/archive/` that had zero remaining citations, and `docs/guides/m4-manager-smoke-test.md` (referenced test files and a script directory that no longer exist). `budget-resolver.md` and `memory-corrections/README.md` moved to `docs/archive/` rather than being deleted, since both are still cited by live code/docs; every citing site was repointed. **If you hold bookmarks or links into this repo's `docs/` tree, re-check them.**
 
 ## [v0.5.5] - 2026-08-08
 

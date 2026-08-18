@@ -212,7 +212,7 @@ test-wirelog-helpers-unit:
 # The LIVE always-loaded instruction-budget gate: resolves what every agent
 # unavoidably loads and fails over the ceiling in
 # scripts/always-loaded-budget.conf. See
-# docs/archive/budget-resolver.md.
+# docs/archive/budget-resolver.md (archived).
 #
 # IN `validate` since QUM-1155. It was held out for two reasons and both are now
 # discharged: (1) it FAILED on the tree — 938 in-tree lines against a 250 ceiling

@@ -5,7 +5,7 @@ Date: 2026-05-26
 Status: **DESIGN SPEC ONLY** — no production code changes in this deliverable.
 Tracking: QUM-615 (stays *In Progress* for the implementation phase that follows).
 Source of truth: QUM-615 issue body + `architecture-simplification-audit-2026-05-20.md`
-candidate #2 (§3b seam map) — that file was deleted 2026-08-17 along with the
+candidate #2 (§3b seam map) — that file was deleted 2026-08-18 along with the
 rest of the uncited archive; see git history for its content.
 
 > All file:line citations were re-verified against the worktree at spec time

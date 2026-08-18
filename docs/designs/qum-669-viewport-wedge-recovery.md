@@ -1,7 +1,8 @@
 # QUM-669 — TUI viewport wedge recovery after EventBus drops
 
-**Status:** shipped — see `internal/tui/messages.go:981`, `items.go:16`, and
-  `app.go:869` for the landing site.
+**Status:** shipped — see `internal/tui`'s `EventDropDetectedMsg` handling
+  (`app.go`), the `gapStateResyncing` transition it drives, and the item-set
+  contract note in `items.go` that cites this doc by name.
 **Author:** ghost
 **Date:** 2026-06-03
 **Branch:** `dmotles/qum-669-design`

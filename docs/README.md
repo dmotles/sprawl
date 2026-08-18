@@ -19,9 +19,9 @@ is a bug.
 | `designs/` | Designs that are built, partly built, committed-to-build, or an open decision. New or edited docs **must** carry a status banner: built / partial / design-only / open-decision. Most of the existing ones do not yet — that is a backlog, not a precedent. | Designs that were abandoned or shipped differently — those are archive. |
 | `guides/` | Procedural steps a human or an agent runs from this repo. | A task done only *sometimes* — make that a skill under `.claude/skills/`, which is loaded on demand instead of read every turn. |
 | `reference/` | External facts the tree cannot re-derive: protocol surfaces, client behaviour, third-party contracts. Say which version you observed. | Anything about *our* code. That is `architecture/`. |
-| `audits/` | Dated decision records for an in-flight restructure. Carries an **exit** criterion: when its decisions are executed or superseded, it moves to `archive/`. | Ongoing work tracking. Linear is the tracker. |
+| `audits/` | Dated decision records for an in-flight restructure. Carries an **exit** criterion: when its decisions are executed or superseded, each document either moves to `archive/` (if still cited) or is deleted (git history is the durable record of a completed decision). Currently absent from the tree — no restructure is in flight. | Ongoing work tracking. Linear is the tracker. |
 | `archive/` | Was true once. A one-way door — nothing exits. | Anything you want someone to rely on. |
-| `research/` | **Transitional — do not add to it.** It holds two entries — a file and an `open-source-readiness/` directory — that state part of the security trust model and are held live until QUM-1138 records that model durably. The directory disappears when QUM-1138 lands. | Everything. New investigation goes to `.sprawl/agents/<name>/findings/`, or to `archive/` if it is worth keeping. |
+| `research/` | **Transitional — do not add to it.** `open-source-readiness/03-security-audit.md` states part of the security trust model and is held live until QUM-1138 records that model durably; `docs/research/` disappears when that lands. `qum-1111-repro-and-mechanism.md` is an undisposed leftover, not a QUM-1138 dependency — it has no exit criterion yet. | Everything. New investigation goes to `.sprawl/agents/<name>/findings/`, or to `archive/` if it is worth keeping. |
 
 ## If you are reading a file under `docs/archive/`
 
@@ -72,7 +72,7 @@ one-word edit or a rebase squash, reflecting no content change at all.
 **This rule is applied to its own authors.** The audit documents that produced
 this restructure enumerated a 144-file directory tree, so on this restructure's
 own terms they had an exit criterion, not a home in `docs/audits/`: on
-2026-08-17 they were executed and removed — two relocated to `docs/archive/`
+2026-08-18 they were executed and removed — two relocated to `docs/archive/`
 (`budget-resolver.md`, `memory-corrections/README.md`), the rest deleted, since
 git history is the durable record of a completed decision. A rule whose authors
 exempted themselves is not a rule.

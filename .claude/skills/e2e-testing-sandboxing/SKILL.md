@@ -300,7 +300,7 @@ every `kill -9` of an agent mid-e2e leaked a sandbox deterministically. That is
 what the layers above exist for — and it is why the answer is `sprawl sandbox-gc`,
 never a bare `kill-server`.
 
-Longer analysis in `docs/archive/research/qum-458-e2e-leak-analysis.md`.
+Longer analysis in `docs/archive/research/qum-458-e2e-leak-analysis.md` (archived).
 
 ## Why this matters
 
