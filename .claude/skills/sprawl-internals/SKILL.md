@@ -64,9 +64,16 @@ table at `.claude/skills/e2e-matrix/SKILL.md` (`complete-lifecycle` row).
 ## Build & Test
 
 ```bash
-make              # runs full validation, in order: build + proto-check + fmt-check
-                  #   + lint + test-race-gate + test-race + wirelog-helpers-unit
-                  #   + e2e-matrix-unit + gitignore-classes + leak-scan
+make              # runs full validation. Its prerequisites are declared on ONE line
+                  # of the Makefile (the `validate:` rule) and that line is the only
+                  # authority; this comment is checked against it by
+                  # TestSprawlInternalsSkillBuildTargetsMatchMakefile, so if the two
+                  # ever disagree the test is what tells you, not this text:
+                  #   build hooks-armed proto-check fmt-check lint test-lint-pin
+                  #   test-race-gate test-race test-wirelog-helpers-unit
+                  #   test-e2e-lockwait-unit test-e2e-matrix-unit
+                  #   test-always-loaded-budget-unit always-loaded-budget
+                  #   test-gitignore-classes leak-scan
                   #   (race-gate runs BEFORE test-race on purpose: it takes ~2s and
                   #    fails fast on exactly the regression that would make the
                   #    ~2min race run stop measuring anything)
@@ -79,8 +86,17 @@ make test         # run all unit tests WITHOUT -race — a convenience run, NOT 
 make test-race    # go test -race ./... — THE enforced gate; validate depends on this, not `test`
 make test-race-gate  # shell unit test proving validate's go-test invocation still carries -race,
                      # and that -race really detects a planted race in this toolchain
+make test-lint-pin   # proves the golangci-lint version pin actually BINDS, not just that lint passed
 make test-e2e-matrix-unit  # shell unit tests for the e2e matrix driver (fast, no claude)
-make hooks        # install pre-commit hook
+make test-e2e-lockwait-unit      # bash unit tests for the e2e harness' weave.lock release wait
+make test-always-loaded-budget-unit  # fixture-only unit suite for the always-loaded budget resolver
+make always-loaded-budget        # the LIVE always-loaded instruction-budget gate
+make test-gitignore-classes      # gitignore classification tests
+make hooks        # installs BOTH git hooks: pre-commit (runs `make validate`) and
+                  # reference-transaction (guard-main-ref). The second is the backstop
+                  # `--no-verify` cannot skip — see CLAUDE.md. `make hooks-armed`, which
+                  # validate depends on, verifies they are actually installed.
+make hooks-armed  # `./sprawl hooks verify` — fails validate when the guard is not armed
 
 make test-wirelog-helpers-unit   # bash+jq unit tests for the e2e rows' wire-log
                                  # counter helpers; part of `make validate`
@@ -89,17 +105,17 @@ scripts/smoke-test-memory.sh   # integration test for weave memory system
 scripts/sprawl-test-env.sh     # set up isolated test environment
 ```
 
-Two notes on targets that are deliberately *not* in `validate`, accurate as of
-this tree — do not read them as pending work of your own:
+One note on a target that is deliberately *not* in `validate` — do not read it
+as pending work of your own:
 
-- `make always-loaded-budget` is the LIVE always-loaded instruction-budget
-  gate. It is parked outside `validate` on purpose; `Makefile` carries the two
-  reasons. Its fixture-only unit suite, `make test-always-loaded-budget-unit`,
-  IS in `validate`, which keeps the mechanism from rotting while the gate
-  waits — the same split as `test-race-gate` guarding `test-race`.
-- `make test-e2e-matrix` and its per-row targets are never in `validate`; they
-  need a real authenticated `claude`. See `.claude/skills/e2e-matrix/SKILL.md`
-  for when you owe a row.
+- `make test-e2e-matrix` and its per-row targets need a real authenticated
+  `claude`, so they are never a `validate` prerequisite. See
+  `.claude/skills/e2e-matrix/SKILL.md` for when you owe a row.
+
+`make always-loaded-budget` used to be in that list. It is **not** any more: it
+has been IN `validate` since QUM-1155, alongside its fixture-only unit suite
+`make test-always-loaded-budget-unit`. The Makefile comment on the target
+records why both are now discharged.
 
 ## Install
 
@@ -132,7 +148,7 @@ merge` to explicitly skip it.
 
 ## Code Patterns
 
-**Dependency injection**: Commands use a `deps` struct to inject interfaces for external dependencies (backend processes, git, env vars, filesystem). See `cmd/gc.go` or `cmd/usage.go` for the command-local shape. Agent operations keep theirs in `internal/agentops` as exported `XxxDeps` with nil-defaulting accessors (`internal/agentops/report.go`), which the command aliases — `cmd/merge.go` is `type mergeDeps = agentops.MergeDeps`. This enables testing without real subprocesses.
+**Dependency injection**: Commands use a `deps` struct to inject interfaces for external dependencies (backend processes, git, env vars, filesystem). See `cmd/gc.go` or `cmd/usage.go` for the command-local shape. Agent operations keep theirs in `internal/agentops` as exported `XxxDeps` — `internal/agentops/merge.go` declares `MergeDeps` — which the command aliases and then fills in through a nil-defaulting `resolveXxxDeps`: `cmd/merge.go` has `type mergeDeps = agentops.MergeDeps` plus `resolveMergeDeps`, which returns the package-level `defaultMergeDeps` when a test has set it and the real wiring otherwise. The nil-defaulting lives in `cmd/`, not in `internal/agentops`. This enables testing without real subprocesses.
 
 **Read `/go-cli-best-practices` before writing or modifying Go code** — it covers cobra patterns, error handling conventions, and dependency injection structure used throughout this codebase.
 

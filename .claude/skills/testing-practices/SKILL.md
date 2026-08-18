@@ -1930,68 +1930,65 @@ the document says so rather than implying the mechanisms are sufficient.
 
 This codebase uses a **struct-based dependency injection** pattern for testing CLI commands. Each command defines a `*Deps` struct that holds all external dependencies as fields — typically as **function values** (closures) for filesystem, environment, and git operations, with the occasional interface for richer collaborators (`backend.Adapter`, `worktree.Creator`, `merge.Deps`). The production code path wires in real implementations, while tests inject closures that record calls or return canned values.
 
-The richest end-to-end example today is the offline `retire` command — `internal/agentops/retire.go` defines `RetireDeps`, `cmd/retire.go` wires the production deps, and `cmd/retire_test.go` builds them with closures. Use it as the reference.
+The richest end-to-end example today is the `merge` command — `internal/agentops/merge.go` defines `MergeDeps`, `cmd/merge.go` aliases it and `resolveMergeDeps` wires the production deps, and `cmd/merge_test.go::newTestMergeDeps` builds them with closures. Use it as the reference.
 
 ### How it works
 
-1. **Define a deps struct** for the command. The current convention is to put the struct (and the business logic) in `internal/agentops/` and re-export a type alias from `cmd/`. From `internal/agentops/retire.go`:
+1. **Define a deps struct** for the command. The current convention is to put the struct (and the business logic) in `internal/agentops/` and re-export a type alias from `cmd/`. From `internal/agentops/merge.go`:
 
    ```go
-   type RetireDeps struct {
-       Getenv              func(string) string
-       WorktreeRemove      func(repoRoot, worktreePath string, force bool) error
-       GitStatus           func(worktreePath string) (string, error)
-       RemoveAll           func(string) error
-       GitBranchDelete     func(repoRoot, branchName string) error
-       GitBranchIsMerged   func(repoRoot, branchName string) (bool, error)
-       GitBranchSafeDelete func(repoRoot, branchName string) error
-       DoMerge             func(ctx context.Context, cfg *merge.Config, deps *merge.Deps) (*merge.Result, error)
-       NewMergeDeps        func() *merge.Deps
-       LoadAgent           func(sprawlRoot, name string) (*state.AgentState, error)
-       CurrentBranch       func(repoRoot string) (string, error)
+   type MergeDeps struct {
+       Getenv        func(string) string
+       LoadAgent     func(sprawlRoot, name string) (*state.AgentState, error)
+       ListAgents    func(sprawlRoot string) ([]*state.AgentState, error)
+       GitStatus     func(worktree string) (string, error)
+       BranchExists  func(repoRoot, branchName string) bool
+       CurrentBranch func(repoRoot string) (string, error)
+       LoadConfig    func(sprawlRoot string) (*config.Config, error)
+       DoMerge       func(ctx context.Context, cfg *merge.Config, deps *merge.Deps) (*merge.Result, error)
+       NewMergeDeps  func() *merge.Deps
+       Stderr        io.Writer
        // ...
    }
    ```
 
-   And in `cmd/retire.go`:
+   And in `cmd/merge.go`:
 
    ```go
-   type retireDeps = agentops.RetireDeps
+   type mergeDeps = agentops.MergeDeps
    ```
 
-2. **The package-level run function** (`agentops.Retire`) accepts the deps struct instead of calling globals directly:
+2. **The package-level run function** (`agentops.Merge`) accepts the deps struct instead of calling globals directly:
 
    ```go
-   func Retire(deps *RetireDeps, agentName string, cascade, force, abandon, mergeFirst, yes, noValidate bool) error {
-       // uses deps.Getenv, deps.WorktreeRemove, deps.LoadAgent, etc.
+   func Merge(ctx context.Context, deps *MergeDeps, agentName, messageOverride string,
+       noValidate, dryRun, salvagingTerminalAgent bool) (*MergeOutcome, error) {
+       // uses deps.Getenv, deps.GitStatus, deps.LoadAgent, etc.
    }
    ```
 
-3. **Tests build the deps with closures** in a per-test helper (e.g. `newTestRetireDeps` in `cmd/retire_test.go`):
+3. **Tests build the deps with closures** in a per-test helper (e.g. `newTestMergeDeps` in `cmd/merge_test.go`):
 
    ```go
-   func newTestRetireDeps(t *testing.T) (*retireDeps, string) {
+   func newTestMergeDeps(t *testing.T) (*mergeDeps, string) {
        t.Helper()
        tmpDir := t.TempDir()
-       deps := &retireDeps{
+       deps := &mergeDeps{
            Getenv: func(key string) string {
-               if key == "SPRAWL_ROOT" {
+               switch key {
+               case "SPRAWL_ROOT":
                    return tmpDir
+               case "SPRAWL_AGENT_IDENTITY":
+                   return "parent-agent"
                }
                return ""
            },
-           WorktreeRemove: func(repoRoot, worktreePath string, force bool) error {
-               return os.RemoveAll(worktreePath)
-           },
-           GitStatus:           func(worktreePath string) (string, error) { return "", nil },
-           RemoveAll:           os.RemoveAll,
-           GitBranchDelete:     func(repoRoot, branchName string) error { return nil },
-           GitBranchIsMerged:   func(repoRoot, branchName string) (bool, error) { return false, nil },
-           GitBranchSafeDelete: func(repoRoot, branchName string) error { return nil },
-           DoMerge:             func(_ context.Context, cfg *merge.Config, deps *merge.Deps) (*merge.Result, error) { return &merge.Result{}, nil },
-           NewMergeDeps:        func() *merge.Deps { return &merge.Deps{} },
-           LoadAgent:           state.LoadAgent,
-           CurrentBranch:       func(repoRoot string) (string, error) { return "main", nil },
+           LoadAgent:    state.LoadAgent,
+           ListAgents:   state.ListAgents,
+           GitStatus:    func(worktree string) (string, error) { return "", nil },
+           BranchExists: func(repoRoot, branchName string) bool { return true },
+           DoMerge:      func(_ context.Context, cfg *merge.Config, deps *merge.Deps) (*merge.Result, error) { return &merge.Result{}, nil },
+           NewMergeDeps: func() *merge.Deps { return &merge.Deps{} },
            // ...
        }
        return deps, tmpDir
@@ -2003,8 +2000,8 @@ The richest end-to-end example today is the offline `retire` command — `intern
 4. **Individual tests override fields when they need to assert specific behavior** rather than maintaining mock structs:
 
    ```go
-   func TestRetire_DirtyWorktree_Refuses(t *testing.T) {
-       deps, tmpDir := newTestRetireDeps(t)
+   func TestMerge_DirtyWorktree_Refuses(t *testing.T) {
+       deps, tmpDir := newTestMergeDeps(t)
        deps.GitStatus = func(string) (string, error) { return "M file.go", nil }
        // ...
    }
@@ -2017,7 +2014,7 @@ This codebase **strongly prefers function values** over single-method interfaces
 - The collaborator has multiple related methods that callers compose together (e.g. `worktree.Creator`, `backend.Adapter`, `supervisor.Supervisor`).
 - You need to fake a stateful object across several calls.
 
-Counter-example to follow: `cmd/messages.go::messagesDeps` only needs `getenv` plus injectable `stdout`/`stderr` (`io.Writer`) — no interfaces at all. See `cmd/messages_test.go::newTestMessagesDeps`.
+Counter-example to follow: `cmd/config.go::configDeps` only needs `getenv`, a `readFile`, and injectable `stdout`/`stderr` (`io.Writer`) — no interfaces at all. See `cmd/config_test.go::newTestConfigDeps`.
 
 ### Resolve / run separation
 
@@ -2027,7 +2024,7 @@ Each command file in `cmd/` has the same shape:
 - `run<Command>(deps, ...)` is pure business logic and is the unit under test.
 - The cobra `RunE` is a one-liner that calls `resolve...` and then `run...`.
 
-`defaultRetireDeps` / `defaultMessagesDeps` package-level pointers exist so integration-style tests can swap in a pre-built deps struct without going through `resolve`.
+`defaultMergeDeps` (`cmd/merge.go`) / `defaultGCDeps` (`cmd/gc.go`) package-level pointers exist so integration-style tests can swap in a pre-built deps struct without going through `resolve`.
 
 ### Test file conventions
 
@@ -2189,7 +2186,7 @@ Tests use `state.SaveAgent`/`state.LoadAgent` and `messages.*` directly against 
 
 ### Override fields per-test rather than building parallel mock structs
 
-Idiomatic style: call `newTest<Command>Deps(t)`, then mutate the field you care about (e.g. `deps.GitStatus = func(string) (string, error) { return "M foo", nil }`). See `TestRetire_DirtyWorktree_Refuses` in `cmd/retire_test.go`.
+Idiomatic style: call `newTest<Command>Deps(t)`, then mutate the field you care about (e.g. `deps.GitStatus = func(string) (string, error) { return "M foo", nil }`). See the `deps.GitStatus` overrides in `cmd/merge_test.go`.
 
 ### `cmd/init_removed_test.go` guards a deletion
 

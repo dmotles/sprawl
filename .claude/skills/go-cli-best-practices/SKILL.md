@@ -18,11 +18,11 @@ This repo follows the standard Go CLI layout:
 main.go          # Entry point — calls cmd.Execute()
 cmd/             # All cobra commands (one file per command + tests)
   root.go        # Root command definition + Execute()
-  retire.go      # Sub-command CLI wiring (resolveDeps + RunE)
-  retire_test.go # Tests for that command
+  merge.go       # Sub-command CLI wiring (resolveDeps + RunE)
+  merge_test.go  # Tests for that command
 internal/        # Internal packages (not importable by external code)
   agent/         # Agent name allocation, prompt building
-  agentops/      # Reusable per-command business logic (Spawn, Retire, Kill, Merge, Report)
+  agentops/      # Reusable per-command business logic (Spawn, Retire, Kill, Merge, GC)
   agentloop/     # Per-runtime turn queue & activity feed
   backend/       # Pluggable LLM backend adapter (claude/, fakes for tests)
   supervisor/    # Same-process child-runtime registry & lifecycle
@@ -66,14 +66,14 @@ func Execute() {
 Always use `RunE` (not `Run`) so errors propagate to cobra's error handling instead of requiring manual `os.Exit`:
 
 ```go
-// cmd/retire.go
-var retireCmd = &cobra.Command{
-    Use:   "retire <agent-name>",
-    Short: "Deprecated offline cleanup; use sprawl enter + retire for live runtimes",
-    Long:  "When no weave session is running, fully retire an agent by removing its persisted state and worktree artifacts. If `sprawl enter` is active, use the retire MCP tool from the live weave session instead.",
+// cmd/merge.go
+var mergeCmd = &cobra.Command{
+    Use:   "merge <agent-name>",
+    Short: "Rebase an agent's branch onto yours, validate it, then fast-forward",
     Args:  cobra.ExactArgs(1),
-    RunE: func(_ *cobra.Command, args []string) error {
-        return runRetire(resolveRetireDeps(), args[0], retireCascade, retireForce, retireAbandon, retireMerge, retireYes)
+    RunE: func(cmd *cobra.Command, args []string) error {
+        deps := resolveMergeDeps()
+        return runMerge(cmd.Context(), deps, args[0], mergeMessage, mergeNoValidate, mergeDryRun)
     },
 }
 ```
@@ -91,14 +91,15 @@ func init() {
 
 ### Positional Args Validation
 
-Use cobra's built-in validators for positional args (real example: `cmd/retire.go`):
+Use cobra's built-in validators for positional args (real examples: `cmd/merge.go` for `ExactArgs`, `cmd/gc.go` for `NoArgs`):
 
 ```go
-var retireCmd = &cobra.Command{
-    Use:  "retire <agent-name>",
+var mergeCmd = &cobra.Command{
+    Use:  "merge <agent-name>",
     Args: cobra.ExactArgs(1),   // Enforces exactly 1 positional arg
-    RunE: func(_ *cobra.Command, args []string) error {
-        return runRetire(resolveRetireDeps(), args[0], retireCascade, retireForce, retireAbandon, retireMerge, retireYes)
+    RunE: func(cmd *cobra.Command, args []string) error {
+        deps := resolveMergeDeps()
+        return runMerge(cmd.Context(), deps, args[0], mergeMessage, mergeNoValidate, mergeDryRun)
     },
 }
 ```
@@ -112,12 +113,12 @@ Common validators ([cobra docs](https://pkg.go.dev/github.com/spf13/cobra#Positi
 
 ### Flags — Package-Level Vars
 
-This codebase stores flag values in package-level vars, bound in `init()` (real example: `cmd/retire.go`):
+This codebase stores flag values in package-level vars, bound in `init()` (real example: `cmd/gc.go`):
 
 ```go
 var (
-    retireCascade bool
-    retireForce   bool
+    gcApply                 bool
+    gcLogRetentionDays      int
     retireMerge   bool
     retireYes     bool
 )
@@ -143,51 +144,57 @@ See [pflag docs](https://pkg.go.dev/github.com/spf13/pflag) for the full list.
 2. **A resolve function** — creates real deps from `os.Getenv` and the real git/state wrappers exported from `internal/agentops`.
 3. **A run function** — pure business logic that takes deps as first arg. After QUM-400, that logic typically lives in `internal/agentops/` and the `cmd/` file is a thin shim.
 
-Real example: `cmd/retire.go` + `internal/agentops/retire.go`.
+Real example: `cmd/merge.go` + `internal/agentops/merge.go`.
 
 ```go
 // 1. Deps struct lives in internal/agentops and is re-exported in cmd/.
-//    See internal/agentops/retire.go::RetireDeps.
-type RetireDeps struct {
-    Getenv              func(string) string
-    WorktreeRemove      func(repoRoot, worktreePath string, force bool) error
-    GitStatus           func(worktreePath string) (string, error)
-    RemoveAll           func(string) error
-    GitBranchDelete     func(repoRoot, branchName string) error
-    GitBranchIsMerged   func(repoRoot, branchName string) (bool, error)
-    GitBranchSafeDelete func(repoRoot, branchName string) error
-    DoMerge             func(ctx context.Context, cfg *merge.Config, deps *merge.Deps) (*merge.Result, error)
-    NewMergeDeps        func() *merge.Deps
-    LoadAgent           func(sprawlRoot, name string) (*state.AgentState, error)
-    CurrentBranch       func(repoRoot string) (string, error)
+//    See internal/agentops/merge.go::MergeDeps.
+type MergeDeps struct {
+    Getenv        func(string) string
+    LoadAgent     func(sprawlRoot, name string) (*state.AgentState, error)
+    ListAgents    func(sprawlRoot string) ([]*state.AgentState, error)
+    GitStatus     func(worktree string) (string, error)
+    BranchExists  func(repoRoot, branchName string) bool
+    CurrentBranch func(repoRoot string) (string, error)
+    LoadConfig    func(sprawlRoot string) (*config.Config, error)
+    DoMerge       func(ctx context.Context, cfg *merge.Config, deps *merge.Deps) (*merge.Result, error)
+    NewMergeDeps  func() *merge.Deps
+    Stderr        io.Writer
     // ...
 }
 
-// In cmd/retire.go we just alias the type so existing tests keep their
-// names (`*retireDeps`).
-type retireDeps = agentops.RetireDeps
+// In cmd/merge.go we just alias the type so existing tests keep their
+// names (`*mergeDeps`).
+type mergeDeps = agentops.MergeDeps
 
-// 2. Resolve — wires real implementations from agentops's exported helpers.
-//    See cmd/retire.go::resolveRetireDeps for the full thing.
-func resolveRetireDeps() *retireDeps {
-    return &retireDeps{
-        Getenv:              os.Getenv,
-        WorktreeRemove:      realWorktreeRemove,    // = agentops.RealWorktreeRemove
-        GitStatus:           realGitStatus,         // = agentops.RealGitStatus
-        RemoveAll:           os.RemoveAll,
-        GitBranchDelete:     realGitBranchDelete,
-        GitBranchIsMerged:   realGitBranchIsMerged,
-        GitBranchSafeDelete: realGitBranchSafeDelete,
-        DoMerge:             merge.Merge,
-        LoadAgent:           state.LoadAgent,
-        CurrentBranch:       gitCurrentBranch,
-        // ...
+// 2. Resolve — wires real implementations from agentops's exported helpers,
+//    and nil-defaults to a package-level var a test can set. The
+//    nil-defaulting lives HERE in cmd/, not in internal/agentops.
+//    See cmd/merge.go::resolveMergeDeps.
+var defaultMergeDeps *mergeDeps
+
+func resolveMergeDeps() *mergeDeps {
+    if defaultMergeDeps != nil {
+        return defaultMergeDeps
+    }
+    return &mergeDeps{
+        Getenv:        os.Getenv,
+        LoadAgent:     state.LoadAgent,
+        ListAgents:    state.ListAgents,
+        GitStatus:     agentops.RealGitStatus,
+        BranchExists:  agentops.RealBranchExists,
+        CurrentBranch: agentops.GitCurrentBranch,
+        LoadConfig:    config.Load,
+        DoMerge:       merge.Merge,
+        NewMergeDeps:  func() *merge.Deps { return merge.RealDeps(os.Stderr) },
+        Stderr:        os.Stderr,
     }
 }
 
 // 3. Run — testable business logic in agentops, called via a thin cmd/ shim.
-//    See internal/agentops/retire.go::Retire and cmd/retire.go::runRetire.
-func Retire(deps *RetireDeps, agentName string, cascade, force, abandon, mergeFirst, yes, noValidate bool) error {
+//    See internal/agentops/merge.go::Merge and cmd/merge.go::runMerge.
+func Merge(ctx context.Context, deps *MergeDeps, agentName, messageOverride string,
+    noValidate, dryRun, salvagingTerminalAgent bool) (*MergeOutcome, error) {
     // All external calls go through deps.
 }
 ```
@@ -195,12 +202,13 @@ func Retire(deps *RetireDeps, agentName string, cascade, force, abandon, mergeFi
 The cobra `RunE` just wires it together:
 
 ```go
-RunE: func(_ *cobra.Command, args []string) error {
-    return runRetire(resolveRetireDeps(), args[0], retireCascade, retireForce, retireAbandon, retireMerge, retireYes)
+RunE: func(cmd *cobra.Command, args []string) error {
+    deps := resolveMergeDeps()
+    return runMerge(cmd.Context(), deps, args[0], mergeMessage, mergeNoValidate, mergeDryRun)
 },
 ```
 
-For the simplest possible shape (no `agentops/` indirection, no interfaces, just an `io.Writer` and `getenv`), see `cmd/messages.go::messagesDeps` and its `resolveMessagesDeps`. For a deps struct that does pull in interfaces — `worktree.Creator` and a backend `RunScript` — see `internal/agentops/spawn.go::SpawnDeps`.
+For the simplest possible shape (no `agentops/` indirection, no interfaces, just `io.Writer`s, `getenv` and a file read), see `cmd/config.go::configDeps` and its `resolveConfigDeps`. For a deps struct that does pull in interfaces — `worktree.Creator` and a backend `RunScript` — see `internal/agentops/spawn.go::SpawnDeps`.
 
 ---
 
@@ -210,28 +218,28 @@ This codebase uses **stdlib `testing` only** (no testify). Docs: [Go testing pac
 
 ### Test Helper for Deps Setup
 
-Use `t.Helper()` in shared setup functions. Real example: `cmd/retire_test.go::newTestRetireDeps`.
+Use `t.Helper()` in shared setup functions. Real example: `cmd/merge_test.go::newTestMergeDeps`, which returns the deps and the temp `SPRAWL_ROOT` it wired them to.
 
 ```go
-func newTestRetireDeps(t *testing.T) (*retireDeps, string) {
+func newTestMergeDeps(t *testing.T) (*mergeDeps, string) {
     t.Helper()
     tmpDir := t.TempDir()  // Auto-cleaned up
-    deps := &retireDeps{
+    deps := &mergeDeps{
         Getenv: func(key string) string {
-            if key == "SPRAWL_ROOT" {
+            switch key {
+            case "SPRAWL_ROOT":
                 return tmpDir
+            case "SPRAWL_AGENT_IDENTITY":
+                return "parent-agent"
             }
             return ""
         },
-        WorktreeRemove:    func(repoRoot, worktreePath string, force bool) error { return os.RemoveAll(worktreePath) },
-        GitStatus:         func(string) (string, error) { return "", nil },
-        RemoveAll:         os.RemoveAll,
-        GitBranchDelete:   func(repoRoot, branchName string) error { return nil },
-        GitBranchIsMerged: func(repoRoot, branchName string) (bool, error) { return false, nil },
-        DoMerge:           func(context.Context, *merge.Config, *merge.Deps) (*merge.Result, error) { return &merge.Result{}, nil },
-        NewMergeDeps:      func() *merge.Deps { return &merge.Deps{} },
-        LoadAgent:         state.LoadAgent,
-        CurrentBranch:     func(string) (string, error) { return "main", nil },
+        LoadAgent:    state.LoadAgent,
+        ListAgents:   state.ListAgents,
+        GitStatus:    func(worktree string) (string, error) { return "", nil },
+        BranchExists: func(repoRoot, branchName string) bool { return true },
+        DoMerge:      func(context.Context, *merge.Config, *merge.Deps) (*merge.Result, error) { return &merge.Result{}, nil },
+        NewMergeDeps: func() *merge.Deps { return &merge.Deps{} },
         // ...
     }
     return deps, tmpDir
@@ -243,22 +251,22 @@ func newTestRetireDeps(t *testing.T) (*retireDeps, string) {
 The idiomatic style is: get the default deps from the helper, then mutate just the field that drives the scenario under test.
 
 ```go
-func TestRetire_DirtyWorktree_Refuses(t *testing.T) {
-    deps, tmpDir := newTestRetireDeps(t)
+func TestMerge_DirtyWorktree_Refuses(t *testing.T) {
+    deps, tmpDir := newTestMergeDeps(t)
     deps.GitStatus = func(string) (string, error) { return "M file.go", nil }
     // ...
 }
 ```
 
-Mock structs only show up where deps takes an interface — see `cmd/mocks_test.go` for the shared `worktree.Creator` and `agent.Launcher` fakes used by `cmd/spawn_test.go`.
+Mock structs only show up where deps takes an interface — see `internal/agentops/spawn_test.go` for the `worktree.Creator` fakes (`fakeWorktreeCreator`, and `fatalWorktreeCreator` for the "must not be called" case) used by the spawn tests.
 
 ### Individual Test Functions (Not Table-Driven)
 
 This codebase uses **one function per test case**, not table-driven tests. Each test is self-contained:
 
 ```go
-func TestRetire_HappyPathDeletesState(t *testing.T) {
-    deps, tmpDir := newTestRetireDeps(t)
+func TestMerge_HappyPath(t *testing.T) {
+    deps, tmpDir := newTestMergeDeps(t)
     // ... seed agent state via state.SaveAgent ...
     if err := runRetire(deps, "alice", false, false, false, false, false); err != nil {
         t.Fatalf("runRetire() error: %v", err)
@@ -331,11 +339,11 @@ The `%w` verb wraps the error so callers can use `errors.Is()` and `errors.As()`
 
 ### Context-Only Errors (No Wrapping)
 
-When the original error isn't useful to callers, create a new descriptive error (real examples from `internal/agentops/spawn.go` and `cmd/report.go`):
+When the original error isn't useful to callers, create a new descriptive error (real examples from `internal/agentops/spawn.go`):
 
 ```go
-return fmt.Errorf("SPRAWL_ROOT environment variable is not set")
-return fmt.Errorf("SPRAWL_AGENT_IDENTITY environment variable is not set; report must be called from within a sprawl agent")
+return fmt.Errorf("SPRAWL_ROOT environment variable is not set; spawn must be called from within a sprawl agent")
+return fmt.Errorf("SPRAWL_AGENT_IDENTITY environment variable is not set; spawn must be called from within a sprawl agent")
 ```
 
 ### Validation Errors
@@ -343,8 +351,8 @@ return fmt.Errorf("SPRAWL_AGENT_IDENTITY environment variable is not set; report
 Return descriptive errors with the invalid value and valid options:
 
 ```go
-return fmt.Errorf("invalid agent type %q; valid types: %v", agentType, validTypes)
-return fmt.Errorf("agent type %q is not yet supported; currently supported: engineer", agentType)
+return fmt.Errorf("invalid agent type %q; valid types: %v", agentType, ValidTypes)
+return fmt.Errorf("agent type %q is not yet supported; currently supported: engineer, researcher, manager, qa", agentType)
 ```
 
 ### Idempotent Operations — Warn, Don't Error
@@ -360,7 +368,7 @@ if agentState.Status == "killed" {
 
 ### Best-Effort Cleanup — Discard Errors
 
-For cleanup that shouldn't fail the operation (real example from `cmd/retire.go`):
+For cleanup that shouldn't fail the operation (real example from `cmd/enter.go`):
 
 ```go
 defer func() { _ = lock.Release() }()

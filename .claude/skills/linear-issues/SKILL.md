@@ -48,8 +48,8 @@ Why does this issue exist? What problem does it solve or what need does it addre
 
 #### Implementation Details
 Concrete, specific information the implementer needs:
-- **File locations and names** — exact paths to files that need to change (e.g., `cmd/spawn.go`, `internal/tmux/session.go`)
-- **Functions and types** — specific functions, interfaces, or types involved (e.g., "the `spawnDeps` struct in `cmd/spawn.go:42`")
+- **File locations and names** — exact paths to files that need to change (e.g., `cmd/merge.go`, `internal/agentops/merge.go`)
+- **Functions and types** — specific functions, interfaces, or types involved (e.g., "the `mergeDeps` alias in `cmd/merge.go`")
 - **API contracts and integration points** — how this interacts with other components, what interfaces it needs to satisfy
 - **URLs and external resources** — if there are docs, APIs, or references the implementer should consult, link them directly
 - **Scope boundaries** — what is explicitly NOT included in this issue
