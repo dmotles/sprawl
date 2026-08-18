@@ -4,8 +4,9 @@
 moved, or deleted. Both stores live outside the repo; `weave` owns them and lands
 these.
 
-**Work order:** `docs/audits/2026-08-06-docs-restructure/memory-store-probe.md`
-(branch `dmotles/memory-store-probe`), which measured 16 falsified claims out of 71
+**Work order:** `memory-store-probe.md` (deleted 2026-08-17 along with the rest of
+the 2026-08-06 docs-restructure audit trail; see git history for its content),
+branch `dmotles/memory-store-probe`, which measured 16 falsified claims out of 71
 checkable standing present-tense claims (23%) across both stores. This document is
 the *application* of that report. Findings are cited as `F1`…`F11` from its §2 and
 by category from its §3 (unverifiable-as-stated). **Nothing here re-derives the
