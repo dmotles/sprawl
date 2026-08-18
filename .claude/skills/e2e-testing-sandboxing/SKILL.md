@@ -238,8 +238,8 @@ credential is *present*, not *valid*.
 
 `internal/memory/oneshot.go`'s `resolveClaudeBinary` honors `$SPRAWL_CLAUDE`:
 if set, it is used verbatim as the `claude` binary path; otherwise it falls
-back to a `PATH` lookup. (This said `internal/agent/claude.go` until QUM-1227
-deleted that file's never-called copy of the same logic.)
+back to a `PATH` lookup. That is now the only copy of this logic — QUM-1227
+deleted a second, never-called one that used to live under `internal/agent`.
 
 **`scripts/run-claude -p '...'` does NOT validate harness auth (QUM-973).**
 It sources `$SPRAWL_ROOT/.env` directly and never exercises

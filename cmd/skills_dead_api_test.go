@@ -338,10 +338,23 @@ func TestToolNameDeclRE(t *testing.T) {
 //     `$VAR/`-prefixed citations stay covered. BOTH failure directions are
 //     live: a sibling-only file is a false alarm, a same-named local file is a
 //     miss. Neither is theoretical — say so rather than assuming one direction.
-//   - A doc that legitimately NARRATES a deletion ("`cmd/retire.go` was removed
-//     by QUM-1186") is indistinguishable from rot here, and the exception list
-//     below cannot tell those apart either. That is the known cost of the
-//     mechanism, not an oversight.
+//   - A doc that NARRATES a deletion ("`cmd/retire.go` was removed by QUM-1186")
+//     is indistinguishable from rot here, and the exception list below cannot
+//     tell those apart either.
+//
+//     RESOLVED, by extending a policy this file already had rather than by
+//     inventing one: see bannedMCPTools' policy note — "a skill cannot narrate
+//     the migration either. Skills tell agents what to call; changelogs belong
+//     elsewhere." The same holds for paths. Write the live location, and name
+//     the deleted one by PACKAGE or by issue rather than by a path that still
+//     looks resolvable.
+//
+//     First live instance: QUM-1227 deleted internal/agent/claude.go and the
+//     e2e-testing-sandboxing skill correctly repointed at
+//     internal/memory/oneshot.go, but kept the dead path in a trailing
+//     parenthetical. Fixed by rewording, NOT by an exception entry — an
+//     exception asserts "this path is not ours", and that path WAS ours, so the
+//     entry would have been a false claim as well as a hole.
 
 // skillPathExtensions are the file extensions a citation must end in. Requiring
 // one is what separates a citation from a directory or a prose fragment:
