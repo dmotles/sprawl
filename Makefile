@@ -1,4 +1,4 @@
-.PHONY: lint-cache-dir test-lint-pin validate build hooks-armed proto-check proto-gen proto-gen-web hub-web fmt-check lint test clean install fmt hooks leak-scan test-handoff-e2e test-exit-code-preservation test-parallel-agent-viewport-e2e test-tui-e2e test-leak-resistance-e2e test-e2e-matrix test-e2e-matrix-unit test-hooks-e2e test-hub-bootstrap test-hub-e2e test-wirelog-helpers-unit test-e2e-lockwait-unit test-gitignore-classes test-race test-race-gate always-loaded-budget test-always-loaded-budget-unit
+.PHONY: lint-cache-dir test-lint-pin validate build hooks-armed proto-check proto-gen proto-gen-web hub-web fmt-check lint test clean install fmt hooks leak-scan test-handoff-e2e test-exit-code-preservation test-parallel-agent-viewport-e2e test-tui-e2e test-leak-resistance-e2e test-e2e-matrix test-e2e-matrix-unit test-hooks-e2e test-hub-bootstrap test-hub-e2e test-store-pg test-wirelog-helpers-unit test-e2e-lockwait-unit test-gitignore-classes test-race test-race-gate always-loaded-budget test-always-loaded-budget-unit
 
 # Default target — full quality gauntlet
 validate: build hooks-armed proto-check fmt-check lint test-lint-pin test-race-gate test-race test-wirelog-helpers-unit test-e2e-lockwait-unit test-e2e-matrix-unit test-always-loaded-budget-unit always-loaded-budget test-gitignore-classes leak-scan
@@ -365,6 +365,15 @@ test-hub-bootstrap:
 # Needs only the Go toolchain (behind the hub_e2e build tag; no claude/tmux).
 test-hub-e2e:
 	go test -tags hub_e2e -count=1 -v ./internal/hub/e2e/
+
+# QUM-1249 (M1a) event-log store Postgres integration suite. Docker-dependent,
+# so it is NOT in `validate` — validate stays Docker-free. `-count=1` is
+# load-bearing: a Docker-down run t.Skip's, Go caches that as a passing package,
+# and without the bypass the skip replays as green once Docker is back.
+# For the exit-77-on-no-Docker contract, run it through its matrix row instead:
+# `make test-e2e-matrix-store-pg-integration`.
+test-store-pg:
+	go test -tags store_pg -count=1 -v ./internal/store/
 
 # QUM-616 matrix-driven e2e harness foundation. Wave 1 — runs alongside
 # the per-test test-*-e2e targets. See scripts/e2e-matrix.sh.
