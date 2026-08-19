@@ -33,6 +33,8 @@ func TestRecord_AllKeysPresentOnZeroValue(t *testing.T) {
 		"output_tokens",
 		"cache_read_input_tokens",
 		"cache_creation_input_tokens",
+		"schema_version",
+		"session_cost_usd",
 		"total_cost_usd",
 	}
 	for _, key := range required {

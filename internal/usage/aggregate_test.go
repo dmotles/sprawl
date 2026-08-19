@@ -28,6 +28,13 @@ func writeFixtureFile(t *testing.T, sprawlRoot, agent, session string, recs []Re
 	defer f.Close()
 	enc := json.NewEncoder(f)
 	for _, r := range recs {
+		// Fixtures written by this helper are current-schema rows: their
+		// TotalCostUsd is already a per-turn delta. Without the stamp they
+		// would decode as pre-QUM-1247 rows and aggregation would "repair"
+		// them, quietly turning every test below into a legacy-repair test.
+		// Legacy fixtures go through writeRows (aggregate_legacy_test.go),
+		// which writes SchemaVersion verbatim.
+		r.SchemaVersion = RecordSchemaVersion
 		if err := enc.Encode(&r); err != nil {
 			t.Fatalf("Encode: %v", err)
 		}
@@ -161,13 +168,14 @@ func TestSumForAgent_MissingDirReturnsZero(t *testing.T) {
 
 func rec(ts, agent, sess, model string, in, out int, cost float64) Record {
 	return Record{
-		Timestamp:    ts,
-		AgentName:    agent,
-		SessionID:    sess,
-		Model:        model,
-		InputTokens:  in,
-		OutputTokens: out,
-		TotalCostUsd: cost,
+		SchemaVersion: RecordSchemaVersion,
+		Timestamp:     ts,
+		AgentName:     agent,
+		SessionID:     sess,
+		Model:         model,
+		InputTokens:   in,
+		OutputTokens:  out,
+		TotalCostUsd:  cost,
 	}
 }
 
@@ -491,10 +499,10 @@ func TestSumGrouped_SkipsMalformedLines(t *testing.T) {
 		t.Fatalf("MkdirAll: %v", err)
 	}
 	path := filepath.Join(dir, "s1.ndjson")
-	body := `{"timestamp":"2026-05-01T10:00:00Z","agent_name":"alice","input_tokens":100,"total_cost_usd":0.10}` + "\n" +
+	body := `{"schema_version":1,"timestamp":"2026-05-01T10:00:00Z","agent_name":"alice","input_tokens":100,"total_cost_usd":0.10}` + "\n" +
 		`}{ not json` + "\n" +
 		"\n" +
-		`{"timestamp":"2026-05-01T11:00:00Z","agent_name":"alice","input_tokens":200,"total_cost_usd":0.20}` + "\n"
+		`{"schema_version":1,"timestamp":"2026-05-01T11:00:00Z","agent_name":"alice","input_tokens":200,"total_cost_usd":0.20}` + "\n"
 	if err := os.WriteFile(path, []byte(body), 0o644); err != nil {
 		t.Fatalf("WriteFile: %v", err)
 	}
@@ -689,10 +697,10 @@ func TestSumForAgentSession_SkipsMalformedLines(t *testing.T) {
 	if err := os.MkdirAll(dir, 0o755); err != nil {
 		t.Fatalf("MkdirAll: %v", err)
 	}
-	body := `{"timestamp":"2026-05-01T10:00:00Z","agent_name":"alice","input_tokens":100,"total_cost_usd":0.10}` + "\n" +
+	body := `{"schema_version":1,"timestamp":"2026-05-01T10:00:00Z","agent_name":"alice","input_tokens":100,"total_cost_usd":0.10}` + "\n" +
 		`}{ not json` + "\n" +
 		"\n" +
-		`{"timestamp":"2026-05-01T11:00:00Z","agent_name":"alice","input_tokens":200,"total_cost_usd":0.20}` + "\n"
+		`{"schema_version":1,"timestamp":"2026-05-01T11:00:00Z","agent_name":"alice","input_tokens":200,"total_cost_usd":0.20}` + "\n"
 	if err := os.WriteFile(filepath.Join(dir, "s1.ndjson"), []byte(body), 0o644); err != nil {
 		t.Fatalf("WriteFile: %v", err)
 	}

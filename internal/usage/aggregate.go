@@ -13,6 +13,7 @@ import (
 
 // aggregateLine is the minimal subset of fields decoded for aggregation.
 type aggregateLine struct {
+	SchemaVersion            int     `json:"schema_version"`
 	AgentName                string  `json:"agent_name"`
 	Timestamp                string  `json:"timestamp"`
 	InputTokens              int     `json:"input_tokens"`
@@ -20,6 +21,7 @@ type aggregateLine struct {
 	CacheReadInputTokens     int     `json:"cache_read_input_tokens"`
 	CacheCreationInputTokens int     `json:"cache_creation_input_tokens"`
 	TotalCostUsd             float64 `json:"total_cost_usd"`
+	SessionCostUsd           float64 `json:"session_cost_usd"`
 }
 
 // GroupKey selects how SumGrouped buckets records.
@@ -274,22 +276,155 @@ func scanNDJSON(path string, onLine func([]byte)) error {
 	return scanner.Err()
 }
 
+// deltaFrom converts one cumulative reading into that turn's own cost, given
+// the previous reading in the same series. A reading BELOW its predecessor
+// means Claude restarted the cumulative after a context reset, so the reading
+// is itself the new segment's first value and is counted whole — clamping the
+// negative difference to zero would silently drop that turn's spend (QUM-1247).
+func deltaFrom(cur, last float64) float64 {
+	delta := cur - last
+	if cur < last {
+		delta = cur
+	}
+	if delta < 0 {
+		delta = 0
+	}
+	return delta
+}
+
+// repairLegacyCosts rewrites the cost column of pre-QUM-1247 rows, which stored
+// the session-cumulative total_cost_usd rather than the turn's own cost, so
+// summing them inflated totals by roughly N/2x.
+//
+// Rows are addressed by index because the two scan paths decode into different
+// structs; n is the row count and the closures read and write one row's fields.
+// The caller must pass exactly ONE file's rows, in file order: each session file
+// is an independent cumulative series, and a baseline carried across a file
+// boundary would score the next file's first row against the previous file's
+// high-water mark.
+//
+// Rows already at RecordSchemaVersion or later hold true per-turn deltas and are
+// passed through untouched. They also reset the baseline, so a file the old
+// binary started and the new binary appended to repairs its legacy prefix
+// without the corrected suffix contaminating it.
+func repairLegacyCosts(n int, version func(int) int, cost func(int) float64, repair func(i int, delta, cumulative float64)) {
+	var last float64
+	inLegacy := false
+	for i := 0; i < n; i++ {
+		if version(i) >= RecordSchemaVersion {
+			inLegacy = false
+			continue
+		}
+		if !inLegacy {
+			last = 0
+			inLegacy = true
+		}
+		cur := cost(i)
+		repair(i, deltaFrom(cur, last), cur)
+		last = cur
+	}
+}
+
+// scanFile decodes one usage file, repairs any legacy rows, then invokes fn per
+// row. It buffers the whole file because a legacy row's cost is only computable
+// from its predecessor; streaming each line straight to fn cannot do that.
 func scanFile(path string, fn func(aggregateLine)) error {
-	return scanNDJSON(path, func(line []byte) {
+	var rows []aggregateLine
+	if err := scanNDJSON(path, func(line []byte) {
 		var rec aggregateLine
 		if err := json.Unmarshal(line, &rec); err != nil {
 			return
 		}
-		fn(rec)
-	})
+		rows = append(rows, rec)
+	}); err != nil {
+		return err
+	}
+	repairLegacyCosts(len(rows),
+		func(i int) int { return rows[i].SchemaVersion },
+		func(i int) float64 { return rows[i].TotalCostUsd },
+		func(i int, delta, cumulative float64) {
+			rows[i].TotalCostUsd = delta
+			rows[i].SessionCostUsd = cumulative
+		})
+	for _, r := range rows {
+		fn(r)
+	}
+	return nil
 }
 
+// scanRecords is scanFile's typed-Record counterpart, with the same per-file
+// buffering and legacy repair. Repair happens here rather than in LoadRecords so
+// that it precedes any Since/Until filtering: a delta needs its predecessor, and
+// a predecessor dropped by the filter would leave the survivor carrying a raw
+// cumulative.
 func scanRecords(path string, fn func(Record)) error {
-	return scanNDJSON(path, func(line []byte) {
+	var rows []Record
+	if err := scanNDJSON(path, func(line []byte) {
 		var rec Record
 		if err := json.Unmarshal(line, &rec); err != nil {
 			return
 		}
-		fn(rec)
-	})
+		rows = append(rows, rec)
+	}); err != nil {
+		return err
+	}
+	repairLegacyCosts(len(rows),
+		func(i int) int { return rows[i].SchemaVersion },
+		func(i int) float64 { return rows[i].TotalCostUsd },
+		func(i int, delta, cumulative float64) {
+			rows[i].TotalCostUsd = delta
+			rows[i].SessionCostUsd = cumulative
+		})
+	for _, r := range rows {
+		fn(r)
+	}
+	return nil
+}
+
+// CountLegacyRows reports how many of the rows matching f were written before
+// the QUM-1247 cost fix (and so had their per-turn cost reconstructed on read),
+// alongside the total row count. `sprawl usage` reports this so a reconstructed
+// figure is never mistaken for one read straight off disk.
+//
+// It re-scans rather than reusing LoadRecords because repair overwrites the
+// cost column but deliberately leaves SchemaVersion alone, making the legacy
+// rows still identifiable.
+func CountLegacyRows(sprawlRoot string, f Filter) (legacy, total int, err error) {
+	pattern := filepath.Join(sprawlRoot, ".sprawl", "logs", "usage", "*", "*.ndjson")
+	if f.Agent != "" {
+		pattern = filepath.Join(sprawlRoot, ".sprawl", "logs", "usage", f.Agent, "*.ndjson")
+	}
+	matches, err := filepath.Glob(pattern)
+	if err != nil {
+		return 0, 0, err
+	}
+	hasSince := !f.Since.IsZero()
+	hasUntil := !f.Until.IsZero()
+	for _, path := range matches {
+		if err := scanNDJSON(path, func(line []byte) {
+			var rec Record
+			if err := json.Unmarshal(line, &rec); err != nil {
+				return
+			}
+			if hasSince || hasUntil {
+				ts, err := time.Parse(time.RFC3339, rec.Timestamp)
+				if err != nil {
+					return
+				}
+				if hasSince && ts.Before(f.Since) {
+					return
+				}
+				if hasUntil && !ts.Before(f.Until) {
+					return
+				}
+			}
+			total++
+			if rec.SchemaVersion < RecordSchemaVersion {
+				legacy++
+			}
+		}); err != nil {
+			return 0, 0, err
+		}
+	}
+	return legacy, total, nil
 }

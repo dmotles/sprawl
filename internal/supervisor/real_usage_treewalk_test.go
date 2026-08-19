@@ -7,6 +7,8 @@ import (
 	"path/filepath"
 	"testing"
 
+	"github.com/dmotles/sprawl/internal/usage"
+
 	"github.com/dmotles/sprawl/internal/state"
 )
 
@@ -28,6 +30,10 @@ func writeUsageFixture(t *testing.T, sprawlRoot, agent, session string, costs ..
 	enc := json.NewEncoder(f)
 	for i, cost := range costs {
 		rec := map[string]any{
+			// Current-schema rows: the costs passed in are per-turn deltas.
+			// Unstamped, they would decode as pre-QUM-1247 cumulative rows and
+			// aggregation would reconstruct deltas from them (QUM-1247).
+			"schema_version":              usage.RecordSchemaVersion,
 			"timestamp":                   "2026-06-09T07:00:00Z",
 			"agent_name":                  agent,
 			"agent_type":                  "engineer",

@@ -43,6 +43,13 @@ type Recorder struct {
 	accum         TurnAccumulator
 	currentSessID string
 	currentFile   io.WriteCloser
+
+	// lastSessionCost is the previous turn's session-cumulative
+	// total_cost_usd, the baseline each turn's own cost is measured against.
+	// Cleared on session rotation and re-seeded from disk when this Recorder
+	// resumes a session another process already wrote rows for.
+	lastSessionCost float64
+	costSeeded      bool
 }
 
 // NewRecorder constructs a Recorder for agentName under sprawlRoot. It reads
@@ -71,6 +78,11 @@ func (r *Recorder) Handle(ev runtime.RuntimeEvent) {
 	case runtime.EventTurnCompleted:
 		r.handleTurnCompleted(ev)
 	case runtime.EventInterrupted, runtime.EventBackendFaulted:
+		// Only the in-flight tokens are discarded; lastSessionCost is
+		// deliberately left alone. An interrupted turn writes no row, but its
+		// spend stays in Claude's running cumulative, so the next successful
+		// turn's delta absorbs it. Clearing the baseline here would re-charge
+		// everything spent in the session so far.
 		r.accum.Reset()
 	}
 }
@@ -88,6 +100,8 @@ func (r *Recorder) handleProtocolMessage(ev runtime.RuntimeEvent) {
 		}
 		r.accum.Reset()
 		r.currentSessID = ev.Message.SessionID
+		r.lastSessionCost = 0
+		r.costSeeded = false
 	}
 
 	var am protocol.AssistantMessage
@@ -109,8 +123,17 @@ func (r *Recorder) handleTurnCompleted(ev runtime.RuntimeEvent) {
 	if sessID == "" {
 		sessID = ev.Result.SessionID
 	}
+	if !r.costSeeded {
+		r.lastSessionCost = r.seedCostBaseline(sessID)
+		r.costSeeded = true
+	}
+	sessionCost := ev.Result.TotalCostUsd
+	turnCost := deltaFrom(sessionCost, r.lastSessionCost)
+	r.lastSessionCost = sessionCost
+
 	u := r.accum.Usage()
 	rec := Record{
+		SchemaVersion:            RecordSchemaVersion,
 		Timestamp:                time.Now().UTC().Format(time.RFC3339Nano),
 		AgentName:                r.agentName,
 		AgentType:                r.agentType,
@@ -123,7 +146,8 @@ func (r *Recorder) handleTurnCompleted(ev runtime.RuntimeEvent) {
 		OutputTokens:             u.OutputTokens,
 		CacheReadInputTokens:     u.CacheReadInputTokens,
 		CacheCreationInputTokens: u.CacheCreationInputTokens,
-		TotalCostUsd:             ev.Result.TotalCostUsd,
+		TotalCostUsd:             turnCost,
+		SessionCostUsd:           sessionCost,
 	}
 	if err := r.writeRecord(sessID, rec); err != nil {
 		// Best-effort: swallow write errors so the runtime hot path is
@@ -131,6 +155,42 @@ func (r *Recorder) handleTurnCompleted(ev runtime.RuntimeEvent) {
 		_ = err
 	}
 	r.accum.Reset()
+}
+
+// seedCostBaseline returns the session-cumulative cost already accounted for in
+// sessID's log, so a Recorder resuming a session another process started
+// measures its first delta against that instead of against zero.
+//
+// Without it, a restart mid-session re-charges the whole session: the log is
+// opened O_APPEND, so the prior rows survive and the first new row would store
+// the full running cumulative as if it were one turn's cost.
+//
+// Returns 0 whenever the answer cannot be read — no file, an unreadable one, or
+// an injected writer factory with no file behind it — which is exactly the
+// correct baseline for a session with no rows yet.
+func (r *Recorder) seedCostBaseline(sessID string) float64 {
+	if sessID == "" {
+		return 0
+	}
+	path := filepath.Join(r.sprawlRoot, ".sprawl", "logs", "usage", r.agentName, sessID+".ndjson")
+	var last Record
+	var found bool
+	if err := scanNDJSON(path, func(line []byte) {
+		var rec Record
+		if err := json.Unmarshal(line, &rec); err != nil {
+			return
+		}
+		last = rec
+		found = true
+	}); err != nil || !found {
+		return 0
+	}
+	if last.SchemaVersion >= RecordSchemaVersion {
+		return last.SessionCostUsd
+	}
+	// A legacy row's total_cost_usd IS the cumulative; it has no
+	// session_cost_usd to read.
+	return last.TotalCostUsd
 }
 
 func (r *Recorder) writeRecord(sessID string, rec Record) error {

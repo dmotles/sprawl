@@ -127,6 +127,10 @@ func writeNDJSON(t *testing.T, root, agent, session string, recs []usage.Record)
 
 func mkRec(ts, agent, sess, model string, in, out, cr, cc int, cost float64) usage.Record {
 	return usage.Record{
+		// Current-schema rows: TotalCostUsd is already a per-turn delta. An
+		// unstamped fixture would decode as a pre-QUM-1247 row and be
+		// "repaired" on read, silently turning these into legacy-repair tests.
+		SchemaVersion:            usage.RecordSchemaVersion,
 		Timestamp:                ts,
 		AgentName:                agent,
 		AgentType:                "claude",
@@ -621,7 +625,7 @@ func TestRunUsageExport_CSV_Golden(t *testing.T) {
 		t.Fatalf("runUsageExport: %v", err)
 	}
 	got := out.String()
-	wantHeader := "timestamp,agent_name,agent_type,agent_family,parent_name,session_id,branch,model,input_tokens,output_tokens,cache_read_input_tokens,cache_creation_input_tokens,total_cost_usd"
+	wantHeader := "timestamp,agent_name,agent_type,agent_family,parent_name,session_id,branch,model,input_tokens,output_tokens,cache_read_input_tokens,cache_creation_input_tokens,total_cost_usd,session_cost_usd,schema_version"
 	firstLine := strings.SplitN(got, "\n", 2)[0]
 	if firstLine != wantHeader {
 		t.Errorf("CSV header mismatch:\n got: %q\nwant: %q", firstLine, wantHeader)

@@ -394,10 +394,28 @@ func runUsageSummary(deps *usageDeps, by, group, sinceStr, untilStr string, quie
 	if !quiet {
 		if by == "cost" || by == "all" {
 			fmt.Fprintln(deps.stderr, "note: cost is API-reported; doesn't reflect subscription credits (Claude Max etc.)")
+			reportLegacyRows(deps, root, filter)
 		}
 		fmt.Fprintln(deps.stderr, "tip: sprawl usage tail --agent <name>")
 	}
 	return nil
+}
+
+// reportLegacyRows warns when any cost in the figures above was reconstructed
+// rather than read straight off disk. Rows written before QUM-1247 stored the
+// session-cumulative total_cost_usd, so aggregation rebuilds their per-turn cost
+// on read; without this note a reconstructed total is indistinguishable from a
+// recorded one. Counting failures are ignored — the totals are already printed,
+// and a missing advisory note must not turn a successful summary into an error.
+func reportLegacyRows(deps *usageDeps, root string, filter usage.Filter) {
+	legacy, total, err := usage.CountLegacyRows(root, filter)
+	if err != nil || legacy == 0 {
+		return
+	}
+	fmt.Fprintf(deps.stderr,
+		"note: %d of %d rows predate the QUM-1247 cost fix; their per-turn cost was reconstructed "+
+			"from the cumulative column (see schema_version in `sprawl usage export`)\n",
+		legacy, total)
 }
 
 // --- export ---
@@ -430,7 +448,7 @@ func runUsageExport(deps *usageDeps, format, sinceStr, agent string, quiet bool)
 			"timestamp", "agent_name", "agent_type", "agent_family", "parent_name",
 			"session_id", "branch", "model",
 			"input_tokens", "output_tokens", "cache_read_input_tokens", "cache_creation_input_tokens",
-			"total_cost_usd",
+			"total_cost_usd", "session_cost_usd", "schema_version",
 		}
 		if err := w.Write(header); err != nil {
 			return err
@@ -442,6 +460,8 @@ func runUsageExport(deps *usageDeps, format, sinceStr, agent string, quiet bool)
 				strconv.Itoa(r.InputTokens), strconv.Itoa(r.OutputTokens),
 				strconv.Itoa(r.CacheReadInputTokens), strconv.Itoa(r.CacheCreationInputTokens),
 				strconv.FormatFloat(r.TotalCostUsd, 'f', -1, 64),
+				strconv.FormatFloat(r.SessionCostUsd, 'f', -1, 64),
+				strconv.Itoa(r.SchemaVersion),
 			}
 			if err := w.Write(row); err != nil {
 				return err

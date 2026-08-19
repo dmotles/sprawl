@@ -9,7 +9,9 @@ import (
 
 // TestRecorder_MultiTurnProducesOneRecordEach drives three successive turns
 // through one Recorder and asserts three NDJSON lines, each carrying its own
-// per-turn total_cost_usd from the Result frame (QUM-368 AC §2).
+// per-turn cost (QUM-368 AC §2). The Result frame's total_cost_usd is
+// session-cumulative, so the stored column is the delta over the previous turn
+// (QUM-1247) — the cost invariant itself is pinned in recorder_cost_delta_test.go.
 func TestRecorder_MultiTurnProducesOneRecordEach(t *testing.T) {
 	tmp := t.TempDir()
 	if err := state.SaveAgent(tmp, &state.AgentState{Name: "finn", Status: "active"}); err != nil {
@@ -23,8 +25,9 @@ func TestRecorder_MultiTurnProducesOneRecordEach(t *testing.T) {
 	defer rec.Close()
 
 	sessionID := "sess-multi"
-	costs := []float64{0.01, 0.02, 0.04}
-	for i, c := range costs {
+	cumulative := []float64{0.01, 0.02, 0.04}
+	wantDeltas := []float64{0.01, 0.01, 0.02}
+	for i, c := range cumulative {
 		rec.Handle(assistantEvent(t, sessionID, protocol.Usage{
 			InputTokens:  i + 1,
 			OutputTokens: i + 2,
@@ -41,8 +44,9 @@ func TestRecorder_MultiTurnProducesOneRecordEach(t *testing.T) {
 		t.Fatalf("got %d records, want 3", len(records))
 	}
 	for i, r := range records {
-		if r.TotalCostUsd != costs[i] {
-			t.Errorf("record[%d].TotalCostUsd = %v, want %v", i, r.TotalCostUsd, costs[i])
+		if r.TotalCostUsd != wantDeltas[i] {
+			t.Errorf("record[%d].TotalCostUsd = %v, want delta %v (cumulative fed in: %v)",
+				i, r.TotalCostUsd, wantDeltas[i], cumulative[i])
 		}
 		if r.InputTokens != i+1 || r.OutputTokens != i+2 {
 			t.Errorf("record[%d] tokens = (%d,%d), want (%d,%d)",

@@ -8,7 +8,7 @@
 
 # QUM-1029: the number of assertions a COMPLETE, PASSING run of this row
 # makes. Five forced passes plus four symmetric gates. The required-keys loop asserts nothing itself — it accumulates into one gate after the loop.
-MIN_ASSERTIONS=9
+MIN_ASSERTIONS=11
 
 test_metadata() {
     echo "needs_claude=1 needs_tmux=1"
@@ -29,6 +29,8 @@ USAGE_REQUIRED_KEYS=(
     cache_read_input_tokens
     cache_creation_input_tokens
     total_cost_usd
+    session_cost_usd
+    schema_version
 )
 
 test_run() {
@@ -150,11 +152,15 @@ test_run() {
     #  - agent_name == "weave"
     #  - input_tokens + output_tokens > 0
     #  - total_cost_usd >= 0
-    local AGENT_NAME INPUT_TOKENS OUTPUT_TOKENS COST
+    #  - schema_version == 1 and total_cost_usd <= session_cost_usd (QUM-1247:
+    #    the stored cost is this turn's delta, the session figure is cumulative)
+    local AGENT_NAME INPUT_TOKENS OUTPUT_TOKENS COST SESSION_COST SCHEMA_VERSION
     AGENT_NAME=$(echo "$FIRST" | jq -r '.agent_name')
     INPUT_TOKENS=$(echo "$FIRST" | jq -r '.input_tokens')
     OUTPUT_TOKENS=$(echo "$FIRST" | jq -r '.output_tokens')
     COST=$(echo "$FIRST" | jq -r '.total_cost_usd')
+    SESSION_COST=$(echo "$FIRST" | jq -r '.session_cost_usd')
+    SCHEMA_VERSION=$(echo "$FIRST" | jq -r '.schema_version')
 
     if [ "$AGENT_NAME" = "weave" ]; then
         pass "agent_name = weave"
@@ -172,6 +178,25 @@ test_run() {
         pass "total_cost_usd >= 0 ($COST)"
     else
         fail "expected total_cost_usd >= 0, got $COST"
+    fi
+
+    # A freshly written row must carry the current schema version; without this
+    # a recorder that silently reverted to the pre-QUM-1247 shape would still
+    # satisfy every key-presence check above.
+    if [ "$SCHEMA_VERSION" = "1" ]; then
+        pass "schema_version = 1"
+    else
+        fail "expected schema_version=1, got '$SCHEMA_VERSION'"
+    fi
+
+    # The per-turn delta can never exceed the session-cumulative figure it was
+    # derived from. Storing the cumulative in total_cost_usd (the QUM-1247 bug)
+    # makes these equal, which still passes; a delta larger than the cumulative
+    # means the baseline went backwards.
+    if [ "$(echo "$COST <= $SESSION_COST" | bc -l 2>/dev/null || echo 0)" = "1" ]; then
+        pass "total_cost_usd <= session_cost_usd ($COST <= $SESSION_COST)"
+    else
+        fail "expected total_cost_usd <= session_cost_usd, got $COST > $SESSION_COST"
     fi
 
     echo ""

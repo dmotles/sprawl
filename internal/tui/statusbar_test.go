@@ -511,3 +511,22 @@ func TestStatusBar_SetTransientLabel_LastWriteWins(t *testing.T) {
 		t.Errorf("View() should contain latest label %q, got:\n%s", labelB, view)
 	}
 }
+
+// TestStatusBar_SetTurnCost_DecreasingValueReplaces pins replace-not-accumulate
+// from the other direction (QUM-366, re-affirmed by QUM-1247). The existing
+// TestStatusBar_CumulativeCost only rules out addition; a "keep the max"
+// refactor would pass it and still be wrong. total_cost_usd restarts from a low
+// value after a context reset, and the bar must follow it down.
+func TestStatusBar_SetTurnCost_DecreasingValueReplaces(t *testing.T) {
+	m := newTestStatusBarModel(t)
+	m.SetWidth(80)
+	m.SetTurnCost(0.50)
+	m.SetTurnCost(0.02)
+	view := m.View()
+	if !strings.Contains(view, "$0.0200") {
+		t.Errorf("View() should contain the replaced cost '$0.0200', got:\n%s", view)
+	}
+	if strings.Contains(view, "$0.5000") {
+		t.Errorf("View() should NOT retain the earlier higher cost '$0.5000' (max-not-replace bug), got:\n%s", view)
+	}
+}
