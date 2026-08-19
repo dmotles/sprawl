@@ -46,6 +46,7 @@ type seedDoc struct {
 	Version    int             `json:"version"`
 	Opens      bool            `json:"opens"`
 	Closes     string          `json:"closes"`
+	Spillable  bool            `json:"spillable"`
 	JSONSchema json.RawMessage `json:"json_schema"`
 }
 
@@ -61,6 +62,16 @@ type EventTypeSchema struct {
 	// Opens marks a type that creates an outstanding contract. The appender
 	// keys open_contracts maintenance off exactly this field.
 	Opens bool
+	// Spillable marks a type that may be written to the local degraded-mode
+	// spill when the event log is unreachable.
+	//
+	// It is a property of the DEFINITION rather than an argument to the emit
+	// call on purpose. Telemetry and lifecycle events are recoverable from a
+	// local file; a goal is not — a goal recorded only locally is invisible to
+	// every other host and to the sweeper, so it would read as work nobody is
+	// doing. If a caller could pass this flag, a caller that got it wrong would
+	// lose a goal silently and nothing downstream would notice.
+	Spillable bool
 }
 
 // Registry resolves event-type schemas by PINNED id.
@@ -154,6 +165,7 @@ func loadSeedRegistry() (*Registry, error) {
 			JSONSchema: doc.JSONSchema,
 			Closes:     doc.Closes,
 			Opens:      doc.Opens,
+			Spillable:  doc.Spillable,
 		})
 	}
 	return NewRegistry(schemas)

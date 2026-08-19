@@ -2,6 +2,7 @@
   "name": "repo_initialized",
   "version": 1,
   "opens": false,
+  "spillable": true,
   "closes": "",
   "json_schema": {
     "type": "object",

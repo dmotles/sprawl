@@ -36,41 +36,51 @@ var wantSeeds = []struct {
 	id      string
 	opens   bool
 	closes  string
+	// spillable decides whether a degraded-mode outage loses this event to a
+	// local file or fails the caller. Getting it wrong on a contract type is
+	// silent data loss, so it is pinned per type rather than trusted.
+	spillable bool
 	// required is the exact `required` list, so a silently relaxed schema
 	// (which would let a malformed payload into the log) fails here.
 	required []string
 }{
 	{
 		name: "repo_initialized", version: 1,
-		id:       "0c923406-a2a7-5ef2-b011-d841d807e664",
-		required: []string{"git_sha", "remote_url"},
+		spillable: true,
+		id:        "0c923406-a2a7-5ef2-b011-d841d807e664",
+		required:  []string{"git_sha", "remote_url"},
 	},
 	{
 		name: "run_started", version: 1,
-		id:       "0bd29d8f-eed8-5dc8-a8f8-c1712af384b3",
-		required: []string{"agent_name", "agent_type", "session_id"},
+		spillable: true,
+		id:        "0bd29d8f-eed8-5dc8-a8f8-c1712af384b3",
+		required:  []string{"agent_name", "agent_type", "session_id"},
 	},
 	{
 		name: "turn_finished", version: 1,
-		id:       "f4f14d6c-5cb3-57c4-a379-ee699165de93",
-		required: []string{"session_id", "input_tokens", "output_tokens"},
+		spillable: true,
+		id:        "f4f14d6c-5cb3-57c4-a379-ee699165de93",
+		required:  []string{"session_id", "input_tokens", "output_tokens"},
 	},
 	{
 		name: "run_finished", version: 1,
-		id:       "538a89f3-fe07-53c8-b17b-07a9cc14a5fd",
-		required: []string{"session_id", "outcome"},
+		spillable: true,
+		id:        "538a89f3-fe07-53c8-b17b-07a9cc14a5fd",
+		required:  []string{"session_id", "outcome"},
 	},
 	{
 		name: "agent_spawned", version: 1,
-		id:       "d470020f-ba51-560d-a9d6-9a604f4c2738",
-		opens:    true,
-		required: []string{"agent_name", "agent_type"},
+		spillable: true,
+		id:        "d470020f-ba51-560d-a9d6-9a604f4c2738",
+		opens:     true,
+		required:  []string{"agent_name", "agent_type"},
 	},
 	{
 		name: "agent_retired", version: 1,
-		id:       "88342d9c-cb92-5de7-a634-ad7051f5e211",
-		closes:   "agent_spawned",
-		required: []string{"agent_name", "outcome"},
+		spillable: true,
+		id:        "88342d9c-cb92-5de7-a634-ad7051f5e211",
+		closes:    "agent_spawned",
+		required:  []string{"agent_name", "outcome"},
 	},
 	{
 		name: "goal_opened", version: 1,
@@ -114,6 +124,9 @@ func TestSeedRegistry_MatchesGoldenIDsAndWiring(t *testing.T) {
 		}
 		if got.Closes != w.closes {
 			t.Errorf("%s@%d closes=%q, want %q — closes is what makes the appender delete the contract", w.name, w.version, got.Closes, w.closes)
+		}
+		if got.Spillable != w.spillable {
+			t.Errorf("%s@%d spillable=%v, want %v", w.name, w.version, got.Spillable, w.spillable)
 		}
 	}
 }
@@ -215,5 +228,45 @@ func TestSeedRegistry_ClosesNamesAnExistingOpener(t *testing.T) {
 	}
 	if checked == 0 {
 		t.Fatal("no seed schema declares `closes` — this assertion inspected nothing, so its silence is not evidence")
+	}
+}
+
+// TestSeedRegistry_ContractTypesAreNeverSpillable is the safety invariant behind
+// the degraded-mode split, asserted as a RULE over the whole seed set rather
+// than as two per-type goldens.
+//
+// A goal recorded only in a local spill file is invisible to every other host
+// and to the sweeper: it reads as work nobody is doing, while the agent that
+// opened it believes it was recorded. The per-type goldens above would catch
+// today's two contract types flipping; this catches a NEW contract type being
+// added spillable, which is the more likely mistake because whoever adds it will
+// be copying an existing telemetry seed.
+//
+// agent_spawned/agent_retired are the deliberate exception and are named here
+// explicitly rather than silently skipped: they are lifecycle telemetry that
+// also happens to form a contract pair (Appendix B item 12), they are replayed
+// rather than depended on for coordination, and the appender mints the event id
+// before the append so a replay deduplicates against events.id UNIQUE.
+func TestSeedRegistry_ContractTypesAreNeverSpillable(t *testing.T) {
+	reg, err := SeedRegistry()
+	if err != nil {
+		t.Fatalf("SeedRegistry: %v", err)
+	}
+	lifecycleExceptions := map[string]bool{"agent_spawned": true, "agent_retired": true}
+
+	var checked int
+	for _, s := range reg.All() {
+		isContract := s.Opens || s.Closes != ""
+		if !isContract || lifecycleExceptions[s.Name] {
+			continue
+		}
+		checked++
+		if s.Spillable {
+			t.Errorf("%s@%d takes part in an open/close contract AND is spillable: a contract recorded only in a local spill file is invisible to every other host and to the sweeper. If this type really is replay-safe, add it to lifecycleExceptions with the reason",
+				s.Name, s.Version)
+		}
+	}
+	if checked == 0 {
+		t.Fatal("no non-exempt contract type was examined, so this assertion's silence is not evidence")
 	}
 }

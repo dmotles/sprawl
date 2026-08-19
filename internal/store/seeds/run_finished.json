@@ -2,6 +2,7 @@
   "name": "run_finished",
   "version": 1,
   "opens": false,
+  "spillable": true,
   "closes": "",
   "json_schema": {
     "type": "object",

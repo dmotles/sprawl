@@ -21,6 +21,16 @@ var (
 
 	// ErrInsecureSecrets means the secrets file is group- or world-accessible.
 	ErrInsecureSecrets = errors.New("store: secrets file is group- or world-accessible")
+
+	// ErrDegraded means the event log is unreachable and the operation is one
+	// that must NOT proceed locally. Only telemetry and lifecycle events spill;
+	// anything carrying cross-host coordination meaning fails with this.
+	ErrDegraded = errors.New("store: event log is unreachable")
+
+	// ErrNoOpenContract means a close event referenced something that is not an
+	// open contract — already closed, or never opened. Closes are final and the
+	// log is monotone, so this is refused rather than absorbed.
+	ErrNoOpenContract = errors.New("store: no such open contract")
 )
 
 // HintError pairs a failure with the single next action that resolves it.
