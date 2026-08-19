@@ -1,7 +1,7 @@
 # Sprawl v2: Log-Centric Rearchitecture — Plan of Record
 
 **Date:** 2026-08-18
-**Status:** design-only (approved; no milestone issue has landed yet — see Milestones below)
+**Status:** design-only (approved; milestones ship independently — check Linear for current per-milestone progress, not this doc)
 
 > This is a repo-safe copy of the Linear plan-of-record document for the v2
 > milestone (`QUM-1247`..`QUM-1256`, tracked under the "v2: Log-Centric
@@ -142,9 +142,11 @@ enforced on every version, not just seeds).
 
 ## Data layer (bare Postgres ≥16 + pgvector; nothing vendor-bound)
 
-Host: a small managed Postgres instance (~$15–20/mo; step up when HNSW needs
-more RAM). A free-tier managed Postgres option is documented for OSS
-contributors.
+Host: Azure Database for PostgreSQL Flexible Server B1ms (~$15–20/mo; step up
+to B2s when HNSW needs more RAM) — named as a generic public-cloud target per
+this repo's hub-docs convention, not as the maintainer's specific instance
+(no subscription/tenant/resource identifiers here). Neon's free tier is
+documented as the option for OSS contributors without their own instance.
 
 * Definitions ×3 (`event_type_schemas` — additive-only within a name,
   breaking change = new event type name; `agent_cards`; `workflow_defs`).
@@ -213,29 +215,35 @@ contributors.
   Postgres, AND a demonstrated *backtrack*, not just crash-resume; otherwise
   thin hand-rolled engine over open_contracts. Temporal only if
   multi-host-heavy.
-* Eval/observability: OTel GenAI spans → a hosted LLM-observability platform
-  (free tier, OTLP, judge tooling, self-host escape). `agent_runs` is the
-  system of record.
+* Eval/observability: OTel GenAI spans → Langfuse Cloud (free tier, OTLP,
+  judge tooling, self-host escape). `agent_runs` is the system of record.
 * Cheap models: gateway-agnostic (`ANTHROPIC_BASE_URL/AUTH_TOKEN/MODEL` per
-  card). Cheaper open-weight models hold up for mechanical work. A vetted,
-  pinned LiteLLM version is the default gateway (a supply-chain incident hit
-  a specific PyPI release; pin around it). Anthropic-via-cloud-marketplace =
-  same list price, different invoice. Managed agent-hosting services: not a
-  fit for coding agents.
+  card). GLM/Kimi/Haiku hold up for mechanical work. LiteLLM default (pin
+  vetted version; PyPI 1.82.7/.8 shipped malware — pin around those
+  releases specifically). Anthropic-via-Foundry/Bedrock = same list price,
+  different invoice. Foundry Agent Service: not a fit for coding agents.
 * Messaging: Postgres; NATS is the someday step-up. No managed memory SaaS
   (employer context stays in our DB).
 
 ## Relationship to the hub design (`docs/designs/hub/`)
 
-The v2 event log absorbs the hub's storage half (docs 00/01/07/09/10 —
+> **Note on terminology:** this section's "v2" is *this* document's v2 (the
+> sprawl log-centric rearchitecture). The hub docs use "v2" for their own,
+> unrelated second design iteration (single-user, post-multi-tenant cut) —
+> `13-implementation-plan.md` and `QUM-913` both use "v2" that way. The two
+> are not the same v2.
+
+The sprawl v2 event log absorbs the hub's storage half (docs 00/01/07/09/10 —
 durable seq'd stream, storage/persistence, portable memory) and inverts its
 philosophy: the shared Postgres IS the authoritative coordination spine, not
 an optional companion. The hub's UI half (browser relay, remote view+input,
 attachments, auth boundary — docs 03/04/11, attachments-multimodal) remains
 valid future work as a thin view layer over this database. See
 `docs/designs/hub/README.md`'s status block for the doc-by-doc
-superseded/retargeted breakdown (`QUM-1248`); `QUM-913` tracks aligning the
-hub docs' own prose to the v2 model.
+superseded/retargeted breakdown (`QUM-1248`). No issue currently tracks
+aligning the hub docs' own prose to this (sprawl v2) model — `QUM-913` is a
+different, unrelated hygiene ticket about the hub's own v2 iteration; do not
+follow it expecting sprawl-v2 content.
 
 ## Milestones
 
@@ -244,22 +252,22 @@ M3a (engine + 2 goals) → M3b (taxonomy + mgmt workflows) → M4 (search/eval) 
 M5 (cheap tier) → M6 (memory). Each is an issue in the Sprawl Linear project
 carrying its full implementation detail; dependencies are wired in Linear.
 
-| Milestone | Issue | Status (2026-08-18) |
-|---|---|---|
-| M0 — cost fix | `QUM-1247` | Todo |
-| M1a — store core | `QUM-1249` | Todo |
-| M1b — dispatch | `QUM-1250` | Backlog |
-| M2 — definitions/cards | `QUM-1251` | Backlog |
-| M3a — engine + 2 goals | `QUM-1252` | Backlog |
-| M3b — taxonomy + mgmt workflows | `QUM-1253` | Backlog |
-| M4 — search/eval | `QUM-1254` | Backlog |
-| M5 — cheap tier | `QUM-1255` | Backlog |
-| M6 — memory | `QUM-1256` | Backlog |
+| Milestone | Issue |
+|---|---|
+| M0 — cost fix | `QUM-1247` |
+| M1a — store core | `QUM-1249` |
+| M1b — dispatch | `QUM-1250` |
+| M2 — definitions/cards | `QUM-1251` |
+| M3a — engine + 2 goals | `QUM-1252` |
+| M3b — taxonomy + mgmt workflows | `QUM-1253` |
+| M4 — search/eval | `QUM-1254` |
+| M5 — cheap tier | `QUM-1255` |
+| M6 — memory | `QUM-1256` |
 
-This table is a snapshot, not a live view — it enumerates the milestone
-issues that existed at approval time and will go stale as issues move; check
+The milestone→issue-key mapping above is durable (keys don't change); status
+is deliberately not tabulated here because it goes stale within a day — check
 Linear (project "Sprawl", milestone "v2: Log-Centric Rearchitecture") for
-current status rather than trusting the table above.
+current per-milestone status.
 
 ## Cross-cutting requirements (apply to every milestone)
 

@@ -7,32 +7,36 @@ persist** memory, session transcripts, and attachments so they're reachable from
 any machine. Nothing more — no multi-tenant service, no authoritative state
 store.
 
-> **Read these first:** [`00-overview.md`](00-overview.md) (the *why* & *what*)
-> then [`01-architecture.md`](01-architecture.md) (the north-star architecture
-> every other doc conforms to).
+## Status (2026-08-19) — partially superseded by sprawl v2
 
-## Status (2026-08-18) — partially superseded by v2
+**Read this section before "Read these first" below** — both docs that
+section points at are superseded.
 
-The [v2 log-centric rearchitecture](../v2-log-centric-rearchitecture.md)
+The [sprawl v2 log-centric rearchitecture](../v2-log-centric-rearchitecture.md)
 (`QUM-1248`) absorbs this design's storage half and **inverts its core
 philosophy**: where this doc says "cloud companion, not brain; local session
 is source of truth; no default endpoint," v2 makes the shared Postgres event
 log the authoritative coordination spine, with the connection string as the
-system identity. That inversion means the docs below split into two groups:
+system identity. (This "v2" is the *sprawl* rearchitecture, not this hub
+design's own "v2" single-user iteration referenced in `13-implementation-plan.md`
+and `QUM-913` below — the two are unrelated.) That inversion means the docs
+in this directory split into groups:
 
-**Superseded by the v2 event log** (do not build against these; consult the
-v2 doc instead):
+**Superseded by the sprawl v2 event log** (do not build against these;
+consult the sprawl v2 doc instead):
 
 | doc | why superseded |
 |---|---|
 | [`00-overview.md`](00-overview.md) | Its problem statement and solution shape assume a companion/relay hub over a locally-authoritative sprawl; v2's shared Postgres inverts that authority relationship. |
 | [`01-architecture.md`](01-architecture.md) | Its north-star topology (hub-and-spoke broker, no authoritative state) is the specific thing v2 replaces with the Postgres event log as the spine. |
-| [`07-storage-persistence.md`](07-storage-persistence.md) | Its store interface and keep-everything schema are superseded by v2's `events`/`artifacts`/definitions schema (see v2 doc, Appendix A). |
+| [`07-storage-persistence.md`](07-storage-persistence.md) | Its store interface and keep-everything schema are superseded by v2's `events`/`artifacts`/definitions schema (see the sprawl v2 doc, Appendix A). |
 | [`09-synchronization.md`](09-synchronization.md) | Its reconnect-replay spine and advisory active-host marker are superseded by v2's event-level claims, seq-cursor dispatch, and turn-boundary liveness. |
 | [`10-memory.md`](10-memory.md) | Its portable last-writer-wins memory streams are superseded by v2's log-fed temporal memory (`entities`/`facts`/`fact_provenance`, supersede-don't-delete). |
+| [`qum-911-e2e-walkthrough.md`](qum-911-e2e-walkthrough.md) | Its live-tail/reconnect zero-gap proof validates `09-synchronization.md`'s reconnect-replay spine specifically, so it is superseded for the same reason as that doc. |
 
 **Retained, retargeted as future work** (still valid designs, but as a thin
-view/relay layer over the v2 Postgres rather than an independent store):
+view/relay layer over the sprawl v2 Postgres rather than an independent
+store):
 
 | doc | why retained |
 |---|---|
@@ -41,13 +45,27 @@ view/relay layer over the v2 Postgres rather than an independent store):
 | [`11-frontend-stack.md`](11-frontend-stack.md) | Frontend framework selection is independent of the storage/coordination redesign. |
 | [`attachments-multimodal.md`](attachments-multimodal.md) | Screenshot/image ingestion is a UI-layer concern that still applies once the hub is a view over v2. |
 
-Docs not listed above (`02-components`, `05-observability`, `06-iac`,
-`08-deployment`, `12-testability-local-dev`, `security-privacy`,
-`13-implementation-plan`) were `todo`/unwritten at v2 approval time and carry
-no assessment yet; treat them as needing the same superseded-vs-retargeted
-pass before anyone writes them. `QUM-913` tracks aligning the affected docs'
-own prose to the v2 model; this status block is not a substitute for that
-edit, it is the pointer until that edit lands.
+**Not assessed by this pass** (this issue's scope named the nine docs above;
+these two were not called out either way and still need a look):
+[`security-privacy.md`](security-privacy.md) and
+[`13-implementation-plan.md`](13-implementation-plan.md).
+
+**Already disposed, need no pass**: `02-components`, `05-observability`,
+`06-iac`, `08-deployment`, and `12-testability-local-dev` no longer live in
+this directory — they were superseded and moved to `docs/archive/hub/`
+before this pass (`docs/archive/` is a one-way door; see `docs/README.md`).
+
+No issue currently tracks aligning this directory's own prose to the sprawl
+v2 model (this status block is a pointer, not that edit). `QUM-913` is a
+**different, unrelated** ticket — it is about realigning `00`/`02` to *this
+hub design's own* "v2" single-user iteration, predates the sprawl v2 plan
+entirely, and partly targets `02-components.md`, which is now archived. Do
+not follow it expecting sprawl-v2 content.
+
+> **Read these first:** [`00-overview.md`](00-overview.md) (the *why* & *what*)
+> then [`01-architecture.md`](01-architecture.md) (the north-star architecture
+> every other doc conforms to) — **both superseded, per Status above; read
+> for history, not as current design.**
 
 ## Core principles (TL;DR)
 
@@ -93,6 +111,12 @@ edit, it is the pointer until that edit lands.
 
 > Leaf docs own their own files. This index is **not** meant to be edited by leaf
 > authors beyond flipping their row's status to `draft`/`done`.
+
+> **This table's `Status` column predates the Status section above and is
+> stale** (several rows say `todo` for docs that are hundreds of lines long,
+> and five rows name docs that have since moved to `docs/archive/hub/`).
+> Trust the Status section above for superseded/retained/archived
+> disposition; this table is left as-is pending a separate cleanup pass.
 
 ## Conventions
 
