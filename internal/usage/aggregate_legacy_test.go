@@ -263,3 +263,113 @@ func TestLegacyRepair_ProductionShapeRowsOmitSchemaVersionKey(t *testing.T) {
 			"treated as legacy and repaired", got.TotalCostUsd)
 	}
 }
+
+// TestSumForAgentSession_LegacyRowAfterV1RowUsesV1Baseline covers the reverse
+// of the mixed-file case: an OLDER binary appending to a file a newer one
+// already wrote. The legacy rows continue the same cumulative series the v1
+// rows were tracking, so the baseline entering the legacy stretch is the last
+// v1 row's session_cost_usd — restarting it at 0 re-charges the whole session.
+func TestSumForAgentSession_LegacyRowAfterV1RowUsesV1Baseline(t *testing.T) {
+	root := t.TempDir()
+	base := time.Date(2026, 8, 1, 12, 0, 0, 0, time.UTC)
+	rows := []Record{
+		{
+			SchemaVersion: RecordSchemaVersion, Timestamp: base.Format(time.RFC3339),
+			AgentName: "weave", SessionID: "sess-v1first",
+			TotalCostUsd: 10.0, SessionCostUsd: 10.0,
+		},
+		{
+			SchemaVersion: 0, Timestamp: base.Add(time.Minute).Format(time.RFC3339),
+			AgentName: "weave", SessionID: "sess-v1first", TotalCostUsd: 10.5,
+		},
+		{
+			SchemaVersion: 0, Timestamp: base.Add(2 * time.Minute).Format(time.RFC3339),
+			AgentName: "weave", SessionID: "sess-v1first", TotalCostUsd: 11.0,
+		},
+	}
+	writeRows(t, root, "weave", "sess-v1first", rows)
+
+	got, err := SumForAgentSession(root, "weave", "sess-v1first")
+	if err != nil {
+		t.Fatalf("SumForAgentSession: %v", err)
+	}
+	if !closeTo(got.TotalCostUsd, 11.0) {
+		t.Errorf("TotalCostUsd = %v, want 11.0 (the session's final cumulative)", got.TotalCostUsd)
+	}
+	if closeTo(got.TotalCostUsd, 21.0) {
+		t.Errorf("TotalCostUsd = %v: the legacy stretch restarted its baseline at 0 instead of "+
+			"continuing from the preceding v1 row's session_cost_usd, re-charging the session", got.TotalCostUsd)
+	}
+}
+
+// TestDeltaFrom_TinyDipIsNoiseNotReset guards the most expensive available
+// wrong answer: a real context reset drops the cumulative to a near-zero
+// restart, but a rounding or re-pricing wobble drops it by a hair. Treating the
+// two alike re-charges an entire session over a fraction of a cent.
+func TestDeltaFrom_TinyDipIsNoiseNotReset(t *testing.T) {
+	for _, tc := range []struct {
+		name            string
+		cur, last, want float64
+	}{
+		{"normal increase", 54.40, 54.31, 0.09},
+		{"flat", 54.31, 54.31, 0},
+		{"one-microdollar dip is noise", 54.309999, 54.31, 0},
+		{"genuine reset to near zero", 2.99, 54.31, 2.99},
+		{"reset to exactly zero", 0, 54.31, 0},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			got := deltaFrom(tc.cur, tc.last)
+			if !closeTo(got, tc.want) {
+				t.Errorf("deltaFrom(%v, %v) = %v, want %v", tc.cur, tc.last, got, tc.want)
+			}
+		})
+	}
+}
+
+// TestLoadRecords_RepairedRowsAreStampedCurrentSchema keeps exported bytes
+// self-consistent. `sprawl usage export` writes LoadRecords output verbatim, so
+// a repaired row leaving with a reconstructed cost but schema_version 0 would
+// be repaired a SECOND time by anything that re-ingests it.
+func TestLoadRecords_RepairedRowsAreStampedCurrentSchema(t *testing.T) {
+	root := t.TempDir()
+	writeRows(t, root, "weave", "sess-stamp", legacyRows("weave", "sess-stamp", []float64{0.10, 0.35}))
+
+	recs, err := LoadRecords(root, Filter{})
+	if err != nil {
+		t.Fatalf("LoadRecords: %v", err)
+	}
+	if len(recs) != 2 {
+		t.Fatalf("got %d records, want 2", len(recs))
+	}
+	for i, r := range recs {
+		if r.SchemaVersion != RecordSchemaVersion {
+			t.Errorf("record[%d].SchemaVersion = %d, want %d: a repaired row carries v1 semantics "+
+				"and must say so, or re-ingesting an export repairs it twice",
+				i, r.SchemaVersion, RecordSchemaVersion)
+		}
+		if !closeTo(r.SessionCostUsd, legacyRows("", "", []float64{0.10, 0.35})[i].TotalCostUsd) {
+			t.Errorf("record[%d].SessionCostUsd = %v, want the original cumulative", i, r.SessionCostUsd)
+		}
+	}
+	// Re-repairing an already-repaired stream must be a no-op.
+	if !closeTo(recs[0].TotalCostUsd+recs[1].TotalCostUsd, 0.35) {
+		t.Errorf("sum = %v, want 0.35", recs[0].TotalCostUsd+recs[1].TotalCostUsd)
+	}
+}
+
+// TestCountLegacyRows_HonoursSinceFilter pins the note's denominator against
+// the rows the summary actually printed.
+func TestCountLegacyRows_HonoursSinceFilter(t *testing.T) {
+	root := t.TempDir()
+	writeRows(t, root, "weave", "sess-since-count", legacyRows("weave", "sess-since-count", []float64{0.10, 0.35, 0.80}))
+
+	since := time.Date(2026, 8, 1, 12, 2, 0, 0, time.UTC)
+	legacy, total, err := CountLegacyRows(root, Filter{Since: since})
+	if err != nil {
+		t.Fatalf("CountLegacyRows: %v", err)
+	}
+	if legacy != 1 || total != 1 {
+		t.Errorf("CountLegacyRows = (%d, %d), want (1, 1): only the row at or after --since counts",
+			legacy, total)
+	}
+}

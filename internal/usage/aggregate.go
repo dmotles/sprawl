@@ -194,33 +194,50 @@ func groupKeyFor(r Record, group GroupKey) (string, bool) {
 	return "", false
 }
 
+// usageFilePaths returns the session log files f selects, so every reader
+// resolves the same set. Shared by LoadRecords and CountLegacyRows: the note
+// CountLegacyRows feeds is a statement ABOUT the rows LoadRecords returned, so
+// the two must not drift apart.
+func usageFilePaths(sprawlRoot string, f Filter) ([]string, error) {
+	agent := f.Agent
+	if agent == "" {
+		agent = "*"
+	}
+	return filepath.Glob(filepath.Join(sprawlRoot, ".sprawl", "logs", "usage", agent, "*.ndjson"))
+}
+
+// withinWindow reports whether an RFC3339 timestamp falls in f's [Since, Until)
+// window. An unparseable timestamp is excluded, matching the previous behavior
+// of every caller.
+func (f Filter) withinWindow(timestamp string) bool {
+	if f.Since.IsZero() && f.Until.IsZero() {
+		return true
+	}
+	ts, err := time.Parse(time.RFC3339, timestamp)
+	if err != nil {
+		return false
+	}
+	if !f.Since.IsZero() && ts.Before(f.Since) {
+		return false
+	}
+	if !f.Until.IsZero() && !ts.Before(f.Until) {
+		return false
+	}
+	return true
+}
+
 // LoadRecords returns all records under sprawlRoot, optionally filtered,
 // sorted ascending by Timestamp (RFC3339 string compare).
 func LoadRecords(sprawlRoot string, f Filter) ([]Record, error) {
 	var out []Record
-	pattern := filepath.Join(sprawlRoot, ".sprawl", "logs", "usage", "*", "*.ndjson")
-	if f.Agent != "" {
-		pattern = filepath.Join(sprawlRoot, ".sprawl", "logs", "usage", f.Agent, "*.ndjson")
-	}
-	matches, err := filepath.Glob(pattern)
+	matches, err := usageFilePaths(sprawlRoot, f)
 	if err != nil {
 		return nil, err
 	}
-	hasSince := !f.Since.IsZero()
-	hasUntil := !f.Until.IsZero()
 	for _, path := range matches {
 		if err := scanRecords(path, func(r Record) {
-			if hasSince || hasUntil {
-				ts, err := time.Parse(time.RFC3339, r.Timestamp)
-				if err != nil {
-					return
-				}
-				if hasSince && ts.Before(f.Since) {
-					return
-				}
-				if hasUntil && !ts.Before(f.Until) {
-					return
-				}
+			if !f.withinWindow(r.Timestamp) {
+				return
 			}
 			out = append(out, r)
 		}); err != nil {
@@ -276,20 +293,33 @@ func scanNDJSON(path string, onLine func([]byte)) error {
 	return scanner.Err()
 }
 
+// costNoiseTolerance is the largest drop in a cumulative cost series treated as
+// measurement noise (rounding, re-pricing) rather than a context reset. Real
+// per-turn costs are orders of magnitude larger, so nothing legitimate is lost
+// below it.
+const costNoiseTolerance = 1e-4
+
 // deltaFrom converts one cumulative reading into that turn's own cost, given
-// the previous reading in the same series. A reading BELOW its predecessor
-// means Claude restarted the cumulative after a context reset, so the reading
-// is itself the new segment's first value and is counted whole — clamping the
-// negative difference to zero would silently drop that turn's spend (QUM-1247).
+// the previous reading in the same series.
+//
+// A reading materially BELOW its predecessor means Claude restarted the
+// cumulative after a context reset, so the reading is itself the new segment's
+// first value and is counted whole — clamping the negative difference to zero
+// would silently drop that turn's spend (QUM-1247).
+//
+// A reading below its predecessor by less than costNoiseTolerance is a wobble,
+// not a restart, and yields 0. The distinction matters because the two failure
+// modes are wildly asymmetric: mistaking a fraction-of-a-cent dip for a reset
+// re-charges the ENTIRE session cumulative, which on a $54 series is the most
+// expensive wrong answer available.
 func deltaFrom(cur, last float64) float64 {
-	delta := cur - last
 	if cur < last {
-		delta = cur
+		if last-cur <= costNoiseTolerance {
+			return 0
+		}
+		return cur
 	}
-	if delta < 0 {
-		delta = 0
-	}
-	return delta
+	return cur - last
 }
 
 // repairLegacyCosts rewrites the cost column of pre-QUM-1247 rows, which stored
@@ -297,32 +327,44 @@ func deltaFrom(cur, last float64) float64 {
 // summing them inflated totals by roughly N/2x.
 //
 // Rows are addressed by index because the two scan paths decode into different
-// structs; n is the row count and the closures read and write one row's fields.
-// The caller must pass exactly ONE file's rows, in file order: each session file
-// is an independent cumulative series, and a baseline carried across a file
-// boundary would score the next file's first row against the previous file's
-// high-water mark.
+// structs; a is the row count plus closures that read and write one row's
+// fields. The caller must pass exactly ONE file's rows, in file order: each
+// session file is an independent cumulative series, and a baseline carried
+// across a file boundary would score the next file's first row against the
+// previous file's high-water mark.
 //
 // Rows already at RecordSchemaVersion or later hold true per-turn deltas and are
-// passed through untouched. They also reset the baseline, so a file the old
-// binary started and the new binary appended to repairs its legacy prefix
-// without the corrected suffix contaminating it.
-func repairLegacyCosts(n int, version func(int) int, cost func(int) float64, repair func(i int, delta, cumulative float64)) {
+// passed through untouched. Crucially they still ADVANCE the baseline, to their
+// recorded cumulative: both binaries write to the same session file, so a legacy
+// row following a corrected one continues the same series, and restarting its
+// baseline at zero would re-charge everything spent so far. That ordering is
+// reachable whenever an older binary appends to a file a newer one already
+// wrote — a resume from a pre-fix build.
+func repairLegacyCosts(a costRowAccess) {
 	var last float64
-	inLegacy := false
-	for i := 0; i < n; i++ {
-		if version(i) >= RecordSchemaVersion {
-			inLegacy = false
+	for i := 0; i < a.n; i++ {
+		if a.version(i) >= RecordSchemaVersion {
+			last = a.sessionCost(i)
 			continue
 		}
-		if !inLegacy {
-			last = 0
-			inLegacy = true
-		}
-		cur := cost(i)
-		repair(i, deltaFrom(cur, last), cur)
+		cur := a.cost(i)
+		a.repair(i, deltaFrom(cur, last), cur)
 		last = cur
 	}
+}
+
+// costRowAccess adapts one file's decoded rows for repairLegacyCosts,
+// independent of which struct they were decoded into.
+type costRowAccess struct {
+	n           int
+	version     func(int) int
+	cost        func(int) float64
+	sessionCost func(int) float64
+	// repair records a legacy row's reconstructed per-turn cost, the original
+	// cumulative it came from, and stamps the row as carrying current-schema
+	// semantics — an exported row must not be repaired a second time by
+	// whatever re-ingests it.
+	repair func(i int, delta, cumulative float64)
 }
 
 // scanFile decodes one usage file, repairs any legacy rows, then invokes fn per
@@ -339,13 +381,17 @@ func scanFile(path string, fn func(aggregateLine)) error {
 	}); err != nil {
 		return err
 	}
-	repairLegacyCosts(len(rows),
-		func(i int) int { return rows[i].SchemaVersion },
-		func(i int) float64 { return rows[i].TotalCostUsd },
-		func(i int, delta, cumulative float64) {
+	repairLegacyCosts(costRowAccess{
+		n:           len(rows),
+		version:     func(i int) int { return rows[i].SchemaVersion },
+		cost:        func(i int) float64 { return rows[i].TotalCostUsd },
+		sessionCost: func(i int) float64 { return rows[i].SessionCostUsd },
+		repair: func(i int, delta, cumulative float64) {
 			rows[i].TotalCostUsd = delta
 			rows[i].SessionCostUsd = cumulative
-		})
+			rows[i].SchemaVersion = RecordSchemaVersion
+		},
+	})
 	for _, r := range rows {
 		fn(r)
 	}
@@ -368,13 +414,17 @@ func scanRecords(path string, fn func(Record)) error {
 	}); err != nil {
 		return err
 	}
-	repairLegacyCosts(len(rows),
-		func(i int) int { return rows[i].SchemaVersion },
-		func(i int) float64 { return rows[i].TotalCostUsd },
-		func(i int, delta, cumulative float64) {
+	repairLegacyCosts(costRowAccess{
+		n:           len(rows),
+		version:     func(i int) int { return rows[i].SchemaVersion },
+		cost:        func(i int) float64 { return rows[i].TotalCostUsd },
+		sessionCost: func(i int) float64 { return rows[i].SessionCostUsd },
+		repair: func(i int, delta, cumulative float64) {
 			rows[i].TotalCostUsd = delta
 			rows[i].SessionCostUsd = cumulative
-		})
+			rows[i].SchemaVersion = RecordSchemaVersion
+		},
+	})
 	for _, r := range rows {
 		fn(r)
 	}
@@ -390,33 +440,18 @@ func scanRecords(path string, fn func(Record)) error {
 // cost column but deliberately leaves SchemaVersion alone, making the legacy
 // rows still identifiable.
 func CountLegacyRows(sprawlRoot string, f Filter) (legacy, total int, err error) {
-	pattern := filepath.Join(sprawlRoot, ".sprawl", "logs", "usage", "*", "*.ndjson")
-	if f.Agent != "" {
-		pattern = filepath.Join(sprawlRoot, ".sprawl", "logs", "usage", f.Agent, "*.ndjson")
-	}
-	matches, err := filepath.Glob(pattern)
+	matches, err := usageFilePaths(sprawlRoot, f)
 	if err != nil {
 		return 0, 0, err
 	}
-	hasSince := !f.Since.IsZero()
-	hasUntil := !f.Until.IsZero()
 	for _, path := range matches {
 		if err := scanNDJSON(path, func(line []byte) {
 			var rec Record
 			if err := json.Unmarshal(line, &rec); err != nil {
 				return
 			}
-			if hasSince || hasUntil {
-				ts, err := time.Parse(time.RFC3339, rec.Timestamp)
-				if err != nil {
-					return
-				}
-				if hasSince && ts.Before(f.Since) {
-					return
-				}
-				if hasUntil && !ts.Before(f.Until) {
-					return
-				}
+			if !f.withinWindow(rec.Timestamp) {
+				return
 			}
 			total++
 			if rec.SchemaVersion < RecordSchemaVersion {

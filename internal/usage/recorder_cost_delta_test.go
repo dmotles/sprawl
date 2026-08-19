@@ -1,21 +1,14 @@
 package usage
 
 import (
+	"os"
+	"path/filepath"
 	"testing"
 
 	"github.com/dmotles/sprawl/internal/protocol"
 	"github.com/dmotles/sprawl/internal/runtime"
 	"github.com/dmotles/sprawl/internal/state"
 )
-
-// costEpsilon bounds float comparison of dollar amounts. Deltas are built by
-// subtraction, so exact equality is not safe even for tidy decimal inputs.
-const costEpsilon = 1e-9
-
-func closeTo(got, want float64) bool {
-	d := got - want
-	return d < costEpsilon && d > -costEpsilon
-}
 
 // driveTurns feeds one assistant frame + one turn-completed frame per entry in
 // cumulative, using the session-cumulative cost value Claude's result frame
@@ -314,5 +307,46 @@ func TestRecorder_ResumedSessionReseedsBaselineFromLastRow(t *testing.T) {
 	}
 	if !closeTo(sumCost(records), 0.55) {
 		t.Errorf("sum = %v, want the session's final cumulative 0.55", sumCost(records))
+	}
+}
+
+// TestRecorder_ResumedLegacySessionSeedsFromTotalCostUsd covers resuming a
+// session whose existing rows predate the fix. Those rows have no
+// session_cost_usd; their total_cost_usd IS the cumulative, so that is the
+// baseline the first post-resume delta must measure against.
+func TestRecorder_ResumedLegacySessionSeedsFromTotalCostUsd(t *testing.T) {
+	tmp := t.TempDir()
+	if err := state.SaveAgent(tmp, &state.AgentState{Name: "finn", Status: "active"}); err != nil {
+		t.Fatalf("SaveAgent: %v", err)
+	}
+	path := usageLogPath(tmp, "finn", "sess-legacy-resume")
+	if err := os.MkdirAll(filepath.Dir(path), 0o755); err != nil {
+		t.Fatalf("MkdirAll: %v", err)
+	}
+	// Pre-fix rows: no schema_version key, total_cost_usd is the cumulative.
+	legacy := `{"timestamp":"2026-08-01T12:00:00Z","agent_name":"finn","session_id":"sess-legacy-resume","input_tokens":1,"output_tokens":1,"total_cost_usd":0.10}
+{"timestamp":"2026-08-01T12:01:00Z","agent_name":"finn","session_id":"sess-legacy-resume","input_tokens":1,"output_tokens":1,"total_cost_usd":0.40}
+`
+	if err := os.WriteFile(path, []byte(legacy), 0o600); err != nil {
+		t.Fatalf("WriteFile: %v", err)
+	}
+
+	rec, err := NewRecorder(tmp, "finn")
+	if err != nil {
+		t.Fatalf("NewRecorder: %v", err)
+	}
+	rec.Handle(assistantEvent(t, "sess-legacy-resume", protocol.Usage{InputTokens: 1, OutputTokens: 1}, "claude-opus-4-7"))
+	rec.Handle(turnCompletedEvent("sess-legacy-resume", 0.55))
+	if err := rec.Close(); err != nil {
+		t.Fatalf("Close: %v", err)
+	}
+
+	records := readNDJSONLines(t, path)
+	if len(records) != 3 {
+		t.Fatalf("got %d records, want 3", len(records))
+	}
+	if !closeTo(records[2].TotalCostUsd, 0.15) {
+		t.Errorf("record[2].TotalCostUsd = %v, want 0.15 — a legacy last row's total_cost_usd is "+
+			"the cumulative and must seed the baseline", records[2].TotalCostUsd)
 	}
 }

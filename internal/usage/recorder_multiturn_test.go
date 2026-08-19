@@ -44,7 +44,7 @@ func TestRecorder_MultiTurnProducesOneRecordEach(t *testing.T) {
 		t.Fatalf("got %d records, want 3", len(records))
 	}
 	for i, r := range records {
-		if r.TotalCostUsd != wantDeltas[i] {
+		if !closeTo(r.TotalCostUsd, wantDeltas[i]) {
 			t.Errorf("record[%d].TotalCostUsd = %v, want delta %v (cumulative fed in: %v)",
 				i, r.TotalCostUsd, wantDeltas[i], cumulative[i])
 		}
