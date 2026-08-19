@@ -1,0 +1,24 @@
+{
+  "name": "run_finished",
+  "version": 1,
+  "opens": false,
+  "closes": "",
+  "json_schema": {
+    "type": "object",
+    "description": "agent_runs-style summary for one run. card_version_id is optional until M2 registers cards; emitters OMIT it rather than sending null.",
+    "required": ["session_id", "outcome"],
+    "properties": {
+      "agent_name": {"type": "string"},
+      "session_id": {"type": "string"},
+      "outcome": {"type": "string"},
+      "card_version_id": {"type": "string"},
+      "git_sha": {"type": "string"},
+      "dirty_digest": {"type": "string"},
+      "turns": {"type": "integer"},
+      "input_tokens": {"type": "integer"},
+      "output_tokens": {"type": "integer"},
+      "cost_usd": {"type": "number"},
+      "tool_failures": {"type": "integer"}
+    }
+  }
+}

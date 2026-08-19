@@ -1,0 +1,19 @@
+{
+  "name": "turn_finished",
+  "version": 1,
+  "opens": false,
+  "closes": "",
+  "json_schema": {
+    "type": "object",
+    "description": "One completed turn. Turn boundaries are also the liveness signal (Appendix B item 4).",
+    "required": ["session_id", "input_tokens", "output_tokens"],
+    "properties": {
+      "agent_name": {"type": "string"},
+      "session_id": {"type": "string"},
+      "input_tokens": {"type": "integer"},
+      "output_tokens": {"type": "integer"},
+      "cost_usd": {"type": "number"},
+      "outcome": {"type": "string"}
+    }
+  }
+}

@@ -1,0 +1,19 @@
+{
+  "name": "run_started",
+  "version": 1,
+  "opens": false,
+  "closes": "",
+  "json_schema": {
+    "type": "object",
+    "description": "An agent runtime started a backend session. Telemetry: spillable.",
+    "required": ["agent_name", "agent_type", "session_id"],
+    "properties": {
+      "agent_name": {"type": "string"},
+      "agent_type": {"type": "string"},
+      "session_id": {"type": "string"},
+      "git_sha": {"type": "string"},
+      "host": {"type": "string"},
+      "resumed": {"type": "boolean"}
+    }
+  }
+}

@@ -1,0 +1,15 @@
+{
+  "name": "goal_closed",
+  "version": 1,
+  "opens": false,
+  "closes": "goal_opened",
+  "json_schema": {
+    "type": "object",
+    "description": "Closes are final and the log is monotone: a defect found after a close emits REWORK_REQUESTED (M3), never a mutation. NOT spillable.",
+    "required": ["outcome"],
+    "properties": {
+      "outcome": {"type": "string"},
+      "summary": {"type": "string"}
+    }
+  }
+}

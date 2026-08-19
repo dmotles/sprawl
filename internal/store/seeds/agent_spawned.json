@@ -1,0 +1,20 @@
+{
+  "name": "agent_spawned",
+  "version": 1,
+  "opens": true,
+  "closes": "",
+  "json_schema": {
+    "type": "object",
+    "description": "Opens a contract that agent_retired closes, so the outstanding-work view stays complete during the legacy migration (Appendix B item 12).",
+    "required": ["agent_name", "agent_type"],
+    "properties": {
+      "agent_name": {"type": "string"},
+      "agent_type": {"type": "string"},
+      "family": {"type": "string"},
+      "parent": {"type": "string"},
+      "branch": {"type": "string"},
+      "subagent": {"type": "boolean"},
+      "legacy": {"type": "boolean"}
+    }
+  }
+}

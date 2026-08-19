@@ -1,0 +1,16 @@
+{
+  "name": "goal_opened",
+  "version": 1,
+  "opens": true,
+  "closes": "",
+  "json_schema": {
+    "type": "object",
+    "description": "A goal stays open until a close event references it. NOT spillable: a goal that only exists in a local spill file is invisible to every other host, so opening one must fail loudly while the DB is down.",
+    "required": ["goal_type", "text"],
+    "properties": {
+      "goal_type": {"type": "string"},
+      "text": {"type": "string"},
+      "owner": {"type": "string"}
+    }
+  }
+}
