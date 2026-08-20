@@ -74,6 +74,7 @@ worktree.setup: 'echo setup && ln -sf a b'
 worktree.teardown: echo teardown
 idle_reclaim.after: 20m
 idle_reclaim.sweep: 45s
+event_log.enabled: "true"
 `
 
 // TestLoad_RepoConfigLoadsClean guards the worst possible outcome of making the

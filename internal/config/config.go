@@ -87,6 +87,18 @@ type Config struct {
 	IdleReclaimAfter string `yaml:"idle_reclaim.after,omitempty" sprawl:"default=0 (DISABLED),purpose=Idle time before an agent's subprocess is reclaimed as a Go duration. DEFAULT 0 = OFF. Two HARD PRECONDITIONS on enabling: (1) QUM-1213 — LastActivityAt can go stale during a long tool call and the quiescent term reads it; (2) a recorded e2e run in which an agent whose ONLY outstanding work is a live SIDECHAIN survives the sweep with the refusal record naming blocker=work_outstanding. That second join is covered today by construction and by a unit test — not by a run — and it is 43 of 263 recorded turn closures. Also note a wedged background task has no auto-expiry by design, so it pins its agent until an operator reads the refusal record"`
 	IdleReclaimSweep string `yaml:"idle_reclaim.sweep,omitempty" sprawl:"default=1m,purpose=How often the idle reaper sweeps the runtime registry as a Go duration"`
 
+	// EventLog is the QUM-1249 event-log feature flag ("true" enables it).
+	//
+	// A STRING and not a bool because registry() panics on any field kind but
+	// string and int (see the type note at the top of this struct); the
+	// EventLogEnabled accessor turns it into a decision.
+	//
+	// The DSN deliberately has no key here. .sprawl/config.yaml is TRACKED in a
+	// PUBLIC repo, so a database credential must be structurally unable to land
+	// in it — the DSN comes from SPRAWL_DB_DSN or a 0600
+	// ~/.config/sprawl/secrets.yaml and from nowhere else.
+	EventLog string `yaml:"event_log.enabled,omitempty" sprawl:"default=false,purpose=Enable the shared Postgres event log. The DSN is NOT configured here — it comes from SPRAWL_DB_DSN or a 0600 ~/.config/sprawl/secrets.yaml"`
+
 	// sprawlRoot is not a config key. Unexported, so yaml ignores it on both
 	// unmarshal and marshal.
 	sprawlRoot string
@@ -182,6 +194,22 @@ const SuggestedIdleReclaimAfter = 15 * time.Minute
 // coarser than this would make the threshold's effective resolution the sweep
 // interval rather than the threshold. QUM-1186.
 const DefaultIdleReclaimSweep = time.Minute
+
+// EventLogEnabled reports whether the shared Postgres event log is switched on.
+//
+// Anything that is not a recognised truthy value reads as OFF, INCLUDING a typo.
+// The two failure directions are not symmetric: a typo read as off means an
+// operator who meant to enable the store sees no events and goes looking, which
+// is visible and self-correcting; a typo read as on means every host starts
+// trying to reach a database on a value nobody intended.
+func (c *Config) EventLogEnabled() bool {
+	switch strings.ToLower(strings.TrimSpace(c.EventLog)) {
+	case "true", "1", "yes", "on":
+		return true
+	default:
+		return false
+	}
+}
 
 // IdleReclaimAfterDuration returns the idle-reclaim threshold. Unset returns
 // the default; an explicit "0"/"0s" returns 0, which disables the reaper.
