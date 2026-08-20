@@ -356,8 +356,64 @@ for f in "${PRECISION_FIXTURES[@]}"; do
   printf '%s\n' "${KEEPS[@]}" | grep -qxF -- "$f" \
     || { echo "CORPUS DRIFT: precision fixture $f is not in KEEPS — [6] would pass vacuously" >&2; exit 1; }
 done
+# ---------------------------------------------------------------------------
+# [7] QUM-1249: the event-log degraded-mode spill directory.
+#
+# Kept as its own section rather than added to HAZARDS, because the HAZARDS
+# machinery attributes each fixture to one of the GUARDED_PATTERNS and asserts a
+# control in which that pattern is removed. The spill is covered by `.sprawl/*`,
+# which is NOT one of those patterns and cannot become one: `.sprawl/config.yaml`
+# is a TRACKED file that matches it and survives only via the `!` negation, so
+# adding `.sprawl/*` there trips the harness's own no-tracked-file-is-ignored
+# check. (Measured: it does.) So this section asserts the property directly.
+#
+# WHY IT NEEDS ASSERTING AT ALL: nothing in the `.sprawl/*` rule mentions the
+# spill, so the coverage is incidental. Spilled payloads carry whatever an event
+# carried — agent names, goal text, and per CLAUDE.md potentially
+# employer-context material — and this repo is PUBLIC.
+#
+# One thing this is NOT protecting against, corrected after the control failed
+# to fire: a future `!` negation under .sprawl/ CANNOT expose the spill. git
+# cannot re-include a file whose parent directory is excluded, and `.sprawl/*`
+# excludes the `logs` directory itself, so `!.sprawl/logs/ledger-spill/*` is
+# inert. That was the hazard the first draft of this comment claimed, and it was
+# wrong. What this section actually guards is the `.sprawl/*` line itself being
+# narrowed or removed — the control below deletes it and both assertions fire.
+# The complementary risk, the spill MOVING out of .sprawl/, is guarded on the Go
+# side by TestSpillDir_IsUnderTheGitignoredSprawlTree.
+echo "=== [7] QUM-1249 event-log spill: .sprawl/logs/ledger-spill must be ignored"
+for p in \
+  '.sprawl/logs/ledger-spill/2026-08-19.ndjson' \
+  '.sprawl/logs/ledger-spill/dead-letter/2026-08-19.ndjson'
+do
+  if git -C "$REPO_ROOT" check-ignore -q -- "$p"; then
+    ok "check-ignore: $p is ignored (spilled event payloads never enter a public repo)"
+  else
+    fail "check-ignore: $p is NOT ignored — spilled event payloads are stageable into a PUBLIC repo"
+  fi
+done
+
+# POSITIVE CONTROL for the instrument: a path that must NOT be ignored. Without
+# it, a check-ignore that reported everything as ignored — a broken invocation, a
+# wrong -C, a typo in the flag — would satisfy both assertions above in silence.
+if git -C "$REPO_ROOT" check-ignore -q -- 'docs/designs/v2-log-centric-rearchitecture.md'; then
+  fail "control: a tracked design doc is reported as ignored — check-ignore is answering yes to everything, so the two assertions above prove nothing"
+else
+  ok "control: a tracked design doc is NOT ignored (check-ignore discriminates, so the assertions above have teeth)"
+fi
+
+# The neighbouring property, asserted because it is the one thing that could be
+# broken by widening the ignore to protect the spill: config.yaml must stay
+# tracked. `.sprawl/*` plus `!.sprawl/config.yaml` is a two-line balance and both
+# directions matter.
+if git -C "$REPO_ROOT" check-ignore -q -- '.sprawl/config.yaml'; then
+  fail ".sprawl/config.yaml is ignored — the negation that keeps project config tracked has been lost"
+else
+  ok ".sprawl/config.yaml is still NOT ignored (the negation survives)"
+fi
+
 echo "=== $ASSERTIONS assertions, $FAILURES failures ==="
-# 67 = [0] 8 + [1] 27 + [2] 16 + [3] 2 + [4] 2 + [5] 7 + [6] 5. Hand-computed.
-[ "$ASSERTIONS" -eq 67 ] || { echo "FLOOR BREACH: $ASSERTIONS assertions ran, expected 67" >&2; exit 1; }
+# 71 = [0] 8 + [1] 27 + [2] 16 + [3] 2 + [4] 2 + [5] 7 + [6] 5 + [7] 4. Hand-computed.
+[ "$ASSERTIONS" -eq 71 ] || { echo "FLOOR BREACH: $ASSERTIONS assertions ran, expected 71" >&2; exit 1; }
 [ "$FAILURES" -eq 0 ] || exit 1
 echo "gitignore-classes: OK"
