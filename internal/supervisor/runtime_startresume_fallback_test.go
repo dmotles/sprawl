@@ -7,6 +7,7 @@ import (
 	"testing"
 
 	"github.com/dmotles/sprawl/internal/state"
+	"github.com/dmotles/sprawl/internal/supervisor/liveness"
 )
 
 // QUM-1260. The boot resume path (Real.RecoverAgents → AgentRuntime.StartResume)
@@ -26,21 +27,30 @@ import (
 // you which way it is aimed:
 //
 //   - POSITIVE: the subject is StartResume as it stood before the fix, which
-//     contains the defect. Every test below whose name says "FallsBack" or
-//     "ReportsBoth" was run against it and fired; the recorded red output is in
-//     the commit message, per-assertion, along with the mutations used for the
-//     assertions the leading t.Fatalf shadowed.
-//   - NEGATIVE: TestStartResume_NoFallbackWhenResumeSucceeds — a subject known
-//     clean (a resume that is NOT rejected). These probes must stay silent
-//     there, otherwise a fix that always started a second session would satisfy
-//     every other assertion in the file.
+//     contains the defect. Every "FallsBack" / "BothLegsFail" test below was run
+//     against it and fired; the recorded red output is in the commit message,
+//     per-assertion, along with the mutations used for the assertions the
+//     leading t.Fatalf shadowed.
+//   - NEGATIVE: TestStartResume_NoFallbackWhenResumeSucceeds (a resume that is
+//     NOT rejected) and TestStartResume_TransientStartErrorNeitherFallsBackNor
+//     Stamps (a failure that is not a rejection). Both are subjects where the
+//     fallback must NOT fire; without them, a fix that always started a second
+//     session, or one that treated every start error as a rejection, would
+//     satisfy every other assertion in the file. The second of those was itself
+//     red against the first cut of this fix, which did exactly that.
 //   - Cross-path regression guard (NOT a control):
 //     TestWake_FallbackOnResumeRejected in runtime_wake_new_test.go pins the
 //     already-correct wake-path behaviour and must stay green.
 
 var (
-	errResumeRejected = errors.New("backend: session reader exited before initialize handshake")
-	errFreshRejected  = errors.New("backend: fresh start also failed")
+	// errResumeHandshakeDied is what the live defect produces: the backend's
+	// marker writer kills the transport, so Initialize fails. Named for the
+	// handshake, not for the rejection, so it is not confused with
+	// errResumeCookieRejected — which is the production sentinel for the marker
+	// itself and has no error value of its own.
+	errResumeHandshakeDied = errors.New("backend: session reader exited before initialize handshake")
+	errTransientStart      = errors.New("fork/exec: too many open files")
+	errFreshRejected       = errors.New("backend: fresh start also failed")
 )
 
 // mirrorSpecSession builds a handle whose SessionID is the one the spec asked
@@ -53,16 +63,18 @@ func mirrorSpecSession(_ int, spec RuntimeStartSpec) *runtimeTestSession {
 	}
 }
 
-// TestStartResume_FallsBackToFreshWhenResumeStartFails — a resume whose Start
-// fails must be retried ONCE as a fresh session, carrying the same
-// restart-injection prompt and a NEWLY MINTED session id (never the rejected
-// one, and never empty: QUM-744 established that letting claude self-generate
-// loses the id host-side, so the next restart would resume a defunct
-// transcript).
-func TestStartResume_FallsBackToFreshWhenResumeStartFails(t *testing.T) {
+// TestStartResume_FallsBackWhenCookieRejectedAndHandshakeDies is the live
+// defect's exact shape: the backend's marker writer fires OnResumeFailure and
+// then kills the transport, so the start ALSO returns an error. The rejection
+// must be retried ONCE as a fresh session, carrying the same restart-injection
+// prompt and a NEWLY MINTED session id (never the rejected one, and never
+// empty: QUM-744 established that letting claude self-generate loses the id
+// host-side, so the next restart would resume a defunct transcript).
+func TestStartResume_FallsBackWhenCookieRejectedAndHandshakeDies(t *testing.T) {
 	starter := &wakeCapturingStarter{
-		startErrByCall: map[int]error{1: errResumeRejected},
-		sessionMaker:   mirrorSpecSession,
+		fireResumeFailOn: 1,
+		startErrByCall:   map[int]error{1: errResumeHandshakeDied},
+		sessionMaker:     mirrorSpecSession,
 	}
 	rt := NewAgentRuntime(AgentRuntimeConfig{
 		SprawlRoot: t.TempDir(),
@@ -101,6 +113,41 @@ func TestStartResume_FallsBackToFreshWhenResumeStartFails(t *testing.T) {
 	}
 	if got := rt.Snapshot().SessionID; got != specs[1].SessionID {
 		t.Errorf("Snapshot().SessionID = %q, want the fresh id %q so RecoverAgents persists it", got, specs[1].SessionID)
+	}
+}
+
+// TestStartResume_TransientStartErrorNeitherFallsBackNorStamps is the F1
+// regression guard, and it is the reason the fallback is gated on an actual
+// cookie rejection rather than on "the start failed".
+//
+// A start error with NO marker is transient or environmental: exec failure, fd
+// exhaustion, a handshake that missed its deadline under boot load. Falling
+// back would discard the agent's entire transcript for a cause that had nothing
+// to do with the transcript, and stamping resume_failed would convert a failure
+// that retries on the next `sprawl enter` into a permanent one — a wider brick
+// than the one this whole change exists to remove, since it needs no rejected
+// cookie at all and a fleet-wide boot hiccup would hit every agent at once.
+func TestStartResume_TransientStartErrorNeitherFallsBackNorStamps(t *testing.T) {
+	starter := &wakeCapturingStarter{
+		startErrByCall: map[int]error{1: errTransientStart},
+		sessionMaker:   mirrorSpecSession,
+	}
+	rt := NewAgentRuntime(AgentRuntimeConfig{
+		SprawlRoot: t.TempDir(),
+		Agent:      testAgentState("alice"),
+		Starter:    starter,
+	})
+
+	var stamped atomic.Int64
+	err := rt.StartResume("RESTART-INJECTION", func() { stamped.Add(1) })
+	if !errors.Is(err, errTransientStart) {
+		t.Fatalf("StartResume = %v, want the start error surfaced unchanged", err)
+	}
+	if n := starter.callCount(); n != 1 {
+		t.Errorf("starter called %d time(s), want 1 — a non-rejection failure must not discard the transcript by starting a fresh session", n)
+	}
+	if got := stamped.Load(); got != 0 {
+		t.Errorf("OnResumeFailure fired %d time(s), want 0 — resume_failed is outside the boot accept-set, so stamping a TRANSIENT failure makes it permanent", got)
 	}
 }
 
@@ -148,8 +195,9 @@ func TestStartResume_FallsBackWhenCookieRejectedInBand(t *testing.T) {
 // correct fix from one that simply forwards every marker.
 func TestStartResume_DiscardsMarkerFromAbandonedAttempt(t *testing.T) {
 	starter := &wakeCapturingStarter{
-		startErrByCall: map[int]error{1: errResumeRejected},
-		sessionMaker:   mirrorSpecSession,
+		fireResumeFailOn: 1,
+		startErrByCall:   map[int]error{1: errResumeHandshakeDied},
+		sessionMaker:     mirrorSpecSession,
 	}
 	rt := NewAgentRuntime(AgentRuntimeConfig{
 		SprawlRoot: t.TempDir(),
@@ -178,6 +226,15 @@ func TestStartResume_DiscardsMarkerFromAbandonedAttempt(t *testing.T) {
 // must reach the caller so the durable status becomes resume_failed. Without
 // this, the fix would silently delete the behaviour
 // TestRealRecoverAgents_OnResumeFailureFlipsStatusToResumeFailed depends on.
+//
+// SCOPE, stated because the test name overpromises otherwise: this pins the
+// PLUMBING (the callback reaches the caller), not the durable OUTCOME. At the
+// supervisor seam a forwarded marker races RecoverAgents' post-success write
+// (load → Status=active → save), which runs after StartResume returns, so on
+// the likely interleaving the resume_failed stamp is immediately overwritten.
+// Whether it should survive that race is a separate question — see the QUM-1260
+// notes on the RecoverAgents last-writer-wins window; it is deliberately not
+// asserted here.
 func TestStartResume_ForwardsLateMarkerOnSuccessfulResume(t *testing.T) {
 	starter := &wakeCapturingStarter{sessionMaker: mirrorSpecSession}
 	rt := NewAgentRuntime(AgentRuntimeConfig{
@@ -203,15 +260,19 @@ func TestStartResume_ForwardsLateMarkerOnSuccessfulResume(t *testing.T) {
 	}
 }
 
-// TestStartResume_BothAttemptsFailReportsBoth — when the fresh fallback fails
-// too there is nothing left to try. The error must name BOTH causes (a message
-// mentioning only the fallback hides why a resume was attempted at all) and the
-// caller's callback MUST fire, because resume_failed is now the truthful
-// durable status.
-func TestStartResume_BothAttemptsFailReportsBoth(t *testing.T) {
+// TestStartResume_BothLegsFailStampsAndMarksStopped — when the fresh fallback
+// fails after a genuine cookie rejection there is nothing left to try. The
+// error must name BOTH causes (a message mentioning only the fallback hides why
+// a resume was attempted at all), the caller's callback MUST fire because
+// resume_failed is now the truthful durable status, and the runtime must stop
+// claiming to be Running: startWithSpec published Liveness=Running for the leg
+// we abandoned, and a caller that filters on Running (the TUI tree,
+// Real.Shutdown's teardown loop) would then call Stop on a nil handle.
+func TestStartResume_BothLegsFailStampsAndMarksStopped(t *testing.T) {
 	starter := &wakeCapturingStarter{
-		startErrByCall: map[int]error{1: errResumeRejected, 2: errFreshRejected},
-		sessionMaker:   mirrorSpecSession,
+		fireResumeFailOn: 1,
+		startErrByCall:   map[int]error{2: errFreshRejected},
+		sessionMaker:     mirrorSpecSession,
 	}
 	rt := NewAgentRuntime(AgentRuntimeConfig{
 		SprawlRoot: t.TempDir(),
@@ -222,19 +283,23 @@ func TestStartResume_BothAttemptsFailReportsBoth(t *testing.T) {
 	var stamped atomic.Int64
 	err := rt.StartResume("RESTART-INJECTION", func() { stamped.Add(1) })
 	if err == nil {
-		t.Fatalf("StartResume = nil, want an error when both the resume and the fresh fallback fail")
+		t.Fatalf("StartResume = nil, want an error when the cookie was rejected and the fresh fallback failed")
 	}
-	if !errors.Is(err, errResumeRejected) {
-		t.Errorf("error %q does not wrap the resume-leg cause %q", err, errResumeRejected)
+	if !errors.Is(err, errResumeCookieRejected) {
+		t.Errorf("error %q does not wrap the resume-leg cause %q", err, errResumeCookieRejected)
 	}
 	if !errors.Is(err, errFreshRejected) {
 		t.Errorf("error %q does not wrap the fresh-leg cause %q", err, errFreshRejected)
 	}
 	if got := stamped.Load(); got != 1 {
-		t.Errorf("OnResumeFailure fired %d time(s), want 1 (both attempts failed, so resume_failed is the truthful status)", got)
+		t.Errorf("OnResumeFailure fired %d time(s), want 1 (both legs failed, so resume_failed is the truthful status)", got)
 	}
 	if n := starter.callCount(); n != 2 {
 		t.Errorf("starter called %d time(s), want exactly 2 — the fallback must be tried once, not retried in a loop", n)
+	}
+	snap := rt.Snapshot()
+	if snap.Liveness == liveness.Running {
+		t.Errorf("Snapshot().Liveness = Running with no handle left; want a stopped liveness so Real.Shutdown's `snap.Liveness != Running` filter skips this dead agent instead of calling Stop on nil")
 	}
 }
 
@@ -278,8 +343,9 @@ func TestStartResume_NoFallbackWhenResumeSucceeds(t *testing.T) {
 func TestRealRecoverAgents_ResumeRejectionEndsActiveNotResumeFailed(t *testing.T) {
 	r, tmpDir := newFakeReal(t)
 	starter := &wakeCapturingStarter{
-		startErrByCall: map[int]error{1: errResumeRejected},
-		sessionMaker:   mirrorSpecSession,
+		fireResumeFailOn: 1,
+		startErrByCall:   map[int]error{1: errResumeHandshakeDied},
+		sessionMaker:     mirrorSpecSession,
 	}
 	installStarter(r, starter)
 
@@ -303,5 +369,43 @@ func TestRealRecoverAgents_ResumeRejectionEndsActiveNotResumeFailed(t *testing.T
 	}
 	if loaded.SessionID != specs[1].SessionID {
 		t.Errorf("persisted SessionID = %q, want the fresh fallback id %q (otherwise the NEXT restart resumes a defunct transcript)", loaded.SessionID, specs[1].SessionID)
+	}
+}
+
+// TestAbandonHandleIf_LeavesAHandleItDidNotStart gives the compare-and-clear in
+// abandonHandleIf its own control. StartResume tears down the handle IT started;
+// if something else swapped a handle in between, that handle must survive
+// untouched. There is no concurrency here on purpose — the racing caller
+// (a Wake arriving mid-boot-resume) is unreachable today because RecoverAgents
+// runs synchronously in runEnter before the MCP server can serve one, so a race
+// test would be asserting about a scenario the product cannot produce. What is
+// testable, and what the guard is actually for, is the identity check.
+func TestAbandonHandleIf_LeavesAHandleItDidNotStart(t *testing.T) {
+	current := &runtimeTestSession{sessionID: "current", caps: recoverTestSession("").caps}
+	stale := &runtimeTestSession{sessionID: "stale", caps: recoverTestSession("").caps}
+	rt := NewAgentRuntime(AgentRuntimeConfig{
+		SprawlRoot: t.TempDir(),
+		Agent:      testAgentState("alice"),
+	})
+	rt.AttachHandle(current)
+
+	rt.abandonHandleIf(stale)
+
+	if got := stale.stopAbandonCalls.Load(); got != 0 {
+		t.Errorf("StopAbandon called %d time(s) on a handle this runtime never installed, want 0", got)
+	}
+	if got := current.stopAbandonCalls.Load(); got != 0 {
+		t.Errorf("StopAbandon called %d time(s) on the CURRENT handle, want 0 — abandoning a stale handle must not reach it", got)
+	}
+	if rt.Snapshot().Liveness != liveness.Running {
+		t.Errorf("Liveness = %v after abandoning a handle we do not hold; want Running (the live handle is untouched)", rt.Snapshot().Liveness)
+	}
+
+	// Positive control for the same probe: the handle it DID install is torn
+	// down. Without this, the assertions above would be satisfied by an
+	// abandonHandleIf that never does anything at all.
+	rt.abandonHandleIf(current)
+	if got := current.stopAbandonCalls.Load(); got != 1 {
+		t.Errorf("StopAbandon called %d time(s) on the current handle, want 1", got)
 	}
 }

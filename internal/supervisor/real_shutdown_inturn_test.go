@@ -128,10 +128,16 @@ func TestRealShutdown_InTurnCleanDrainRestsAtSuspendedNotPaused(t *testing.T) {
 	}
 }
 
-// TestRealShutdown_OperatorPausedAgentStaysPaused is one half of the NEGATIVE
-// control: a subject where the defect is NOT present. An agent the operator
-// paused BEFORE shutdown must still read `paused` afterwards — the fix above
-// must not flatten it.
+// TestRealShutdown_OperatorPausedAgentStaysPaused guards Shutdown's
+// preserve-switch: an agent the operator paused BEFORE shutdown must still read
+// `paused` afterwards, so the fix above cannot flatten it.
+//
+// It is NOT a negative control for pauseDrain, and calling it one would be a
+// lie: with no handle attached the runtime's liveness is not Running, so
+// Real.Shutdown's loop `continue`s and never reaches PauseForShutdown at all —
+// no mutation of pauseDrain can make this test fire. The real negative control
+// for pauseDrain is TestAgentRuntimePause_OperatorVerbStillRestsAtPaused below,
+// which does reach it.
 //
 // No handle is attached on purpose. A paused agent's runtime has already been
 // torn down, so its liveness is not Running and Shutdown's loop skips it; an

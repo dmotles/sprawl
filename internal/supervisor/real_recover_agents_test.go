@@ -445,23 +445,18 @@ func TestRealRecoverAgents_SkipsMissingWorktree(t *testing.T) {
 
 // TestRealRecoverAgents_FailureIsolation — three eligible agents; starter
 // errs on the middle one. The first and third must still be started, the
-// failing one's status must NOT be flipped to "active", and the return values
-// must reflect (2, 1, len==1).
+// failing one's status must NOT be flipped to "active" (it remains as it
+// was: suspended), and the return values must reflect (2, 1, len==1).
 //
-// QUM-1260 changed two expectations here, deliberately, because StartResume
-// gained a single fresh-session fallback:
-//
-//  1. bob is attempted TWICE (resume, then the fresh fallback), so the total
-//     spec count is 4, not 3. The property the count is really guarding —
-//     "a failure must not abort the loop, alice and carol are still tried" —
-//     is unchanged and is what the per-name check below pins.
-//  2. bob ends at resume_failed rather than suspended. This starter fails
-//     EVERY call for bob, so both legs fail, and resume_failed is then the
-//     truthful durable status: there is nothing left to try. The old comment
-//     here claimed resume_failed "is only set by the OnResumeFailure marker
-//     callback, not on a starter error" — that is no longer true, and it was
-//     never a property worth preserving: an agent whose every start fails is
-//     exactly what resume_failed means.
+// QUM-1260: this starter fails with a plain error and never fires the resume
+// marker, so it models a TRANSIENT/environmental start failure (exec failure,
+// fd exhaustion, a handshake that missed its deadline under boot load) rather
+// than a rejected resume cookie. bob must stay `suspended` — retryable on the
+// next `sprawl enter` — and must NOT be stamped `resume_failed`, which is
+// outside the boot accept-set and would make a transient failure permanent.
+// StartResume's fresh-session fallback is deliberately gated on an actual
+// cookie rejection for exactly this reason, so bob is attempted once, not
+// twice.
 func TestRealRecoverAgents_FailureIsolation(t *testing.T) {
 	r, tmpDir := newFakeReal(t)
 	starter := &recoverTestStarter{
@@ -485,16 +480,16 @@ func TestRealRecoverAgents_FailureIsolation(t *testing.T) {
 		t.Errorf("len(errs) = %d, want 1", len(errs))
 	}
 
-	// All three were attempted (failure must not abort the loop): alice and
-	// carol once each, bob twice (resume + fresh fallback).
-	if len(starter.specs) != 4 {
-		t.Errorf("starter.specs len = %d, want 4 (alice, bob x2, carol — the loop must continue past failure)", len(starter.specs))
+	// All three were attempted exactly once (failure must not abort the loop,
+	// and a non-rejection error must not trigger the fresh fallback).
+	if len(starter.specs) != 3 {
+		t.Errorf("starter.specs len = %d, want 3 (loop must continue past failure; a transient error must not be retried as a fresh session)", len(starter.specs))
 	}
 	attempts := map[string]int{}
 	for _, sp := range starter.specs {
 		attempts[sp.Name]++
 	}
-	for name, want := range map[string]int{"alice": 1, "bob": 2, "carol": 1} {
+	for name, want := range map[string]int{"alice": 1, "bob": 1, "carol": 1} {
 		if attempts[name] != want {
 			t.Errorf("attempts for %q = %d, want %d", name, attempts[name], want)
 		}
@@ -503,7 +498,7 @@ func TestRealRecoverAgents_FailureIsolation(t *testing.T) {
 	for _, want := range []struct{ name, status string }{
 		{"alice", state.StatusActive},
 		{"carol", state.StatusActive},
-		{"bob", state.StatusResumeFailed},
+		{"bob", state.StatusSuspended},
 	} {
 		loaded, err := state.LoadAgent(tmpDir, want.name)
 		if err != nil {

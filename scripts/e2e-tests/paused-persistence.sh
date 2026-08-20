@@ -67,6 +67,19 @@ pause_wait_active() {
 # session has actually produced output, i.e. some activity*.ndjson under its
 # agent dir is non-empty.
 #
+# THIS IS A PROXY, and the proxy is the reason it is robust. The property P2
+# actually needs is "claude has flushed a resumable transcript to
+# ~/.claude/projects/<mangled-cwd>/<sid>.jsonl"; this checks "sprawl received
+# frames from the session". They co-occur — an assistant frame reached sprawl
+# over the same session's stdout — and the direct check would hard-code claude's
+# private on-disk layout, so a claude upgrade would fail this row for a reason
+# unrelated to sprawl. The reason the proxy is SAFE rather than merely
+# convenient: if it ever went green too early, P2's next assertion — the
+# echo-back of the RestartInjection literal — cannot pass, because only a
+# genuinely RESUMED session remembers the echo instruction from its spawn
+# prompt. A fresh session fails it loudly. So the row cannot silently go green
+# on resume-of-nothing even if this gate is wrong.
+#
 # QUM-1260: pause_wait_active is NOT this, and the difference is the whole bug.
 # Real.Spawn persists Status=active before the runtime's first frame, so the
 # status flips ~1s after the spawn MCP call — long before claude has written

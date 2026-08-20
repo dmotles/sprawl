@@ -58,6 +58,26 @@ func (s *wakeCapturingStarter) Start(spec RuntimeStartSpec) (RuntimeHandle, erro
 	maker := s.sessionMaker
 	s.mu.Unlock()
 
+	// QUM-1260: the marker fires BEFORE a start error is returned, because
+	// that is the production order — backend/claude/adapter.go's marker writer
+	// invokes OnResumeFailure and THEN kills the transport, and it is the kill
+	// that makes Initialize fail. A fake that returned the error first could
+	// not model the shape the live defect actually has.
+	if fireOn != 0 && call == fireOn && spec.OnResumeFailure != nil {
+		// Fire on this goroutine, BEFORE handing anything back, so the caller
+		// deterministically observes the rejection in-band. QUM-1260 made this
+		// synchronous: the previous `go spec.OnResumeFailure()` left it a coin
+		// flip whether the flag was set before the caller read it, which made
+		// the assertion about the in-band path a claim about scheduling.
+		//
+		// This means Wake's ASYNC-late-marker arm (runtime.go's "OnResumeFailure
+		// may also fire shortly AFTER a seemingly-healthy probe", which Wake
+		// does not handle) now has no test at all rather than a flaky one.
+		// Recorded because turning a coin flip into silence is only an
+		// improvement if the silence is written down.
+		spec.OnResumeFailure()
+	}
+
 	if startErr != nil {
 		return nil, startErr
 	}
@@ -76,15 +96,6 @@ func (s *wakeCapturingStarter) Start(spec RuntimeStartSpec) (RuntimeHandle, erro
 	s.lastSessions = append(s.lastSessions, sess)
 	s.mu.Unlock()
 
-	if fireOn != 0 && call == fireOn && spec.OnResumeFailure != nil {
-		// Fire the resume-failure callback on this goroutine, BEFORE handing
-		// the handle back, so the caller deterministically observes the
-		// rejection in-band. QUM-1260 made this synchronous: the previous
-		// `go spec.OnResumeFailure()` left it a coin flip whether the flag was
-		// set before the caller read it, which made the assertion about the
-		// in-band path a claim about scheduling.
-		spec.OnResumeFailure()
-	}
 	return sess, nil
 }
 

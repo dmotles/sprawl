@@ -525,9 +525,11 @@ func (r *AgentRuntime) StartResume(restartInjection string, onResumeFailure ...f
 	// caller's durable resume_failed would be a lie, and it is a lie the agent
 	// cannot recover from: resume_failed is outside RecoverAgents' boot
 	// accept-set, so the agent would never auto-resume again. Once we stop
-	// intercepting (a resume that succeeded, with no fallback in flight) a
+	// intercepting (a resume that SUCCEEDED, with no fallback in flight) a
 	// late marker is a genuine failure and is forwarded unchanged. A marker
-	// arriving from an ABANDONED attempt after a fallback is discarded.
+	// arriving from an ABANDONED attempt after a fallback is discarded, and so
+	// is one arriving after a start that failed for some other reason — there
+	// is no session left for it to describe.
 	var markerMu sync.Mutex
 	rejected := false
 	forward := false
@@ -555,6 +557,14 @@ func (r *AgentRuntime) StartResume(restartInjection string, onResumeFailure ...f
 	r.mu.RUnlock()
 
 	resumeErr := r.startWithSpec(spec)
+	// Capture the handle THIS call installed, so a teardown below cannot reach
+	// a handle someone else swapped in. StartResume has no single-flight guard
+	// (Wake has wakeMu) because RecoverAgents runs synchronously in runEnter
+	// before the MCP server can serve a wake — but the compare-and-clear costs
+	// nothing and does not rely on that staying true.
+	r.mu.RLock()
+	started := r.handle
+	r.mu.RUnlock()
 
 	markerMu.Lock()
 	cookieRejected := rejected
@@ -567,22 +577,55 @@ func (r *AgentRuntime) StartResume(restartInjection string, onResumeFailure ...f
 	}
 	markerMu.Unlock()
 
-	if resumeErr == nil && !cookieRejected {
-		return nil
+	if !cookieRejected {
+		// Either the resume held (resumeErr == nil), or it failed for a reason
+		// that is NOT a rejected cookie.
+		//
+		// QUM-1260: that second case must NOT fall back and must NOT stamp.
+		// The only production signal for a rejected cookie is this callback —
+		// the backend's marker writer invokes it and then kills the transport,
+		// so a genuine rejection always arrives here before the start error
+		// does. A start error WITHOUT it is transient or environmental (exec
+		// failure, fd exhaustion, a handshake that missed its deadline under
+		// boot load). Falling back would discard the agent's whole transcript
+		// for a cause that had nothing to do with the transcript, and stamping
+		// resume_failed would turn a failure that retries on the next
+		// `sprawl enter` into a permanent one — the exact brick this change
+		// exists to remove, with a WIDER trigger. So: report the error and
+		// leave the agent at its existing revivable status.
+		return resumeErr
 	}
+
 	if resumeErr == nil {
-		// The session came up but claude rejected the cookie. Tear the
+		// The session came up and claude rejected the cookie. Tear the
 		// half-alive attempt down before starting its replacement, otherwise
 		// two backend sessions race for the same agent.
-		r.abandonStartedHandle()
+		r.abandonHandleIf(started)
+	}
+
+	fail := func(err error) error {
+		// No handle survives either leg. startWithSpec already published a
+		// RuntimeEventStarted and set Liveness=Running for the attempt we just
+		// abandoned, so correct both before returning — otherwise callers that
+		// filter on Liveness==Running (the TUI tree, Real.Shutdown's teardown
+		// loop) treat a dead agent as live and call Stop on a nil handle.
+		// Mirrors Wake's stampDoublyFailedWake, minus the disk write: the
+		// caller's callback owns the durable resume_failed here.
+		r.mu.Lock()
+		if r.handle == nil {
+			r.snapshot.Liveness = liveness.Stopped
+		}
+		r.mu.Unlock()
+		r.emit(RuntimeEventStopped)
+		if cb != nil {
+			cb()
+		}
+		return err
 	}
 
 	freshSID, sidErr := state.GenerateUUID()
 	if sidErr != nil {
-		if cb != nil {
-			cb()
-		}
-		return fmt.Errorf("resume for %q failed (%w) and minting a fallback session id also failed: %w", spec.Name, resumeOrRejected(resumeErr), sidErr)
+		return fail(fmt.Errorf("supervisor: resume for %q was rejected (%w) and minting a fallback session id failed: %w", spec.Name, errResumeCookieRejected, sidErr))
 	}
 	fresh := spec
 	fresh.Resume = false
@@ -600,42 +643,39 @@ func (r *AgentRuntime) StartResume(restartInjection string, onResumeFailure ...f
 		slog.Any("resume_err", resumeErr))
 
 	if freshErr := r.startWithSpec(fresh); freshErr != nil {
-		if cb != nil {
-			cb()
-		}
-		return fmt.Errorf("resume for %q failed (%w) and the fresh fallback failed too: %w", spec.Name, resumeOrRejected(resumeErr), freshErr)
+		return fail(fmt.Errorf("supervisor: resume for %q was rejected (%w) and the fresh fallback failed too: %w", spec.Name, errResumeCookieRejected, freshErr))
 	}
+	// NOTE: a rescued resume publishes TWO RuntimeEventStarted (one per leg)
+	// where Wake publishes a single RuntimeEventWoken. Left as-is deliberately:
+	// no current subscriber counts Started (the activity, delivery, fault,
+	// usage and ledger subscribers all key off protocol events), and
+	// suppressing it would mean startWithSpec growing a "quiet" mode for one
+	// caller. Recorded so a future Started-counting subscriber knows.
 	return nil
 }
 
-// resumeOrRejected renders the resume leg's cause for the doubly-failed error.
-// A nil resumeErr means the session started and claude rejected the cookie via
-// the stderr marker instead, which has no error value of its own.
-func resumeOrRejected(resumeErr error) error {
-	if resumeErr != nil {
-		return resumeErr
-	}
-	return errResumeCookieRejected
-}
-
 // errResumeCookieRejected stands in for the stderr "No conversation found"
-// marker, which reaches the host as a callback rather than an error.
+// marker, which reaches the host as a callback rather than an error value.
 var errResumeCookieRejected = errors.New("resume cookie rejected by the backend")
 
-// abandonStartedHandle detaches and tears down the handle startWithSpec just
-// installed. Used by StartResume when the started session turns out to be
-// unusable, so the replacement attempt is not racing a live sibling. The
-// watcher is detached BEFORE StopAbandon for the same reason Wake does it:
-// watchHandleExit's `r.handle == handle` guard must see a stale match so the
-// abandoned handle's Done() does not emit a spurious Stopped.
-func (r *AgentRuntime) abandonStartedHandle() {
-	r.mu.Lock()
-	handle := r.handle
-	r.handle = nil
-	r.mu.Unlock()
+// abandonHandleIf detaches and tears down `handle`, but ONLY if it is still the
+// runtime's current one. Used by StartResume when the session it just started
+// turns out to be unusable, so the replacement attempt is not racing a live
+// sibling — and so a handle installed by someone else in the meantime is never
+// the one torn down. The detach happens BEFORE StopAbandon for the same reason
+// Wake does it: watchHandleExit's `r.handle == handle` guard must see a stale
+// match so the abandoned handle's Done() does not emit a spurious Stopped.
+func (r *AgentRuntime) abandonHandleIf(handle RuntimeHandle) {
 	if handle == nil {
 		return
 	}
+	r.mu.Lock()
+	if r.handle != handle {
+		r.mu.Unlock()
+		return
+	}
+	r.handle = nil
+	r.mu.Unlock()
 	ctx, cancel := context.WithTimeout(context.Background(), wakeStopAbandonTimeout)
 	defer cancel()
 	if err := handle.StopAbandon(ctx); err != nil {
@@ -914,9 +954,14 @@ func (r *AgentRuntime) pauseDrain(ctx context.Context, timeout time.Duration, re
 		return true, nil
 	}
 
-	// Escalation: timeout fired. Hard-abandon and stamp killed on disk. Same
-	// on both paths: a turn that will not drain has to be cut off, and `killed`
-	// is the truthful record of that whoever asked for the teardown.
+	// Escalation: timeout fired. Hard-abandon and stamp killed on disk. Same on
+	// both paths: a turn that will not drain has to be cut off, and `killed` is
+	// the truthful record of that whoever asked for the teardown. `reason` is
+	// threaded through for the stop-reason bookkeeping, but it makes no
+	// difference to the resting status HERE — stopReason.restingStatus() maps
+	// both stopReasonOperator and stopReasonShutdown to StatusSuspended, and
+	// the `killed` stamp below overwrites it either way. Do not read this arm
+	// as reason-sensitive.
 	if err := r.StopAbandonWithReason(ctx, reason); err != nil {
 		return false, err
 	}
