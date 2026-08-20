@@ -39,6 +39,7 @@ type WeaveRuntimeHandle struct {
 	activityClose func() error
 	stopActivity  func()
 	stopUsage     func()
+	stopLedger    func()
 	sprawlRoot    string
 	name          string
 
@@ -195,6 +196,28 @@ func NewWeaveRuntimeHandle(rt *runtimepkg.UnifiedRuntime, session backendpkg.Ses
 	usageRec, _ := usage.NewRecorder(sprawlRoot, name)
 	stopUsage := runUsageSubscriber(rt.EventBus(), usageRec, "weave-usage")
 
+	// QUM-1249: the event-log lifecycle emitter for the ROOT weave agent.
+	//
+	// Wired here as well as in runtime_launcher.go because weave does not go
+	// through that launcher — it has its own handle, and this is where its bus
+	// subscribers live. Found by the store-degraded e2e row: with only the child
+	// path wired, a weave-driven session produced no lifecycle events at all, so
+	// the degraded-mode spill assertion failed with nothing to read. Weave's own
+	// runs are the ones an operator most wants in the log, so this is a fix
+	// rather than a workaround for the row.
+	//
+	// Construction failure is non-fatal and yields a nil emitter, exactly like
+	// the usage recorder above: the event log must never be the reason a session
+	// fails to start.
+	ledgerEmitter := newLifecycleEmitter(context.Background(), RuntimeStartSpec{
+		SprawlRoot: sprawlRoot,
+		Name:       name,
+	}, session.SessionID())
+	if ledgerEmitter != nil {
+		ledgerEmitter.RunStarted(context.Background())
+	}
+	stopLedger := runLedgerSubscriber(rt.EventBus(), ledgerEmitter, "weave-ledger")
+
 	h := &WeaveRuntimeHandle{
 		rt:           rt,
 		session:      session,
@@ -203,6 +226,7 @@ func NewWeaveRuntimeHandle(rt *runtimepkg.UnifiedRuntime, session backendpkg.Ses
 		activityFile: activityFile,
 		stopActivity: stopActivity,
 		stopUsage:    stopUsage,
+		stopLedger:   stopLedger,
 		sprawlRoot:   sprawlRoot,
 		name:         name,
 		ring:         ring,
@@ -297,6 +321,14 @@ func (h *WeaveRuntimeHandle) stopOnceWith(ctx context.Context, stopRuntime func(
 		if h.stopActivity != nil {
 			joinWithTimeout(h.stopActivity, stopActivityTimeout,
 				"stopActivity abandoned — likely wedged activity subscriber goroutine (QUM-547)",
+				"handle", "WeaveRuntimeHandle", "agent", h.name)
+		}
+		// Stopped alongside the other bus subscribers: run_finished is written
+		// as the subscriber drains, so skipping it leaves weave's run looking
+		// like it never ended.
+		if h.stopLedger != nil {
+			joinWithTimeout(h.stopLedger, stopActivityTimeout,
+				"stopLedger abandoned — likely wedged event-log subscriber goroutine (QUM-1249)",
 				"handle", "WeaveRuntimeHandle", "agent", h.name)
 		}
 		if h.stopUsage != nil {

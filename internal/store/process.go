@@ -60,12 +60,23 @@ func OpenProcessLedger(ctx context.Context, d ProcessDeps) (*Ledger, error) {
 		return nil, err
 	}
 
-	remoteURL, err := originURL(ctx, d.Git, d.SprawlRoot)
-	if err != nil {
-		return nil, &HintError{
-			Err:  fmt.Errorf("store: the event log is enabled but this repo's remote URL could not be read, and a project's identity IS its remote URL: %w", err),
-			Hint: "add a remote (`git remote add origin <url>`), or switch the store off with `sprawl config set event_log.enabled false`",
-		}
+	remoteURL := ProvisionalProjectID(d.SprawlRoot)
+	if url, err := originURL(ctx, d.Git, d.SprawlRoot); err == nil {
+		remoteURL = url
+	} else if d.Logger != nil {
+		// A repo with no remote gets a PROVISIONAL local identity rather than a
+		// refusal. The plan of record says so in as many words — "Project = repo
+		// remote URL (unique key; temp name if unset, renameable)" — and it is
+		// the right call: a fresh repo, a sandbox, and a scratch checkout all
+		// legitimately have no remote, and refusing to record anything there
+		// would mean the store cannot be enabled until someone pushes.
+		//
+		// Logged at WARN because it IS a degraded identity: it is host-local, so
+		// two machines working the same unpushed repo would land in two
+		// projects. Renaming a provisional project onto a real remote is M2's
+		// `def`-style work.
+		d.Logger.Warn("event log: this repo has no origin remote, using a provisional host-local project identity",
+			"project", remoteURL, "reason", err)
 	}
 
 	// HEAD is allowed to be missing, and that is the opposite call from the
@@ -88,6 +99,17 @@ func OpenProcessLedger(ctx context.Context, d ProcessDeps) (*Ledger, error) {
 		Logger:     d.Logger,
 		Now:        d.Now,
 	})
+}
+
+// ProvisionalProjectID is the stand-in identity for a repo with no remote.
+//
+// The `local:` scheme is deliberately not URL-shaped: it must be impossible to
+// confuse with a real remote, because the two have different uniqueness
+// guarantees — a remote is global, this is host-local. The absolute path makes
+// it stable across runs on one host, which is what stops every session on an
+// unpushed repo creating a new project.
+func ProvisionalProjectID(sprawlRoot string) string {
+	return "local:" + sprawlRoot
 }
 
 // originURL reads the repo's origin remote, which is a project's identity.

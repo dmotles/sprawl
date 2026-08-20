@@ -101,27 +101,67 @@ func TestOpenProcessLedger_ConfigLoadFailureIsReported(t *testing.T) {
 	}
 }
 
-// TestOpenProcessLedger_MissingRemoteIsReported pins that a repo with no remote
-// is a loud failure, because a project's identity IS its remote URL and there is
-// nothing sensible to fall back to.
-func TestOpenProcessLedger_MissingRemoteIsReported(t *testing.T) {
+// TestOpenProcessLedger_NoRemoteFallsBackToAProvisionalIdentity pins what the
+// plan of record actually asks for: "Project = repo remote URL (unique key;
+// TEMP NAME IF UNSET, renameable)".
+//
+// THIS TEST REPLACES ONE THAT ASSERTED THE OPPOSITE. The first version pinned a
+// hard failure on a missing remote, which was my misreading of the design rather
+// than the design — and because the test agreed with the implementation, nothing
+// in the unit suite could disagree with either. It took the store-degraded e2e
+// row, whose sandbox repo has no origin remote, to surface it: no emitter was
+// built, so no telemetry spilled, so the AC5 spill assertion failed. Recorded
+// rather than quietly swapped, because "assert the intended outcome, not the
+// current mechanism" is exactly the rule that was broken.
+//
+// A fresh repo, a sandbox, and a scratch checkout all legitimately have no
+// remote; refusing to record anything there would mean the store cannot be
+// enabled until someone pushes.
+func TestOpenProcessLedger_NoRemoteFallsBackToAProvisionalIdentity(t *testing.T) {
+	root := t.TempDir()
 	d := newProcessDeps(t, &config.Config{EventLog: "true"}, "postgres://u@127.0.0.1:1/db?sslmode=disable&connect_timeout=1")
+	d.SprawlRoot = root
 	d.Git = func(_ context.Context, _ string, args ...string) ([]byte, error) {
 		if strings.Join(args, " ") == "config --get remote.origin.url" {
 			return nil, errors.New("exit status 1")
 		}
-		return []byte("sha\n"), nil
+		return []byte("0123456789abcdef0123456789abcdef01234567\n"), nil
 	}
-	_, err := OpenProcessLedger(context.Background(), d)
-	if err == nil {
-		t.Fatal("a repo with no remote must fail loudly: a project's identity is its remote URL")
+
+	l, err := OpenProcessLedger(context.Background(), d)
+	if err != nil {
+		t.Fatalf("a repo with no remote must still be able to enable the store: %v", err)
 	}
-	var hint *HintError
-	if !errors.As(err, &hint) {
-		t.Fatalf("the failure must carry a next action; got %T: %v", err, err)
+	if l == nil {
+		t.Fatal("no Ledger returned for a repo with no remote, so nothing would ever be recorded there")
 	}
-	if !strings.Contains(hint.Hint, "remote") {
-		t.Errorf("the hint should say what to do about the remote; got: %q", hint.Hint)
+	t.Cleanup(l.Close)
+	// The DSN points at a refused port, so reaching degraded state proves the
+	// function got all the way through identity resolution to Open.
+	if l.DegradedError() == nil {
+		t.Error("expected a degraded Ledger; a healthy one means this fixture is not exercising the path it claims")
+	}
+}
+
+// TestProvisionalProjectID_IsStableAndNotRemoteShaped pins the two properties
+// the fallback identity needs.
+//
+// Stable, because an identity that varied per run would make every session on an
+// unpushed repo a new project. Not URL-shaped, because a provisional identity is
+// HOST-LOCAL while a real remote is global — two machines on the same unpushed
+// repo land in two projects, and that difference has to be visible rather than
+// hidden behind something that looks like a remote.
+func TestProvisionalProjectID_IsStableAndNotRemoteShaped(t *testing.T) {
+	root := t.TempDir()
+	first, second := ProvisionalProjectID(root), ProvisionalProjectID(root)
+	if first != second {
+		t.Errorf("ProvisionalProjectID is not stable (%q vs %q); every session would create a new project", first, second)
+	}
+	if !strings.HasPrefix(first, "local:") {
+		t.Errorf("ProvisionalProjectID = %q; it must be visibly NOT a remote URL, since its uniqueness is only host-local", first)
+	}
+	if ProvisionalProjectID(root) == ProvisionalProjectID(t.TempDir()) {
+		t.Error("two different repos share a provisional identity, so they would share a namespace in the log")
 	}
 }
 
