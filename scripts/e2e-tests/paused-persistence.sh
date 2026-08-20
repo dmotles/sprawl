@@ -23,8 +23,9 @@
 # Only the tmux session is torn down + relaunched between phases.
 
 # QUM-1029: the number of assertions a COMPLETE, PASSING run of this row
-# makes. Twenty-six pass sites, less the four shutdown_sprawl gates whose else arms only echo a NOTE and one inside a PID-presence guard. Those four passes are in fact guaranteed today (the helper always returns 0), but the lower number survives an edit to it.
-MIN_ASSERTIONS=21
+# makes. Twenty-eight pass sites, less the four shutdown_sprawl gates whose else arms only echo a NOTE and one inside a PID-presence guard. Those four passes are in fact guaranteed today (the helper always returns 0), but the lower number survives an edit to it.
+# QUM-1260 added two: the P2 and P3 session-output gates (pause_wait_child_ready).
+MIN_ASSERTIONS=23
 
 test_metadata() {
     echo "needs_claude=1 needs_tmux=1 needs_jq=1"
@@ -58,6 +59,31 @@ pause_wait_active() {
         [ "$status" = "active" ] && return 0
         sleep 2
         elapsed=$((elapsed + 2))
+    done
+    return 1
+}
+
+# pause_wait_child_ready NAME [TIMEOUT] — wait until the child's backend
+# session has actually produced output, i.e. some activity*.ndjson under its
+# agent dir is non-empty.
+#
+# QUM-1260: pause_wait_active is NOT this, and the difference is the whole bug.
+# Real.Spawn persists Status=active before the runtime's first frame, so the
+# status flips ~1s after the spawn MCP call — long before claude has written
+# anything. A fleet crash taken inside that window kills a session with NO
+# transcript on disk, so the post-restart `claude --resume <sid>` is correctly
+# rejected ("No conversation found") and the row failed while blaming
+# RecoverAgents. Any phase that crashes the fleet and then expects a RESUME
+# (rather than a fresh session) must gate on this, not on Status alone.
+pause_wait_child_ready() {
+    local name="$1" timeout="${2:-180}"
+    local dir="$SPRAWL_ROOT/.sprawl/agents/$name"
+    local deadline=$((SECONDS + timeout)) f
+    while [ "$SECONDS" -lt "$deadline" ]; do
+        while IFS= read -r f; do
+            [ -s "$f" ] && return 0
+        done < <(find "$dir" -maxdepth 2 -name 'activity*.ndjson' 2>/dev/null)
+        sleep 2
     done
     return 1
 }
@@ -332,7 +358,7 @@ test_run() {
         return 1
     fi
     P2_NAME=$(jq -r '.name' "$P2_STATE")
-    pass "P2: child spawned (name=$P2_NAME)"
+    pass "P2: child spawned (name=$P2_NAME, state=$P2_STATE)"
 
     if ! pause_wait_active "$P2_STATE" 90; then
         fail "P2: child never reached active pre-restart"
@@ -340,6 +366,18 @@ test_run() {
         return 1
     fi
     pass "P2: child active pre-restart"
+
+    # QUM-1260: Status=active alone does not mean the session is resumable —
+    # see pause_wait_child_ready. Gate the crash on real session output so this
+    # phase tests resume, not resume-of-nothing.
+    if pause_wait_child_ready "$P2_NAME" 180; then
+        pass "P2: child session produced output (a resumable transcript exists)"
+    else
+        fail "P2: child produced no session output within 180s — crashing now would test resume-of-nothing"
+        ls -la "$SPRAWL_ROOT/.sprawl/agents/$P2_NAME" >&2 2>/dev/null || true
+        e2e_print_results
+        return 1
+    fi
 
     # Tear down sprawl.
     echo "  P2: tearing down sprawl (session=$SESSION_P1B)"
@@ -362,6 +400,12 @@ test_run() {
     if ! pause_wait_active "$P2_STATE" 90; then
         fail "P2: child did not reach active post-restart (RecoverAgents resume failed?)"
         cat "$P2_STATE" >&2 2>/dev/null || true
+        # QUM-1260: sprawl's own resume diagnosis lives here and nowhere else —
+        # `[enter] resume error: …` is the line that names the cause. Without it
+        # this failure reads as an unexplained timeout, which is what sent
+        # earlier readers hunting in RecoverAgents.
+        echo "  P2: enter stderr (resume diagnosis):" >&2
+        tail -20 "$SPRAWL_ROOT/.sprawl/tui-stderr.log" >&2 2>/dev/null || true
         e2e_print_results
         return 1
     fi
@@ -462,6 +506,16 @@ test_run() {
     pass "P3: active-sibling spawned (name=$P3_ACTIVE_NAME)"
     if ! pause_wait_active "$P3_ACTIVE_STATE" 90; then
         fail "P3: active-sibling never reached active"
+        e2e_print_results
+        return 1
+    fi
+    # QUM-1260: same gate as P2 — the active sibling is the one that must
+    # RESUME across the restart below, so it needs a transcript to resume.
+    if pause_wait_child_ready "$P3_ACTIVE_NAME" 180; then
+        pass "P3: active-sibling produced session output (resumable transcript exists)"
+    else
+        fail "P3: active-sibling produced no session output within 180s"
+        ls -la "$SPRAWL_ROOT/.sprawl/agents/$P3_ACTIVE_NAME" >&2 2>/dev/null || true
         e2e_print_results
         return 1
     fi
