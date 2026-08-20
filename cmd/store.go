@@ -58,7 +58,10 @@ var storeCmd = &cobra.Command{
 	Long: "Operate the shared Postgres event log (QUM-1249). The DSN is read " +
 		"from SPRAWL_DB_DSN or a 0600 ~/.config/sprawl/secrets.yaml and is " +
 		"never stored in .sprawl/config.yaml, which is tracked in a public " +
-		"repo. No subcommand ever prints the DSN.",
+		"repo. No subcommand ever prints the DSN.\n\n" +
+		"Setup, including a local container, Neon's free tier, and the " +
+		"least-privilege role that makes `events` append-only: " +
+		"docs/event-log-setup.md",
 }
 
 var storeStatusCmd = &cobra.Command{
@@ -127,7 +130,8 @@ func runStoreStatus(ctx context.Context, deps *storeDeps) error {
 		fmt.Fprintf(deps.Stdout,
 			"event log: disabled\n"+
 				"  enable it with: sprawl config set event_log.enabled true\n"+
-				"  then supply a DSN via %s or a 0600 ~/.config/sprawl/%s\n",
+				"  then supply a DSN via %s or a 0600 ~/.config/sprawl/%s\n"+
+				"  setup guide: docs/event-log-setup.md\n",
 			store.EnvDSN, store.SecretsFileName)
 		return nil
 	}

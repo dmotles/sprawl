@@ -161,3 +161,21 @@ func TestStoreMigrate_RequiresADSNAndSaysWhere(t *testing.T) {
 		t.Errorf("the error should name where to put the DSN; got: %v", err)
 	}
 }
+
+// TestStoreStatus_PointsAtTheSetupGuide pins that the disabled path names the
+// setup doc.
+//
+// The primary consumer of this CLI is an agent (/cli-ux-best-practices), which
+// cannot browse docs/ to discover that a guide exists. "enable it with: sprawl
+// config set …" tells you the switch but not where the DSN comes from, what the
+// 0600 requirement is, or why `store migrate` is a separate privileged step — so
+// without this the next action after enabling is a guess.
+func TestStoreStatus_PointsAtTheSetupGuide(t *testing.T) {
+	deps, out, _ := newTestStoreDeps(t)
+	if err := runStoreStatus(context.Background(), deps); err != nil {
+		t.Fatalf("runStoreStatus: %v", err)
+	}
+	if !strings.Contains(out.String(), "docs/event-log-setup.md") {
+		t.Errorf("the disabled output does not name the setup guide, so an agent has to guess what comes after enabling:\n%s", out.String())
+	}
+}
