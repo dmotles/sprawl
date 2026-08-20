@@ -1,0 +1,18 @@
+{
+  "name": "spawn_failed",
+  "version": 1,
+  "opens": false,
+  "spillable": false,
+  "closes": "spawn_intent",
+  "json_schema": {
+    "type": "object",
+    "description": "The spawn this intent opened did not happen. Two producers: the handler, when the local spawn returns an error; and startup reconciliation, for an intent with no local trace after the grace period. Sharing one closer with spawn_committed is deliberate — Closes holds a NAME, so one intent is resolvable either way. NOT spillable (contract event).",
+    "required": ["agent_name", "reason", "host"],
+    "properties": {
+      "agent_name": {"type": "string"},
+      "reason": {"type": "string"},
+      "host": {"type": "string"},
+      "traceless": {"type": "boolean"}
+    }
+  }
+}

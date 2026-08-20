@@ -1,0 +1,22 @@
+{
+  "name": "spawn_intent",
+  "version": 1,
+  "opens": true,
+  "spillable": false,
+  "closes": "",
+  "json_schema": {
+    "type": "object",
+    "description": "Appendix B item 2, the write-ahead: recorded UNDER THE CLAIM and BEFORE any worktree, branch or session exists. It is what makes a spawn re-checkable, which is the only reason claims.go's lease takeover is safe — a second handler arriving after a takeover finds this and reconciles against local reality instead of spawning again. Closed by spawn_committed or spawn_failed. NOT spillable: an intent in a local file is invisible to the reconciler on every other host, and a contract event that only exists locally reads as work nobody is doing. host_affinity names the host that is about to create the local resource, so worktree-bound follow-ups are claimable only there.",
+    "required": ["agent_name", "agent_type", "host_affinity"],
+    "properties": {
+      "agent_name": {"type": "string"},
+      "agent_type": {"type": "string"},
+      "family": {"type": "string"},
+      "parent": {"type": "string"},
+      "branch": {"type": "string"},
+      "subagent": {"type": "boolean"},
+      "host_affinity": {"type": "string"},
+      "request_event_id": {"type": "string"}
+    }
+  }
+}

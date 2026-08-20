@@ -1,0 +1,20 @@
+{
+  "name": "spawn_committed",
+  "version": 1,
+  "opens": false,
+  "spillable": false,
+  "closes": "spawn_intent",
+  "json_schema": {
+    "type": "object",
+    "description": "The local resources named by the intent now exist. Also the ADOPTION record: startup reconciliation emits this for an orphan whose intent is still open, which is the state a crash between the spawn and this event leaves behind. NOT spillable (contract event).",
+    "required": ["agent_name", "host"],
+    "properties": {
+      "agent_name": {"type": "string"},
+      "host": {"type": "string"},
+      "branch": {"type": "string"},
+      "worktree": {"type": "string"},
+      "session_id": {"type": "string"},
+      "adopted": {"type": "boolean"}
+    }
+  }
+}

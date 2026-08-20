@@ -98,6 +98,39 @@ var wantSeeds = []struct {
 		closes:   "goal_opened",
 		required: []string{"outcome"},
 	},
+	// QUM-1250 (M1b): the dispatch layer's spawn write-ahead. Every one of
+	// these ids is DERIVED from "<name>@<version>", so the values below are not
+	// a choice — they are a record of what the derivation produces, and a
+	// change to any of them means a schema_id already written into a real log
+	// no longer resolves.
+	{
+		name: "spawn_requested", version: 1,
+		id:       "dfa0f2e5-4b38-5c16-88a7-d498cf0424a0",
+		required: []string{"agent_name", "agent_type"},
+	},
+	{
+		name: "spawn_intent", version: 1,
+		id:       "d55e359e-a38f-5d64-8002-9681d0de7c4b",
+		opens:    true,
+		required: []string{"agent_name", "agent_type", "host_affinity"},
+	},
+	{
+		name: "spawn_committed", version: 1,
+		id:       "7b332cb0-bbf9-5086-be3a-8598e5b08f85",
+		closes:   "spawn_intent",
+		required: []string{"agent_name", "host"},
+	},
+	{
+		name: "spawn_failed", version: 1,
+		id:       "2ed385a2-ab7a-516b-8fa6-fb4d75dbff36",
+		closes:   "spawn_intent",
+		required: []string{"agent_name", "reason", "host"},
+	},
+	{
+		name: "stray_reclaimed", version: 1,
+		id:       "4b6456ec-7e96-5fd3-ad6e-ae9de83a0712",
+		required: []string{"agent_name", "reason", "host"},
+	},
 }
 
 func TestSeedRegistry_MatchesGoldenIDsAndWiring(t *testing.T) {

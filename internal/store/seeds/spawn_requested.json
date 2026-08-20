@@ -1,0 +1,23 @@
+{
+  "name": "spawn_requested",
+  "version": 1,
+  "opens": false,
+  "spillable": false,
+  "closes": "",
+  "json_schema": {
+    "type": "object",
+    "description": "Asks for an agent to be spawned. NOT a contract: it is a request, and the intent/committed pair the dispatcher writes underneath it is what carries the outstanding-work accounting. M3a's workflow engine owns request lifecycle. NOT spillable: a spawn request recorded only in a local spill file would be invisible to every dispatcher, so it would read as work nobody is doing. A prompt longer than the 8KiB payload CHECK must go to a content-addressed artifact (M3a) rather than inline — the append fails loudly rather than truncating.",
+    "required": ["agent_name", "agent_type"],
+    "properties": {
+      "agent_name": {"type": "string"},
+      "agent_type": {"type": "string"},
+      "family": {"type": "string"},
+      "parent": {"type": "string"},
+      "branch": {"type": "string"},
+      "prompt": {"type": "string"},
+      "model": {"type": "string"},
+      "subagent": {"type": "boolean"},
+      "host_affinity": {"type": "string"}
+    }
+  }
+}

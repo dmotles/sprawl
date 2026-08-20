@@ -1,0 +1,20 @@
+{
+  "name": "stray_reclaimed",
+  "version": 1,
+  "opens": false,
+  "spillable": false,
+  "closes": "",
+  "json_schema": {
+    "type": "object",
+    "description": "A local resource whose spawn_intent was already closed spawn_failed has been reclaimed. Exists because this is the one DESTRUCTIVE and otherwise UNATTRIBUTABLE action the reconciler takes: without a log record, a worktree simply disappears with nothing saying who removed it or why. Recorded only AFTER the resource is actually gone — the log is append-only, so a premature record could never be retracted. NOT spillable: a destructive action recorded only on the host that performed it is invisible to everyone investigating why an agent vanished.",
+    "required": ["agent_name", "reason", "host"],
+    "properties": {
+      "agent_name": {"type": "string"},
+      "reason": {"type": "string"},
+      "host": {"type": "string"},
+      "worktree": {"type": "string"},
+      "branch": {"type": "string"},
+      "intent_event_id": {"type": "string"}
+    }
+  }
+}
