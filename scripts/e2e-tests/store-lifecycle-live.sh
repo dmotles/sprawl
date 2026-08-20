@@ -223,12 +223,38 @@ test_run() {
 
     echo ""
     echo "=== Driving a real retire ==="
+    # Asserted on the CHILD'S STATE FILE DISAPPEARING, not on the pane.
+    #
+    # Three reasons, and the first two are corrections of earlier attempts:
+    #
+    #   1. `wait_for_pattern "Completed in"` is unfalsifiable here — it greps the
+    #      current pane with no anchor, so it matches the SPAWN turn's leftover
+    #      text and returns on the first poll.
+    #   2. Counting "Completed in" occurrences does not work either: it is a
+    #      status-bar label showing one value at a time, so the count never
+    #      exceeds 1. (Measured on the sibling row: "completions stuck at 1".)
+    #   3. The state file is minted by `retire` itself, its removal is monotonic,
+    #      and it asserts the thing this row actually needs — that the retire
+    #      HAPPENED — rather than that a turn ended. A turn that ended without
+    #      retiring anything would satisfy a pane grep and not this.
+    local STATE_FILE="$SPRAWL_ROOT/.sprawl/agents/$CHILD.json"
+    if [ ! -f "$STATE_FILE" ]; then
+        fail "the child's state file is already gone before the retire prompt, so its removal cannot evidence the retire"
+        return 1
+    fi
     e2e_send_user_prompt "$SESSION" \
         "Use the retire tool to retire the agent named $CHILD with abandon=true. Do not do anything else."
-    if wait_for_pattern "$SESSION" "Completed in" 180; then
-        pass "weave completed the retire turn"
+
+    local RETIRE_WAITED=0
+    while [ "$RETIRE_WAITED" -lt 180 ]; do
+        [ -f "$STATE_FILE" ] || break
+        sleep 3
+        RETIRE_WAITED=$((RETIRE_WAITED + 3))
+    done
+    if [ ! -f "$STATE_FILE" ]; then
+        pass "the child was really retired (its state file was removed after ${RETIRE_WAITED}s)"
     else
-        fail "weave did not complete the retire turn within 180s"
+        fail "the child's state file still exists after 180s, so the retire did not complete"
         capture_pane "$SESSION" | tail -40 >&2
     fi
 

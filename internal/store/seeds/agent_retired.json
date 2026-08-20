@@ -2,7 +2,7 @@
   "name": "agent_retired",
   "version": 1,
   "opens": false,
-  "spillable": true,
+  "spillable": false,
   "closes": "agent_spawned",
   "json_schema": {
     "type": "object",

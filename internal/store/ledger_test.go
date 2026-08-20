@@ -295,3 +295,46 @@ func TestOpen_ARefusedDatabaseIsNotDegradedMode(t *testing.T) {
 		t.Error("an unparseable DSN must be an error, not degraded mode — degraded mode would hide a permanent misconfiguration behind a growing spill directory")
 	}
 }
+
+// TestOpen_DoesNotMigrate_SchemaReadinessIsCheckedInstead pins the fix for a
+// defect that made the store's two goals mutually exclusive.
+//
+// Open used to call Migrate on every start, with the APPLICATION DSN. goose must
+// read its own goose_db_version bookkeeping table on every Up(), even with
+// nothing pending — and sprawl_app holds SELECT+INSERT on `events` and nothing
+// at all on goose_db_version. So a deployment that followed
+// 00002_m1a_app_role.sql's documented precondition ("the application must
+// actually CONNECT as a user that inherits this role") got 42501 from Migrate,
+// which is a PgError, hence a refusal, hence NOT survivable, hence Open returned
+// an error, which store.Process cached in its sync.Once for the whole process
+// lifetime, so newLifecycleEmitter returned nil for every agent and every
+// lifecycle event was DROPPED — not spilled, not dead-lettered, not surfaced.
+// That is the fifth outcome spill.go promises does not exist.
+//
+// The two states were therefore mutually exclusive: an over-privileged DSN made
+// AC3 (append-only) a comment, and a least-privilege DSN made the store record
+// nothing. Migration is now the operator's job via `sprawl store migrate`, and
+// Open only CHECKS readiness — using a query the app role can actually run.
+func TestOpen_DoesNotMigrate_SchemaReadinessIsCheckedInstead(t *testing.T) {
+	var migrateCalls int
+	l, err := Open(context.Background(), LedgerConfig{
+		Enabled:    true,
+		DSN:        "postgres://nobody@127.0.0.1:1/nothing?sslmode=disable&connect_timeout=1",
+		DSNSource:  EnvDSN,
+		RemoteURL:  "https://example.invalid/nomigrate",
+		SprawlRoot: t.TempDir(),
+		migrate: func(context.Context, string) error {
+			migrateCalls++
+			return nil
+		},
+	})
+	if err != nil {
+		t.Fatalf("Open: %v", err)
+	}
+	if l != nil {
+		t.Cleanup(l.Close)
+	}
+	if migrateCalls != 0 {
+		t.Errorf("Open invoked the migrator %d time(s); migrating with the application DSN is what broke least-privilege deployments", migrateCalls)
+	}
+}

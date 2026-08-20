@@ -93,7 +93,28 @@ func init() {
 	rootCmd.AddCommand(storeCmd)
 }
 
+// requireSprawlRoot refuses an unset SPRAWL_ROOT.
+//
+// Every other command in cmd/ does this, and skipping it here was not merely
+// inconsistent — it made the diagnostic LIE. With SPRAWL_ROOT unset,
+// config.Load("") resolves a RELATIVE .sprawl/config.yaml, finds nothing, and
+// returns a zero Config with no error, so `store status` printed
+// "event log: disabled / enable it with: sprawl config set ..." and exited 0 on
+// a host where the store was enabled and possibly spilling — a confident,
+// exactly-wrong answer with a remedy that was already applied. reportSpill then
+// looked at a relative spill dir and printed "nothing has ever spilled", which
+// is the plausible zero this file goes out of its way to avoid elsewhere.
+func requireSprawlRoot(deps *storeDeps) error {
+	if deps.SprawlRoot == "" {
+		return fmt.Errorf("SPRAWL_ROOT environment variable is not set, so there is no project to report on\nnext: run this from inside a sprawl session, or set SPRAWL_ROOT to the repo root")
+	}
+	return nil
+}
+
 func runStoreStatus(ctx context.Context, deps *storeDeps) error {
+	if err := requireSprawlRoot(deps); err != nil {
+		return err
+	}
 	ledger, err := deps.OpenLedger(ctx, deps.SprawlRoot)
 	if err != nil {
 		// A misconfiguration, not an outage. Printed rather than returned so
@@ -127,7 +148,25 @@ func runStoreStatus(ctx context.Context, deps *storeDeps) error {
 	return nil
 }
 
+// runStoreDoctor reports on the event log. It exits 0 for every state it can
+// describe, INCLUDING a broken one — deliberately, and asymmetrically with
+// `store status`, which exits non-zero on a misconfiguration.
+//
+// The asymmetry is the point, and it is documented because an agent caller (the
+// stated primary consumer) otherwise cannot know which command's exit status
+// means what. `status` answers "is the store healthy?", so a bad configuration
+// is a failure of the question. `doctor` answers "what is wrong with the
+// store?", and it having successfully found the answer is not a failure — a
+// doctor that exited non-zero whenever it had something to report could not be
+// distinguished from a doctor that failed to run. Callers wanting a pass/fail
+// signal should use `status`; callers wanting detail should read `doctor`'s
+// output, not its status.
 func runStoreDoctor(ctx context.Context, deps *storeDeps) error {
+	if err := requireSprawlRoot(deps); err != nil {
+		// The one exception: an unset SPRAWL_ROOT means doctor cannot examine
+		// anything at all, so there is no diagnosis to have succeeded at.
+		return err
+	}
 	ledger, err := deps.OpenLedger(ctx, deps.SprawlRoot)
 	if err != nil {
 		fmt.Fprintf(deps.Stdout, "connection: FAILED\n  %s\n", store.RedactError(err))

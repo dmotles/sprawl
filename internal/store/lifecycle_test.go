@@ -3,6 +3,7 @@ package store
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"testing"
 
 	"github.com/dmotles/sprawl/internal/protocol"
@@ -305,4 +306,46 @@ func TestLifecycle_AppendFailureDoesNotPropagate(t *testing.T) {
 	e.Handle(assistantUsageEvent(1, 1))
 	e.Handle(turnCompleted(0.01, false))
 	e.Close(ctx)
+}
+
+// TestLifecycle_FailedTurnAlsoRecordsATurnBoundary pins the fix for a liveness
+// gap this file's own header made explicit and the code then failed to honour.
+//
+// EventTurnFailed is a terminal turn boundary — internal/runtime groups it with
+// EventTurnCompleted, and a mid-turn terminal error publishes exactly one
+// EventTurnFailed and zero EventTurnCompleted. The branch used to increment the
+// counters and emit nothing, so an agent failing every turn (an ErrHangTimeout
+// loop) produced run_started, then N invisible failures, then run_finished — in
+// the log, indistinguishable from an agent that started and did nothing, which
+// is exactly the state turn boundaries exist to distinguish.
+func TestLifecycle_FailedTurnAlsoRecordsATurnBoundary(t *testing.T) {
+	e, pool := newLifecycleFixture(t)
+	ctx := context.Background()
+	e.RunStarted(ctx)
+	before := countAppends(pool)
+
+	e.Handle(sprawlrt.RuntimeEvent{Type: sprawlrt.EventTurnFailed, Error: errors.New("hang timeout")})
+
+	if got := countAppends(pool) - before; got != 1 {
+		t.Fatalf("a failed turn appended %d event(s), want 1 — a turn boundary that records nothing makes the agent look quieter than it is", got)
+	}
+	// And it must be labelled a failure. A turn_finished saying "success" for a
+	// turn that faulted is worse than no row: a reader cannot tell it from a
+	// real one. EventTurnFailed carries no Result, so an implementation keying
+	// only on ev.Result.IsError would label it success.
+	if got := e.LastTurnPayload()["outcome"]; got != "failure" {
+		t.Errorf("turn_finished outcome = %v, want \"failure\"", got)
+	}
+	if _, ok := e.LastTurnPayload()["session_id"]; !ok {
+		t.Error("turn_finished carries no session_id, so it cannot be correlated to a run")
+	}
+
+	// Control: a clean turn is still labelled success, so the assertion above is
+	// not satisfied by an emitter that marks everything a failure.
+	clean, _ := newLifecycleFixture(t)
+	clean.RunStarted(ctx)
+	clean.Handle(turnCompleted(0.01, false))
+	if got := clean.LastTurnPayload()["outcome"]; got != "success" {
+		t.Errorf("a clean turn was labelled %v, want \"success\"", got)
+	}
 }

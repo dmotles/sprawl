@@ -3,11 +3,14 @@ package store
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"log/slog"
 	"time"
 
 	"github.com/google/uuid"
+	"github.com/jackc/pgx/v5"
+	"github.com/jackc/pgx/v5/pgconn"
 	"github.com/jackc/pgx/v5/pgxpool"
 )
 
@@ -57,6 +60,12 @@ type LedgerConfig struct {
 	SprawlRoot string
 	Logger     *slog.Logger
 	Now        func() time.Time
+
+	// migrate is a test seam only. Production leaves it nil, and Open does not
+	// migrate at all — see TestOpen_DoesNotMigrate_SchemaReadinessIsCheckedInstead
+	// for why applying migrations with the application DSN was a defect rather
+	// than a convenience.
+	migrate func(ctx context.Context, dsn string) error
 }
 
 // Open connects the event log, migrates it, and registers the project.
@@ -140,22 +149,36 @@ func Open(ctx context.Context, cfg LedgerConfig) (*Ledger, error) {
 		}, nil
 	}
 
-	// isTransportFailure is what separates "the database is unreachable" from
-	// "the database refused this". Only the first is survivable: a rejected
-	// migration or a permission error is a real misconfiguration that degraded
-	// mode would hide behind a growing spill directory.
-	if err := Migrate(ctx, cfg.DSN); err != nil {
-		if isTransportFailure(err) {
-			return degraded(err)
-		}
-		return nil, err
-	}
+	// OPEN DOES NOT MIGRATE. Migration is `sprawl store migrate`, run by an
+	// operator with a privileged DSN.
+	//
+	// It used to, and that was a defect severe enough to make the store's two
+	// goals mutually exclusive. goose reads its own goose_db_version table on
+	// every Up() even with nothing pending, and the least-privilege app role
+	// holds nothing on that table — so the deployment shape 00002 documents
+	// produced 42501, a PgError, hence a refusal, hence not survivable, hence a
+	// hard error from Open, which store.Process caches for the process lifetime,
+	// hence a nil emitter for every agent and every lifecycle event DROPPED. Not
+	// spilled, not dead-lettered, not surfaced: the fifth outcome spill.go says
+	// does not exist.
 	pool, err := pgxpool.New(ctx, cfg.DSN)
 	if err != nil {
 		if isTransportFailure(err) {
 			return degraded(err)
 		}
 		return nil, fmt.Errorf("store: connecting to the event log: %w", err)
+	}
+
+	// Readiness instead. isTransportFailure separates "unreachable" (survivable,
+	// degrade) from "the database answered and refused" (a real
+	// misconfiguration that degraded mode would hide behind a growing spill
+	// directory).
+	if err := verifySchemaReady(ctx, pool, registry); err != nil {
+		pool.Close()
+		if isTransportFailure(err) {
+			return degraded(err)
+		}
+		return nil, err
 	}
 
 	l := &Ledger{
@@ -209,33 +232,99 @@ func Open(ctx context.Context, cfg LedgerConfig) (*Ledger, error) {
 	return l, nil
 }
 
+// verifySchemaReady checks that the schema is applied and the seed event types
+// are published, using ONLY privileges the least-privilege app role holds.
+//
+// One query does both jobs. Counting the registry's own ids in
+// event_type_schemas fails with 42P01 (undefined_table) when migrations have
+// never run, and returns a short count when the binary carries seeds the
+// database has not published — which is the case that would otherwise surface
+// much later as an FK violation on a pinned schema_id, at append time, in
+// production.
+//
+// It requires SELECT on event_type_schemas and nothing else. That constraint is
+// the whole point: a readiness check the app role cannot run is a readiness
+// check that fails for every correct deployment.
+func verifySchemaReady(ctx context.Context, pool PgPool, registry *Registry) error {
+	all := registry.All()
+	ids := make([]uuid.UUID, 0, len(all))
+	for _, s := range all {
+		ids = append(ids, s.ID)
+	}
+
+	var found int
+	if err := pool.QueryRow(ctx,
+		`SELECT count(*) FROM event_type_schemas WHERE id = ANY($1)`, ids).Scan(&found); err != nil {
+		var pgErr *pgconn.PgError
+		if errors.As(err, &pgErr) {
+			return &HintError{
+				Err:  fmt.Errorf("store: the event log schema is not usable from this connection: %w", err),
+				Hint: "run `sprawl store migrate` with a privileged DSN (the application role deliberately cannot migrate); if it has already been run, check that this DSN points at the right database and that its role inherits sprawl_app",
+			}
+		}
+		return err // transport: the caller degrades
+	}
+	if found != len(ids) {
+		return &HintError{
+			Err: fmt.Errorf("store: the event log has %d of this build's %d event-type schemas published",
+				found, len(ids)),
+			Hint: "run `sprawl store migrate` with a privileged DSN to publish them; until then an append would fail its schema_id foreign key",
+		}
+	}
+	return nil
+}
+
 // ensureProject registers the project by remote URL, returning its id and
 // whether this call created it.
 //
-// remote_url is UNIQUE, so two hosts enabling the store concurrently converge on
-// one project rather than racing to create two. The DO UPDATE is a no-op that
-// exists only so RETURNING yields a row in the already-exists case; DO NOTHING
-// would return no rows and the second host would see "no rows in result set".
+// USES ONLY SELECT AND INSERT, and that constraint drives the shape. The obvious
+// one-statement form —
+// `INSERT ... ON CONFLICT (remote_url) DO UPDATE SET remote_url = projects.remote_url RETURNING id, (xmax = 0)` —
+// requires the UPDATE privilege even though the update is a no-op, and the
+// least-privilege app role deliberately does not hold UPDATE on projects. That
+// is not a hypothetical: it produced "permission denied for table projects"
+// (42501) the first time this was exercised as a real login role inheriting
+// sprawl_app, which is the deployment 00002_m1a_app_role.sql documents. Granting
+// UPDATE to make one clever statement work would have weakened the privilege
+// story to save two round trips.
 //
-// `xmax = 0` distinguishes an inserted row from an updated one. It is a
-// Postgres implementation detail (a freshly inserted tuple has no deleting
-// transaction id) rather than portable SQL, and it is used because the obvious
-// alternatives are both wrong here: `excluded` is not in scope in RETURNING, and
-// a SELECT-then-INSERT would report "created" on whichever of two concurrent
-// hosts lost the race. Its only consumer is whether to emit repo_initialized, so
-// the blast radius of it being wrong is one duplicate or one missing marker
-// event, not a correctness failure.
+// remote_url is UNIQUE, so the read-insert-read shape is race-safe rather than
+// merely lucky: two hosts enabling the store concurrently converge on one
+// project, and whichever loses the insert reads the winner's row. `created` is
+// true only for the caller whose INSERT actually returned a row, so
+// repo_initialized is emitted exactly once.
 func ensureProject(ctx context.Context, pool PgPool, remoteURL string) (uuid.UUID, bool, error) {
 	var id uuid.UUID
-	var created bool
-	if err := pool.QueryRow(ctx,
+
+	// Already registered: the overwhelmingly common case after first enable.
+	err := pool.QueryRow(ctx, `SELECT id FROM projects WHERE remote_url = $1`, remoteURL).Scan(&id)
+	if err == nil {
+		return id, false, nil
+	}
+	if !errors.Is(err, pgx.ErrNoRows) {
+		return uuid.Nil, false, fmt.Errorf("store: looking up project: %w", err)
+	}
+
+	// DO NOTHING rather than DO UPDATE, for the privilege reason above. It
+	// returns no row when another host won the race, which is why the read below
+	// is not redundant.
+	err = pool.QueryRow(ctx,
 		`INSERT INTO projects (id, remote_url, created_at) VALUES ($1, $2, now())
-		 ON CONFLICT (remote_url) DO UPDATE SET remote_url = projects.remote_url
-		 RETURNING id, (xmax = 0)`,
-		uuid.New(), remoteURL).Scan(&id, &created); err != nil {
+		 ON CONFLICT (remote_url) DO NOTHING
+		 RETURNING id`, uuid.New(), remoteURL).Scan(&id)
+	if err == nil {
+		return id, true, nil
+	}
+	if !errors.Is(err, pgx.ErrNoRows) {
 		return uuid.Nil, false, fmt.Errorf("store: registering project: %w", err)
 	}
-	return id, created, nil
+
+	// Lost the race: read the winner's row.
+	if err := pool.QueryRow(ctx,
+		`SELECT id FROM projects WHERE remote_url = $1`, remoteURL).Scan(&id); err != nil {
+		return uuid.Nil, false, fmt.Errorf("store: reading concurrently-registered project: %w", err)
+	}
+	return id, false, nil
 }
 
 // Enabled reports whether this Ledger records anything. Safe on nil.
@@ -290,13 +379,26 @@ func (l *Ledger) Registry() *Registry {
 	return l.registry
 }
 
-// Close releases the pool. Safe on nil and idempotent.
+// Close releases the pool. Safe on nil, and safe to call twice.
+//
+// FOR SHORT-LIVED PROCESSES ONLY — `sprawl store …`, a migration, a test. A
+// long-lived process must NOT call this on the value from Process(), which is a
+// package singleton shared by every agent in the process: closing it would take
+// the pool out from under all of them.
+//
+// It deliberately does not nil out the field. pgxpool.Pool.Close is itself
+// idempotent, so the nil-ing bought nothing and cost an unsynchronised write
+// racing every Pool() reader. Leaving the (closed) pool in place is also more
+// honest: a caller that keeps using a closed Ledger gets pgx's "closed pool"
+// error rather than a nil dereference — and note that error is NOT a PgError, so
+// isTransportFailure classes it as transport and a spillable event would spill.
+// That is the reason the "short-lived only" rule above is a rule and not a
+// preference.
 func (l *Ledger) Close() {
 	if l == nil || l.pool == nil {
 		return
 	}
 	l.pool.Close()
-	l.pool = nil
 }
 
 // Append writes a fully-formed event. Safe on nil: records nothing, returns

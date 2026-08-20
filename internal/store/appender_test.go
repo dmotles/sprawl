@@ -752,3 +752,33 @@ func TestAppend_ServerRefusalIsNotSpilled(t *testing.T) {
 		t.Errorf("a server refusal spilled %d record(s) — it would be refused identically on replay, so this hides a real defect behind a dead letter", spill.count())
 	}
 }
+
+// TestAppend_ClosesEventIDOnANonClosingSchemaIsRejected covers the branch that
+// refuses a ClosesEventID on a schema that closes nothing.
+//
+// Added because the opposite direction was covered and this one was not, so the
+// branch could be deleted with the suite green. It matters: a close pointer on a
+// non-closing type would leave a real FK edge in the log implying a contract
+// relationship the schema does not define, and the projection would never delete
+// anything for it — the graph would say a contract was closed by an event whose
+// type is not a closer.
+func TestAppend_ClosesEventIDOnANonClosingSchemaIsRejected(t *testing.T) {
+	reg := testRegistry(t)
+	pool := newRecordingPool()
+	a := newTestAppender(t, pool, &capturingSpiller{})
+
+	stray := uuid.New()
+	ev := runStartedEvent(t, reg) // run_started closes nothing
+	ev.ClosesEventID = &stray
+
+	_, err := a.Append(context.Background(), ev)
+	if err == nil {
+		t.Fatal("an append carrying closes_event_id for a non-closing schema must be refused")
+	}
+	if !strings.Contains(err.Error(), "closes_event_id") {
+		t.Errorf("the error should name the offending field; got: %v", err)
+	}
+	if calls := pool.log(); len(calls) != 0 {
+		t.Errorf("the rejected append touched the database: %v", calls)
+	}
+}

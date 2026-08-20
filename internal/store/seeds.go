@@ -152,11 +152,8 @@ func loadSeedRegistry() (*Registry, error) {
 		if err := json.Unmarshal(body, &doc); err != nil {
 			return nil, fmt.Errorf("store: parsing seed %s: %w", e.Name(), err)
 		}
-		if doc.Name == "" || doc.Version <= 0 {
-			return nil, fmt.Errorf("store: seed %s has no name or a non-positive version", e.Name())
-		}
-		if doc.Opens && doc.Closes != "" {
-			return nil, fmt.Errorf("store: seed %s both opens and closes a contract", e.Name())
+		if err := validateSeedDoc(e.Name(), doc); err != nil {
+			return nil, err
 		}
 		schemas = append(schemas, &EventTypeSchema{
 			ID:         SeedID(doc.Name, doc.Version),
@@ -169,4 +166,35 @@ func loadSeedRegistry() (*Registry, error) {
 		})
 	}
 	return NewRegistry(schemas)
+}
+
+// validateSeedDoc enforces the invariants a seed definition must satisfy.
+//
+// Split out of loadSeedRegistry so it is directly testable: the spillable/
+// contract contradiction below shipped once precisely because neither of the
+// affected types is emitted in M1a, so no behavioural test could reach it. A
+// build-time refusal with a unit test is the only check that fires before an
+// emit site exists.
+func validateSeedDoc(file string, doc seedDoc) error {
+	if doc.Name == "" || doc.Version <= 0 {
+		return fmt.Errorf("store: seed %s has no name or a non-positive version", file)
+	}
+	if doc.Opens && doc.Closes != "" {
+		return fmt.Errorf("store: seed %s both opens and closes a contract", file)
+	}
+	// A CONTRACT EVENT MUST NEVER BE SPILLABLE.
+	//
+	// A contract recorded only in a local spill file is invisible to every other
+	// host and to the sweeper: an open reads as work nobody is doing, and a close
+	// leaves the contract open everywhere else, so the sweeper keeps poking an
+	// agent that believes it has finished. Replay does not rescue it — a spilled
+	// close replayed before, or without, its opener hits ErrNoOpenContract and
+	// dead-letters. Deduplicating on events.id UNIQUE handles DUPLICATES, not
+	// ORDERING, which is why "it is replay-safe" was the wrong argument.
+	if doc.Spillable && (doc.Opens || doc.Closes != "") {
+		return fmt.Errorf(
+			"store: seed %s takes part in an open/close contract and is marked spillable; a contract recorded only in a local spill file is invisible to every other host",
+			file)
+	}
+	return nil
 }

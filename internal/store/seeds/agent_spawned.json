@@ -2,7 +2,7 @@
   "name": "agent_spawned",
   "version": 1,
   "opens": true,
-  "spillable": true,
+  "spillable": false,
   "closes": "",
   "json_schema": {
     "type": "object",

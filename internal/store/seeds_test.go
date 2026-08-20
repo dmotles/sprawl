@@ -70,17 +70,15 @@ var wantSeeds = []struct {
 	},
 	{
 		name: "agent_spawned", version: 1,
-		spillable: true,
-		id:        "d470020f-ba51-560d-a9d6-9a604f4c2738",
-		opens:     true,
-		required:  []string{"agent_name", "agent_type"},
+		id:       "d470020f-ba51-560d-a9d6-9a604f4c2738",
+		opens:    true,
+		required: []string{"agent_name", "agent_type"},
 	},
 	{
 		name: "agent_retired", version: 1,
-		spillable: true,
-		id:        "88342d9c-cb92-5de7-a634-ad7051f5e211",
-		closes:    "agent_spawned",
-		required:  []string{"agent_name", "outcome"},
+		id:       "88342d9c-cb92-5de7-a634-ad7051f5e211",
+		closes:   "agent_spawned",
+		required: []string{"agent_name", "outcome"},
 	},
 	{
 		name: "goal_opened", version: 1,
@@ -231,42 +229,84 @@ func TestSeedRegistry_ClosesNamesAnExistingOpener(t *testing.T) {
 	}
 }
 
-// TestSeedRegistry_ContractTypesAreNeverSpillable is the safety invariant behind
-// the degraded-mode split, asserted as a RULE over the whole seed set rather
-// than as two per-type goldens.
+// TestSeedRegistry_ContractTypesAreNeverSpillable asserts the rule over the
+// whole seed set, with NO exceptions.
 //
-// A goal recorded only in a local spill file is invisible to every other host
-// and to the sweeper: it reads as work nobody is doing, while the agent that
-// opened it believes it was recorded. The per-type goldens above would catch
-// today's two contract types flipping; this catches a NEW contract type being
-// added spillable, which is the more likely mistake because whoever adds it will
-// be copying an existing telemetry seed.
+// It used to carry an exception list for agent_spawned/agent_retired, justified
+// as "lifecycle telemetry that also happens to form a contract pair, replayed
+// rather than depended on for coordination, and deduplicated on replay against
+// events.id UNIQUE". Review killed that argument: dedup handles DUPLICATES, not
+// ORDERING, and a spilled close replayed before or without its opener hits
+// ErrNoOpenContract and dead-letters. So the two are now non-spillable like
+// every other contract type, the exception list is gone, and the rule is also
+// enforced at registry-load time — which is the check that fires before an emit
+// site exists, and therefore the only one that could have caught this while
+// neither type was emitted.
 //
-// agent_spawned/agent_retired are the deliberate exception and are named here
-// explicitly rather than silently skipped: they are lifecycle telemetry that
-// also happens to form a contract pair (Appendix B item 12), they are replayed
-// rather than depended on for coordination, and the appender mints the event id
-// before the append so a replay deduplicates against events.id UNIQUE.
+// Consequence, stated because it is a real behaviour change: with the event log
+// unreachable, a future spawn/retire will be REFUSED rather than spilled. That
+// is the correct trade for a contract event, and it is the same trade goal
+// open/close already makes.
 func TestSeedRegistry_ContractTypesAreNeverSpillable(t *testing.T) {
 	reg, err := SeedRegistry()
 	if err != nil {
 		t.Fatalf("SeedRegistry: %v", err)
 	}
-	lifecycleExceptions := map[string]bool{"agent_spawned": true, "agent_retired": true}
-
 	var checked int
 	for _, s := range reg.All() {
-		isContract := s.Opens || s.Closes != ""
-		if !isContract || lifecycleExceptions[s.Name] {
+		if !s.Opens && s.Closes == "" {
 			continue
 		}
 		checked++
 		if s.Spillable {
-			t.Errorf("%s@%d takes part in an open/close contract AND is spillable: a contract recorded only in a local spill file is invisible to every other host and to the sweeper. If this type really is replay-safe, add it to lifecycleExceptions with the reason",
+			t.Errorf("%s@%d takes part in an open/close contract AND is spillable: a contract recorded only in a local spill file is invisible to every other host and to the sweeper, and on replay a close without its opener dead-letters",
 				s.Name, s.Version)
 		}
 	}
 	if checked == 0 {
-		t.Fatal("no non-exempt contract type was examined, so this assertion's silence is not evidence")
+		t.Fatal("no contract type was examined, so this assertion's silence is not evidence")
+	}
+	// Anti-vacuity in the other direction: at least one type must be spillable,
+	// or "contract types are not spillable" would be trivially true of a set
+	// where nothing spills and degraded mode would record nothing at all.
+	var spillable int
+	for _, s := range reg.All() {
+		if s.Spillable {
+			spillable++
+		}
+	}
+	if spillable == 0 {
+		t.Error("no seed type is spillable at all, so degraded mode would record nothing")
+	}
+}
+
+// TestSeedRegistry_LoaderRefusesASpillableContractType is the positive control
+// for the build-time invariant, and it exercises the real loader rather than a
+// hand-built Registry — the check lives in loadSeedRegistry, so a test that
+// called NewRegistry directly would prove nothing about it.
+func TestSeedRegistry_LoaderRefusesASpillableContractType(t *testing.T) {
+	// Reuse the production parse path via a doc that violates the rule.
+	bad := seedDoc{
+		Name: "bad_contract", Version: 1, Opens: true, Spillable: true,
+		JSONSchema: json.RawMessage(`{"type":"object"}`),
+	}
+	if err := validateSeedDoc("bad_contract.json", bad); err == nil {
+		t.Error("the loader accepted a spillable contract type; nothing would then stop M1b shipping one")
+	}
+	// Negative control: the same doc without the contradiction is accepted.
+	ok := seedDoc{
+		Name: "fine", Version: 1, Opens: true, Spillable: false,
+		JSONSchema: json.RawMessage(`{"type":"object"}`),
+	}
+	if err := validateSeedDoc("fine.json", ok); err != nil {
+		t.Errorf("the loader rejected a legal seed: %v", err)
+	}
+	// And a spillable NON-contract type is legal, which is the common case.
+	telemetry := seedDoc{
+		Name: "telemetry", Version: 1, Spillable: true,
+		JSONSchema: json.RawMessage(`{"type":"object"}`),
+	}
+	if err := validateSeedDoc("telemetry.json", telemetry); err != nil {
+		t.Errorf("the loader rejected a spillable telemetry type: %v", err)
 	}
 }

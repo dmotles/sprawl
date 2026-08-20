@@ -59,8 +59,20 @@ func Validate(schema json.RawMessage, payload []byte) error {
 	}
 
 	for _, name := range root.required {
-		if _, ok := obj[name]; !ok {
+		raw, ok := obj[name]
+		if !ok {
 			return fmt.Errorf("%w: missing required field %q", ErrSchemaViolation, name)
+		}
+		// An explicit null does not satisfy `required`, and this check has to be
+		// here rather than in checkType: checkType only runs for DECLARED
+		// properties, so a field named in `required` but absent from `properties`
+		// was previously satisfied by {"x": null} — the exact "required column
+		// full of nulls" outcome the header rules out. Unreachable with today's
+		// seeds, which declare every required field; a one-line gap between a
+		// stated rule and the code is still a gap.
+		if string(raw) == "null" {
+			return fmt.Errorf("%w: required field %q is null; omit a field you have no value for rather than sending null",
+				ErrSchemaViolation, name)
 		}
 	}
 

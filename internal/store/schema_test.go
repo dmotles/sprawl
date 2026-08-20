@@ -169,3 +169,30 @@ func TestValidate_EmptyPayloadAgainstNoRequiredFields(t *testing.T) {
 		t.Fatalf("an empty payload against a schema requiring nothing must be accepted; got: %v", err)
 	}
 }
+
+// TestValidate_RequiredFieldPresentButNullIsRejected closes a gap between the
+// rule stated at the top of schema.go and the code.
+//
+// checkType rejects null, but it only runs for DECLARED properties. A field
+// named in `required` and absent from `properties` therefore used to be
+// satisfied by an explicit null — the "required column full of nulls" outcome
+// the header rules out. Unreachable with today's seeds, which declare every
+// required field; a gap between a stated rule and the code is still a gap, and
+// the next schema author has no way to know the rule only half-holds.
+func TestValidate_RequiredFieldPresentButNullIsRejected(t *testing.T) {
+	// Undeclared: the case that used to slip through.
+	if err := Validate(json.RawMessage(`{"type":"object","required":["x"]}`), []byte(`{"x":null}`)); !errors.Is(err, ErrSchemaViolation) {
+		t.Errorf("a required-but-undeclared field satisfied by null: got err=%v, want ErrSchemaViolation", err)
+	}
+	// Declared: was already rejected, asserted so the two stay consistent.
+	declared := `{"type":"object","required":["x"],"properties":{"x":{"type":"string"}}}`
+	if err := Validate(json.RawMessage(declared), []byte(`{"x":null}`)); !errors.Is(err, ErrSchemaViolation) {
+		t.Errorf("a required DECLARED field satisfied by null: got err=%v, want ErrSchemaViolation", err)
+	}
+	// Control: an OPTIONAL undeclared null is still fine — event schemas are
+	// additive-only, so a permissive default for undeclared keys is deliberate,
+	// and this assertion is what stops the fix above tightening it by accident.
+	if err := Validate(json.RawMessage(`{"type":"object","required":[]}`), []byte(`{"maybe":null}`)); err != nil {
+		t.Errorf("an optional undeclared null must be allowed: %v", err)
+	}
+}

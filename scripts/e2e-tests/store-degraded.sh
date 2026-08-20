@@ -30,7 +30,7 @@
 # Hand-counted: TUI rendered, turn completed, spill dir exists, spill file found,
 # >=1 telemetry record, record carries a reason, record is a telemetry type (not
 # a contract type), doctor reports degraded, doctor names the DSN source, doctor
-# does not leak the DSN, agent still alive after the outage.
+# does not leak the DSN, and a SECOND turn both completed and spilled.
 MIN_ASSERTIONS=11
 
 test_metadata() {
@@ -41,6 +41,33 @@ test_metadata() {
 # regression (a per-append dial retry) from turning this row into a 10-minute
 # hang instead of a failure.
 UNREACHABLE_DSN='postgres://nobody:nothing@127.0.0.1:1/nosuchdb?sslmode=disable&connect_timeout=1'
+
+# count_spilled_turns echoes how many turn_finished records exist in the spill.
+#
+# A monotonic, product-minted counter, which is what makes a "second turn"
+# assertion falsifiable. The pane cannot serve that purpose: `wait_for_pattern`
+# greps the current pane with no anchor (so a leftover match passes immediately),
+# and "Completed in" is a status-bar label showing one value at a time (so
+# counting its occurrences never reaches 2). An append-only NDJSON file has
+# neither problem.
+#
+# Prints 0 rather than nothing when the directory or files are absent, so the
+# caller's arithmetic comparison cannot error out on an empty string — the shape
+# that makes a bash guard silently skip.
+count_spilled_turns() {
+    local dir="$1"
+    [ -d "$dir" ] || { echo 0; return; }
+    local n
+    n=$(find "$dir" -maxdepth 1 -name '*.ndjson' -type f -exec cat {} + 2>/dev/null \
+        | jq -r 'select(.schema_name == "turn_finished") | .schema_name' 2>/dev/null | wc -l)
+    [ -n "$n" ] || n=0
+    echo "$n"
+}
+
+test_metadata() {
+    echo "needs_claude=1 needs_tmux=1"
+}
+
 
 test_run() {
     unset SPRAWL_AGENT_IDENTITY
@@ -203,12 +230,44 @@ test_run() {
 
     echo ""
     echo "=== Asserting the agent is still alive after the outage ==="
+    # A SECOND turn, asserted on the SPILL FILE rather than on the pane.
+    #
+    # Two earlier attempts at this assertion were wrong, both recorded because
+    # the second one looked like the fix for the first:
+    #
+    #   1. `wait_for_pattern "Completed in"` — unfalsifiable. wait_for_pattern
+    #      greps the CURRENT pane with no anchor, so it matched the FIRST turn's
+    #      leftover text and returned on the first poll, before the second turn
+    #      had done anything.
+    #   2. counting "Completed in" occurrences and requiring an increase —
+    #      structurally unable to pass. "Completed in" is a STATUS BAR label
+    #      showing one value at a time, so the count is 0 or 1 and never 2.
+    #      Measured: "completions stuck at 1".
+    #
+    # Counting spilled turn_finished records fixes both. The count is monotonic
+    # (an append-only file, not a repainting pane), the records are minted by the
+    # product rather than by this assertion, and it asserts strictly more than a
+    # pane grep: not just that a second turn happened, but that its telemetry
+    # ALSO spilled — which is the property AC5 is actually about.
+    local SPILLED_BEFORE
+    SPILLED_BEFORE=$(count_spilled_turns "$SPILL_DIR")
     e2e_send_user_prompt "$SESSION" "say bye in two words"
-    if wait_for_pattern "$SESSION" "Completed in" 120; then
-        pass "weave completed a SECOND turn with the event log still unreachable"
+
+    local WAITED=0 SPILLED_NOW="$SPILLED_BEFORE"
+    while [ "$WAITED" -lt 150 ]; do
+        SPILLED_NOW=$(count_spilled_turns "$SPILL_DIR")
+        if [ "$SPILLED_NOW" -gt "$SPILLED_BEFORE" ]; then
+            break
+        fi
+        sleep 3
+        WAITED=$((WAITED + 3))
+    done
+    if [ "$SPILLED_NOW" -gt "$SPILLED_BEFORE" ]; then
+        pass "a SECOND turn completed and also spilled with the event log still unreachable (turn_finished records $SPILLED_BEFORE -> $SPILLED_NOW)"
     else
-        fail "weave could not complete a second turn — the store degrades progressively rather than staying out of the way"
+        fail "no additional turn_finished spilled within 150s (stuck at $SPILLED_BEFORE) — either the second turn never completed, or the store stopped spilling after the first outage"
         capture_pane "$SESSION" | tail -30 >&2
+        ls -la "$SPILL_DIR" >&2 || true
     fi
 
     e2e_print_results

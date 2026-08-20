@@ -131,9 +131,22 @@ func (e *LifecycleEmitter) Handle(ev sprawlrt.RuntimeEvent) {
 		e.accum.Reset()
 
 	case sprawlrt.EventTurnFailed:
+		// EventTurnFailed IS a terminal turn boundary — internal/runtime groups
+		// it with EventTurnCompleted, and a mid-turn terminal error publishes
+		// exactly one EventTurnFailed and zero EventTurnCompleted.
+		//
+		// It therefore emits turn_finished, for the reason stated at the top of
+		// this file: turn boundaries are the liveness signal, so a boundary that
+		// records nothing makes an agent look quieter than it is. This branch
+		// originally incremented the counters and emitted nothing, which meant an
+		// agent failing every turn (an ErrHangTimeout loop, say) produced
+		// run_started, then N invisible failures, then run_finished — in the log,
+		// indistinguishable from an agent that started and did nothing, which is
+		// precisely the state this signal exists to distinguish.
 		e.turns++
 		e.failedTurns++
 		e.outcome = outcomeFailure
+		e.emitTurnFinished(ctx, ev)
 		e.accum.Reset()
 
 	case sprawlrt.EventInterrupted:
@@ -176,9 +189,18 @@ func (e *LifecycleEmitter) emitTurnFinished(ctx context.Context, ev sprawlrt.Run
 	// delta — and computing deltas here would duplicate the one piece of
 	// arithmetic QUM-1247 got wrong. The run's total is recorded once, on
 	// run_finished, from the last cumulative value.
-	if ev.Result != nil && ev.Result.IsError {
+	// A failed turn carries no Result at all (the turn died before one arrived),
+	// so the outcome is keyed on the EVENT TYPE first and only then on the
+	// result's is_error. Keying solely on ev.Result would label every
+	// EventTurnFailed a success, which is the plausible-value failure: a
+	// turn_finished row saying "success" for a turn that faulted is worse than
+	// no row, because a reader cannot tell it from a real one.
+	switch {
+	case ev.Type == sprawlrt.EventTurnFailed:
 		payload["outcome"] = outcomeFailure
-	} else {
+	case ev.Result != nil && ev.Result.IsError:
+		payload["outcome"] = outcomeFailure
+	default:
 		payload["outcome"] = outcomeSuccess
 	}
 	e.lastTurnPayload = payload

@@ -7,23 +7,40 @@ import (
 
 // Redaction of database credentials out of text bound for a terminal or a log.
 //
-// NOT PROSPECTIVE HARDENING — this exists because a test caught a live leak.
-// pgx quotes the connection string in its errors ("failed to connect to
-// `postgres://user:pass@host:5432/db`: connection refused"), so printing %v of a
-// connection failure from `sprawl store doctor` put a real database password on
-// stdout. This repo is public and terminal transcripts get pasted into issues.
+// WHAT THIS ACTUALLY DEFENDS, corrected after measuring the pinned dependency
+// rather than assuming it. An earlier version of this comment asserted that pgx
+// quotes `postgres://user:pass@host/db` in its errors and had therefore "put a
+// real database password on stdout". THAT IS FALSE for pgx v5.10.0, and the
+// claim was never verified before being written down. Measured across
+// ParseConfig, pgxpool.New, pool.Begin and Migrate, with URL, keyword and
+// quoted-keyword DSNs: pgx MASKS the password as `xxxxxx` in parse errors and
+// OMITS it entirely from connect errors, which read
+// "failed to connect to `user=leakuser database=nodb`: ... connection refused".
+// Password leak: none, on every probe.
+//
+// So this is PROSPECTIVE hardening, and saying so is the point. What it does buy
+// today is real but narrower than a password: pgx parse errors DO quote the full
+// URL including host and database ("cannot parse
+// `postgres://leakuser:xxxxxx@127.0.0.1:notaport/nodb`"), and per CLAUDE.md a
+// hostname can itself be employer-internal detail that must not enter a public
+// repo. What it insures against is a future driver version, or any other
+// library handed a DSN, formatting one less carefully.
 //
 // Redaction is a BACKSTOP, not the primary control. The primary control is that
 // nothing in this package ever formats a DSN into a message on purpose; this
-// catches the DSNs that arrive inside somebody else's error string.
+// catches DSNs that arrive inside somebody else's error string.
 var (
 	// URL form: postgres:// or postgresql:// through to the next whitespace,
 	// backtick, or quote. Deliberately greedy about the tail — over-redacting a
 	// database name is free, under-redacting a password is not.
 	dsnURLRe = regexp.MustCompile(`(?i)postgres(?:ql)?://[^\s"'` + "`" + `]*`)
-	// Keyword form: libpq accepts `host=... password=...`, and pgx quotes that
-	// too. Redacting only URLs would leave half the leak open.
-	dsnKeywordRe = regexp.MustCompile(`(?i)\b(password|pgpassword)\s*=\s*[^\s"'` + "`" + `]+`)
+	// Keyword form: libpq accepts `host=... password=...`. The value may be
+	// SINGLE- OR DOUBLE-QUOTED, which is the only way to express a password
+	// containing a space — and an earlier version of this pattern excluded
+	// quotes from the value class, so `password='hunter two'` matched NOTHING
+	// and passed through intact. The quoted alternatives come first so they win
+	// over the bare form.
+	dsnKeywordRe = regexp.MustCompile(`(?i)\b(password|pgpassword)\s*=\s*('[^']*'|"[^"]*"|[^\s"'` + "`" + `]+)`)
 )
 
 // RedactSecrets removes anything DSN-shaped from s.
