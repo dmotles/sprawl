@@ -179,3 +179,56 @@ func (r *PgIntentReader) FailedIntents(ctx context.Context, projectID uuid.UUID,
 	}
 	return out, rows.Err()
 }
+
+// ---------------------------------------------------------------------------
+// Notification state
+// ---------------------------------------------------------------------------
+
+// openNotifiesSQL finds owner_notify contracts with no close, for one recipient.
+//
+// Reads open_contracts for the same reason openIntentsSQL does: the projection is
+// maintained inside the append transaction, so it cannot disagree with the log,
+// and the anti-join alternative would run on every turn boundary of every agent —
+// which is the single hottest path in this file.
+const openNotifiesSQL = `
+	SELECT e.id, e.workflow_instance_id
+	  FROM open_contracts oc
+	  JOIN events e ON e.id = oc.event_id
+	 WHERE e.project_id = $1
+	   AND e.schema_id = ANY($2)
+	   AND e.payload->>'recipient' = $3
+	 ORDER BY e.seq`
+
+// PgNotifyReader reads outstanding notifications through a pgx pool.
+type PgNotifyReader struct {
+	Pool interface {
+		Query(ctx context.Context, sql string, args ...any) (pgx.Rows, error)
+	}
+	Registry *Registry
+}
+
+var _ NotifyReader = (*PgNotifyReader)(nil)
+
+func (r *PgNotifyReader) OpenNotifies(ctx context.Context, projectID uuid.UUID, recipient string) ([]OpenNotify, error) {
+	if recipient == "" {
+		// An empty recipient would match every notification whose payload has no
+		// recipient — and acking somebody else's notification is exactly the
+		// failure the open/close pair exists to prevent.
+		return nil, fmt.Errorf("store: reading outstanding notifications requires a recipient")
+	}
+	rows, err := r.Pool.Query(ctx, openNotifiesSQL, projectID, schemaIDsFor(r.Registry, "owner_notify"), recipient)
+	if err != nil {
+		return nil, fmt.Errorf("store: reading outstanding notifications for %q: %w", recipient, err)
+	}
+	defer rows.Close()
+
+	var out []OpenNotify
+	for rows.Next() {
+		n := OpenNotify{Recipient: recipient}
+		if err := rows.Scan(&n.EventID, &n.WorkflowID); err != nil {
+			return nil, fmt.Errorf("store: scanning an outstanding notification: %w", err)
+		}
+		out = append(out, n)
+	}
+	return out, rows.Err()
+}

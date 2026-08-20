@@ -125,6 +125,7 @@ const eventScanSQL = `
 type PgEventReader struct {
 	Pool interface {
 		Query(ctx context.Context, sql string, args ...any) (pgx.Rows, error)
+		QueryRow(ctx context.Context, sql string, args ...any) pgx.Row
 	}
 	// Registry resolves each row's pinned schema_id to a name and version.
 	Registry *Registry
@@ -554,4 +555,41 @@ func (d *Dispatcher) Run(ctx context.Context) error {
 		case <-time.After(wait):
 		}
 	}
+}
+
+// eventByIDSQL resolves one event. Used to read the contract a close refers to,
+// so the notification handler can find out who owns it.
+const eventByIDSQL = `
+	SELECT e.seq, e.id, e.project_id, e.workflow_instance_id, e.schema_id,
+	       e.agent_session_id, e.owner_agent_id, e.closes_event_id, e.payload, e.at
+	  FROM events e
+	 WHERE e.id = $1`
+
+var _ EventLookup = (*PgEventReader)(nil)
+
+// ByID resolves one event by its uuid.
+//
+// Deliberately NOT scoped to a project: closes_event_id is a foreign key onto
+// events(id), so the referenced event is already guaranteed to exist, and adding
+// a project predicate would turn a guaranteed hit into a silent miss if the two
+// ever disagreed — which is a data-integrity problem worth surfacing rather than
+// filtering away.
+func (r *PgEventReader) ByID(ctx context.Context, id uuid.UUID) (DispatchedEvent, error) {
+	var (
+		ev      DispatchedEvent
+		payload []byte
+	)
+	if err := r.Pool.QueryRow(ctx, eventByIDSQL, id).Scan(
+		&ev.Seq, &ev.ID, &ev.ProjectID, &ev.WorkflowInstanceID, &ev.SchemaID,
+		&ev.AgentSessionID, &ev.OwnerAgentID, &ev.ClosesEventID, &payload, &ev.At,
+	); err != nil {
+		return DispatchedEvent{}, fmt.Errorf("store: reading event %s: %w", id, err)
+	}
+	ev.Payload = json.RawMessage(payload)
+	schema, ok := r.Registry.ByID(ev.SchemaID)
+	if !ok {
+		return DispatchedEvent{}, fmt.Errorf("store: event %s carries schema_id %s, which this build does not know", id, ev.SchemaID)
+	}
+	ev.SchemaName, ev.SchemaVersion = schema.Name, schema.Version
+	return ev, nil
 }

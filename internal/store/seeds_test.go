@@ -131,6 +131,20 @@ var wantSeeds = []struct {
 		id:       "4b6456ec-7e96-5fd3-ad6e-ae9de83a0712",
 		required: []string{"agent_name", "reason", "host"},
 	},
+	// QUM-1250 (M1b): notification delivery. The pair is what makes a LOST
+	// delivery swept rather than assumed.
+	{
+		name: "owner_notify", version: 1,
+		id:       "a7a21a6e-e4cf-5955-8078-f27472b1a743",
+		opens:    true,
+		required: []string{"recipient", "subject_event_id"},
+	},
+	{
+		name: "notify_acked", version: 1,
+		id:       "149e7fde-c082-59ab-bb01-2487aa872ecb",
+		closes:   "owner_notify",
+		required: []string{"recipient"},
+	},
 }
 
 func TestSeedRegistry_MatchesGoldenIDsAndWiring(t *testing.T) {

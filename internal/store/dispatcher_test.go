@@ -74,6 +74,13 @@ type fakeClaims struct {
 	// refuse, when non-empty, makes Claim return false for these event ids.
 	refuse map[uuid.UUID]bool
 	err    error
+	// claimConsumers is the consumer string of every Claim, in order.
+	claimConsumers []string
+	// trace, when set, also records claims into a SHARED ordered log. Needed
+	// wherever an assertion spans this double and another one — the notify
+	// handler's claim/record/inject ordering cannot be seen from a per-double
+	// call list, only from a shared trace.
+	trace *trace
 }
 
 func newFakeClaims() *fakeClaims {
@@ -86,6 +93,10 @@ func (c *fakeClaims) Claim(_ context.Context, id uuid.UUID, consumer, host strin
 	c.mu.Lock()
 	defer c.mu.Unlock()
 	c.calls = append(c.calls, "claim:"+id.String())
+	c.claimConsumers = append(c.claimConsumers, consumer)
+	if c.trace != nil {
+		c.trace.add("claim:" + id.String())
+	}
 	if c.err != nil {
 		return false, c.err
 	}
@@ -121,6 +132,16 @@ func (c *fakeClaims) Release(_ context.Context, id uuid.UUID, consumer, host str
 		delete(c.held, claimKey(id, consumer))
 	}
 	return nil
+}
+
+// consumers records the claim CONSUMER string of every Claim call, which is what
+// the per-recipient notification key is asserted on: the ordered call log keys on
+// event id, so it cannot distinguish a claim taken per event from one taken per
+// recipient.
+func (c *fakeClaims) consumers() []string {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	return append([]string(nil), c.claimConsumers...)
 }
 
 func (c *fakeClaims) log() []string {
