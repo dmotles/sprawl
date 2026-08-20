@@ -177,6 +177,20 @@ func (s *inProcessUnifiedStarter) Start(spec RuntimeStartSpec) (RuntimeHandle, e
 	usageRec, _ := usage.NewRecorder(spec.SprawlRoot, spec.Name)
 	stopUsage := runUsageSubscriber(rt.EventBus(), usageRec, "usage")
 
+	// QUM-1249: the event-log lifecycle emitter, at the same subscription point
+	// as the usage recorder. newLifecycleEmitter returns nil when the store is
+	// off (the default) and the subscriber tolerates a nil emitter, so on a host
+	// that never enabled the store this costs one goroutine and nothing else.
+	//
+	// RunStarted fires here rather than on the first observed event: a run that
+	// starts and produces no traffic at all is exactly the case an operator most
+	// wants to find in the log, and a lazy emit would omit it.
+	ledgerEmitter := newLifecycleEmitter(context.Background(), spec, session.SessionID())
+	if ledgerEmitter != nil {
+		ledgerEmitter.RunStarted(context.Background())
+	}
+	stopLedger := runLedgerSubscriber(rt.EventBus(), ledgerEmitter, "ledger")
+
 	// Phase 6: assemble the handle. Single linear block, no closures already
 	// in flight observe partial state.
 	handle := &unifiedHandle{
@@ -189,6 +203,7 @@ func (s *inProcessUnifiedStarter) Start(spec RuntimeStartSpec) (RuntimeHandle, e
 		stopDelivery: stopDelivery,
 		stopFault:    stopFault,
 		stopUsage:    stopUsage,
+		stopLedger:   stopLedger,
 		sprawlRoot:   spec.SprawlRoot,
 		name:         spec.Name,
 		coord:        coord,
@@ -204,6 +219,7 @@ func (s *inProcessUnifiedStarter) Start(spec RuntimeStartSpec) (RuntimeHandle, e
 	// Phase 8: start the runtime. Rollback on error: tear down subscribers,
 	// close + reap session, close activity file.
 	if err := rt.Start(context.Background()); err != nil {
+		stopLedger()
 		stopUsage()
 		stopFault()
 		stopDelivery()
@@ -462,6 +478,7 @@ type unifiedHandle struct {
 	stopActivity  func()
 	stopFault     func()
 	stopUsage     func()
+	stopLedger    func()
 	sprawlRoot    string
 	name          string
 
@@ -556,6 +573,15 @@ func (h *unifiedHandle) stopOnceWith(ctx context.Context, stopRuntime func(conte
 		if h.stopUsage != nil {
 			joinWithTimeout(h.stopUsage, stopActivityTimeout,
 				"stopUsage abandoned — likely wedged usage subscriber goroutine (QUM-368)",
+				"handle", "unifiedHandle", "agent", h.name)
+		}
+		// The ledger subscriber emits run_finished as it drains, so it is
+		// stopped alongside the other bus subscribers rather than left to the
+		// process exit — a run_finished that never gets written leaves the run
+		// looking like it is still going.
+		if h.stopLedger != nil {
+			joinWithTimeout(h.stopLedger, stopActivityTimeout,
+				"stopLedger abandoned — likely wedged event-log subscriber goroutine (QUM-1249)",
 				"handle", "unifiedHandle", "agent", h.name)
 		}
 		if h.stopDelivery != nil {
