@@ -445,8 +445,23 @@ func TestRealRecoverAgents_SkipsMissingWorktree(t *testing.T) {
 
 // TestRealRecoverAgents_FailureIsolation — three eligible agents; starter
 // errs on the middle one. The first and third must still be started, the
-// failing one's status must NOT be flipped to "active" (it remains as it
-// was: suspended), and the return values must reflect (2, 1, len==1).
+// failing one's status must NOT be flipped to "active", and the return values
+// must reflect (2, 1, len==1).
+//
+// QUM-1260 changed two expectations here, deliberately, because StartResume
+// gained a single fresh-session fallback:
+//
+//  1. bob is attempted TWICE (resume, then the fresh fallback), so the total
+//     spec count is 4, not 3. The property the count is really guarding —
+//     "a failure must not abort the loop, alice and carol are still tried" —
+//     is unchanged and is what the per-name check below pins.
+//  2. bob ends at resume_failed rather than suspended. This starter fails
+//     EVERY call for bob, so both legs fail, and resume_failed is then the
+//     truthful durable status: there is nothing left to try. The old comment
+//     here claimed resume_failed "is only set by the OnResumeFailure marker
+//     callback, not on a starter error" — that is no longer true, and it was
+//     never a property worth preserving: an agent whose every start fails is
+//     exactly what resume_failed means.
 func TestRealRecoverAgents_FailureIsolation(t *testing.T) {
 	r, tmpDir := newFakeReal(t)
 	starter := &recoverTestStarter{
@@ -470,18 +485,25 @@ func TestRealRecoverAgents_FailureIsolation(t *testing.T) {
 		t.Errorf("len(errs) = %d, want 1", len(errs))
 	}
 
-	// All three were attempted (failure must not abort the loop).
-	if len(starter.specs) != 3 {
-		t.Errorf("starter.specs len = %d, want 3 (loop must continue past failure)", len(starter.specs))
+	// All three were attempted (failure must not abort the loop): alice and
+	// carol once each, bob twice (resume + fresh fallback).
+	if len(starter.specs) != 4 {
+		t.Errorf("starter.specs len = %d, want 4 (alice, bob x2, carol — the loop must continue past failure)", len(starter.specs))
+	}
+	attempts := map[string]int{}
+	for _, sp := range starter.specs {
+		attempts[sp.Name]++
+	}
+	for name, want := range map[string]int{"alice": 1, "bob": 2, "carol": 1} {
+		if attempts[name] != want {
+			t.Errorf("attempts for %q = %d, want %d", name, attempts[name], want)
+		}
 	}
 
-	// alice + carol flipped to active, bob remains suspended (the
-	// resume-failed status is only set by the OnResumeFailure marker
-	// callback, not on a starter error — covered separately below).
 	for _, want := range []struct{ name, status string }{
 		{"alice", state.StatusActive},
 		{"carol", state.StatusActive},
-		{"bob", state.StatusSuspended},
+		{"bob", state.StatusResumeFailed},
 	} {
 		loaded, err := state.LoadAgent(tmpDir, want.name)
 		if err != nil {
@@ -495,8 +517,18 @@ func TestRealRecoverAgents_FailureIsolation(t *testing.T) {
 
 // TestRealRecoverAgents_OnResumeFailureFlipsStatusToResumeFailed — when the
 // starter records the spec and the test invokes spec.OnResumeFailure() (as
-// the live claude stderr scanner would), the on-disk status must flip to
-// resume_failed so the next sprawl-enter can fall back to a fresh launch.
+// the live claude stderr scanner would, arriving LATE — after the resume has
+// already been declared healthy), the on-disk status must flip to
+// resume_failed.
+//
+// QUM-1260 corrected the rationale that used to sit here: it claimed the
+// resume_failed stamp exists "so the next sprawl-enter can fall back to a
+// fresh launch". It cannot — resume_failed is outside the boot accept-set at
+// real.go's eligibility filter, so a stamped agent is skipped by every later
+// RecoverAgents. The fallback now happens IN BAND inside StartResume, and this
+// stamp means only "the resume was rejected after we had already committed to
+// it", which is a genuine terminal-for-this-boot outcome. The behaviour under
+// test is unchanged; only the reason it is correct is.
 func TestRealRecoverAgents_OnResumeFailureFlipsStatusToResumeFailed(t *testing.T) {
 	r, tmpDir := newFakeReal(t)
 	starter := &recoverTestStarter{session: recoverTestSession("sess-x")}

@@ -31,14 +31,21 @@ import (
 // call (to drive the wake fallback path), and can produce per-call sessions
 // (e.g. first one pre-faulted to fail the health probe).
 type wakeCapturingStarter struct {
-	mu               sync.Mutex
-	specs            []RuntimeStartSpec
-	startErr         error
-	failOnCall       int // 0=never; N=Nth call returns startErr
+	mu    sync.Mutex
+	specs []RuntimeStartSpec
+	// startErrByCall maps a 1-based call ordinal to the error that call
+	// returns. QUM-1260 replaced the previous single failOnCall/startErr pair
+	// with a map so a test can fail BOTH legs of a resume→fresh fallback with
+	// two distinguishable errors — the pair could only ever fail one.
+	startErrByCall   map[int]error
 	fireResumeFailOn int // 0=never; N=invoke spec.OnResumeFailure on Nth call (after returning the handle)
-	sessionMaker     func(call int) *runtimeTestSession
-	lastSessions     []*runtimeTestSession
-	startCalls       int
+	// sessionMaker builds the handle for a call. It receives the spec so a
+	// test can mirror spec.SessionID onto the handle, which is what makes the
+	// host-side "did we persist the id we actually launched with" assertion
+	// possible (QUM-744/QUM-1260).
+	sessionMaker func(call int, spec RuntimeStartSpec) *runtimeTestSession
+	lastSessions []*runtimeTestSession
+	startCalls   int
 }
 
 func (s *wakeCapturingStarter) Start(spec RuntimeStartSpec) (RuntimeHandle, error) {
@@ -46,19 +53,18 @@ func (s *wakeCapturingStarter) Start(spec RuntimeStartSpec) (RuntimeHandle, erro
 	s.startCalls++
 	call := s.startCalls
 	s.specs = append(s.specs, spec)
-	failOnCall := s.failOnCall
-	startErr := s.startErr
+	startErr := s.startErrByCall[call]
 	fireOn := s.fireResumeFailOn
 	maker := s.sessionMaker
 	s.mu.Unlock()
 
-	if failOnCall != 0 && call == failOnCall && startErr != nil {
+	if startErr != nil {
 		return nil, startErr
 	}
 
 	var sess *runtimeTestSession
 	if maker != nil {
-		sess = maker(call)
+		sess = maker(call, spec)
 	} else {
 		sess = &runtimeTestSession{
 			sessionID: "sess-" + spec.Name,
@@ -71,9 +77,13 @@ func (s *wakeCapturingStarter) Start(spec RuntimeStartSpec) (RuntimeHandle, erro
 	s.mu.Unlock()
 
 	if fireOn != 0 && call == fireOn && spec.OnResumeFailure != nil {
-		// Fire the resume-failure callback synchronously so Wake observes the
-		// signal on the same goroutine that drove the Start.
-		go spec.OnResumeFailure()
+		// Fire the resume-failure callback on this goroutine, BEFORE handing
+		// the handle back, so the caller deterministically observes the
+		// rejection in-band. QUM-1260 made this synchronous: the previous
+		// `go spec.OnResumeFailure()` left it a coin flip whether the flag was
+		// set before the caller read it, which made the assertion about the
+		// in-band path a claim about scheduling.
+		spec.OnResumeFailure()
 	}
 	return sess, nil
 }
@@ -301,7 +311,7 @@ func TestWake_FallbackOnHealthProbeFail(t *testing.T) {
 	shortenWakeTimeouts(t)
 
 	starter := &wakeCapturingStarter{
-		sessionMaker: func(call int) *runtimeTestSession {
+		sessionMaker: func(call int, _ RuntimeStartSpec) *runtimeTestSession {
 			sess := &runtimeTestSession{
 				sessionID: "sess-alice",
 				caps:      backendpkg.Capabilities{SupportsInterrupt: true, SupportsResume: true},
@@ -367,8 +377,7 @@ func TestWake_FallbackFailureSurfacesError(t *testing.T) {
 	wantErr := errors.New("fresh start failed: out of fd")
 	starter := &wakeCapturingStarter{
 		fireResumeFailOn: 1,
-		failOnCall:       2,
-		startErr:         wantErr,
+		startErrByCall:   map[int]error{2: wantErr},
 	}
 	agent := testAgentState("alice")
 	agent.Status = state.StatusPaused

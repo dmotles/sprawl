@@ -518,6 +518,29 @@ func (r *AgentRuntime) StartResume(restartInjection string, onResumeFailure ...f
 			break
 		}
 	}
+
+	// QUM-1260: the caller's callback is INTERCEPTED for the duration of the
+	// resume attempt. While the attempt is still in flight a rejected cookie
+	// is recoverable — the fresh fallback below rescues it — so stamping the
+	// caller's durable resume_failed would be a lie, and it is a lie the agent
+	// cannot recover from: resume_failed is outside RecoverAgents' boot
+	// accept-set, so the agent would never auto-resume again. Once we stop
+	// intercepting (a resume that succeeded, with no fallback in flight) a
+	// late marker is a genuine failure and is forwarded unchanged. A marker
+	// arriving from an ABANDONED attempt after a fallback is discarded.
+	var markerMu sync.Mutex
+	rejected := false
+	forward := false
+	onReject := func() {
+		markerMu.Lock()
+		rejected = true
+		fwd := forward
+		markerMu.Unlock()
+		if fwd && cb != nil {
+			cb()
+		}
+	}
+
 	r.mu.RLock()
 	spec := RuntimeStartSpec{
 		Name:             r.snapshot.Name,
@@ -526,11 +549,99 @@ func (r *AgentRuntime) StartResume(restartInjection string, onResumeFailure ...f
 		SessionID:        r.snapshot.SessionID,
 		TreePath:         r.snapshot.TreePath,
 		Resume:           true,
-		OnResumeFailure:  cb,
+		OnResumeFailure:  onReject,
 		RestartInjection: restartInjection,
 	}
 	r.mu.RUnlock()
-	return r.startWithSpec(spec)
+
+	resumeErr := r.startWithSpec(spec)
+
+	markerMu.Lock()
+	cookieRejected := rejected
+	if resumeErr == nil && !cookieRejected {
+		// Resume held. Stop intercepting so a later marker reaches the caller,
+		// and re-read `rejected` under the same lock so one that landed in the
+		// gap is not swallowed.
+		forward = true
+		cookieRejected = rejected
+	}
+	markerMu.Unlock()
+
+	if resumeErr == nil && !cookieRejected {
+		return nil
+	}
+	if resumeErr == nil {
+		// The session came up but claude rejected the cookie. Tear the
+		// half-alive attempt down before starting its replacement, otherwise
+		// two backend sessions race for the same agent.
+		r.abandonStartedHandle()
+	}
+
+	freshSID, sidErr := state.GenerateUUID()
+	if sidErr != nil {
+		if cb != nil {
+			cb()
+		}
+		return fmt.Errorf("resume for %q failed (%w) and minting a fallback session id also failed: %w", spec.Name, resumeOrRejected(resumeErr), sidErr)
+	}
+	fresh := spec
+	fresh.Resume = false
+	// Mint the id host-side rather than letting claude self-generate it: the
+	// backend's SessionID is fixed at construction and never re-read from the
+	// init frame, so a self-generated id would be invisible here and the NEXT
+	// restart would try to resume a defunct transcript. Same reasoning as
+	// AgentRuntime.Wake's fresh leg (QUM-744).
+	fresh.SessionID = freshSID
+	fresh.OnResumeFailure = nil
+	slog.Warn("supervisor: StartResume falling back to a fresh session",
+		slog.String("agent", spec.Name),
+		slog.String("rejected_session_id", spec.SessionID),
+		slog.String("fresh_session_id", freshSID),
+		slog.Any("resume_err", resumeErr))
+
+	if freshErr := r.startWithSpec(fresh); freshErr != nil {
+		if cb != nil {
+			cb()
+		}
+		return fmt.Errorf("resume for %q failed (%w) and the fresh fallback failed too: %w", spec.Name, resumeOrRejected(resumeErr), freshErr)
+	}
+	return nil
+}
+
+// resumeOrRejected renders the resume leg's cause for the doubly-failed error.
+// A nil resumeErr means the session started and claude rejected the cookie via
+// the stderr marker instead, which has no error value of its own.
+func resumeOrRejected(resumeErr error) error {
+	if resumeErr != nil {
+		return resumeErr
+	}
+	return errResumeCookieRejected
+}
+
+// errResumeCookieRejected stands in for the stderr "No conversation found"
+// marker, which reaches the host as a callback rather than an error.
+var errResumeCookieRejected = errors.New("resume cookie rejected by the backend")
+
+// abandonStartedHandle detaches and tears down the handle startWithSpec just
+// installed. Used by StartResume when the started session turns out to be
+// unusable, so the replacement attempt is not racing a live sibling. The
+// watcher is detached BEFORE StopAbandon for the same reason Wake does it:
+// watchHandleExit's `r.handle == handle` guard must see a stale match so the
+// abandoned handle's Done() does not emit a spurious Stopped.
+func (r *AgentRuntime) abandonStartedHandle() {
+	r.mu.Lock()
+	handle := r.handle
+	r.handle = nil
+	r.mu.Unlock()
+	if handle == nil {
+		return
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), wakeStopAbandonTimeout)
+	defer cancel()
+	if err := handle.StopAbandon(ctx); err != nil {
+		slog.Warn("supervisor: StartResume StopAbandon of rejected resume attempt",
+			slog.Any("err", err))
+	}
 }
 
 // AttachHandle attaches a pre-built RuntimeHandle to this AgentRuntime
