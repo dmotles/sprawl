@@ -29,7 +29,14 @@ type Ledger struct {
 	registry  *Registry
 	projectID uuid.UUID
 	dsnSource string
-	log       *slog.Logger
+	// degradedErr is non-nil when the event log was unreachable at Open.
+	//
+	// Open returns a DEGRADED Ledger rather than an error in that case, and the
+	// reason is not politeness: with no Ledger there is no spiller, so telemetry
+	// would be silently DROPPED instead of spilled — the one outcome the
+	// degraded-mode requirement forbids.
+	degradedErr error
+	log         *slog.Logger
 }
 
 // LedgerConfig is what Open needs. Resolved by the caller so this package does
@@ -84,15 +91,70 @@ func Open(ctx context.Context, cfg LedgerConfig) (*Ledger, error) {
 		}
 	}
 
+	// Parse the DSN BEFORE anything else, and treat a parse failure as the
+	// configuration error it is.
+	//
+	// This is separated from the reachability check below because
+	// isTransportFailure cannot tell them apart: an unparseable DSN produces a
+	// non-PgError, exactly like a dial failure, so routing on that alone would
+	// send a permanent typo into degraded mode and hide it behind a quietly
+	// growing spill directory. The DSN is not echoed back — it is a credential.
+	if _, err := pgxpool.ParseConfig(cfg.DSN); err != nil {
+		return nil, &HintError{
+			Err:  fmt.Errorf("store: the event-log DSN from %s is not a valid Postgres connection string: %w", describeSource(cfg.DSNSource), err),
+			Hint: "check the value for typos (the DSN itself is not shown here because it is a credential); the expected form is postgres://user:password@host:5432/dbname",
+		}
+	}
+
 	registry, err := SeedRegistry()
 	if err != nil {
 		return nil, err
 	}
+	spiller := &FileSpiller{Root: cfg.SprawlRoot, Now: cfg.Now}
+
+	// degraded builds an ENABLED Ledger that spills telemetry and refuses
+	// coordination.
+	//
+	// It returns (ledger, nil) rather than an error, and that is load-bearing
+	// rather than lenient: with no Ledger there is no spiller, so telemetry
+	// would be silently DROPPED instead of spilled — the one outcome the
+	// degraded-mode requirement forbids. The caller gets a working object whose
+	// behaviour differs, not an error it has to interpret.
+	degraded := func(cause error) (*Ledger, error) {
+		log.Warn("event log unreachable — running degraded: telemetry spills, goal open/close is refused",
+			"error", cause, "dsn_source", cfg.DSNSource, "spill_dir", SpillDir(cfg.SprawlRoot))
+		return &Ledger{
+			enabled:     true,
+			registry:    registry,
+			dsnSource:   cfg.DSNSource,
+			degradedErr: cause,
+			log:         log,
+			appender: NewAppender(AppenderDeps{
+				Registry:  registry,
+				Spill:     spiller,
+				Now:       cfg.Now,
+				Logger:    log,
+				Degraded:  cause,
+				RemoteURL: cfg.RemoteURL,
+			}),
+		}, nil
+	}
+
+	// isTransportFailure is what separates "the database is unreachable" from
+	// "the database refused this". Only the first is survivable: a rejected
+	// migration or a permission error is a real misconfiguration that degraded
+	// mode would hide behind a growing spill directory.
 	if err := Migrate(ctx, cfg.DSN); err != nil {
+		if isTransportFailure(err) {
+			return degraded(err)
+		}
 		return nil, err
 	}
 	pool, err := pgxpool.New(ctx, cfg.DSN)
 	if err != nil {
+		if isTransportFailure(err) {
+			return degraded(err)
+		}
 		return nil, fmt.Errorf("store: connecting to the event log: %w", err)
 	}
 
@@ -104,11 +166,12 @@ func Open(ctx context.Context, cfg LedgerConfig) (*Ledger, error) {
 		log:       log,
 	}
 	l.appender = NewAppender(AppenderDeps{
-		Pool:     pool,
-		Registry: registry,
-		Spill:    &FileSpiller{Root: cfg.SprawlRoot, Now: cfg.Now},
-		Now:      cfg.Now,
-		Logger:   log,
+		Pool:      pool,
+		Registry:  registry,
+		Spill:     spiller,
+		Now:       cfg.Now,
+		Logger:    log,
+		RemoteURL: cfg.RemoteURL,
 	})
 
 	// A WARNING rather than a failure. An over-privileged DSN means history is
@@ -122,6 +185,9 @@ func Open(ctx context.Context, cfg LedgerConfig) (*Ledger, error) {
 	projectID, created, err := ensureProject(ctx, pool, cfg.RemoteURL)
 	if err != nil {
 		pool.Close()
+		if isTransportFailure(err) {
+			return degraded(err)
+		}
 		return nil, err
 	}
 	l.projectID = projectID
@@ -181,6 +247,20 @@ func (l *Ledger) ProjectID() uuid.UUID {
 		return uuid.Nil
 	}
 	return l.projectID
+}
+
+// DegradedError reports why the event log is unreachable, or nil.
+//
+// A degraded Ledger is still ENABLED — it is spilling, which is doing
+// something — so Enabled() alone cannot tell an operator that events are not
+// reaching the database. This is what `sprawl store doctor` reports. Safe on
+// nil, where it returns nil: a nil Ledger is DISABLED, which is a different
+// state from degraded and must not be reported as an outage.
+func (l *Ledger) DegradedError() error {
+	if l == nil {
+		return nil
+	}
+	return l.degradedErr
 }
 
 // DSNSource names where the DSN came from. It never contains the DSN, so it is
@@ -297,4 +377,13 @@ func (l *Ledger) Emit(ctx context.Context, req EmitRequest) (int64, error) {
 		ArtifactID:         req.ArtifactID,
 		Payload:            payload,
 	})
+}
+
+// describeSource renders where a DSN came from, for an error message. Never the
+// DSN itself.
+func describeSource(source string) string {
+	if source == "" {
+		return "the configured source"
+	}
+	return source
 }

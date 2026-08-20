@@ -80,26 +80,47 @@ type AppenderDeps struct {
 	Now      func() time.Time
 	NewUUID  func() uuid.UUID
 	Logger   *slog.Logger
+	// Degraded, when non-nil, means the event log was already known to be
+	// unreachable when this Appender was built. Every Append then goes STRAIGHT
+	// to the degraded branch without touching the pool.
+	//
+	// This is a state rather than a per-append discovery on purpose. A dial
+	// timeout is seconds; every agent turn produces events; and the emitters run
+	// on agents' own EventBus subscriber goroutines. Retrying the connection per
+	// append would convert "the database is down" into "every agent is wedged",
+	// which is exactly what "agents never brick on the store" rules out.
+	// Recovery is by restart, which matches "no new coordination starts while
+	// the DB is down".
+	Degraded error
+	// RemoteURL identifies the project on a spilled record. A degraded Appender
+	// never read the projects row, so ProjectID is unknown; without the remote
+	// URL — which IS a project's identity — a replayer has nothing to resolve
+	// against and every spilled record dead-letters.
+	RemoteURL string
 }
 
 // Appender writes events. Safe for concurrent use: it holds no per-append state.
 type Appender struct {
-	pool     PgPool
-	registry *Registry
-	spill    Spiller
-	now      func() time.Time
-	newUUID  func() uuid.UUID
-	log      *slog.Logger
+	pool      PgPool
+	registry  *Registry
+	spill     Spiller
+	degraded  error
+	remoteURL string
+	now       func() time.Time
+	newUUID   func() uuid.UUID
+	log       *slog.Logger
 }
 
 func NewAppender(d AppenderDeps) *Appender {
 	a := &Appender{
-		pool:     d.Pool,
-		registry: d.Registry,
-		spill:    d.Spill,
-		now:      d.Now,
-		newUUID:  d.NewUUID,
-		log:      d.Logger,
+		pool:      d.Pool,
+		registry:  d.Registry,
+		spill:     d.Spill,
+		degraded:  d.Degraded,
+		remoteURL: d.RemoteURL,
+		now:       d.Now,
+		newUUID:   d.NewUUID,
+		log:       d.Logger,
 	}
 	if a.now == nil {
 		a.now = time.Now
@@ -152,6 +173,12 @@ func (a *Appender) Append(ctx context.Context, ev Event) (int64, error) {
 		ev.ID = a.newUUID()
 	}
 
+	// Known-degraded: skip the transaction entirely (see AppenderDeps.Degraded).
+	// Validation above has already run, so degraded mode is not a hole in it.
+	if a.degraded != nil {
+		return 0, a.degradedResult(ctx, schema, ev, a.degraded)
+	}
+
 	seq, err := a.appendTx(ctx, schema, ev)
 	if err == nil {
 		return seq, nil
@@ -162,17 +189,22 @@ func (a *Appender) Append(ctx context.Context, ev Event) (int64, error) {
 	if !isTransportFailure(err) {
 		return 0, err
 	}
+	return 0, a.degradedResult(ctx, schema, ev, err)
+}
+
+// degradedResult routes one event according to its schema's spillability.
+func (a *Appender) degradedResult(ctx context.Context, schema *EventTypeSchema, ev Event, cause error) error {
 	if !schema.Spillable {
-		return 0, &HintError{
+		return &HintError{
 			// Two %w: errors.Is must match ErrDegraded (callers branch on it)
 			// AND the underlying transport error must stay in the chain for
 			// diagnosis.
 			Err: fmt.Errorf("%w: cannot record %s@%d while the event log is unreachable: %w",
-				ErrDegraded, schema.Name, schema.Version, err),
+				ErrDegraded, schema.Name, schema.Version, cause),
 			Hint: "the event log is the authoritative cross-host record, so this operation cannot proceed locally — check SPRAWL_DB_DSN or ~/.config/sprawl/secrets.yaml, then run `sprawl store doctor`",
 		}
 	}
-	return 0, a.spillEvent(ctx, schema, ev, err)
+	return a.spillEvent(ctx, schema, ev, cause)
 }
 
 // appendTx is the single transaction.
@@ -254,6 +286,7 @@ func (a *Appender) spillEvent(ctx context.Context, schema *EventTypeSchema, ev E
 		OwnerAgentID:       ev.OwnerAgentID,
 		ClosesEventID:      ev.ClosesEventID,
 		Payload:            ev.Payload,
+		RemoteURL:          a.remoteURL,
 		At:                 a.now().UTC(),
 		Reason:             cause.Error(),
 	}

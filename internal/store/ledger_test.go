@@ -3,6 +3,7 @@ package store
 import (
 	"context"
 	"errors"
+	"os"
 	"strings"
 	"testing"
 
@@ -212,5 +213,85 @@ func TestDisabledLedger_EmitShortCircuitsBeforeValidation(t *testing.T) {
 	enabled := &Ledger{registry: mustSeedRegistry(t), enabled: true}
 	if _, err := enabled.Emit(context.Background(), EmitRequest{TypeName: "no_such_type", TypeVersion: 0}); err == nil {
 		t.Error("an enabled Ledger accepted a request with no version and an unknown type")
+	}
+}
+
+// TestOpen_UnreachableDatabaseYieldsADegradedLedgerNotAnError is AC5's
+// precondition, and the reason Open cannot simply fail.
+//
+// With no Ledger there is no spiller, so telemetry would be silently DROPPED
+// rather than spilled. That is the one outcome the degraded-mode requirement
+// rules out, so an unreachable database has to produce a working object whose
+// behaviour differs — not an error the caller has to interpret.
+//
+// Hermetic: port 1 on loopback refuses immediately, so this needs no container.
+func TestOpen_UnreachableDatabaseYieldsADegradedLedgerNotAnError(t *testing.T) {
+	root := t.TempDir()
+	l, err := Open(context.Background(), LedgerConfig{
+		Enabled:    true,
+		DSN:        "postgres://nobody@127.0.0.1:1/nothing?sslmode=disable&connect_timeout=1",
+		DSNSource:  EnvDSN,
+		RemoteURL:  "https://example.invalid/degraded",
+		SprawlRoot: root,
+	})
+	if err != nil {
+		t.Fatalf("an unreachable database must not fail Open — the caller would then have no spiller and telemetry would be dropped: %v", err)
+	}
+	if l == nil {
+		t.Fatal("Open returned no Ledger for an unreachable database, so every emitter would silently no-op instead of spilling")
+	}
+	t.Cleanup(l.Close)
+
+	if !l.Enabled() {
+		t.Error("a degraded Ledger must report itself ENABLED — it is spilling, which is doing something")
+	}
+	if l.DegradedError() == nil {
+		t.Error("DegradedError() is nil, so no diagnostic surface could report the outage")
+	}
+
+	// The spill leg: telemetry lands on disk and the caller sees no error.
+	if _, err := l.Emit(context.Background(), EmitRequest{
+		TypeName:    "run_started",
+		TypeVersion: 1,
+		Payload:     map[string]any{"agent_name": "finn", "agent_type": "engineer", "session_id": "s-1"},
+	}); err != nil {
+		t.Errorf("telemetry against a degraded Ledger returned an error to its emitter: %v", err)
+	}
+	entries, readErr := os.ReadDir(SpillDir(root))
+	if readErr != nil {
+		t.Fatalf("no spill directory was created, so the telemetry event was silently dropped: %v", readErr)
+	}
+	if len(entries) == 0 {
+		t.Error("the spill directory is empty — the event was neither stored nor spilled")
+	}
+
+	// The loud leg: coordination is refused, with a hint.
+	_, goalErr := l.Emit(context.Background(), EmitRequest{
+		TypeName:    "goal_opened",
+		TypeVersion: 1,
+		Payload:     map[string]any{"goal_type": "RESEARCH", "text": "x"},
+	})
+	if !errors.Is(goalErr, ErrDegraded) {
+		t.Errorf("opening a goal against a degraded Ledger: got err=%v, want ErrDegraded", goalErr)
+	}
+}
+
+// TestOpen_ARefusedDatabaseIsNotDegradedMode pins the other side of the split.
+//
+// Degraded mode is for "unreachable". A database that ANSWERS and refuses — bad
+// credentials, a permission error, a migration that will not apply — is a real
+// misconfiguration, and hiding it behind a quietly growing spill directory would
+// mean nobody discovers it until they query an empty log. A malformed DSN is the
+// cheapest reachable instance of "not a transport failure".
+func TestOpen_ARefusedDatabaseIsNotDegradedMode(t *testing.T) {
+	_, err := Open(context.Background(), LedgerConfig{
+		Enabled:    true,
+		DSN:        "this is not a dsn at all",
+		DSNSource:  EnvDSN,
+		RemoteURL:  "https://example.invalid/bad-dsn",
+		SprawlRoot: t.TempDir(),
+	})
+	if err == nil {
+		t.Error("an unparseable DSN must be an error, not degraded mode — degraded mode would hide a permanent misconfiguration behind a growing spill directory")
 	}
 }

@@ -52,7 +52,11 @@ type SpillRecord struct {
 	OwnerAgentID       *uuid.UUID      `json:"owner_agent_id,omitempty"`
 	ClosesEventID      *uuid.UUID      `json:"closes_event_id,omitempty"`
 	Payload            json.RawMessage `json:"payload"`
-	At                 time.Time       `json:"at"`
+	// RemoteURL is the project's identity. Present because a DEGRADED writer
+	// never read the projects row and so has no ProjectID to record — without
+	// this a replayer cannot tell which project a spilled event belongs to.
+	RemoteURL string    `json:"remote_url,omitempty"`
+	At        time.Time `json:"at"`
 	// Reason is why this record spilled, so a replay can distinguish a
 	// transient outage from a permanent rejection.
 	Reason string `json:"reason"`
