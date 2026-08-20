@@ -807,6 +807,30 @@ func (r *AgentRuntime) StopAbandonWithReason(ctx context.Context, reason stopRea
 // the err return is reserved — never non-nil — so callers can treat a
 // returned err as fatal.
 func (r *AgentRuntime) Pause(ctx context.Context, timeout time.Duration) (clean bool, err error) {
+	return r.pauseDrain(ctx, timeout, stopReasonOperator, true)
+}
+
+// PauseForShutdown is Pause's teardown MECHANISM without its operator
+// SEMANTICS: it drains an open turn the same way, but a clean drain rests at
+// whatever the shutdown stop reason records (StatusSuspended) instead of
+// stamping StatusPaused.
+//
+// QUM-1260: Real.Shutdown used Pause here, so an agent that merely happened to
+// be mid-turn when sprawl exited was left at `paused` on disk —
+// indistinguishable from an operator's explicit pause, and therefore excluded
+// from RecoverAgents' boot accept-set (QUM-723) on that boot and every later
+// one. Nobody asked for that pause; it must not cost the agent its
+// auto-resume. The escalation arm is unchanged: a turn that will not drain
+// inside the budget is still abandoned and stamped killed.
+func (r *AgentRuntime) PauseForShutdown(ctx context.Context, timeout time.Duration) (clean bool, err error) {
+	return r.pauseDrain(ctx, timeout, stopReasonShutdown, false)
+}
+
+// pauseDrain is the shared body of Pause and PauseForShutdown. operatorStamp
+// selects whether a clean drain records the operator resting state
+// (StatusPaused / liveness.Paused / RuntimeEventPaused) or leaves the resting
+// state StopWithReason already derived from `reason`.
+func (r *AgentRuntime) pauseDrain(ctx context.Context, timeout time.Duration, reason stopReason, operatorStamp bool) (clean bool, err error) {
 	r.mu.RLock()
 	name := r.snapshot.Name
 	sprawlRoot := r.sprawlRoot
@@ -862,10 +886,15 @@ func (r *AgentRuntime) Pause(ctx context.Context, timeout time.Duration) (clean 
 	}
 
 	if cleanExit {
-		// QUM-1186 (D3): operator reason. Pause stamps StatusPaused itself
-		// immediately below; the reason only has to not claim idle-reclaim.
-		if err := r.StopWithReason(ctx, stopReasonOperator); err != nil {
+		// QUM-1186 (D3): the reason only has to not claim idle-reclaim. On the
+		// operator path Pause stamps StatusPaused itself immediately below; on
+		// the shutdown path StopWithReason's own resting status (suspended) is
+		// the one that must survive, so nothing is stamped over it.
+		if err := r.StopWithReason(ctx, reason); err != nil {
 			return false, err
+		}
+		if !operatorStamp {
+			return true, nil
 		}
 		// Persist disk Status=paused so the projection rests at Paused.
 		if name != "" {
@@ -885,8 +914,10 @@ func (r *AgentRuntime) Pause(ctx context.Context, timeout time.Duration) (clean 
 		return true, nil
 	}
 
-	// Escalation: timeout fired. Hard-abandon and stamp killed on disk.
-	if err := r.StopAbandonWithReason(ctx, stopReasonOperator); err != nil {
+	// Escalation: timeout fired. Hard-abandon and stamp killed on disk. Same
+	// on both paths: a turn that will not drain has to be cut off, and `killed`
+	// is the truthful record of that whoever asked for the teardown.
+	if err := r.StopAbandonWithReason(ctx, reason); err != nil {
 		return false, err
 	}
 	if name != "" {

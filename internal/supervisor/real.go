@@ -1506,8 +1506,13 @@ func (r *Real) Shutdown(ctx context.Context) error {
 			stopCtx, cancel := withRuntimeStopTimeout(ctx)
 			defer cancel()
 			if runtime.InTurn() {
-				// In-turn → use Pause (bounded escalation to killed).
-				if _, pErr := runtime.Pause(stopCtx, pauseBudget); pErr != nil {
+				// In-turn → drain the turn (bounded escalation to killed).
+				// QUM-1260: PauseForShutdown, NOT Pause — the drain is the
+				// mechanism we want, but Pause also stamps the operator
+				// `paused` status, which the preserve switch below then
+				// protects and RecoverAgents refuses to auto-resume. An agent
+				// that was merely busy at exit must come back.
+				if _, pErr := runtime.PauseForShutdown(stopCtx, pauseBudget); pErr != nil {
 					_ = runtime.StopAbandonWithReason(stopCtx, stopReasonShutdown)
 				}
 			} else {
