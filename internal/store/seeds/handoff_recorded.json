@@ -1,0 +1,19 @@
+{
+  "name": "handoff_recorded",
+  "version": 1,
+  "opens": false,
+  "spillable": true,
+  "closes": "",
+  "json_schema": {
+    "type": "object",
+    "description": "A weave session handoff summary. The plan's dual-write-then-replace decision for memory: the summary is still written to .sprawl/memory (authoritative until M6) AND recorded here. The BODY is not in this payload — it is a content-addressed artifact referenced by the event's artifact_id, because a handoff document routinely exceeds the 8KiB payload CHECK. summary_sha256 ties the event to the memory file even when the artifact could not be written (degraded mode).",
+    "required": ["session_id", "summary_sha256", "summary_bytes"],
+    "properties": {
+      "session_id": {"type": "string"},
+      "summary_sha256": {"type": "string"},
+      "summary_bytes": {"type": "integer"},
+      "agents_active": {"type": "array"},
+      "agent_count": {"type": "integer"}
+    }
+  }
+}

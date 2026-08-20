@@ -4,9 +4,13 @@ package store
 
 import (
 	"context"
+	"encoding/json"
 	"fmt"
 	"net/url"
+	"strings"
 	"testing"
+
+	"github.com/google/uuid"
 )
 
 // Ledger.Open against a real database: project registration and the
@@ -225,4 +229,68 @@ func rewriteDSNCredentials(t *testing.T, dsn, user, password string) string {
 	}
 	u.User = url.UserPassword(user, password)
 	return u.String()
+}
+
+// TestRecordHandoff_AgainstARealDatabase pins the dual-write end to end: the
+// event lands, the body lands as a content-addressed artifact, the event
+// references it, and the payload passes the 8KiB CHECK with a summary far larger
+// than that.
+//
+// The hermetic tests assert the payload SIZE; only this one proves the database
+// accepts the result, which is where a payload over the CHECK would actually be
+// refused.
+func TestRecordHandoff_AgainstARealDatabase(t *testing.T) {
+	f := newAppenderFixture(t)
+	ctx := context.Background()
+	// Comfortably over the 8KiB payload cap, so an inline body would be refused.
+	body := strings.Repeat("handoff prose that goes on and on. ", 1000)
+
+	if err := RecordHandoff(ctx, &Ledger{
+		enabled:   true,
+		registry:  f.registry,
+		projectID: f.projectID,
+		appender:  f.appender,
+	}, HandoffRecord{
+		SessionID:    "sess-real",
+		AgentsActive: []string{"finn", "zone"},
+		Body:         body,
+		GitSHA:       "0123456789abcdef0123456789abcdef01234567",
+	}); err != nil {
+		t.Fatalf("RecordHandoff: %v", err)
+	}
+
+	var (
+		artifactID uuid.UUID
+		payload    []byte
+	)
+	if err := f.pool.QueryRow(ctx,
+		`SELECT e.artifact_id, e.payload FROM events e
+		 JOIN event_type_schemas s ON s.id = e.schema_id
+		 WHERE s.name = 'handoff_recorded' AND e.project_id = $1`, f.projectID).
+		Scan(&artifactID, &payload); err != nil {
+		t.Fatalf("read back the handoff event: %v", err)
+	}
+
+	// The body must be in artifacts, reachable from the event, byte-identical.
+	var stored string
+	if err := f.pool.QueryRow(ctx,
+		`SELECT content FROM artifacts WHERE id = $1`, artifactID).Scan(&stored); err != nil {
+		t.Fatalf("the event's artifact_id does not resolve: %v", err)
+	}
+	if stored != body {
+		t.Errorf("the stored artifact is %d bytes, the summary was %d — the body did not round-trip",
+			len(stored), len(body))
+	}
+
+	// And the payload carries the digest rather than the document.
+	var got map[string]any
+	if err := json.Unmarshal(payload, &got); err != nil {
+		t.Fatalf("payload does not parse: %v", err)
+	}
+	if got["summary_sha256"] == nil {
+		t.Error("the payload carries no summary_sha256, so the event cannot be tied to the memory file")
+	}
+	if n, ok := got["summary_bytes"].(float64); !ok || int(n) != len(body) {
+		t.Errorf("summary_bytes = %v, want %d", got["summary_bytes"], len(body))
+	}
 }

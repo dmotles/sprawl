@@ -338,6 +338,22 @@ func (l *Ledger) ProjectID() uuid.UUID {
 	return l.projectID
 }
 
+// logger returns a usable logger even when none was configured.
+//
+// NOT DEFENSIVE PADDING — l.log is only populated by Open, so any Ledger built
+// any other way (every hermetic test fixture, and any future constructor) panics
+// on its first warn. That is what happened: RecordHandoff was the first Ledger
+// method to log, and it segfaulted in slog.Logger.Enabled on a fixture-built
+// Ledger. A nil *slog.Logger is a nil-pointer dereference, not a no-op, so the
+// nil-Ledger-is-a-working-Ledger promise this type makes everywhere else did not
+// extend to logging until this existed.
+func (l *Ledger) logger() *slog.Logger {
+	if l == nil || l.log == nil {
+		return slog.New(slog.DiscardHandler)
+	}
+	return l.log
+}
+
 // DegradedError reports why the event log is unreachable, or nil.
 //
 // A degraded Ledger is still ENABLED — it is spilling, which is doing

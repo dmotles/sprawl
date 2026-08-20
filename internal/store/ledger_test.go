@@ -338,3 +338,36 @@ func TestOpen_DoesNotMigrate_SchemaReadinessIsCheckedInstead(t *testing.T) {
 		t.Errorf("Open invoked the migrator %d time(s); migrating with the application DSN is what broke least-privilege deployments", migrateCalls)
 	}
 }
+
+// TestLedger_LoggingIsSafeWithoutAConfiguredLogger pins that a Ledger built
+// without a logger does not panic when it needs to log.
+//
+// l.log is only populated by Open, so every hermetic fixture — and any future
+// constructor — leaves it nil, and a nil *slog.Logger is a nil-pointer
+// dereference rather than a no-op. This was not theoretical: RecordHandoff was
+// the first Ledger method to log on a failure path, and it segfaulted inside
+// slog.Logger.Enabled the first time it ran. The type promises "a nil Ledger is
+// a working Ledger" everywhere else; that promise did not cover logging.
+func TestLedger_LoggingIsSafeWithoutAConfiguredLogger(t *testing.T) {
+	var nilLedger *Ledger
+	if nilLedger.logger() == nil {
+		t.Error("a nil Ledger's logger() returned nil, which every caller then dereferences")
+	}
+	nilLedger.logger().Warn("must not panic")
+
+	// The realistic case: a fixture-built Ledger with no logger, on a path that
+	// logs. A store failure must be reported, not fatal.
+	pool := newRecordingPool()
+	pool.beginErr = errConnRefused
+	reg := mustSeedRegistry(t)
+	l := &Ledger{
+		enabled:  true,
+		registry: reg,
+		appender: NewAppender(AppenderDeps{
+			Pool: pool, Registry: reg, Spill: &capturingSpiller{err: errConnRefused},
+		}),
+	}
+	if err := RecordHandoff(context.Background(), l, HandoffRecord{SessionID: "s", Body: "b"}); err != nil {
+		t.Errorf("RecordHandoff returned an error: %v", err)
+	}
+}

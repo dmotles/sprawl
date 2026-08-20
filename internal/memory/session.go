@@ -168,6 +168,16 @@ func WriteSessionSummary(sprawlRoot string, session Session, body string) error 
 	}
 
 	success = true
+
+	// QUM-1249 dual-write: a HANDOFF summary is additionally recorded in the
+	// event log. Deliberately here, AFTER the rename — the file is the system of
+	// record until M6, and an event pointing at a summary that never landed
+	// would send a reader following summary_sha256 to nothing. Non-handoff
+	// summaries are not emitted: they are written on every session end, and the
+	// plan scopes the dual-write to handoffs.
+	if session.Handoff {
+		emitHandoffEvent(sprawlRoot, session, body)
+	}
 	return nil
 }
 

@@ -111,6 +111,16 @@ type Appender struct {
 	log       *slog.Logger
 }
 
+// pgPool exposes the injectable Postgres seam this Appender writes through.
+//
+// Used by RecordHandoff to store an artifact on the SAME seam appends go
+// through, rather than reaching for the Ledger's concrete *pgxpool.Pool. That
+// distinction is not cosmetic: the concrete field is nil in every hermetic
+// fixture, so an artifact write that bypassed this seam silently did nothing in
+// tests while working in production — which is how the handoff artifact came to
+// be untested on its first attempt.
+func (a *Appender) pgPool() PgPool { return a.pool }
+
 func NewAppender(d AppenderDeps) *Appender {
 	a := &Appender{
 		pool:      d.Pool,

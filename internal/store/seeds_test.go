@@ -87,6 +87,12 @@ var wantSeeds = []struct {
 		required: []string{"goal_type", "text"},
 	},
 	{
+		name: "handoff_recorded", version: 1,
+		spillable: true,
+		id:        "66c4b91e-8955-54be-a90f-563abb6b2b46",
+		required:  []string{"session_id", "summary_sha256", "summary_bytes"},
+	},
+	{
 		name: "goal_closed", version: 1,
 		id:       "866d4ba6-b748-548c-a2d9-4dd9c8197601",
 		closes:   "goal_opened",
