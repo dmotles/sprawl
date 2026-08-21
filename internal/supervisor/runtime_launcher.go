@@ -302,12 +302,24 @@ func (s *inProcessUnifiedStarter) startBackendSession(ctx context.Context, prep 
 	}
 	if err := session.Start(context.Background()); err != nil {
 		_ = session.Close()
+		// QUM-1260: this Wait is NOT just reaping hygiene. AgentRuntime.
+		// StartResume gates its fresh-session fallback on the resume-cookie
+		// rejection callback having fired, and the guarantee that it has fired
+		// by the time this function returns comes from cmd.Wait: because
+		// cmd.Stderr is the marker writer rather than an *os.File, os/exec runs
+		// an internal pipe->writer copier and cmd.Wait does not return until it
+		// has drained. Delete this and the fallback silently stops firing on the
+		// self-exit interleaving, with no test failing. See runtime.go's
+		// StartResume rejection gate.
 		_ = session.Wait()
 		return nil, err
 	}
 	if s.initSpec.ToolBridge != nil || len(s.initSpec.MCPServerNames) > 0 {
 		if err := session.Initialize(ctx, s.initSpec); err != nil {
 			_ = session.Close()
+			// Load-bearing for the same reason as the Wait above — see that
+			// comment before removing it (QUM-1260). This is the path the live
+			// rejected-cookie defect actually takes.
 			_ = session.Wait()
 			return nil, err
 		}

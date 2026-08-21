@@ -301,6 +301,39 @@ func TestStartResume_BothLegsFailStampsAndMarksStopped(t *testing.T) {
 	if snap.Liveness == liveness.Running {
 		t.Errorf("Snapshot().Liveness = Running with no handle left; want a stopped liveness so Real.Shutdown's `snap.Liveness != Running` filter skips this dead agent instead of calling Stop on nil")
 	}
+	if snap.Status != state.StatusResumeFailed {
+		t.Errorf("Snapshot().Status = %q, want %q — the RuntimeEventStopped this path emits carries the snapshot, and a stale \"active\" in it tells every subscriber the opposite of what happened", snap.Status, state.StatusResumeFailed)
+	}
+}
+
+// TestStartResume_BothLegsFailKeepsTheConcreteResumeCause — when the resume leg
+// also returned an error (the live interleaving: marker fires, transport is
+// killed, Initialize fails), that error must survive into the returned one.
+// `backend: session reader exited before initialize handshake` is the concrete
+// cause every prior investigation of this bug keyed off; a message naming only
+// the sentinel and the fallback error throws away the one string an operator
+// can search for.
+func TestStartResume_BothLegsFailKeepsTheConcreteResumeCause(t *testing.T) {
+	starter := &wakeCapturingStarter{
+		fireResumeFailOn: 1,
+		startErrByCall:   map[int]error{1: errResumeHandshakeDied, 2: errFreshRejected},
+		sessionMaker:     mirrorSpecSession,
+	}
+	rt := NewAgentRuntime(AgentRuntimeConfig{
+		SprawlRoot: t.TempDir(),
+		Agent:      testAgentState("alice"),
+		Starter:    starter,
+	})
+
+	err := rt.StartResume("RESTART-INJECTION", func() {})
+	if err == nil {
+		t.Fatalf("StartResume = nil, want an error")
+	}
+	for _, want := range []error{errResumeCookieRejected, errResumeHandshakeDied, errFreshRejected} {
+		if !errors.Is(err, want) {
+			t.Errorf("error %q does not wrap %q", err, want)
+		}
+	}
 }
 
 // TestStartResume_NoFallbackWhenResumeSucceeds is the NEGATIVE control for this

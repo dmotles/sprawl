@@ -454,21 +454,25 @@ func (r *AgentRuntime) Start() error {
 		TreePath:   r.snapshot.TreePath,
 	}
 	r.mu.RUnlock()
-	return r.startWithSpec(spec)
+	_, err := r.startWithSpec(spec)
+	return err
 }
 
-// startWithSpec is the shared body for Start and StartResume.
-func (r *AgentRuntime) startWithSpec(spec RuntimeStartSpec) error {
+// startWithSpec is the shared body for Start and StartResume. It returns the
+// handle it installed so a caller that may have to abandon the attempt can
+// target THAT handle rather than whatever is current by the time it looks
+// (QUM-1260). nil handle on error.
+func (r *AgentRuntime) startWithSpec(spec RuntimeStartSpec) (RuntimeHandle, error) {
 	r.mu.RLock()
 	starter := r.starter
 	r.mu.RUnlock()
 
 	if starter == nil {
-		return fmt.Errorf("runtime starter not configured")
+		return nil, fmt.Errorf("runtime starter not configured")
 	}
 	handle, err := starter.Start(spec)
 	if err != nil {
-		return err
+		return nil, err
 	}
 
 	// QUM-722: a fresh start is an expected entry into Running; clear the
@@ -490,7 +494,7 @@ func (r *AgentRuntime) startWithSpec(spec RuntimeStartSpec) error {
 	if doneAware, ok := handle.(runtimeHandleDone); ok && doneAware.Done() != nil {
 		r.watchHandleExit(handle, doneAware.Done())
 	}
-	return nil
+	return handle, nil
 }
 
 // StartResume launches the agent's backend session with the Resume flag set,
@@ -556,15 +560,14 @@ func (r *AgentRuntime) StartResume(restartInjection string, onResumeFailure ...f
 	}
 	r.mu.RUnlock()
 
-	resumeErr := r.startWithSpec(spec)
-	// Capture the handle THIS call installed, so a teardown below cannot reach
-	// a handle someone else swapped in. StartResume has no single-flight guard
-	// (Wake has wakeMu) because RecoverAgents runs synchronously in runEnter
-	// before the MCP server can serve a wake — but the compare-and-clear costs
-	// nothing and does not rely on that staying true.
-	r.mu.RLock()
-	started := r.handle
-	r.mu.RUnlock()
+	// `started` is the handle THIS call installed, returned by startWithSpec
+	// rather than re-read from r.handle — re-reading leaves a window in which a
+	// swap lands between the install and the read, and the identity check below
+	// would then happily tear down someone else's handle. StartResume has no
+	// single-flight guard (Wake has wakeMu) because RecoverAgents runs
+	// synchronously in runEnter before the MCP server can serve a wake; this is
+	// belt-and-braces that does not rely on that staying true.
+	started, resumeErr := r.startWithSpec(spec)
 
 	markerMu.Lock()
 	cookieRejected := rejected
@@ -593,6 +596,18 @@ func (r *AgentRuntime) StartResume(restartInjection string, onResumeFailure ...f
 		// `sprawl enter` into a permanent one — the exact brick this change
 		// exists to remove, with a WIDER trigger. So: report the error and
 		// leave the agent at its existing revivable status.
+		if resumeErr != nil {
+			// This path is the one that DEGRADES silently if the rejection
+			// signal is ever lost — e.g. more than ResumeMarkerScanCap of
+			// stderr arriving before the marker, which self-disables the
+			// scanner. The fallback then does not fire where it should, and
+			// nothing else says so. Log it so that case is diagnosable rather
+			// than invisible.
+			slog.Info("supervisor: StartResume start failed with no resume-cookie rejection; not falling back",
+				slog.String("agent", spec.Name),
+				slog.String("session_id", spec.SessionID),
+				slog.Any("err", resumeErr))
+		}
 		return resumeErr
 	}
 
@@ -609,14 +624,25 @@ func (r *AgentRuntime) StartResume(restartInjection string, onResumeFailure ...f
 		// abandoned, so correct both before returning — otherwise callers that
 		// filter on Liveness==Running (the TUI tree, Real.Shutdown's teardown
 		// loop) treat a dead agent as live and call Stop on a nil handle.
-		// Mirrors Wake's stampDoublyFailedWake, minus the disk write: the
-		// caller's callback owns the durable resume_failed here.
+		// Mirrors Wake's stampDoublyFailedWake, minus the DISK write: the
+		// caller's callback owns the durable resume_failed. RecoverAgents
+		// always supplies one; a caller that does not gets the in-memory
+		// snapshot corrected and nothing durable, which is the honest outcome
+		// of not supplying a persister.
+		demoted := false
 		r.mu.Lock()
 		if r.handle == nil {
 			r.snapshot.Liveness = liveness.Stopped
+			r.snapshot.Status = state.StatusResumeFailed
+			demoted = true
 		}
 		r.mu.Unlock()
-		r.emit(RuntimeEventStopped)
+		// Only announce a stop we actually performed. If a handle is live it
+		// belongs to someone else, and a Stopped event for a running agent
+		// would be a lie.
+		if demoted {
+			r.emit(RuntimeEventStopped)
+		}
 		if cb != nil {
 			cb()
 		}
@@ -625,7 +651,7 @@ func (r *AgentRuntime) StartResume(restartInjection string, onResumeFailure ...f
 
 	freshSID, sidErr := state.GenerateUUID()
 	if sidErr != nil {
-		return fail(fmt.Errorf("supervisor: resume for %q was rejected (%w) and minting a fallback session id failed: %w", spec.Name, errResumeCookieRejected, sidErr))
+		return fail(fmt.Errorf("supervisor: resume for %q was rejected (%w) and minting a fallback session id failed: %w", spec.Name, errors.Join(errResumeCookieRejected, resumeErr), sidErr))
 	}
 	fresh := spec
 	fresh.Resume = false
@@ -642,8 +668,12 @@ func (r *AgentRuntime) StartResume(restartInjection string, onResumeFailure ...f
 		slog.String("fresh_session_id", freshSID),
 		slog.Any("resume_err", resumeErr))
 
-	if freshErr := r.startWithSpec(fresh); freshErr != nil {
-		return fail(fmt.Errorf("supervisor: resume for %q was rejected (%w) and the fresh fallback failed too: %w", spec.Name, errResumeCookieRejected, freshErr))
+	if _, freshErr := r.startWithSpec(fresh); freshErr != nil {
+		// resumeErr is joined in, not just logged: in production it is
+		// `backend: session reader exited before initialize handshake`, the
+		// concrete cause every prior investigation of this bug keyed off. It is
+		// nil on the in-band-rejection interleaving, and errors.Join drops nils.
+		return fail(fmt.Errorf("supervisor: resume for %q was rejected (%w) and the fresh fallback failed too: %w", spec.Name, errors.Join(errResumeCookieRejected, resumeErr), freshErr))
 	}
 	// NOTE: a rescued resume publishes TWO RuntimeEventStarted (one per leg)
 	// where Wake publishes a single RuntimeEventWoken. Left as-is deliberately:
