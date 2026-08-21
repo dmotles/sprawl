@@ -5,12 +5,18 @@
 # Drives a real claude child to call mcp__sprawl__send_message so the
 # Send → defaultNotifier → WakeForDelivery → claude prompt-inject →
 # drain-row citation pipeline is exercised end-to-end.
+#
+# QUM-1276: also asserts, from /proc/<pid>/cmdline, that the claude processes
+# this row launches for weave and for the spawned child both carry
+# `--effort low`. This row hosts that proof because it is the only owed row
+# with both a live weave and a live child at the same moment.
 
 # QUM-1029: the number of assertions a COMPLETE, PASSING run of this row
 # makes. The unconditional pass after launch plus three symmetric gates, plus
-# the three QUM-1276 --effort argv gates (weave low, child low, neither
-# medium) added below the spawn gate.
-MIN_ASSERTIONS=7
+# the four QUM-1276 argv gates below the spawn gate: pid resolved (weave,
+# child) and --effort low (weave, child). Resolution is asserted separately so
+# a broken probe cannot masquerade as an effort regression.
+MIN_ASSERTIONS=8
 
 # --- Test-local helpers (single-test scope, not promoted to lib). ---
 
@@ -20,7 +26,10 @@ MIN_ASSERTIONS=7
 # SPRAWL_ROOT (state.WriteSystemPrompt). Empty output + rc 1 when not found.
 _drain_claude_argv() {
     local want="$SPRAWL_ROOT/.sprawl/agents/$1/SYSTEM.md" pid
-    pid=$(pgrep -af 'claude' 2>/dev/null | awk -v p="$want" 'index($0, p) > 0 { print $1; exit }')
+    # `|| true`: under the driver's `set -o pipefail`, pgrep's rc 1 (no match)
+    # would become this assignment's status and abort the row in any context
+    # where errexit is not suspended.
+    pid=$(pgrep -af 'claude' 2>/dev/null | awk -v p="$want" 'index($0, p) > 0 { print $1; exit }') || true
     [ -n "$pid" ] && [ -r "/proc/$pid/cmdline" ] || return 1
     tr '\0' '\n' < "/proc/$pid/cmdline"
 }
@@ -155,9 +164,12 @@ test_run() {
     # (weave drove the spawn; the child's state file just landed), so a pid we
     # cannot resolve is a failure, never a skip.
     local WEAVE_ARGV CHILD_ARGV WEAVE_EFFORT CHILD_EFFORT
-    # The state file can land a beat before the subprocess is up, so poll.
+    # The state file can land a beat before the subprocess is up, so poll —
+    # but briefly: the row's primary assertion below greps only the VISIBLE
+    # pane, so time spent blocking here is time the drain-row citation can
+    # scroll away, turning a probe failure into a second, spurious red.
     local ARGV_WAIT=0
-    while [ "$ARGV_WAIT" -lt 30 ]; do
+    while [ "$ARGV_WAIT" -lt 10 ]; do
         WEAVE_ARGV=$(_drain_claude_argv weave || true)
         CHILD_ARGV=$(_drain_claude_argv "$CHILD_NAME" || true)
         [ -n "$WEAVE_ARGV" ] && [ -n "$CHILD_ARGV" ] && break
@@ -167,25 +179,34 @@ test_run() {
     WEAVE_EFFORT=$(printf '%s\n' "$WEAVE_ARGV" | _drain_argv_effort)
     CHILD_EFFORT=$(printf '%s\n' "$CHILD_ARGV" | _drain_argv_effort)
 
+    # Resolution is asserted BEFORE the effort value, so an unresolvable pid
+    # reports itself as a broken probe rather than as an effort regression:
+    # an empty $WEAVE_EFFORT means either "argv carried no --effort" (the real
+    # regression) or "we never found the process" (the probe changed out from
+    # under us), and those must not print the same message.
+    if [ -n "$WEAVE_ARGV" ]; then
+        pass "resolved weave's claude pid via $SPRAWL_ROOT/.sprawl/agents/weave/SYSTEM.md"
+    else
+        fail "could not resolve weave's claude pid — probe broken, NOT evidence about --effort"
+    fi
+    if [ -n "$CHILD_ARGV" ]; then
+        pass "resolved $CHILD_NAME's claude pid via $SPRAWL_ROOT/.sprawl/agents/$CHILD_NAME/SYSTEM.md"
+    else
+        fail "could not resolve $CHILD_NAME's claude pid — probe broken, NOT evidence about --effort"
+    fi
+
     if [ "$WEAVE_EFFORT" = "low" ]; then
         pass "weave claude argv carries --effort low"
     else
-        fail "weave claude argv effort = '${WEAVE_EFFORT:-<absent>}', want low"
+        fail "weave claude argv effort = '${WEAVE_EFFORT:-<no --effort flag>}', want low"
         printf '%s\n' "$WEAVE_ARGV" | sed 's/^/    /' >&2
     fi
 
     if [ "$CHILD_EFFORT" = "low" ]; then
         pass "child $CHILD_NAME claude argv carries --effort low"
     else
-        fail "child $CHILD_NAME claude argv effort = '${CHILD_EFFORT:-<absent>}', want low"
+        fail "child $CHILD_NAME claude argv effort = '${CHILD_EFFORT:-<no --effort flag>}', want low"
         printf '%s\n' "$CHILD_ARGV" | sed 's/^/    /' >&2
-    fi
-
-    # Catches a partial edit: one of the two paths still on the old default.
-    if [ "$WEAVE_EFFORT" != "medium" ] && [ "$CHILD_EFFORT" != "medium" ]; then
-        pass "neither weave nor $CHILD_NAME carries the old --effort medium default"
-    else
-        fail "stale --effort medium survives (weave='$WEAVE_EFFORT' child='$CHILD_EFFORT')"
     fi
 
     echo ""
