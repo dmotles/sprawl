@@ -1113,12 +1113,25 @@ e2e_attach_phantom_client() {
 # resolve — so a broader fallback would trade a diagnosable failure for a run
 # that may pass against the wrong process.
 #
+# Reading children via /proc/<pid>/task/*/children needs CONFIG_PROC_CHILDREN,
+# which the old pgrep walk did not. On a kernel without it the FORKING direction
+# becomes unresolvable and this returns rc 1 — loudly, at the caller's `fail`,
+# and section [24]'s forking arm goes red on such a host rather than any of this
+# passing quietly.
+#
 # /proc/<pid>/comm is truncated to TASK_COMM_LEN-1 = 15 bytes, so the needle is
 # truncated to match (e2e-matrix.sh builds `sprawl-matrix-<row>` binaries for
 # needs_build_tags rows, e.g. `sprawl-matrix-wake-live` -> `sprawl-matrix-w`).
 # Two binaries agreeing in their first 15 bytes are indistinguishable here.
 e2e_resolve_pane_process() {
     local root_pid="${1:-}" needle="${2:-}"
+    # Pinned locally because the child-list split below is IFS-sensitive: under a
+    # caller's global IFS the whole children line becomes one word, the walk never
+    # descends, and this returns rc 1 — i.e. the very false red QUM-1277 exists to
+    # remove, with the same message. Measured: IFS=$'\n', IFS=, and IFS= each turn
+    # a resolvable forking subject into rc 1.
+    local IFS=$' \t\n'
+
     case "$root_pid" in
         '' | *[!0-9]*) return 2 ;;
     esac
@@ -1127,15 +1140,22 @@ e2e_resolve_pane_process() {
     needle="${needle:0:15}"
 
     # Cursor-indexed queue rather than array reslicing: O(n) instead of O(n^2),
-    # and no empty-array expansion to trip over under `set -u`. The node budget
-    # bounds the walk if pid reuse makes `seen` miss a revisit.
+    # and no empty-array expansion to trip over under `set -u`. The budget bounds
+    # the walk if pid reuse makes `seen` miss a revisit.
     local queue=("$root_pid") cursor=0 budget=4096 seen=" "
     local pid comm kids kid
     while [ "$cursor" -lt "${#queue[@]}" ]; do
         pid="${queue[$cursor]}"
         cursor=$((cursor + 1))
+        # A visit budget, not a distinct-node budget (revisits are cheap and the
+        # decrement precedes the `seen` check). Exhausting it is reported as rc 1
+        # for the caller's purposes but says so on stderr, because "the walk gave
+        # up" is a different diagnosis from "the process is not there".
         budget=$((budget - 1))
-        [ "$budget" -gt 0 ] || return 1
+        if [ "$budget" -le 0 ]; then
+            echo "e2e_resolve_pane_process: walk budget exhausted under pid $root_pid — giving up, NOT a proof of absence" >&2
+            return 1
+        fi
         case "$seen" in
             *" $pid "*) continue ;;
         esac

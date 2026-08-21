@@ -219,7 +219,12 @@ FAIL=0
 # precondition else-branch emits exactly the assertions it replaces, and it is
 # 18 either way on a host with or without zsh. Re-measured on a FULL GREEN run:
 # 675 passed / 0 failed.
-MIN_ASSERTIONS=675
+#
+# 676 with code review (byte, F1)'s caller-IFS arm 24i. Positive control for it:
+# with the helper's `local IFS` line deleted, "FAIL: 24i: a caller IFS changed the
+# answer for a subject that was alive throughout: [IFS=<newline> rc=1 out=''] …";
+# restored, it passes. Re-measured on a FULL GREEN run: 676 passed / 0 failed.
+MIN_ASSERTIONS=676
 # A [16b] nested child deliberately does NOT re-run section [16] (recursing would
 # fork-bomb, and counting there would corrupt the parity comparison), so it asserts
 # strictly fewer things and needs its own floor. Measured at de22410: 237; 238 after
@@ -298,7 +303,11 @@ MIN_ASSERTIONS=675
 #   NONCE=$(mktemp /tmp/qum1277-nonce.XXXXXX); printf 'nested-seam-check\n' >"$NONCE"
 #   UNIT_NESTED_SEAM_CHECK=$NONCE bash scripts/test-e2e-matrix-unit.sh | tail -2
 #   -> "655 passed / 0 failed"
-MIN_ASSERTIONS_NESTED=655
+#
+# 656 with arm 24i (+1, same delta as the parent — [24] is not gated on
+# UNIT_NESTED_SEAM_CHECK). Re-measured directly with a valid nonce:
+# "656 passed / 0 failed".
+MIN_ASSERTIONS_NESTED=656
 
 # Pin the temp root. This suite runs inside `make validate` and therefore inside
 # the pre-commit hook, so it must not inherit the committing agent's TMPDIR:
@@ -7296,6 +7305,21 @@ _p24_resolve() {
 	)
 }
 
+# As above, but with a global IFS imposed on the caller. Code review (byte, F1):
+# splitting /proc/<pid>/task/*/children is IFS-sensitive, and under a non-default
+# IFS the whole child list collapses into one unreadable "pid" — the walk stops
+# descending and reports rc 1, which is the very false red QUM-1277 is about,
+# wearing the same message.
+_p24_resolve_with_ifs() {
+	(
+		# shellcheck disable=SC1090
+		. "$LIB" >/dev/null 2>&1 || exit 99
+		set -euo pipefail
+		IFS="$1"
+		e2e_resolve_pane_process "$2" "$3"
+	)
+}
+
 # Spawn <shell> -c "<env prefix> '<subject>' <secs> 2>/dev/null" — byte-for-byte
 # the shape of e2e_launch_tui's tmux command string, which is what triggers (or
 # does not trigger) a shell's single-command exec optimization.
@@ -7395,6 +7419,27 @@ if [ -n "$P24_NONCE" ] && [ -n "$P24_ZSH" ] && [ -n "$P24_DIR" ] && [ -x /bin/sh
 	else
 		fail "24a: forking-shell subject never became visible to pgrep — the fixture, not the resolver, is broken"
 		fail "24a: (consequently) the descendant-vs-wrapper arm could not be checked"
+	fi
+
+	# --- 24i: the caller's IFS must not change the answer. Positive control in
+	#     direction: the subject IS alive for every value below, so a resolver
+	#     that cannot see it is giving a wrong answer, not observing an absence.
+	if [ -d "/proc/$P24_FORK_TOP" ]; then
+		P24_I_BAD=""
+		for _p24_ifs in "$(printf '\n')" "," ""; do
+			P24_I_RC=0
+			P24_I_OUT=$(_p24_resolve_with_ifs "$_p24_ifs" "$P24_FORK_TOP" "$(basename "$P24_FORK")") || P24_I_RC=$?
+			if [ "$P24_I_RC" -ne 0 ] || [ "$(_p24_comm "$P24_I_OUT")" != "$(basename "$P24_FORK")" ]; then
+				P24_I_BAD="$P24_I_BAD [IFS='$_p24_ifs' rc=$P24_I_RC out='$P24_I_OUT']"
+			fi
+		done
+		if [ -z "$P24_I_BAD" ]; then
+			pass "24i: the forking arm still resolves under a caller IFS of newline, comma and empty (the split is not left to ambient IFS)"
+		else
+			fail "24i: a caller IFS changed the answer for a subject that was alive throughout:$P24_I_BAD"
+		fi
+	else
+		fail "24i: the forking fixture's wrapper exited before the IFS control ran — the fixture, not the resolver, is broken"
 	fi
 
 	# --- 24b: an EXEC-OPTIMIZING pane shell (zsh — the arm the pre-fix code
@@ -7533,6 +7578,7 @@ else
 	fail "24f: (consequently) the truncation-not-prefix arm could not be checked"
 	fail "24g: (consequently) the empty-root-pid arm could not be checked"
 	fail "24g: (consequently) the dead-root-pid arm could not be checked"
+	fail "24i: (consequently) the caller-IFS control could not be checked"
 fi
 
 # Cleanup. Killing the tracked wrapper pids is not enough: on a FORKING shell the

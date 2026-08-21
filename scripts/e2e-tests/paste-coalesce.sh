@@ -111,7 +111,7 @@ test_run() {
         # Children read the same way the resolver reads them (not via pgrep):
         # this is a diagnostic for a /proc walk, so it should show what that
         # walk saw.
-        echo "  pane children: $(cat "/proc/$PANE_PID/task/"*/children 2>/dev/null | tr '\n' ' ')" >&2
+        echo "  pane children: $(cat "/proc/$PANE_PID/task/"*/children 2>/dev/null | tr '\n' ' ' | grep . || echo '<none/unreadable>')" >&2
         echo "  looking for comm: $(basename "$SPRAWL_BIN")" >&2
         return 1
     fi
