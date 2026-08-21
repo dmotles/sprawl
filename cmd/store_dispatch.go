@@ -179,6 +179,7 @@ func runStoreDispatch(ctx context.Context, deps *storeDeps) error {
 		return fmt.Errorf("could not determine a host identity for this machine (os.Hostname failed)\nnext: pass --host <stable-unique-id>; two machines sharing a host identity is a DATA-LOSS configuration — each reads the other's spawn intents as its own and can declare a live agent failed")
 	}
 	out := deps.Stdout
+	errOut := deps.Stderr
 
 	// A LOGGER, WIRED EXPLICITLY. Every deps struct in internal/store defaults a
 	// nil Logger to slog.DiscardHandler — which is right for a library and wrong
@@ -220,9 +221,7 @@ func runStoreDispatch(ctx context.Context, deps *storeDeps) error {
 		Host:      host,
 		Logger:    logger,
 	}); err != nil {
-		fmt.Fprintf(os.Stderr, "startup reconciliation did not complete: %v\n", err)
-		fmt.Fprintf(os.Stderr, "  continuing anyway: notifications and acks do not depend on it\n")
-		fmt.Fprintf(os.Stderr, "  next: `sprawl store doctor`, and check for a stray agent named by a failed spawn intent\n")
+		reportReconcileFailure(errOut, err)
 	}
 
 	notify, err := store.NewNotifyHandler(store.NotifyHandlerDeps{
@@ -285,13 +284,13 @@ func runStoreDispatch(ctx context.Context, deps *storeDeps) error {
 			return err
 		}
 		if !dispatchNoSweeper {
-			reportSweep(ctx, out, sweeperDeps(pool, registry, local, emitter, injector, ledger.ProjectID(), host, logger))
+			reportSweep(ctx, out, errOut, sweeperDeps(pool, registry, local, emitter, injector, ledger.ProjectID(), host, logger))
 		}
 		return nil
 	}
 
 	if !dispatchNoSweeper {
-		go runSweepTicker(ctx, out, sweeperDeps(pool, registry, local, emitter, injector, ledger.ProjectID(), host, logger))
+		go runSweepTicker(ctx, out, errOut, sweeperDeps(pool, registry, local, emitter, injector, ledger.ProjectID(), host, logger))
 	}
 	fmt.Fprintf(out, "dispatching (Ctrl-C to stop)\n")
 	return dispatcher.Run(ctx)
@@ -320,7 +319,7 @@ func sweeperDeps(pool *pgxpool.Pool, registry *store.Registry, local store.Local
 	}
 }
 
-func runSweepTicker(ctx context.Context, out io.Writer, deps store.SweeperDeps) {
+func runSweepTicker(ctx context.Context, out, errOut io.Writer, deps store.SweeperDeps) {
 	t := time.NewTicker(dispatchSweepInterval)
 	defer t.Stop()
 	for {
@@ -328,17 +327,17 @@ func runSweepTicker(ctx context.Context, out io.Writer, deps store.SweeperDeps) 
 		case <-ctx.Done():
 			return
 		case <-t.C:
-			reportSweep(ctx, out, deps)
+			reportSweep(ctx, out, errOut, deps)
 		}
 	}
 }
 
-func reportSweep(ctx context.Context, out io.Writer, deps store.SweeperDeps) { //nolint:revive // out is the success surface; failures go to stderr
+func reportSweep(ctx context.Context, out, errOut io.Writer, deps store.SweeperDeps) { //nolint:revive // out is the success surface, errOut the failure surface
 	res, err := store.Sweep(ctx, deps)
 	if err != nil {
 		// STDERR. Every other failure in this file goes there, and a failure on
 		// stdout is invisible to a caller that separates the streams.
-		fmt.Fprintf(os.Stderr, "sweep failed: %v\n", err)
+		fmt.Fprintf(errOut, "sweep failed: %s\n", store.RedactError(err))
 		return
 	}
 	// Reported even when nothing happened, and Skipped is reported alongside
@@ -349,6 +348,14 @@ func reportSweep(ctx context.Context, out io.Writer, deps store.SweeperDeps) { /
 		fmt.Fprintf(out, "sweep: considered %d, poked %d, quarantined %d, skipped %d\n",
 			res.Considered, res.Poked, res.Quarantined, res.Skipped)
 	}
+}
+
+// reportReconcileFailure states that startup reconciliation did not complete and
+// that the loop is starting anyway.
+func reportReconcileFailure(errOut io.Writer, err error) {
+	fmt.Fprintf(errOut, "startup reconciliation did not complete: %s\n", store.RedactError(err))
+	fmt.Fprintf(errOut, "  continuing anyway: notifications and acks do not depend on it\n")
+	fmt.Fprintf(errOut, "  next: `sprawl store doctor`, and check for a stray agent named by a failed spawn intent\n")
 }
 
 func reportReconcile(ctx context.Context, out io.Writer, deps store.ReconcileDeps) error {

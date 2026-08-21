@@ -11,6 +11,7 @@ import (
 	"time"
 
 	"github.com/dmotles/sprawl/internal/store"
+	"github.com/google/uuid"
 )
 
 // `sprawl store dispatch` (QUM-1250).
@@ -228,5 +229,169 @@ func TestDefaultHostIdentity_IsNotJustTheCheckoutPath(t *testing.T) {
 	other, _ := newDispatchTestDeps(t)
 	if defaultHostIdentity(other) == got {
 		t.Error("two different checkouts on one machine report the same host identity, so a worktree-bound event would be claimable in the wrong one")
+	}
+}
+
+// THE DSN NEVER REACHES THE SWEEP AND RECONCILE FAILURE OUTPUT (QUM-1279).
+//
+// Both surfaces below print an error that originates in the database layer, and
+// a pgx PARSE error quotes the whole DSN it was handed. What it does not do is
+// leak the password: internal/store/redact.go records the measurement against
+// the pinned pgx v5.10.0 — the password is masked as `xxxxxx` in parse errors
+// and omitted from connect errors. So the synthetic password below is testing
+// PROSPECTIVE hardening (a future driver, or another library handed a DSN),
+// while the host and database name in URL form are a leak that exists today and
+// that CLAUDE.md forbids in a public repo. Read redact.go before restating what
+// pgx leaks; the unmeasured version of that claim was already wrong once.
+//
+// THE ASSERTION IS ABSENCE OF THE SECRET, NOT PRESENCE OF A MARKER. A test that
+// checks for "[redacted]" passes while the password sits next to the marker,
+// which is the exact failure this issue was filed about. Each row also asserts
+// the DIAGNOSIS SURVIVED, because "sweep failed" with the cause dropped would
+// satisfy an absence-only test and is a useless error message — and a useless
+// error message is one somebody deletes the redaction to fix.
+//
+// WHAT THIS DOES NOT COVER, stated so the name is not read as more than it is:
+// the `DegradedError` wrap at store_dispatch.go returns its error for cobra to
+// print, and the slog logger wired onto deps.Stderr receives store records
+// carrying raw `"error", err` attributes. Both are unredacted DSN carriers on
+// the same stream and are filed separately rather than fixed here.
+//
+// AND ONE SEAM IS NOT COVERED: that runStoreDispatch itself routes its
+// reconcile failure through reportReconcileFailure(deps.Stderr, ...) rather than
+// os.Stderr. Everything above that call needs a live Postgres, so it is reached
+// only by the dispatch e2e rows.
+const (
+	probeDSNPassword = "sup3r-synthetic-not-a-real-password"
+	// Covered in URL form only: RedactSecrets replaces a DSN-shaped URL
+	// wholesale, but does NOT redact a bare hostname elsewhere in a message.
+	probeDSNHost = "leak-probe.invalid"
+	probeDSNURL  = "postgres://leakuser:" + probeDSNPassword + "@" + probeDSNHost + ":5432/sprawl?sslmode=require"
+)
+
+// leakyPGXError is shaped like a pgx parse error, which quotes the whole DSN.
+func leakyPGXError() error {
+	return errors.New("cannot parse `" + probeDSNURL + "`: invalid port")
+}
+
+// leakyLocalAgents fails its snapshot with a DSN-bearing error. Both Sweep and
+// Reconcile read the snapshot first, so this reaches the failure print on both.
+type leakyLocalAgents struct{}
+
+func (leakyLocalAgents) Snapshot(context.Context) ([]store.LocalAgent, error) {
+	return nil, leakyPGXError()
+}
+func (leakyLocalAgents) Reclaim(context.Context, string) error { return nil }
+
+type stubSweepReader struct{}
+
+func (stubSweepReader) OpenGoals(context.Context, uuid.UUID) ([]store.StalledCandidate, error) {
+	return nil, nil
+}
+
+type stubIntentReader struct{}
+
+func (stubIntentReader) OpenIntents(context.Context, uuid.UUID, string) ([]store.OpenIntent, error) {
+	return nil, nil
+}
+
+func (stubIntentReader) FailedIntents(context.Context, uuid.UUID, string) ([]store.FailedIntent, error) {
+	return nil, nil
+}
+
+type stubEmitter struct{}
+
+func (stubEmitter) Emit(context.Context, store.EmitRequest) (uuid.UUID, error) {
+	return uuid.Nil, nil
+}
+
+type stubInjector struct{}
+
+func (stubInjector) Inject(context.Context, string, string) error { return nil }
+
+func TestStoreDispatch_SweepAndReconcileFailuresDoNotPrintTheDSN(t *testing.T) {
+	ctx := context.Background()
+
+	cases := []struct {
+		name string
+		// run drives one failure surface and returns everything it emitted.
+		run func(t *testing.T) string
+		// wants are fragments of the surviving diagnosis. They are NOT static
+		// banner text: a print that dropped the error entirely, or reduced it
+		// to "[redacted]", loses them — so they guard both vacuity and the
+		// over-redaction that makes an error worth deleting the redaction for.
+		wants []string
+	}{
+		{
+			name: "sweep failure",
+			run: func(t *testing.T) string {
+				t.Helper()
+				var out, errOut bytes.Buffer
+				reportSweep(ctx, &out, &errOut, store.SweeperDeps{
+					Goals:     stubSweepReader{},
+					Local:     leakyLocalAgents{},
+					Emitter:   stubEmitter{},
+					Injector:  stubInjector{},
+					ProjectID: uuid.New(),
+					Host:      "probe-host",
+				})
+				return out.String() + errOut.String()
+			},
+			wants: []string{"sweep failed", "cannot read local agent state", "invalid port"},
+		},
+		{
+			name: "startup reconciliation failure",
+			run: func(t *testing.T) string {
+				t.Helper()
+				var out, errOut bytes.Buffer
+				err := reportReconcile(ctx, &out, store.ReconcileDeps{
+					Intents:   stubIntentReader{},
+					Local:     leakyLocalAgents{},
+					Emitter:   stubEmitter{},
+					ProjectID: uuid.New(),
+					Host:      "probe-host",
+				})
+				if err == nil {
+					t.Fatal("reportReconcile returned nil; the probe never reached the failure path")
+				}
+				reportReconcileFailure(&errOut, err)
+				return out.String() + errOut.String()
+			},
+			wants: []string{"startup reconciliation did not complete", "cannot read local agent state", "invalid port", "next:"},
+		},
+		{
+			// NEGATIVE CONTROL: a surface already routed through RedactError.
+			// It must be quiet both before and after the fix, which is what
+			// shows the probe discriminates rather than firing on everything.
+			name: "control: doctor, already redacted",
+			run: func(t *testing.T) string {
+				t.Helper()
+				deps, buf := newDispatchTestDeps(t)
+				deps.OpenLedger = func(context.Context, string) (*store.Ledger, error) {
+					return nil, leakyPGXError()
+				}
+				if err := runStoreDoctor(ctx, deps); err != nil {
+					t.Fatalf("runStoreDoctor: %v", err)
+				}
+				return buf.String()
+			},
+			wants: []string{"connection: FAILED", "invalid port"},
+		},
+	}
+
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			got := tc.run(t)
+			for _, want := range tc.wants {
+				if !strings.Contains(got, want) {
+					t.Fatalf("output does not contain %q, so either the diagnosis was lost or the absence assertions below would pass vacuously; got:\n%s", want, got)
+				}
+			}
+			for _, secret := range []string{probeDSNPassword, probeDSNHost, probeDSNURL} {
+				if strings.Contains(got, secret) {
+					t.Errorf("failure output leaked %q; full output:\n%s", secret, got)
+				}
+			}
+		})
 	}
 }
