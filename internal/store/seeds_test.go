@@ -383,3 +383,35 @@ func TestSeedRegistry_LoaderRefusesASpillableContractType(t *testing.T) {
 		t.Errorf("the loader rejected a spillable telemetry type: %v", err)
 	}
 }
+
+// TestSeedRegistry_DocumentedCountMatchesTheRegistry pins the figures
+// docs/event-log-setup.md quotes about publishing event types.
+//
+// It exists because I got them WRONG on the first attempt: the guide said M1b
+// added "eleven" types for a total of 20, and the real numbers are ten and 19.
+// Nobody would have noticed — the sentence reads perfectly, and the only way to
+// check it is to count a directory.
+//
+// The guide's numbers are load-bearing rather than decorative: the section they
+// live in tells an operator that a newer binary REFUSES to open an
+// under-migrated database, and quotes the refusal verbatim, including its
+// counts. An operator comparing a real error against a wrong example concludes
+// the error is about something else.
+//
+// Pinned against the registry rather than by re-reading the file, so adding a
+// seed and forgetting the doc is a failing test rather than a rotted sentence.
+func TestSeedRegistry_DocumentedCountMatchesTheRegistry(t *testing.T) {
+	reg, err := SeedRegistry()
+	if err != nil {
+		t.Fatalf("SeedRegistry: %v", err)
+	}
+	const documentedTotal = 19
+	if got := len(reg.All()); got != documentedTotal {
+		t.Errorf("the registry holds %d seed event types but docs/event-log-setup.md documents %d.\n"+
+			"That guide quotes the count inside the verbatim refusal an operator sees when a database is under-migrated "+
+			"(\"the event log has N of this build's M event-type schemas published\"), so a wrong M makes a real error look "+
+			"like it is about something else.\nnext: update the count in docs/event-log-setup.md's "+
+			"\"Re-run `store migrate` after every upgrade\" section, and this constant with it",
+			got, documentedTotal)
+	}
+}

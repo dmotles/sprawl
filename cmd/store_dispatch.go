@@ -51,6 +51,7 @@ import (
 	"context"
 	"fmt"
 	"io"
+	"log/slog"
 	"time"
 
 	"github.com/dmotles/sprawl/internal/dispatchadapt"
@@ -145,6 +146,14 @@ func runStoreDispatch(ctx context.Context, deps *storeDeps) error {
 	}
 	out := deps.Stdout
 
+	// A LOGGER, WIRED EXPLICITLY. Every deps struct in internal/store defaults a
+	// nil Logger to slog.DiscardHandler — which is right for a library and wrong
+	// for this process: without one, Dispatcher.Run's "dispatch pass failed,
+	// retrying" WARN goes nowhere, so a database outage looks exactly like an
+	// idle log. Found by the dispatch-db-outage e2e row, which could not find
+	// any evidence of the outage it had just caused.
+	logger := slog.New(slog.NewTextHandler(deps.Stderr, &slog.HandlerOptions{Level: slog.LevelInfo}))
+
 	emitter := store.LedgerEmitter{Ledger: ledger}
 	registry := ledger.Registry()
 	reader := &store.PgEventReader{Pool: pool, Registry: registry}
@@ -163,6 +172,7 @@ func runStoreDispatch(ctx context.Context, deps *storeDeps) error {
 		Emitter:   emitter,
 		ProjectID: ledger.ProjectID(),
 		Host:      host,
+		Logger:    logger,
 	}); err != nil {
 		return err
 	}
@@ -178,6 +188,7 @@ func runStoreDispatch(ctx context.Context, deps *storeDeps) error {
 		FallbackOwner: fallbackOwner(deps.SprawlRoot),
 		Host:          host,
 		Consumer:      dispatchConsumer,
+		Logger:        logger,
 	})
 	if err != nil {
 		return err
@@ -186,6 +197,7 @@ func runStoreDispatch(ctx context.Context, deps *storeDeps) error {
 		Emitter:  emitter,
 		Notifies: &store.PgNotifyReader{Pool: pool, Registry: registry},
 		Host:     host,
+		Logger:   logger,
 	})
 	if err != nil {
 		return err
@@ -208,6 +220,7 @@ func runStoreDispatch(ctx context.Context, deps *storeDeps) error {
 			// The ack, from the log rather than a runtime hook.
 			"turn_finished": ack,
 		},
+		Logger: logger,
 		// Doorbell deliberately nil: correctness is the poll, and a standalone
 		// process holding a LISTEN connection open buys latency this process does
 		// not need — its deliveries are already asynchronous.
@@ -224,13 +237,13 @@ func runStoreDispatch(ctx context.Context, deps *storeDeps) error {
 			return err
 		}
 		if !dispatchNoSweeper {
-			reportSweep(ctx, out, sweeperDeps(pool, registry, local, claims, emitter, injector, ledger.ProjectID(), host))
+			reportSweep(ctx, out, sweeperDeps(pool, registry, local, claims, emitter, injector, ledger.ProjectID(), host, logger))
 		}
 		return nil
 	}
 
 	if !dispatchNoSweeper {
-		go runSweepTicker(ctx, out, sweeperDeps(pool, registry, local, claims, emitter, injector, ledger.ProjectID(), host))
+		go runSweepTicker(ctx, out, sweeperDeps(pool, registry, local, claims, emitter, injector, ledger.ProjectID(), host, logger))
 	}
 	fmt.Fprintf(out, "dispatching (Ctrl-C to stop)\n")
 	return dispatcher.Run(ctx)
@@ -246,7 +259,7 @@ const dispatchConsumer = "dispatcher"
 
 func sweeperDeps(pool *pgxpool.Pool, registry *store.Registry, local store.LocalAgents,
 	claims store.ClaimStore, emitter store.EventEmitter, injector store.Injector,
-	projectID uuid.UUID, host string,
+	projectID uuid.UUID, host string, sweepLogger *slog.Logger,
 ) store.SweeperDeps {
 	return store.SweeperDeps{
 		Goals:     &store.PgSweepReader{Pool: pool, Registry: registry},
@@ -257,6 +270,7 @@ func sweeperDeps(pool *pgxpool.Pool, registry *store.Registry, local store.Local
 		ProjectID: projectID,
 		Host:      host,
 		Elect:     store.PgSweepElection(pool, projectID),
+		Logger:    sweepLogger,
 	}
 }
 

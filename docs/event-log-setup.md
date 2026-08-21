@@ -102,6 +102,42 @@ does on startup. That is a deliberate split: the application connects with a
 least-privilege role that cannot migrate (see below), so a sprawl session that
 tried to apply migrations would fail for every correctly-configured deployment.
 
+### Re-run `store migrate` after every upgrade that adds event types
+
+**A newer sprawl binary refuses to open an event log that has not published the
+event types it carries**, and the refusal is immediate and total — not a
+degradation. `Open` counts this build's seed ids in `event_type_schemas` and
+fails when the count is short, because the alternative is an append that
+FK-violates on a pinned `schema_id` later, at run time, in production.
+
+This is not hypothetical. M1b (`QUM-1250`) added **ten** event types to the
+nine M1a shipped, for **19** in total — the spawn write-ahead (`spawn_requested`, `spawn_intent`,
+`spawn_committed`, `spawn_failed`, `stray_reclaimed`), notification delivery
+(`owner_notify`, `notify_acked`), the sweeper (`goal_poke`, `goal_stuck`) and
+owner-dead handling (`ownership_reassigned`). **An M1b binary against an
+M1a-migrated database will not start** until `store migrate` has been run again.
+
+So the upgrade order is:
+
+```bash
+sprawl store migrate    # publish the new event types, with a PRIVILEGED DSN
+sprawl store status     # confirm the log opens
+```
+
+The error names the remedy, so a missed migration is loud rather than mysterious:
+
+```
+store: the event log has 9 of this build's 19 event-type schemas published
+next: run `sprawl store migrate` with a privileged DSN to publish them; until
+then an append would fail its schema_id foreign key
+```
+
+Migrations and seed publication are both idempotent, so running it when there is
+nothing to do costs a round trip and changes nothing. **If you are upgrading a
+shared database, run it before rolling out the new binary** — an older binary is
+unaffected by types it does not know about, but a newer one cannot start without
+them.
+
 ## Least privilege, and why `events` is append-only
 
 Migration `00002_m1a_app_role.sql` creates a `NOLOGIN` role `sprawl_app` holding
@@ -171,6 +207,48 @@ ORDER BY e.seq DESC LIMIT 20;
 A session that has run at least one turn should show `run_started` and
 `turn_finished`. There is deliberately no `sprawl store query`: agents get narrow
 tools and never raw SQL, and an operator has psql.
+
+## Running the dispatch layer
+
+`sprawl store dispatch` is the reactive half of the log (`QUM-1250`): it notifies
+a contract's owner when its result lands, acks that notification at the
+recipient's next turn boundary, sweeps stalled goals, and reconciles spawn
+intents against local state at startup.
+
+```bash
+sprawl store dispatch            # foreground, until interrupted
+sprawl store dispatch --once     # one catch-up pass, then exit
+```
+
+**Running it on several hosts at once is safe and expected.** Correctness is a
+seq cursor plus a 2–5s poll, and exactly-once is carried by `event_claims`, so
+each event is acted on by exactly one host. LISTEN/NOTIFY is not used and is not
+required.
+
+The cursor is the host's only local dispatch state and is **reconstructible** —
+`rm -rf .sprawl/store/dispatch/` forces a full re-scan, and the claims make every
+repeat a no-op. That is the supported recovery if a cursor is ever damaged.
+
+### What a standalone run cannot do
+
+Two limits are structural rather than transient, and the command prints both at
+startup:
+
+* **Notifications are enqueued durably but delivered when the recipient next
+  drains.** The dispatcher writes the maildir envelope and the queue entry; the
+  recipient's own session drains them at its next turn boundary. Nothing is lost —
+  the `owner_notify` contract stays open until acked, so a slow delivery and a
+  lost one are both visible — but the delivery is not instant. Poking synchronously
+  needs the in-process supervisor.
+* **The stall sweeper is inert.** Turn state lives only in a running session's
+  memory, so a process outside one cannot tell a working agent from an idle one.
+  Rather than guess, the sweeper skips any owner whose turn state it cannot
+  observe. This is deliberate: the alternative pokes every working agent in the
+  fleet.
+
+Both become effective when M3a (`QUM-1252`) runs the dispatcher inside the
+session lifecycle. Until then, dispatch is useful for notification delivery and
+reconciliation, and the sweeper is a no-op you can leave running.
 
 ## Running the tests
 
