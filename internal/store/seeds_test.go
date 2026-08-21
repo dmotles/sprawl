@@ -145,6 +145,20 @@ var wantSeeds = []struct {
 		closes:   "owner_notify",
 		required: []string{"recipient"},
 	},
+	// QUM-1250 (M1b): the stall sweeper. NEITHER opens a contract — goal_stuck's
+	// non-contract shape is an approved deviation recorded on the issue, because
+	// M1b ships no closer for an escalation (the user inbox is M3) and an
+	// unclosable contract would make every stuck goal permanently outstanding.
+	{
+		name: "goal_poke", version: 1,
+		id:       "cf548f23-83f9-519b-abb8-007d8a1202fa",
+		required: []string{"goal_event_id", "owner", "epoch"},
+	},
+	{
+		name: "goal_stuck", version: 1,
+		id:       "edc66745-a3fa-5b61-9528-a47a5def3952",
+		required: []string{"goal_event_id", "owner", "pokes"},
+	},
 }
 
 func TestSeedRegistry_MatchesGoldenIDsAndWiring(t *testing.T) {

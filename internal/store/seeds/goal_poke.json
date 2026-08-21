@@ -1,0 +1,20 @@
+{
+  "name": "goal_poke",
+  "version": 1,
+  "opens": false,
+  "spillable": false,
+  "closes": "",
+  "json_schema": {
+    "type": "object",
+    "description": "The stall sweeper nudged a goal's owner. NOT a contract — a poke expects no reply, and pairing it with one would make every poke outstanding work in its own right. It IS the backoff counter: the number of goal_poke events for a goal is that goal's sweep epoch, so the exponent and the poke-dedup key are the same number and neither is stored separately. NOT spillable: a poke recorded only locally is invisible to the other host's dedup, so the next sweep would double-poke.",
+    "required": ["goal_event_id", "owner", "epoch"],
+    "properties": {
+      "goal_event_id": {"type": "string"},
+      "owner": {"type": "string"},
+      "epoch": {"type": "integer"},
+      "reason": {"type": "string"},
+      "host": {"type": "string"},
+      "idle_seconds": {"type": "integer"}
+    }
+  }
+}

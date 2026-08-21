@@ -1,0 +1,19 @@
+{
+  "name": "goal_stuck",
+  "version": 1,
+  "opens": false,
+  "spillable": false,
+  "closes": "",
+  "json_schema": {
+    "type": "object",
+    "description": "The poke cap was reached: this goal is quarantined and will never be poked again. DELIBERATELY NOT a contract in M1b (opens=false), which is a deviation from the plan's 'escalation + quarantine' reading and is recorded on QUM-1250 as an approved decision — M1b ships no closer for it, because the user inbox that would resolve an escalation is M3, so opening a contract here would leave every stuck goal permanently outstanding and force the sweeper to special-case its own output. Quarantine is expressed instead as 'a goal with a goal_stuck event is never poked again', which is what actually stops the token burn. NOT spillable: a quarantine marker recorded only locally would let another host keep poking.",
+    "required": ["goal_event_id", "owner", "pokes"],
+    "properties": {
+      "goal_event_id": {"type": "string"},
+      "owner": {"type": "string"},
+      "pokes": {"type": "integer"},
+      "reason": {"type": "string"},
+      "host": {"type": "string"}
+    }
+  }
+}

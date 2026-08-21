@@ -65,6 +65,11 @@ type LocalAgent struct {
 	Status   string
 	Branch   string
 	Worktree string
+	// InTurn is the sweeper's in-turn gate. It is an OBSERVATION rather than a
+	// stored field — the runtime's phase machine is the authority — so the
+	// adapter that fills this reads it live and a stale false here is a poke to
+	// a working agent.
+	InTurn bool
 }
 
 // LocalAgents is the host's own view of itself.
