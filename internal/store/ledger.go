@@ -76,10 +76,13 @@ func Open(ctx context.Context, cfg LedgerConfig) (*Ledger, error) {
 	if !cfg.Enabled {
 		return nil, nil
 	}
-	log := cfg.Logger
-	if log == nil {
-		log = slog.New(slog.DiscardHandler)
-	}
+	// WRAPPED, not just defaulted. The degraded WARN below logs the pgx connect
+	// error verbatim, and that error renders `user=` and `database=` in keyword
+	// form plus the resolver's hostname — measured, see redact.go. This logger
+	// is built here rather than handed in fully-formed, so a caller wrapping its
+	// own slog.New cannot reach it; QUM-1280's fix has to be at this line.
+	// RedactingLogger is nil-safe and nil still means DISCARD.
+	log := RedactingLogger(cfg.Logger)
 
 	if cfg.DSN == "" {
 		// ResolveDSN treats an absent DSN as a quiet non-error because the
@@ -110,8 +113,15 @@ func Open(ctx context.Context, cfg LedgerConfig) (*Ledger, error) {
 	// growing spill directory. The DSN is not echoed back — it is a credential.
 	if _, err := pgxpool.ParseConfig(cfg.DSN); err != nil {
 		return nil, &HintError{
-			Err:  fmt.Errorf("store: the event-log DSN from %s is not a valid Postgres connection string: %w", describeSource(cfg.DSNSource), err),
-			Hint: "check the value for typos (the DSN itself is not shown here because it is a credential); the expected form is postgres://user:password@host:5432/dbname",
+			Err: fmt.Errorf("store: the event-log DSN from %s is not a valid Postgres connection string: %w", describeSource(cfg.DSNSource), err),
+			// The expected form is spelled WITHOUT a literal `postgres://` and
+			// without any `key=value`, because this hint is itself rendered
+			// through RedactError at every print site — `store doctor` already
+			// did, and QUM-1280 routed cmd/root.go's Execute sink through it
+			// too. Spelled the obvious way, dsnURLRe reduced the whole example
+			// to `postgres://[redacted]`, deleting the answer. Pinned by
+			// TestOpen_BadDSNHintSurvivesRedaction.
+			Hint: "check the value for typos (the DSN itself is not shown here because it is a credential); the expected form is a libpq URL: scheme `postgres`, then `<user>:<password>@<host>:<port>/<dbname>`",
 		}
 	}
 

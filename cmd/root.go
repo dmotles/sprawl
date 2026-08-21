@@ -2,9 +2,12 @@ package cmd
 
 import (
 	"fmt"
+	"io"
 	"os"
 
 	"github.com/spf13/cobra"
+
+	"github.com/dmotles/sprawl/internal/store"
 )
 
 var rootCmd = &cobra.Command{
@@ -26,8 +29,44 @@ var rootCmd = &cobra.Command{
 }
 
 func Execute() {
-	if err := rootCmd.Execute(); err != nil {
-		fmt.Fprintln(os.Stderr, err)
-		os.Exit(1)
+	if code := executeTo(os.Stderr, rootCmd); code != 0 {
+		os.Exit(code)
 	}
+}
+
+// executeTo runs cmd and reports the process exit code, so the sink below is
+// reachable from a test without os.Exit.
+func executeTo(w io.Writer, cmd *cobra.Command) int {
+	if err := cmd.Execute(); err != nil {
+		writeExecError(w, err)
+		return 1
+	}
+	return 0
+}
+
+// writeExecError renders err with DSN-shaped text removed (QUM-1280).
+//
+// This is the sink for EVERY error any cobra command returns, which makes it the
+// single widest credential carrier in the tree: `store migrate`'s raw pgx
+// failure is produced FROM the DSN, and `store dispatch`'s degraded refusal
+// wraps a pgx connect error. This repo is public and the real DSN arrives at
+// runtime, so the concrete failure mode is an operator pasting a terminal error
+// into an issue.
+//
+// REDACTION AT THE PRINT, NEVER AT THE RETURN. Sanitising where the error is
+// produced replaces the value with a string and breaks errors.Is for in-process
+// callers — TestStoreDispatch_PropagatesAnOpenFailure depends on that identity.
+//
+// RedactSecrets is safe to apply to every command's errors, not only the store
+// ones: internal/store/redact_test.go carries a negative control proving it
+// leaves ordinary text alone, and the multi-line `next:` hints this repo prints
+// survive verbatim (pinned in root_test.go).
+//
+// The nil guard matters: RedactError(nil) is "", so an unconditional Fprintln
+// would print a blank line.
+func writeExecError(w io.Writer, err error) {
+	if err == nil {
+		return
+	}
+	fmt.Fprintln(w, store.RedactError(err))
 }

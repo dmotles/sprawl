@@ -148,6 +148,26 @@ func defaultHostIdentity(deps *storeDeps) string {
 // query hundreds of times per stall threshold to reach the same conclusion.
 const dispatchSweepInterval = 2 * time.Minute
 
+// dispatchDegradedRefusal is the refusal returned when the ledger is degraded.
+//
+// A FUNCTION so the refusal is reachable from a test: everything above its call
+// site needs a live Postgres. It keeps %w — the cause must stay in the chain for
+// errors.Is, and the redaction happens at the print in cmd/root.go.
+func dispatchDegradedRefusal(derr error) error {
+	return fmt.Errorf("the event log is unreachable, so dispatch cannot start: %w\nnext: run `sprawl store doctor` to diagnose the connection; running agents are unaffected and their telemetry is spilling locally", derr)
+}
+
+// dispatchLogger builds the dispatch logger, REDACTING (QUM-1280).
+//
+// The store's dispatcher, sweeper and notify handlers log their failures with
+// the raw error attached, and "dispatch pass failed, retrying" fires on a loop
+// during a database outage — the highest-volume DSN carrier in the tree. The
+// wrapper is at the handler rather than at those ~17 call sites so a log line
+// added later cannot bypass it; see internal/store/redactslog.go.
+func dispatchLogger(w io.Writer) *slog.Logger {
+	return slog.New(store.RedactingHandler(slog.NewTextHandler(w, &slog.HandlerOptions{Level: slog.LevelInfo})))
+}
+
 func runStoreDispatch(ctx context.Context, deps *storeDeps) error {
 	if err := requireSprawlRoot(deps); err != nil {
 		return err
@@ -164,7 +184,7 @@ func runStoreDispatch(ctx context.Context, deps *storeDeps) error {
 	// spawn_intent, owner_notify and goal_poke are all non-spillable by design,
 	// so a degraded run would fail on every event while looking busy.
 	if derr := ledger.DegradedError(); derr != nil {
-		return fmt.Errorf("the event log is unreachable, so dispatch cannot start: %w\nnext: run `sprawl store doctor` to diagnose the connection; running agents are unaffected and their telemetry is spilling locally", derr)
+		return dispatchDegradedRefusal(derr)
 	}
 	pool := ledger.Pool()
 	if pool == nil {
@@ -187,7 +207,7 @@ func runStoreDispatch(ctx context.Context, deps *storeDeps) error {
 	// retrying" WARN goes nowhere, so a database outage looks exactly like an
 	// idle log. Found by the dispatch-db-outage e2e row, which could not find
 	// any evidence of the outage it had just caused.
-	logger := slog.New(slog.NewTextHandler(deps.Stderr, &slog.HandlerOptions{Level: slog.LevelInfo}))
+	logger := dispatchLogger(deps.Stderr)
 
 	emitter := store.LedgerEmitter{Ledger: ledger}
 	registry := ledger.Registry()

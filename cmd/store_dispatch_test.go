@@ -251,11 +251,12 @@ func TestDefaultHostIdentity_IsNotJustTheCheckoutPath(t *testing.T) {
 // satisfy an absence-only test and is a useless error message — and a useless
 // error message is one somebody deletes the redaction to fix.
 //
-// WHAT THIS DOES NOT COVER, stated so the name is not read as more than it is:
-// the `DegradedError` wrap at store_dispatch.go returns its error for cobra to
-// print, and the slog logger wired onto deps.Stderr receives store records
-// carrying raw `"error", err` attributes. Both are unredacted DSN carriers on
-// the same stream and are filed separately rather than fixed here.
+// BOTH OF THOSE ARE NOW COVERED (QUM-1280), and the rows are in this table: the
+// `DegradedError` wrap goes through cmd/root.go's Execute sink via
+// writeExecError, and the dispatch logger's handler redacts its records. What
+// this file cannot see is the ledger's OWN logger — built inside store.Open,
+// before this package gets a logger at all — which is covered by
+// TestOpen_DegradedWarningDoesNotLeakTheDSN in internal/store.
 //
 // AND ONE SEAM IS NOT COVERED: that runStoreDispatch itself routes its
 // reconcile failure through reportReconcileFailure(deps.Stderr, ...) rather than
@@ -400,6 +401,36 @@ func TestStoreDispatch_SweepAndReconcileFailuresDoNotPrintTheDSN(t *testing.T) {
 			},
 			wants: []string{"connection: FAILED", "invalid port"},
 		},
+		{
+			// The DegradedError wrap: returned for cobra, printed by
+			// cmd/root.go's Execute sink. Redacted at the print so the %w chain
+			// survives for errors.Is (see TestDispatchDegradedRefusal_PreservesTheCause).
+			name: "degraded refusal, at the Execute sink",
+			run: func(t *testing.T) (string, string) {
+				t.Helper()
+				var buf bytes.Buffer
+				writeExecError(&buf, dispatchDegradedRefusal(leakyPGXError()))
+				return "", buf.String()
+			},
+			// No errOnly: this surface takes a single writer, so there is no
+			// routing claim to pin and a stdout half asserted against "" could
+			// never fire.
+			wants: []string{"the event log is unreachable", "invalid port", "next:", "store doctor"},
+		},
+		{
+			// The dispatch logger: the "dispatch pass failed, retrying" WARN
+			// fires on a LOOP during an outage with the pgx error attached, so
+			// it is the highest-volume carrier of the lot.
+			name: "dispatch logger WARN",
+			run: func(t *testing.T) (string, string) {
+				t.Helper()
+				var buf bytes.Buffer
+				dispatchLogger(&buf).Warn("dispatch pass failed, retrying", "error", leakyPGXError())
+				return "", buf.String()
+			},
+			// No errOnly, for the same reason as the row above.
+			wants: []string{"dispatch pass failed", "invalid port"},
+		},
 	}
 
 	for _, tc := range cases {
@@ -425,5 +456,15 @@ func TestStoreDispatch_SweepAndReconcileFailuresDoNotPrintTheDSN(t *testing.T) {
 				}
 			}
 		})
+	}
+}
+
+// The refusal must keep WRAPPING its cause: redaction belongs at the print, and
+// rendering the cause with %s here would be the tempting wrong fix — it breaks
+// errors.Is for every in-process caller.
+func TestDispatchDegradedRefusal_PreservesTheCause(t *testing.T) {
+	boom := errors.New("boom")
+	if err := dispatchDegradedRefusal(boom); !errors.Is(err, boom) {
+		t.Errorf("dispatchDegradedRefusal dropped its cause from the chain: %v", err)
 	}
 }

@@ -1,8 +1,10 @@
 package store
 
 import (
+	"bytes"
 	"context"
 	"errors"
+	"log/slog"
 	"os"
 	"strings"
 	"testing"
@@ -369,5 +371,94 @@ func TestLedger_LoggingIsSafeWithoutAConfiguredLogger(t *testing.T) {
 	}
 	if err := RecordHandoff(context.Background(), l, HandoffRecord{SessionID: "s", Body: "b"}); err != nil {
 		t.Errorf("RecordHandoff returned an error: %v", err)
+	}
+}
+
+// TestOpen_DegradedWarningDoesNotLeakTheDSN pins the crux of QUM-1280.
+//
+// The degraded WARN fires PRECISELY when the database is unreachable — the
+// scenario the redaction work exists for — and it carried `"error", cause`
+// verbatim. That logger is built inside Open, before any wrapping a caller
+// could do at its own slog.New, so the fix has to be here. Measured red before
+// the fix: the WARN printed
+//
+//	error="failed to connect to `user=degradedleakuser database=degradedleakdb`:
+//	dial error ...: connect: connection refused"
+//
+// Hermetic: port 1 on loopback refuses immediately, so pgx produces a real
+// CONNECT error (keyword form, the shape a real outage makes) with no container
+// and no DNS.
+//
+// ABSENCE OF THE SECRET, not presence of a marker; paired with the survival
+// assertions above it so "printed nothing" cannot satisfy the row.
+func TestOpen_DegradedWarningDoesNotLeakTheDSN(t *testing.T) {
+	const (
+		leakUser = "degradedleakuser"
+		leakDB   = "degradedleakdb"
+	)
+	var buf bytes.Buffer
+	l, err := Open(context.Background(), LedgerConfig{
+		Enabled:    true,
+		DSN:        "postgres://" + leakUser + ":" + probePassword + "@127.0.0.1:1/" + leakDB + "?sslmode=disable&connect_timeout=1",
+		DSNSource:  EnvDSN,
+		RemoteURL:  "https://example.invalid/degraded",
+		SprawlRoot: t.TempDir(),
+		Logger:     slog.New(slog.NewTextHandler(&buf, nil)),
+	})
+	if err != nil {
+		t.Fatalf("Open must degrade rather than fail on an unreachable database: %v", err)
+	}
+	if l == nil {
+		t.Fatal("Open returned no Ledger")
+	}
+	t.Cleanup(l.Close)
+
+	got := buf.String()
+	// Anti-vacuity: without the WARN itself, every absence check below is free.
+	for _, want := range []string{"event log unreachable", "connection refused", "dsn_source=", "spill_dir="} {
+		if !strings.Contains(got, want) {
+			t.Fatalf("the degraded WARN lost %q, so the absence assertions below would pass vacuously; got:\n%s", want, got)
+		}
+	}
+	// probePassword is a CANARY here, not live coverage: pgx omits the password
+	// from connect errors entirely (see the comment at probePassword's
+	// declaration in redact_test.go), so that one check cannot fire today. Only
+	// leakUser and leakDB are live assertions, and both were measured RED on
+	// the parent commit — see the quoted output above.
+	for _, secret := range []string{leakUser, leakDB, probePassword} {
+		if strings.Contains(got, secret) {
+			t.Errorf("the degraded WARN leaked %q; got:\n%s", secret, got)
+		}
+	}
+}
+
+// TestOpen_BadDSNHintSurvivesRedaction guards the OTHER direction of the
+// redaction work: an error message made useless is one somebody deletes the
+// redaction to fix.
+//
+// The bad-DSN hint teaches the expected connection-string shape, and it is
+// printed through RedactError at every sink. Written the obvious way — with a
+// literal postgres:// example — dsnURLRe reduced the entire example to
+// `postgres://[redacted]`. Positive control: restoring that literal makes this
+// row fire.
+func TestOpen_BadDSNHintSurvivesRedaction(t *testing.T) {
+	_, err := Open(context.Background(), LedgerConfig{
+		Enabled:    true,
+		DSN:        "this is not a dsn",
+		DSNSource:  EnvDSN,
+		RemoteURL:  "https://example.invalid/badsdn",
+		SprawlRoot: t.TempDir(),
+	})
+	if err == nil {
+		t.Fatal("an unparseable DSN must be a configuration error, not degraded mode")
+	}
+	rendered := RedactError(err)
+	if !strings.Contains(rendered, "check the value for typos") {
+		t.Fatalf("the hint did not reach the rendered error, so the assertions below are vacuous: %q", rendered)
+	}
+	for _, want := range []string{"user", "password", "host", "port", "dbname"} {
+		if !strings.Contains(rendered, want) {
+			t.Errorf("redaction ate %q out of the bad-DSN hint, leaving the operator without the expected form: %q", want, rendered)
+		}
 	}
 }
