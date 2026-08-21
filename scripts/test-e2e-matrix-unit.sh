@@ -849,10 +849,19 @@ if grep -E '^test-e2e-matrix-unit:' "$MAKEFILE" >/dev/null 2>&1; then
 else
 	fail "Makefile missing test-e2e-matrix-unit target"
 fi
-if grep -E '^validate:.*[[:space:]]test-e2e-matrix-unit([[:space:]]|$)' "$MAKEFILE" >/dev/null 2>&1; then
-	pass "Makefile validate target depends on test-e2e-matrix-unit"
+# QUM-1286: read the wiring from `make print-validate-steps`, not from a
+# `^validate:` prerequisite grep. `validate:` is now a RECIPE driving
+# scripts/validate-timed.sh over $(VALIDATE_STEPS) so each step can be timed and
+# attributed, so it has no prerequisite list to grep — the old form went red for
+# a true reason ("this suite is no longer wired in") that was false about the
+# tree. Asking make resolves the variable, its continuations, and any future
+# refactor of how the list is spelled.
+VALIDATE_STEPS_RESOLVED=$(env -u MAKEFLAGS -u MFLAGS -u MAKELEVEL \
+	make --no-print-directory -C "$(dirname "$MAKEFILE")" -f "$MAKEFILE" print-validate-steps 2>/dev/null)
+if printf '%s\n' "$VALIDATE_STEPS_RESOLVED" | grep -qx 'test-e2e-matrix-unit'; then
+	pass "make print-validate-steps lists test-e2e-matrix-unit"
 else
-	fail "Makefile validate target no longer runs test-e2e-matrix-unit — this suite would stop gating commits"
+	fail "make validate no longer runs test-e2e-matrix-unit — this suite would stop gating commits (resolved steps: $(printf '%s' "$VALIDATE_STEPS_RESOLVED" | tr '\n' ' '))"
 fi
 
 # ----------------------------------------------------------------------------

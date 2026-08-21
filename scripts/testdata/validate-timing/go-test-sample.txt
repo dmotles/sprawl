@@ -1,0 +1,12 @@
+ok  	github.com/dmotles/sprawl/internal/alpha	1.234s
+ok  	github.com/dmotles/sprawl/internal/bravo	12.500s
+ok  	github.com/dmotles/sprawl/internal/charlie	(cached)
+?   	github.com/dmotles/sprawl/internal/delta	[no test files]
+--- FAIL: TestSomething (0.01s)
+    something_test.go:12: boom
+FAIL	github.com/dmotles/sprawl/internal/echo	0.512s
+ok  	github.com/dmotles/sprawl/internal/foxtrot	3.100s
+ok  	github.com/dmotles/sprawl/internal/golf	(cached)
+ok  	github.com/dmotles/sprawl/internal/hotel	7.250s
+ok  	github.com/dmotles/sprawl/internal/india	5.000s
+FAIL

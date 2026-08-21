@@ -425,8 +425,21 @@ func TestSprawlInternalsAgentsStubPointsAtClaudeSkill(t *testing.T) {
 	}
 }
 
-// validatePrereqRE captures `validate`'s prerequisite list from the Makefile.
-var validatePrereqRE = regexp.MustCompile(`(?m)^validate:[ \t]*(.*)$`)
+// validateStepsRE captures validate's step list from the Makefile.
+//
+// It reads `VALIDATE_STEPS`, not `validate:`'s prerequisite list. QUM-1286 turned
+// `validate` into a recipe that drives scripts/validate-timed.sh over
+// `$(VALIDATE_STEPS)` so each step can be timed and attributed, which left
+// `validate:` with NO prerequisites at all — and this test caught it, exactly as
+// its `len(prereqs) < 10` control was written to (`parsed 0 prerequisites from
+// "validate:" ("")`). `VALIDATE_STEPS` is now the single source of truth, so this
+// is where the oracle has to read.
+//
+// The trailing group tolerates backslash line continuations, because the
+// assignment is wrapped across five lines; without that, this captures only the
+// first line and the control below fires on a truncated parse rather than on a
+// missing one.
+var validateStepsRE = regexp.MustCompile(`(?m)^VALIDATE_STEPS[ \t]*:?=[ \t]*((?:.*\\\n)*.*)$`)
 
 // namesMakeTarget reports whether md names the target as a WHOLE TOKEN.
 //
@@ -495,15 +508,15 @@ func TestSprawlInternalsSkillBuildTargetsMatchMakefile(t *testing.T) {
 	makefile := readRepoFile(t, "Makefile")
 	skillSection := mdSection(t, sprawlInternalsSkill, readSprawlInternalsSkill(t), "Build & Test")
 
-	m := validatePrereqRE.FindStringSubmatch(makefile)
+	m := validateStepsRE.FindStringSubmatch(makefile)
 	if m == nil {
-		t.Fatalf("control failed: no `validate:` rule found in Makefile — the regexp stopped matching, so every check below is vacuous")
+		t.Fatalf("control failed: no `VALIDATE_STEPS` assignment found in Makefile — the regexp stopped matching, so every check below is vacuous")
 	}
-	prereqs := strings.Fields(m[1])
+	prereqs := strings.Fields(strings.ReplaceAll(m[1], "\\", " "))
 
 	// Control: a truncated parse makes the loop below pass by iterating nothing.
 	if len(prereqs) < 10 {
-		t.Fatalf("control failed: parsed %d prerequisites from `validate:` (%q), expected at least 10 — the parse is broken", len(prereqs), m[1])
+		t.Fatalf("control failed: parsed %d steps from `VALIDATE_STEPS` (%q), expected at least 10 — the parse is broken", len(prereqs), m[1])
 	}
 	// Control on the fix itself: these five were the ones the frozen block
 	// omitted. If the Makefile stops declaring them, this test must be revisited

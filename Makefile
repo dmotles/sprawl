@@ -1,7 +1,89 @@
-.PHONY: lint-cache-dir test-lint-pin validate build hooks-armed proto-check proto-gen proto-gen-web hub-web fmt-check lint test clean install fmt hooks leak-scan test-handoff-e2e test-exit-code-preservation test-parallel-agent-viewport-e2e test-tui-e2e test-leak-resistance-e2e test-e2e-matrix test-e2e-matrix-unit test-hooks-e2e test-hub-bootstrap test-hub-e2e test-store-pg test-wirelog-helpers-unit test-e2e-lockwait-unit test-gitignore-classes test-race test-race-gate always-loaded-budget test-always-loaded-budget-unit
+.PHONY: lint-cache-dir test-lint-pin validate build hooks-armed proto-check proto-gen proto-gen-web hub-web fmt-check lint test clean install fmt hooks leak-scan test-handoff-e2e test-exit-code-preservation test-parallel-agent-viewport-e2e test-tui-e2e test-leak-resistance-e2e test-e2e-matrix test-e2e-matrix-unit test-hooks-e2e test-hub-bootstrap test-hub-e2e test-store-pg test-wirelog-helpers-unit test-e2e-lockwait-unit test-gitignore-classes test-race test-race-gate always-loaded-budget test-always-loaded-budget-unit print-validate-steps test-validate-timing-unit check-validate-baseline validate-baseline
 
-# Default target — full quality gauntlet
-validate: build hooks-armed proto-check fmt-check lint test-lint-pin test-race-gate test-race test-wirelog-helpers-unit test-e2e-lockwait-unit test-e2e-matrix-unit test-always-loaded-budget-unit always-loaded-budget test-gitignore-classes leak-scan
+# THIS_MAKEFILE must be resolved HERE, above any include, where MAKEFILE_LIST's
+# last entry is still this file. Files named in the MAKEFILES environment
+# variable are PREPENDED (read earlier), so a plain `lastword` is safe at this
+# position — unlike GOLANGCI_LINT_CACHE's mid-file assignment below, which needs
+# the $(filter %Makefile,...) form. And the filter form must NOT be used here:
+# `make -f Makefile-norace` (scripts/test-race-gate.sh's RACE_GATE_MAKEFILE seam)
+# names a file that does not match %Makefile, which would resolve to `-f ''`.
+THIS_MAKEFILE := $(abspath $(lastword $(MAKEFILE_LIST)))
+
+# QUM-1286: validate's step list, and the ONLY copy of it. The timed driver
+# receives it as argv, `print-validate-steps` exposes it for introspection, and
+# scripts/testdata/validate-baseline.observed is checked against it — so a step
+# added or removed here propagates everywhere instead of leaving a second,
+# hand-maintained list to rot.
+VALIDATE_STEPS := build hooks-armed proto-check fmt-check lint test-lint-pin \
+	test-race-gate test-race test-wirelog-helpers-unit test-e2e-lockwait-unit \
+	test-e2e-matrix-unit test-always-loaded-budget-unit always-loaded-budget \
+	test-gitignore-classes test-validate-timing-unit check-validate-baseline \
+	leak-scan
+
+# Default target — full quality gauntlet.
+#
+# QUM-1286: this is a RECIPE rather than a prerequisite list so each step can be
+# timed and attributed. Three consequences, all deliberate, none of them free:
+#
+#  1. The literal `$(MAKE)` is LOAD-BEARING and must not be "simplified" to
+#     `make`. GNU make executes a recipe line containing that literal even under
+#     -n (handing `n` down via MAKEFLAGS), which is the only reason `make -n
+#     validate` still expands the steps — and therefore the only reason
+#     scripts/test-race-gate.sh's wiring assertions can still see `go test
+#     -race ./...` at all. With a bare `make`, -n prints this one line, the race
+#     gate goes blind, and it stays GREEN while blind. Guarded by
+#     scripts/test-validate-timing-unit.sh section [8], which watches the
+#     control fire.
+#  2. `make -j validate` no longer interleaves the steps; the driver runs them
+#     serially. That is required for a per-step number to mean anything, and it
+#     is why the `hooks-armed: build` ordering dependency below is now belt and
+#     braces rather than the mechanism.
+#  3. Each step is its own make process, so `build` runs twice — once as a step,
+#     once as `hooks-armed`'s prerequisite. Measured cost is one warm `go build`;
+#     it is reported in the baseline's driver overhead rather than papered over.
+validate:
+	@MAKE_CMD='$(MAKE) --no-print-directory' \
+	SPRAWL_VALIDATE_MAKE_F='$(THIS_MAKEFILE)' \
+	SPRAWL_VALIDATE_MAKE_C='$(CURDIR)' \
+	bash '$(dir $(THIS_MAKEFILE))scripts/validate-timed.sh' $(VALIDATE_STEPS)
+
+# Introspection seam, in the same spirit as lint-cache-dir below: one step per
+# line, so scripts/check-validate-baseline.sh and
+# scripts/test-validate-timing-unit.sh can compare sets without re-parsing the
+# Makefile. The one-per-line shape is asserted, not assumed — a space-separated
+# single line would silently turn the baseline's step-set legs into no-ops.
+print-validate-steps:
+	@printf '%s\n' $(VALIDATE_STEPS)
+
+# QUM-1286: unit suite for the timing driver itself. Pure bash + make, no Go
+# build, no claude, no tmux. In `validate` for the same reason
+# test-e2e-matrix-unit is: a regression test guarding a false-green is worthless
+# if it only runs when somebody remembers.
+test-validate-timing-unit:
+	bash scripts/test-validate-timing-unit.sh
+
+# QUM-1286: the recorded baseline is a CHECKED artifact, not a remembered one.
+# The previous baseline was prose in this file (see test-race below) and it
+# drifted ~25s silently. This asserts the recorded step set still equals
+# VALIDATE_STEPS, that the measurement is dated and in-window, and that no
+# checkout path leaked into a PUBLIC repo.
+check-validate-baseline:
+	bash scripts/check-validate-baseline.sh scripts/testdata/validate-baseline.observed
+
+# QUM-1286: re-measure the baseline. Runs the real gauntlet and promotes the
+# driver's own machine-readable observation, so the committed file is never
+# hand-edited. Not part of `validate` (it would be circular).
+# TEST_RACE_FLAGS=-count=1 is not optional here and is not "changing what
+# validate runs": a WARM run serves ~43 of 44 packages from the package cache,
+# so it can report a duration for ONE package and a per-package baseline built
+# from it would be a table of absences. Recording therefore bypasses the cache so
+# every package is really measured, and the baseline records go_cache=cold to say
+# so. A command-line variable assignment propagates through MAKEFLAGS to the
+# driver's sub-makes, which is why this works without threading it by hand.
+validate-baseline:
+	@$(MAKE) validate TEST_RACE_FLAGS=-count=1
+	@cp .validate-timings/baseline.observed scripts/testdata/validate-baseline.observed
+	@echo "Recorded a fresh baseline in scripts/testdata/validate-baseline.observed — review the diff and commit it."
 
 BUF ?= buf
 
@@ -57,7 +139,12 @@ hub-web:
 VERSION ?= $(shell git describe --tags --always 2>/dev/null || echo dev)
 COMMIT  ?= $(shell git rev-parse HEAD 2>/dev/null || echo none)
 DATE    ?= $(shell date -u +%Y-%m-%dT%H:%M:%SZ)
-LDFLAGS := -s -w \
+# QUM-1286: DEFERRED (`=`), not simply-expanded. VERSION/COMMIT/DATE each fork a
+# subprocess, and validate now runs 17 sub-makes; a simply-expanded LDFLAGS made
+# every one of them fork `git describe`, `git rev-parse` and `date` at PARSE
+# time, whether or not it was going to build anything. Deferred confines those
+# forks to the recipes that actually reference LDFLAGS (build, install).
+LDFLAGS = -s -w \
 	-X main.version=$(VERSION) \
 	-X main.commit=$(COMMIT) \
 	-X main.date=$(DATE)
@@ -178,21 +265,34 @@ test:
 # running both would double the suite for no extra coverage, since the race build
 # runs every assertion the plain build does.
 #
-# Measured on this host (4 cores, warm build caches, -count=1):
-#   go test ./...          99.0s
-#   go test -race ./...   122.2s   (+23%)
-# Cheap because the suite is sleep/timeout-bound, not CPU-bound —
-# internal/supervisor alone is 75s of the 122s and barely moves under
-# instrumentation. A targeted "concurrency-heavy packages" subset was measured
-# at 76.0s: it saves 46s while covering 4 of ~40 packages, and needs a
-# hand-maintained list that silently stops covering any newly-concurrent
-# package. Not worth it.
+# NO MEASUREMENTS HERE. The numbers that used to sit in this comment (a "4
+# cores" host, `go test ./...` 99.0s vs `-race` 122.2s, "internal/supervisor
+# alone is 75s of the 122s") were undated and had rotted: re-measured on
+# 2026-08-21, internal/supervisor alone was 99.9s test time, so either the
+# package had grown ~33% or the whole-suite figure was ~25s stale, and nothing
+# could tell you which. That drift is QUM-1286's entire reason for existing, and
+# re-adding a number here would recreate it. The live, dated, cache-annotated
+# baseline lives in scripts/testdata/validate-baseline.observed and is checked by
+# `make check-validate-baseline`; `make validate-baseline` re-measures it.
+#
+# The REASONING survives, because it is not a measurement: -race is cheap on this
+# suite because the suite is sleep/timeout-bound rather than CPU-bound, and a
+# targeted "concurrency-heavy packages" subset was rejected — it covers a handful
+# of ~40 packages and needs a hand-maintained list that silently stops covering
+# any newly-concurrent package.
 #
 # -race requires cgo and a C toolchain. That fails LOUDLY (the build is refused)
 # rather than silently skipping, so it cannot become a false green — and
 # test-race-gate re-proves detection actually works on every run anyway.
+# TEST_RACE_FLAGS is the seam `make validate-baseline` uses to bypass the package
+# cache (-count=1) when RECORDING a baseline. Empty by default, so a plain
+# `make validate`/`make test-race` is byte-identical to before QUM-1286 — and
+# note the deliberate absence of -count=1 here is what makes an unchanged-tree
+# re-run cheap, which is also what makes duration bimodal and unusable as a gate.
+TEST_RACE_FLAGS ?=
+
 test-race:
-	go test -race ./...
+	go test -race $(TEST_RACE_FLAGS) ./...
 
 # Guards the gate above. Dropping -race from `validate` is a SILENT regression:
 # nothing fails, races just stop being detected. So is landing in an environment

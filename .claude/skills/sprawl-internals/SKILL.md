@@ -64,19 +64,29 @@ table at `.claude/skills/e2e-matrix/SKILL.md` (`complete-lifecycle` row).
 ## Build & Test
 
 ```bash
-make              # runs full validation. Its prerequisites are declared on ONE line
-                  # of the Makefile (the `validate:` rule) and that line is the only
-                  # authority; this comment is checked against it by
+make              # runs full validation. Its steps are declared in the Makefile's
+                  # `VALIDATE_STEPS` variable, which is the only authority — since
+                  # QUM-1286 the `validate:` rule is a RECIPE driving
+                  # scripts/validate-timed.sh over that variable, so it has no
+                  # prerequisite list to read. This comment is checked against
+                  # VALIDATE_STEPS by
                   # TestSprawlInternalsSkillBuildTargetsMatchMakefile, so if the two
                   # ever disagree the test is what tells you, not this text:
                   #   build hooks-armed proto-check fmt-check lint test-lint-pin
                   #   test-race-gate test-race test-wirelog-helpers-unit
                   #   test-e2e-lockwait-unit test-e2e-matrix-unit
                   #   test-always-loaded-budget-unit always-loaded-budget
-                  #   test-gitignore-classes leak-scan
+                  #   test-gitignore-classes test-validate-timing-unit
+                  #   check-validate-baseline leak-scan
                   #   (race-gate runs BEFORE test-race on purpose: it takes ~2s and
                   #    fails fast on exactly the regression that would make the
                   #    ~2min race run stop measuring anything)
+                  # validate prints a per-step wall-clock breakdown, a per-package
+                  # breakdown of test-race, and the CACHE STATE those numbers are
+                  # conditional on. On failure it names the step; on SIGTERM (an
+                  # agent's Bash timeout killing `git commit` mid-hook) it names the
+                  # step it died in. No timing is asserted — see
+                  # scripts/testdata/validate-baseline.observed.
 make validate     # same as above — the default target
 make build        # builds ./sprawl binary
 make fmt          # auto-fix formatting
@@ -92,6 +102,11 @@ make test-e2e-lockwait-unit      # bash unit tests for the e2e harness' weave.lo
 make test-always-loaded-budget-unit  # fixture-only unit suite for the always-loaded budget resolver
 make always-loaded-budget        # the LIVE always-loaded instruction-budget gate
 make test-gitignore-classes      # gitignore classification tests
+make test-validate-timing-unit   # bash unit suite for validate's own per-step timing driver
+make check-validate-baseline     # asserts the recorded validate baseline still matches VALIDATE_STEPS,
+                                 # is dated, is in-window, and leaked no checkout path
+make validate-baseline           # re-measure and promote the baseline (NOT in validate: circular)
+make print-validate-steps        # the step list, one per line — the introspection seam the two above read
 make hooks        # installs BOTH git hooks: pre-commit (runs `make validate`) and
                   # reference-transaction (guard-main-ref). The second is the backstop
                   # `--no-verify` cannot skip — see CLAUDE.md. `make hooks-armed`, which

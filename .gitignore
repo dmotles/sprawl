@@ -127,6 +127,18 @@ scratch/
 # `git ls-files`), so the ignore cannot strand a real file.
 .golangci-cache/
 
+# Per-worktree `make validate` timing artifacts (QUM-1286). The timed driver
+# writes each captured step's transcript plus a machine-readable
+# baseline.observed here; `make validate-baseline` is what promotes the latter
+# into the tracked scripts/testdata/. Scratch by construction — every run
+# overwrites it, and two agents validating the same worktree must not race a
+# tracked file.
+#
+# Directory-anchored and leading-slash-rooted on purpose: `.validate-timings/`
+# alone would also match a nested directory of that name anywhere in the tree,
+# and the artifacts only ever land at the worktree root.
+/.validate-timings/
+
 # Tool/build/apply logs (QUM-989). Deliberately BROAD. `terraform apply` and
 # `az acr build` emit ad-hoc logs (apply4.log, acrbuild2.log) whose names nobody
 # can enumerate in advance, and this repo is PUBLIC — such logs routinely carry
