@@ -69,11 +69,28 @@ type LocalAgent struct {
 	// owner-dead check: "died with no session" is the permanent case, where
 	// "died but a session is recorded" may still be revivable.
 	SessionID string
-	// InTurn is the sweeper's in-turn gate. It is an OBSERVATION rather than a
-	// stored field — the runtime's phase machine is the authority — so the
-	// adapter that fills this reads it live and a stale false here is a poke to
-	// a working agent.
+	// InTurn and InTurnObserved are the sweeper's in-turn gate, and they are a
+	// TRI-STATE on purpose: in-turn, not-in-turn, and NOT KNOWN.
+	//
+	// A plain bool here was a real defect, found while writing the adapters and
+	// fixed in the same commit. Turn state lives only in the supervisor's
+	// in-memory phase machine (internal/runtime's UnifiedRuntime.State().InTurn)
+	// and has NO on-disk representation — internal/state.AgentState carries no
+	// such field. So a process that is not the supervisor cannot observe it, and
+	// a plain bool forces such a process to report `false`, which the sweeper
+	// would read as "not in turn" and poke a working agent.
+	//
+	// That is precisely the defect internal/supervisor/runtime.go's
+	// InTurnObserved already names: "Accepting the session probe's 'not in turn'
+	// when the authority is absent would be a negative answer derived from an
+	// unavailable observation." Same shape, one layer up, so the same tri-state
+	// answer — and the sweeper SKIPS an agent whose turn state is unobserved
+	// rather than assuming it is idle.
 	InTurn bool
+	// InTurnObserved is false when this view cannot see turn state at all.
+	// A view that reports InTurn: false with InTurnObserved: false is saying
+	// "I do not know", not "it is idle".
+	InTurnObserved bool
 }
 
 // LocalAgents is the host's own view of itself.

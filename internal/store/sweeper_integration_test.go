@@ -292,7 +292,7 @@ func TestSweepPg_SweepPokesOnceThenRespectsItsOwnBackoff(t *testing.T) {
 	e := newSweepEnv(t)
 	e.openGoal(t, "alice")
 
-	local := &fakeLocalAgents{agents: []LocalAgent{{Name: "alice", Status: "active"}}}
+	local := &fakeLocalAgents{agents: []LocalAgent{{Name: "alice", Status: "active", InTurnObserved: true}}}
 	inj := &recordingInjector{}
 	deps := SweeperDeps{
 		Goals: e.reader, Local: local, Claims: &PgClaimStore{Pool: e.pool},
@@ -365,7 +365,7 @@ func TestSweepPg_TwoSweepersWithNoElectionProduceOnePoke(t *testing.T) {
 	for _, host := range []string{"host-a", "host-b"} {
 		deps := SweeperDeps{
 			Goals:  frozen,
-			Local:  &fakeLocalAgents{agents: []LocalAgent{{Name: "alice", Status: "active"}}},
+			Local:  &fakeLocalAgents{agents: []LocalAgent{{Name: "alice", Status: "active", InTurnObserved: true}}},
 			Claims: &PgClaimStore{Pool: e.pool}, Emitter: e.emitter, Injector: shared,
 			ProjectID: e.projectID, Host: host, StallAfter: time.Nanosecond,
 		}
@@ -396,7 +396,7 @@ func TestSweepPg_APermanentlyStalledGoalReachesGoalStuckAndStops(t *testing.T) {
 	clock := time.Now()
 	deps := SweeperDeps{
 		Goals:  e.reader,
-		Local:  &fakeLocalAgents{agents: []LocalAgent{{Name: "alice", Status: "active"}}},
+		Local:  &fakeLocalAgents{agents: []LocalAgent{{Name: "alice", Status: "active", InTurnObserved: true}}},
 		Claims: &PgClaimStore{Pool: e.pool}, Emitter: e.emitter, Injector: inj,
 		ProjectID: e.projectID, Host: "host-a", StallAfter: time.Minute,
 		Now: func() time.Time { return clock },
@@ -468,7 +468,7 @@ func TestSweepPg_SweepWithTheRealElectionStillPokes(t *testing.T) {
 	inj := &recordingInjector{}
 	res, err := Sweep(context.Background(), SweeperDeps{
 		Goals:  e.reader,
-		Local:  &fakeLocalAgents{agents: []LocalAgent{{Name: "alice", Status: "active"}}},
+		Local:  &fakeLocalAgents{agents: []LocalAgent{{Name: "alice", Status: "active", InTurnObserved: true}}},
 		Claims: &PgClaimStore{Pool: e.pool}, Emitter: e.emitter, Injector: inj,
 		ProjectID: e.projectID, Host: "host-a", StallAfter: time.Nanosecond,
 		Elect: PgSweepElection(e.pool, e.projectID),

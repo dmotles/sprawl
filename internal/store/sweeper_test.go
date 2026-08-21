@@ -101,7 +101,7 @@ func newSweepFixture(t *testing.T) *sweepFixture {
 		// Idle well past the stall threshold.
 		LastOwnerActivity: now.Add(-2 * time.Hour),
 	}}
-	f.local.agents = []LocalAgent{{Name: "alice", Status: "active"}}
+	f.local.agents = []LocalAgent{{Name: "alice", Status: "active", InTurnObserved: true}}
 	f.deps = SweeperDeps{
 		Goals:      f.reader,
 		Local:      f.local,
@@ -232,16 +232,54 @@ func TestSweeper_AYoungGoalWithNoTurnBoundaryIsLeftAlone(t *testing.T) {
 // AgentState taxonomy is the sole wake arbiter and InTurn is its observation.
 func TestSweeper_DoesNotPokeAnInTurnOwner(t *testing.T) {
 	f := newSweepFixture(t)
-	f.local.agents = []LocalAgent{{Name: "alice", Status: "active", InTurn: true}}
+	f.local.agents = []LocalAgent{{Name: "alice", Status: "active", InTurn: true, InTurnObserved: true}}
 
 	f.sweep(t)
 	f.assertNotPoked(t, "an owner that is mid-turn")
 }
 
+// GATE 1b — AN UNOBSERVED TURN STATE IS NOT AN IDLE ONE.
+//
+// The defect this guards was live in the first version of the sweeper and was
+// found while writing the adapters, not by review: turn state exists ONLY in the
+// supervisor's in-memory phase machine (internal/runtime's
+// UnifiedRuntime.State().InTurn) and has no on-disk representation at all, so a
+// sweeper running outside that process CANNOT observe it. With a plain bool such
+// a process is forced to report `false`, the sweeper reads that as "idle", and
+// every working agent gets poked — silently, on every sweep, with nothing in the
+// log but a lot of pokes.
+//
+// internal/supervisor/runtime.go's InTurnObserved already names exactly this:
+// "Accepting the session probe's 'not in turn' when the authority is absent
+// would be a negative answer derived from an unavailable observation." Same
+// shape, one layer up.
+func TestSweeper_DoesNotPokeWhenTurnStateIsUnobservable(t *testing.T) {
+	f := newSweepFixture(t)
+	// The shape a non-supervisor process produces: idle-looking, but unknown.
+	f.local.agents = []LocalAgent{{Name: "alice", Status: "active", InTurn: false, InTurnObserved: false}}
+
+	f.sweep(t)
+	f.assertNotPoked(t, "an owner whose turn state this process cannot observe")
+}
+
+// POSITIVE CONTROL for gate 1b: the same fixture with the observation available.
+//
+// Direction: without this leg, a sweeper that skipped EVERYTHING would satisfy
+// gate 1b perfectly — and since the whole point of the tri-state is to make one
+// deployment inert rather than all of them, that is the failure mode it would
+// hide.
+func TestSweeper_PokesWhenTurnStateIsObservedAndIdle(t *testing.T) {
+	f := newSweepFixture(t)
+	f.local.agents = []LocalAgent{{Name: "alice", Status: "active", InTurn: false, InTurnObserved: true}}
+
+	f.sweep(t)
+	f.assertPoked(t, "the identical fixture with turn state observed and idle")
+}
+
 // POSITIVE CONTROL for gate 1: the same fixture with InTurn false IS poked.
 func TestSweeper_PokesTheSameOwnerWhenNotInTurn(t *testing.T) {
 	f := newSweepFixture(t)
-	f.local.agents = []LocalAgent{{Name: "alice", Status: "active", InTurn: false}}
+	f.local.agents = []LocalAgent{{Name: "alice", Status: "active", InTurn: false, InTurnObserved: true}}
 
 	f.sweep(t)
 	f.assertPoked(t, "the identical fixture with InTurn flipped to false")
@@ -253,7 +291,7 @@ func TestSweeper_PokesTheSameOwnerWhenNotInTurn(t *testing.T) {
 // literal, so there is one definition of the taxonomy.
 func TestSweeper_DoesNotPokeAPausedOwner(t *testing.T) {
 	f := newSweepFixture(t)
-	f.local.agents = []LocalAgent{{Name: "alice", Status: pausedStatus}}
+	f.local.agents = []LocalAgent{{Name: "alice", Status: pausedStatus, InTurnObserved: true}}
 
 	f.sweep(t)
 	f.assertNotPoked(t, "an operator-paused owner")
@@ -262,7 +300,7 @@ func TestSweeper_DoesNotPokeAPausedOwner(t *testing.T) {
 // POSITIVE CONTROL for gate 2: same fixture, status active.
 func TestSweeper_PokesTheSameOwnerWhenNotPaused(t *testing.T) {
 	f := newSweepFixture(t)
-	f.local.agents = []LocalAgent{{Name: "alice", Status: "active"}}
+	f.local.agents = []LocalAgent{{Name: "alice", Status: "active", InTurnObserved: true}}
 
 	f.sweep(t)
 	f.assertPoked(t, "the identical fixture with the status flipped to active")
@@ -287,7 +325,7 @@ func TestSweeper_DoesNotPokeAHumanOwnedWait(t *testing.T) {
 	// can hold — and it also asserts the property that actually matters: the
 	// human is never poked EVEN IF something answering to that name exists
 	// locally, so the gate does not depend on an absence to work.
-	f.local.agents = []LocalAgent{{Name: HumanOwner, Status: "active"}}
+	f.local.agents = []LocalAgent{{Name: HumanOwner, Status: "active", InTurnObserved: true}}
 
 	f.sweep(t)
 	f.assertNotPoked(t, "a goal owned by the human, with that name resolvable locally")
@@ -337,7 +375,7 @@ func TestSweeper_PokesTheSameOwnerOnceItIsUnblocked(t *testing.T) {
 func TestSweeper_DoesNotPokeATerminalOwner(t *testing.T) {
 	for _, status := range terminalStatuses() {
 		f := newSweepFixture(t)
-		f.local.agents = []LocalAgent{{Name: "alice", Status: status}}
+		f.local.agents = []LocalAgent{{Name: "alice", Status: status, InTurnObserved: true}}
 
 		f.sweep(t)
 		f.assertNotPoked(t, "an owner whose status is "+status)
@@ -353,7 +391,7 @@ func TestSweeper_DoesNotPokeATerminalOwner(t *testing.T) {
 func TestSweeper_PokesARevivableRestingOwner(t *testing.T) {
 	for _, status := range []string{"suspended", "idle", "complete"} {
 		f := newSweepFixture(t)
-		f.local.agents = []LocalAgent{{Name: "alice", Status: status}}
+		f.local.agents = []LocalAgent{{Name: "alice", Status: status, InTurnObserved: true}}
 
 		f.sweep(t)
 		f.assertPoked(t, "an owner resting in status "+status+" (revivable, not terminal)")

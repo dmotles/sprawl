@@ -366,6 +366,17 @@ func gateFor(c StalledCandidate, locals map[string]LocalAgent, now time.Time, st
 		// pause set on a machine it cannot observe.
 		return true, "the owner is not on this host, so its in-turn and paused state cannot be observed"
 	}
+	// THE TRI-STATE GATE. An UNOBSERVED turn state is not an idle one.
+	//
+	// Turn state exists only in the supervisor's in-memory phase machine, so a
+	// sweeper running outside that process cannot see it. Treating the resulting
+	// `false` as "idle" would poke working agents — and it would do so silently,
+	// on every sweep, with the log showing nothing but a lot of pokes. Skipping
+	// is the safe direction and makes the limitation visible in the reason
+	// string rather than latent in the behaviour.
+	if !local.InTurnObserved {
+		return true, "the owner's turn state is not observable from this process, and an unobserved turn state is not an idle one"
+	}
 	if local.InTurn {
 		return true, "the owner is mid-turn"
 	}
