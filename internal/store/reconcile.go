@@ -65,6 +65,10 @@ type LocalAgent struct {
 	Status   string
 	Branch   string
 	Worktree string
+	// SessionID is empty when this agent has no backend session. Read by the
+	// owner-dead check: "died with no session" is the permanent case, where
+	// "died but a session is recorded" may still be revivable.
+	SessionID string
 	// InTurn is the sweeper's in-turn gate. It is an OBSERVATION rather than a
 	// stored field — the runtime's phase machine is the authority — so the
 	// adapter that fills this reads it live and a stale false here is a poke to

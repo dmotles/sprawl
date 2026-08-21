@@ -143,6 +143,7 @@ type notifyFixture struct {
 	injector *recordingInjector
 	lookup   *fakeEventLookup
 	handler  *NotifyHandler
+	local    *fakeLocalAgents
 	goalID   uuid.UUID
 	closeEv  DispatchedEvent
 }
@@ -547,5 +548,234 @@ func TestNotifySeeds_ContractShapes(t *testing.T) {
 	}
 	if acked.Closes != "owner_notify" {
 		t.Errorf("notify_acked closes %q, want owner_notify", acked.Closes)
+	}
+}
+
+// ---------------------------------------------------------------------------
+// Owner-dead handling: "never let a RESULT land unobserved"
+// ---------------------------------------------------------------------------
+
+// newDeadOwnerFixture is the notify fixture plus a local view and a fallback
+// owner, so the owner-dead branch can be exercised.
+func newDeadOwnerFixture(t *testing.T, owner string, local []LocalAgent) *notifyFixture {
+	t.Helper()
+	f := newNotifyFixture(t, owner)
+	f.local = &fakeLocalAgents{agents: local}
+	h, err := NewNotifyHandler(NotifyHandlerDeps{
+		Emitter:       f.emitter,
+		Injector:      f.injector,
+		Claims:        f.claims,
+		Lookup:        f.lookup,
+		Local:         f.local,
+		FallbackOwner: "weave",
+		Host:          "host-a",
+		Consumer:      "dispatcher",
+	})
+	if err != nil {
+		t.Fatalf("NewNotifyHandler: %v", err)
+	}
+	f.handler = h
+	return f
+}
+
+// A RETIRED OWNER'S RESULT IS REASSIGNED AND DELIVERED TO THE FALLBACK.
+//
+// The plan is explicit that this must not be papered over: "goal owner
+// permanently dead → reassign ownership to root/workflow engine explicitly via a
+// system event; never let a RESULT land unobserved". Without it the notification
+// is addressed to an agent that cannot receive it, the injection fails on every
+// pass, and the owner_notify contract stays open forever — a result nobody ever
+// sees, with a growing pile of failed deliveries as the only symptom.
+func TestNotifyHandler_ARetiredOwnersResultIsReassignedToTheFallback(t *testing.T) {
+	f := newDeadOwnerFixture(t, "alice", []LocalAgent{{Name: "alice", Status: "retired"}})
+
+	if err := f.handler.Handle(context.Background(), f.closeEv); err != nil {
+		t.Fatalf("Handle: %v", err)
+	}
+
+	reassigned := f.emitter.byName("ownership_reassigned")
+	if len(reassigned) != 1 {
+		t.Fatalf("%d ownership_reassigned events, want 1 — a silent redirect leaves a result delivered to an agent that never opened the contract, with nothing saying why", len(reassigned))
+	}
+	payload := fmt.Sprint(reassigned[0].Payload)
+	if !strings.Contains(payload, "alice") || !strings.Contains(payload, "weave") {
+		t.Errorf("the reassignment does not record both the old and new owner: %s", payload)
+	}
+
+	got := f.injector.all()
+	if len(got) != 1 || got[0].Recipient != "weave" {
+		t.Fatalf("delivered %+v, want one delivery to the fallback owner weave", got)
+	}
+	notifies := f.emitter.byName("owner_notify")
+	if len(notifies) != 1 {
+		t.Fatalf("%d owner_notify events, want 1", len(notifies))
+	}
+	if p := fmt.Sprint(notifies[0].Payload); !strings.Contains(p, "weave") {
+		t.Errorf("the owner_notify names %s rather than the new owner, so the ack at weave's turn boundary would never close it: %s", "the dead owner", p)
+	}
+}
+
+// POSITIVE CONTROL for the reassignment: a LIVE owner is not reassigned.
+//
+// Direction: a subject known clean, where the probe must stay quiet. Without it,
+// a handler that reassigned unconditionally would satisfy the test above while
+// routing every result in the system to root and never notifying the agent that
+// actually asked for the work.
+func TestNotifyHandler_ALiveOwnerIsNotReassigned(t *testing.T) {
+	f := newDeadOwnerFixture(t, "alice", []LocalAgent{{Name: "alice", Status: "active"}})
+
+	if err := f.handler.Handle(context.Background(), f.closeEv); err != nil {
+		t.Fatalf("Handle: %v", err)
+	}
+	if got := f.emitter.byName("ownership_reassigned"); len(got) != 0 {
+		t.Errorf("a LIVE owner was reassigned: %v", got)
+	}
+	if got := f.injector.all(); len(got) != 1 || got[0].Recipient != "alice" {
+		t.Errorf("delivered %+v, want one delivery to alice", got)
+	}
+}
+
+// A REVIVABLE resting owner is NOT dead.
+//
+// The distinction that matters most here, and the one the tempting implementation
+// gets wrong: suspended, idle and complete agents are all revivable — a
+// notification to them auto-wakes or waits — so reassigning them would hand root
+// every result belonging to a quiet agent and permanently sever the agent from
+// its own work. state.IsTerminal is the repo's own predicate and is imported
+// rather than reimplemented.
+func TestNotifyHandler_ARevivableRestingOwnerIsNotDead(t *testing.T) {
+	for _, status := range []string{"suspended", "idle", "complete", "faulted", "paused"} {
+		f := newDeadOwnerFixture(t, "alice", []LocalAgent{{Name: "alice", Status: status}})
+		if err := f.handler.Handle(context.Background(), f.closeEv); err != nil {
+			t.Fatalf("Handle(%s): %v", status, err)
+		}
+		if got := f.emitter.byName("ownership_reassigned"); len(got) != 0 {
+			t.Errorf("an owner resting in status %q was reassigned, permanently severing a revivable agent from its own result", status)
+		}
+		if got := f.injector.all(); len(got) != 1 || got[0].Recipient != "alice" {
+			t.Errorf("status %q: delivered %+v, want one delivery to alice", status, got)
+		}
+	}
+}
+
+// DIED WITH NO SESSION is permanent; died WITH a session is not.
+//
+// The plan's wording is "retired/died, no session", and the session is the
+// discriminator: an agent recorded as died but still holding a session id may
+// come back, and reassigning it would take its work away while it is recoverable.
+func TestNotifyHandler_DiedWithNoSessionIsPermanentButWithOneIsNot(t *testing.T) {
+	dead := newDeadOwnerFixture(t, "alice", []LocalAgent{{Name: "alice", Status: "died"}})
+	if err := dead.handler.Handle(context.Background(), dead.closeEv); err != nil {
+		t.Fatalf("Handle (no session): %v", err)
+	}
+	if got := dead.emitter.byName("ownership_reassigned"); len(got) != 1 {
+		t.Errorf("%d reassignments for an owner that died with no session, want 1", len(got))
+	}
+
+	recoverable := newDeadOwnerFixture(t, "alice", []LocalAgent{{Name: "alice", Status: "died", SessionID: "s1"}})
+	if err := recoverable.handler.Handle(context.Background(), recoverable.closeEv); err != nil {
+		t.Fatalf("Handle (with session): %v", err)
+	}
+	if got := recoverable.emitter.byName("ownership_reassigned"); len(got) != 0 {
+		t.Errorf("an owner that died but still holds a session was reassigned, taking its work away while it is still recoverable: %v", got)
+	}
+}
+
+// AN OWNER THIS HOST CANNOT SEE IS NOT PRESUMED DEAD.
+//
+// A goal owned by an agent on another host is normal in a multi-host fleet, and
+// absence from THIS host's state is not evidence of death. Reassigning on that
+// basis would steal work from a perfectly healthy agent every time a result
+// happened to land on the wrong host — and it would do so silently, because the
+// reassignment event would look entirely legitimate.
+//
+// The delivery is attempted as addressed. If it genuinely cannot be delivered the
+// injection fails, the owner_notify contract stays open, and the sweeper
+// re-delivers — which is the mechanism already built for exactly this.
+func TestNotifyHandler_AnUnseenOwnerIsNotPresumedDead(t *testing.T) {
+	f := newDeadOwnerFixture(t, "alice", nil) // alice is on another host
+
+	if err := f.handler.Handle(context.Background(), f.closeEv); err != nil {
+		t.Fatalf("Handle: %v", err)
+	}
+	if got := f.emitter.byName("ownership_reassigned"); len(got) != 0 {
+		t.Errorf("an owner merely absent from this host was declared dead and reassigned: %v", got)
+	}
+	if got := f.injector.all(); len(got) != 1 || got[0].Recipient != "alice" {
+		t.Errorf("delivered %+v, want the delivery attempted to alice as addressed", got)
+	}
+}
+
+// WITHOUT A LOCAL VIEW OR A FALLBACK, THE HANDLER DOES NOT REASSIGN — it behaves
+// exactly as it did before this feature existed.
+//
+// Both are optional dependencies, and the degradation has to be toward "notify
+// the owner as addressed" rather than toward "reassign to nothing": a fallback of
+// "" would produce an owner_notify with an empty recipient, which is a contract
+// nothing can ever ack.
+func TestNotifyHandler_WithNoFallbackConfiguredItNeverReassigns(t *testing.T) {
+	f := newNotifyFixture(t, "alice") // no Local, no FallbackOwner
+
+	if err := f.handler.Handle(context.Background(), f.closeEv); err != nil {
+		t.Fatalf("Handle: %v", err)
+	}
+	if got := f.emitter.byName("ownership_reassigned"); len(got) != 0 {
+		t.Errorf("reassigned with no fallback owner configured: %v", got)
+	}
+	if got := f.injector.all(); len(got) != 1 || got[0].Recipient != "alice" {
+		t.Errorf("delivered %+v, want one delivery to alice", got)
+	}
+}
+
+// THE REASSIGNMENT IS RECORDED BEFORE THE NOTIFICATION IT REDIRECTS.
+//
+// Same rule as everywhere else in this diff, and here the consequence is
+// attribution: a notification to root that arrived with no reassignment on the
+// record is a result delivered to an agent that never opened the contract, with
+// nothing in the log explaining it.
+func TestNotifyHandler_ReassignmentIsRecordedBeforeTheNotification(t *testing.T) {
+	f := newDeadOwnerFixture(t, "alice", []LocalAgent{{Name: "alice", Status: "retired"}})
+	tr := &trace{}
+	f.emitter.trace = tr
+	f.injector.trace = tr
+
+	if err := f.handler.Handle(context.Background(), f.closeEv); err != nil {
+		t.Fatalf("Handle: %v", err)
+	}
+	got := tr.all()
+	want := []string{"emit:ownership_reassigned", "emit:owner_notify", "inject:weave"}
+	if fmt.Sprint(got) != fmt.Sprint(want) {
+		t.Errorf("trace = %v, want %v", got, want)
+	}
+}
+
+// A dead owner whose FALLBACK is also dead is reported rather than looped.
+//
+// Without a stop, a fallback that is itself gone would either be reassigned again
+// (to itself, forever) or produce an undeliverable notification on every pass. One
+// reassignment hop, then the failure surfaces.
+func TestNotifyHandler_DoesNotReassignTheFallbackToItself(t *testing.T) {
+	f := newDeadOwnerFixture(t, "weave", []LocalAgent{{Name: "weave", Status: "retired"}})
+
+	if err := f.handler.Handle(context.Background(), f.closeEv); err != nil {
+		t.Fatalf("Handle: %v", err)
+	}
+	if got := f.emitter.byName("ownership_reassigned"); len(got) != 0 {
+		t.Errorf("the fallback owner was reassigned to itself: %v", got)
+	}
+}
+
+// The new seed carries its intended shape.
+func TestOwnershipSeed_Shape(t *testing.T) {
+	reg := testRegistry(t)
+	s, ok := reg.ByName("ownership_reassigned", 1)
+	if !ok {
+		t.Fatal("ownership_reassigned@1 is missing from the seed registry")
+	}
+	if s.Opens || s.Closes != "" {
+		t.Errorf("ownership_reassigned takes part in a contract (opens=%v closes=%q); it is a system record, not outstanding work", s.Opens, s.Closes)
+	}
+	if s.Spillable {
+		t.Error("ownership_reassigned is spillable; an ownership change recorded only on one host is invisible to every other reader of the contract")
 	}
 }

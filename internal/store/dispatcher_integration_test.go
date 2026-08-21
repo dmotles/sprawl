@@ -463,12 +463,64 @@ func TestDispatchPg_TwoDispatchersActOnEachEventExactlyOnce(t *testing.T) {
 			t.Errorf("event %s was acted on %d times, want exactly 1", id, n)
 		}
 	}
-	// Not an assertion about the split being even — that is a scheduling
-	// accident — but a check that BOTH dispatchers really participated. If one
-	// did all the work, the disjointness above is a statement about a single
-	// dispatcher and says nothing about two.
-	if byHost["host-a"] == 0 || byHost["host-b"] == 0 {
-		t.Errorf("only one dispatcher did any work (%v); the exactly-once result above was not measured across two hosts", byHost)
+	// DELIBERATELY NOT asserting that both dispatchers did some work.
+	//
+	// An earlier version did, and it was FLAKY — observed failing with
+	// `map[host-b:40]`, i.e. one dispatcher legitimately took everything. That is
+	// not a defect: each dispatcher scans from its OWN cursor and skips what is
+	// already claimed, so whichever wins the first races can run ahead and take
+	// the rest. The split is a scheduling outcome, and asserting it makes a
+	// correct implementation fail.
+	//
+	// The direction of that flake was false RED, never false green for
+	// exactly-once — but a test that cries wolf gets weakened by the next person
+	// to see it. The thing it was reaching for (that this result is really about
+	// two hosts and not one) is established deterministically instead, by
+	// TestDispatchPg_AnotherHostsClaimSuppressesThisHost below.
+	t.Logf("work split across hosts: %v (not asserted — see the comment above)", byHost)
+}
+
+// A CLAIM HELD BY ANOTHER HOST SUPPRESSES THIS HOST, deterministically.
+//
+// This is what the flaky participation assertion above was trying to establish,
+// without depending on the scheduler: host-b's claim is planted BEFORE host-a
+// runs, so host-a must skip exactly that event and handle every other one. If
+// cross-host suppression were broken, host-a would handle all of them — and the
+// concurrent test above could still pass by having one host do everything.
+func TestDispatchPg_AnotherHostsClaimSuppressesThisHost(t *testing.T) {
+	e := newDispatchEnv(t)
+	var ids []uuid.UUID
+	for i := 0; i < 4; i++ {
+		ids = append(ids, e.append(t, basePayload))
+	}
+	taken := ids[1]
+
+	// host-b claims one event and never finishes it. The lease is long, so no
+	// takeover is available.
+	claims := &PgClaimStore{Pool: e.pool}
+	if won, err := claims.Claim(context.Background(), taken, "dispatcher", "host-b", time.Hour); err != nil || !won {
+		t.Fatalf("planting host-b's claim: won=%v err=%v", won, err)
+	}
+
+	var handled []uuid.UUID
+	d, err := NewDispatcher(e.deps("host-a", HandlerFunc(func(_ context.Context, ev DispatchedEvent) error {
+		handled = append(handled, ev.ID)
+		return nil
+	})))
+	if err != nil {
+		t.Fatalf("NewDispatcher: %v", err)
+	}
+	if _, err := d.Step(context.Background()); err != nil {
+		t.Fatalf("Step: %v", err)
+	}
+
+	if len(handled) != 3 {
+		t.Fatalf("host-a handled %d events, want 3 (all but the one host-b holds)", len(handled))
+	}
+	for _, id := range handled {
+		if id == taken {
+			t.Errorf("host-a handled event %s, which host-b holds a live claim on — both hosts acted on it", id)
+		}
 	}
 }
 

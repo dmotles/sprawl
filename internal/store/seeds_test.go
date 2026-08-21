@@ -159,6 +159,12 @@ var wantSeeds = []struct {
 		id:       "edc66745-a3fa-5b61-9528-a47a5def3952",
 		required: []string{"goal_event_id", "owner", "pokes"},
 	},
+	// QUM-1250 (M1b): owner-dead handling. "Never let a RESULT land unobserved."
+	{
+		name: "ownership_reassigned", version: 1,
+		id:       "5c57a39e-7f79-568f-a2a2-2fae6108a610",
+		required: []string{"contract_event_id", "from_owner", "to_owner", "reason"},
+	},
 }
 
 func TestSeedRegistry_MatchesGoldenIDsAndWiring(t *testing.T) {

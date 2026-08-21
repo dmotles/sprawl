@@ -7,6 +7,8 @@ import (
 	"log/slog"
 	"time"
 
+	"github.com/dmotles/sprawl/internal/state"
+
 	"github.com/google/uuid"
 )
 
@@ -92,8 +94,15 @@ type NotifyHandlerDeps struct {
 	Lookup   EventLookup
 	Host     string
 	Consumer string
-	Lease    func() time.Duration
-	Logger   *slog.Logger
+	// Local and FallbackOwner enable owner-dead handling, and both are OPTIONAL:
+	// with either absent the handler notifies the owner as addressed, exactly as
+	// it did before this existed. The degradation has to be in that direction —
+	// a fallback of "" would produce an owner_notify with an empty recipient,
+	// which is a contract nothing can ever ack.
+	Local         LocalAgents
+	FallbackOwner string
+	Lease         func() time.Duration
+	Logger        *slog.Logger
 }
 
 // NotifyHandler notifies a contract's owner when its result lands.
@@ -104,6 +113,8 @@ type NotifyHandler struct {
 	lookup   EventLookup
 	host     string
 	consumer string
+	local    LocalAgents
+	fallback string
 	lease    func() time.Duration
 	log      *slog.Logger
 }
@@ -127,7 +138,9 @@ func NewNotifyHandler(d NotifyHandlerDeps) (*NotifyHandler, error) {
 	}
 	h := &NotifyHandler{
 		emitter: d.Emitter, injector: d.Injector, claims: d.Claims, lookup: d.Lookup,
-		host: d.Host, consumer: d.Consumer, lease: d.Lease, log: d.Logger,
+		host: d.Host, consumer: d.Consumer,
+		local: d.Local, fallback: d.FallbackOwner,
+		lease: d.Lease, log: d.Logger,
 	}
 	if h.lease == nil {
 		h.lease = func() time.Duration { return DefaultClaimLease }
@@ -193,6 +206,23 @@ func (h *NotifyHandler) Handle(ctx context.Context, ev DispatchedEvent) error {
 		return nil
 	}
 
+	// OWNER-DEAD HANDLING: "never let a RESULT land unobserved."
+	//
+	// A notification addressed to an agent that is permanently gone cannot be
+	// delivered, so the injection fails on every pass and the owner_notify
+	// contract stays open forever — a result nobody ever sees, whose only symptom
+	// is a growing pile of failed deliveries. Reassigning ownership to the
+	// fallback (root now, the workflow engine later) is what stops that.
+	//
+	// Recorded as an EXPLICIT SYSTEM EVENT rather than a quiet redirect, because
+	// the plan says so and because the alternative is unattributable: a reader
+	// would see a result delivered to an agent that never opened the contract
+	// with nothing saying why.
+	recipient, err = h.reassignIfOwnerIsGone(ctx, ev, opener, recipient)
+	if err != nil {
+		return err
+	}
+
 	won, err := h.claims.Claim(ctx, ev.ID, notifyConsumer(recipient), h.host, h.lease())
 	if err != nil {
 		return fmt.Errorf("store: claiming the notification of %q for event %s: %w", recipient, ev.ID, err)
@@ -226,6 +256,81 @@ func (h *NotifyHandler) Handle(ctx context.Context, ev DispatchedEvent) error {
 		return fmt.Errorf("store: injecting the notification for %q (the owner_notify contract stays open and will be re-delivered): %w", recipient, err)
 	}
 	return nil
+}
+
+// reassignIfOwnerIsGone returns the owner to notify, reassigning first if the
+// original is permanently gone.
+//
+// WHAT COUNTS AS GONE is narrow on purpose, because every false positive
+// permanently severs a live agent from its own result:
+//
+//   - state.IsTerminal (retired, retiring) — parent-decided and permanent.
+//   - died WITH NO SESSION. The session is the discriminator the plan names
+//     ("retired/died, no session"): an agent recorded as died but still holding a
+//     session id may come back, and reassigning it takes its work away while it
+//     is recoverable.
+//
+// WHAT DOES NOT COUNT, and each of these is the tempting mistake:
+//
+//   - Every other resting status. suspended, idle, complete, faulted and paused
+//     are all revivable — a notification auto-wakes or waits — so reassigning
+//     them would hand the fallback every result belonging to a quiet agent.
+//   - ABSENCE FROM THIS HOST. A goal owned by an agent on another host is normal
+//     in a multi-host fleet, and not being in this host's state is not evidence
+//     of death. Reassigning on that basis would steal work from a healthy agent
+//     every time a result landed on the wrong host, and the reassignment event
+//     would look entirely legitimate. The delivery is attempted as addressed; if
+//     it genuinely fails, the contract stays open and the sweeper re-delivers,
+//     which is the mechanism already built for this.
+//   - The FALLBACK itself. One hop only: reassigning the fallback to itself would
+//     either loop or emit a reassignment that changes nothing on every pass.
+func (h *NotifyHandler) reassignIfOwnerIsGone(ctx context.Context, ev, opener DispatchedEvent, recipient string) (string, error) {
+	if h.local == nil || h.fallback == "" || recipient == h.fallback {
+		return recipient, nil
+	}
+	locals, err := h.local.Snapshot(ctx)
+	if err != nil {
+		// NOT degraded to "assume alive" silently — but also not fatal to the
+		// notification, which is the more important of the two jobs. Notifying
+		// the original owner is what the system did before owner-dead handling
+		// existed, and a failed delivery still leaves a sweepable contract.
+		h.log.Warn("cannot read local agent state, so notifying the owner as addressed without checking whether it is gone",
+			"recipient", recipient, "error", err)
+		return recipient, nil
+	}
+	var owner LocalAgent
+	var known bool
+	for _, l := range locals {
+		if l.Name == recipient {
+			owner, known = l, true
+			break
+		}
+	}
+	if !known {
+		return recipient, nil
+	}
+	gone := state.IsTerminal(owner.Status) || (owner.Status == state.StatusDied && owner.SessionID == "")
+	if !gone {
+		return recipient, nil
+	}
+
+	if _, err := h.emitter.Emit(ctx, EmitRequest{
+		TypeName:           "ownership_reassigned",
+		TypeVersion:        1,
+		WorkflowInstanceID: ev.WorkflowInstanceID,
+		Payload: map[string]any{
+			"contract_event_id": opener.ID.String(),
+			"from_owner":        recipient,
+			"to_owner":          h.fallback,
+			"reason":            "the owner is " + owner.Status + " with no recoverable session, so this result would otherwise land unobserved",
+			"host":              h.host,
+		},
+	}); err != nil {
+		return "", fmt.Errorf("store: reassigning ownership of %s from %q to %q: %w", opener.ID, recipient, h.fallback, err)
+	}
+	h.log.Warn("reassigned a contract whose owner is permanently gone",
+		"contract", opener.ID, "from", recipient, "to", h.fallback, "status", owner.Status)
+	return h.fallback, nil
 }
 
 // notifyBody renders the short summary.

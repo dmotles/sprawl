@@ -1,0 +1,19 @@
+{
+  "name": "ownership_reassigned",
+  "version": 1,
+  "opens": false,
+  "spillable": false,
+  "closes": "",
+  "json_schema": {
+    "type": "object",
+    "description": "A contract's owner is permanently gone, so ownership moved to a fallback owner (root, and later the workflow engine). Recorded as an EXPLICIT SYSTEM EVENT rather than handled by quietly redirecting the notification, because the plan says ownership is reassigned explicitly and because the alternative is unattributable: somebody reading the log would see a result delivered to an agent that never opened the contract, with nothing saying why. Emitted BEFORE the notification it redirects, so a failed delivery still leaves the reassignment on the record. NOT spillable: an ownership change recorded only on one host is invisible to every other reader of the contract.",
+    "required": ["contract_event_id", "from_owner", "to_owner", "reason"],
+    "properties": {
+      "contract_event_id": {"type": "string"},
+      "from_owner": {"type": "string"},
+      "to_owner": {"type": "string"},
+      "reason": {"type": "string"},
+      "host": {"type": "string"}
+    }
+  }
+}
