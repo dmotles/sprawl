@@ -893,6 +893,12 @@ func TestRealRecoverAgents_DiedCrashSurvivorAutoResumes(t *testing.T) {
 	if len(starter.specs) != 1 {
 		t.Fatalf("starter.specs len = %d, want 1", len(starter.specs))
 	}
+	// Narrow but kept deliberately: StartResume hardcodes Resume:true, so the
+	// only mutation this catches is RecoverAgents calling Start instead of
+	// StartResume — which would silently discard the transcript of every crash
+	// survivor. That is a different (and worse) failure than the one under test,
+	// so unlike the LivenessFromStatus assertion deleted below, this one guards
+	// something the surrounding assertions do not.
 	if !starter.specs[0].Resume {
 		t.Errorf("spec.Resume = false, want true — the existing transcript is what makes this a resume rather than a fresh start")
 	}
@@ -920,20 +926,26 @@ func TestRealRecoverAgents_DiedCrashSurvivorAutoResumes(t *testing.T) {
 	// unknown-status negative control.
 }
 
-// TestRealRecoverAgents_DiedResumeFailureSelfArrests backs the "no crash-loop
-// guard needed" half of QUM-1265's decision with a check instead of a sentence.
+// TestRealRecoverAgents_DiedTransientLaunchFailureIsRetriableAndNotPromoted is
+// the TRANSIENT half of the no-crash-loop-guard argument.
 //
-// The argument for shipping without a guard is that a died agent whose resume
-// cannot LAUNCH lands at StatusResumeFailed, which the accept-set excludes, so
-// the retry loop terminates by itself. The accept-set table proves
-// resume_failed is excluded; this proves a DIED subject actually gets there.
-// Without it the safety story rests on a comment.
+// This starter fails every call and never fires the resume-cookie marker, so it
+// models an environmental launch failure — exec failure, fd exhaustion — which
+// QUM-1260 established must NOT trigger the fresh-session fallback and must NOT
+// stamp resume_failed. So the agent stays `died`, and because QUM-1265 put
+// `died` INSIDE the accept-set it is retried on the NEXT boot. That is
+// deliberate and desirable: a transient cause must not cost the agent.
 //
-// Note this starter fails EVERY call and never fires the resume-cookie marker,
-// so it models a transient/environmental launch failure — the case QUM-1260
-// established must NOT trigger the fresh-session fallback. One attempt, and the
-// status is whatever it already was.
-func TestRealRecoverAgents_DiedResumeFailureSelfArrests(t *testing.T) {
+// Read the name carefully: this is NOT self-arrest, and an earlier version of
+// this test was called …_DiedResumeFailureSelfArrests, which was wrong. Code
+// review caught it. Self-arrest is the OTHER leg — cookie rejected AND the fresh
+// fallback also failed — which does stamp resume_failed and is pinned by
+// TestRealRecoverAgents_DiedDoublyFailedResumeSelfArrests below. Conflating the
+// two made a load-bearing comment in real.go false.
+//
+// What this test does pin: one attempt (no fresh-session retry), and no
+// promotion to `active` for a subprocess that never started.
+func TestRealRecoverAgents_DiedTransientLaunchFailureIsRetriableAndNotPromoted(t *testing.T) {
 	r, tmpDir := newFakeReal(t)
 	starter := &recoverTestStarter{
 		session:   recoverTestSession("sess-zombie"),
@@ -954,18 +966,70 @@ func TestRealRecoverAgents_DiedResumeFailureSelfArrests(t *testing.T) {
 	if err != nil {
 		t.Fatalf("LoadAgent: %v", err)
 	}
-	// It stays `died` rather than being promoted to active: nothing launched.
-	// Either way the point is that it is NOT `active`, so the loop made no
-	// false claim about a subprocess that does not exist.
+	// Not promoted to active: nothing launched, so claiming a live subprocess
+	// would be a lie the TUI and Shutdown's Running filter would both believe.
 	if loaded.Status == state.StatusActive {
 		t.Errorf("Status = %q after a failed launch; want anything but active — the agent has no live subprocess", loaded.Status)
 	}
-	// And whatever it rests at must be a status a LATER boot can act on, so the
-	// once-per-boot rate limit is a rate limit and not a dead end.
-	if loaded.Status == state.StatusResumeFailed {
-		lv, ok := liveness.LivenessFromStatus(loaded.Status)
-		if ok && lv != liveness.Suspended && lv != liveness.Running && lv != liveness.Died {
-			t.Logf("rests at %q, outside the boot accept-set: self-arrested, which is the intended terminus", loaded.Status)
-		}
+	// It stays `died`, which QUM-1265 put INSIDE the accept-set, so the next
+	// boot tries again. Asserted rather than merely observed: this is the whole
+	// difference between "transient failure is retriable" and "self-arrest", and
+	// getting those two backwards is exactly the error code review caught here.
+	if loaded.Status != state.StatusDied {
+		t.Errorf("Status = %q, want %q — a transient launch failure must leave the status alone (QUM-1260), which for a died subject means retriable next boot", loaded.Status, state.StatusDied)
+	}
+	lv, ok := liveness.LivenessFromStatus(loaded.Status)
+	if !ok || (lv != liveness.Suspended && lv != liveness.Running && lv != liveness.Died) {
+		t.Errorf("resting status %q projects to %v, outside the boot accept-set — a transient failure would then be permanent", loaded.Status, lv)
+	}
+}
+
+// TestRealRecoverAgents_DiedDoublyFailedResumeSelfArrests is the SELF-ARREST
+// half, and the reason the no-crash-loop-guard decision is safe.
+//
+// The leg that actually stamps resume_failed is: the resume cookie is rejected
+// (the stderr marker fires), StartResume falls back to a fresh session per
+// QUM-1260, and that fresh start ALSO fails. Only then does StartResume invoke
+// the caller's callback, which is the single site that writes
+// state.StatusResumeFailed from the boot path. resume_failed is outside the
+// accept-set, so the agent is not retried on any later boot — it self-arrests
+// without needing a crash-loop guard, and without a durable "never retry" stamp
+// of the kind QUM-1260 removed.
+//
+// This test exists because the claim used to be prose. The test-critic asked for
+// it, my first attempt pinned the wrong leg, and code review caught that. Do not
+// delete it and leave the assertion to a comment again.
+func TestRealRecoverAgents_DiedDoublyFailedResumeSelfArrests(t *testing.T) {
+	r, tmpDir := newFakeReal(t)
+	starter := &wakeCapturingStarter{
+		fireResumeFailOn: 1, // the stderr "No conversation found" marker
+		startErrByCall:   map[int]error{2: errFreshRejected},
+		sessionMaker:     mirrorSpecSession,
+	}
+	installStarter(r, starter)
+
+	saveRecoverAgent(t, tmpDir, "zombie", state.StatusDied, "weave")
+
+	resumed, failed, errs := r.RecoverAgents(context.Background())
+	if resumed != 0 || failed != 1 || len(errs) != 1 {
+		t.Fatalf("RecoverAgents = (%d,%d,%v), want (0,1,one error)", resumed, failed, errs)
+	}
+	if n := starter.callCount(); n != 2 {
+		t.Errorf("starter called %d time(s), want 2 (resume leg, then the fresh fallback)", n)
+	}
+	loaded, err := state.LoadAgent(tmpDir, "zombie")
+	if err != nil {
+		t.Fatalf("LoadAgent: %v", err)
+	}
+	if loaded.Status != state.StatusResumeFailed {
+		t.Fatalf("Status = %q, want %q — this is the leg the self-arrest argument rests on", loaded.Status, state.StatusResumeFailed)
+	}
+	// And that status must be OUTSIDE the accept-set, or it is not an arrest.
+	lv, ok := liveness.LivenessFromStatus(loaded.Status)
+	if !ok {
+		t.Fatalf("LivenessFromStatus(%q) not recognised", loaded.Status)
+	}
+	if lv == liveness.Suspended || lv == liveness.Running || lv == liveness.Died {
+		t.Errorf("resting status %q projects to %v, which IS in the boot accept-set — the agent would be retried every boot, so nothing self-arrests", loaded.Status, lv)
 	}
 }

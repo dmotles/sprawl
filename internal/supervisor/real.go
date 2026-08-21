@@ -1313,14 +1313,33 @@ func (r *Real) RecoverAgents(_ context.Context) (resumed int, failed int, errs [
 		// between two paths rather than adding capability.
 		//
 		// NO crash-loop guard accompanies it, and that is a property rather than
-		// an oversight. This loop runs ONCE per boot: a resumed session that
-		// dies again is restamped `died` with nothing retrying until the next
-		// `sprawl enter` or an explicit `wake`, so one attempt per boot is the
-		// natural rate limit. And a resume that fails to LAUNCH rests at
-		// StatusResumeFailed, which stays outside this set — that class
-		// self-arrests. Both halves are pinned by
-		// TestRealRecoverAgents_DiedCrashSurvivorAutoResumes and
-		// TestRealRecoverAgents_DiedResumeFailureSelfArrests.
+		// an oversight. This loop runs ONCE per boot — one call site,
+		// cmd/enter.go's runEnter — and nothing inside it retries the accept-set
+		// decision, so one attempt per agent per boot is the rate limit. The two
+		// failure legs then behave differently, and the difference matters:
+		//
+		//   - A resume that fails to launch for a TRANSIENT reason (exec
+		//     failure, fd exhaustion) does NOT stamp anything: QUM-1260 leaves
+		//     the agent at its existing revivable status deliberately, so a died
+		//     agent stays `died` and IS retried next boot. That is wanted — a
+		//     transient cause must not cost the agent.
+		//   - Only the doubly-failed leg — cookie rejected AND the fresh-session
+		//     fallback also failed — stamps StatusResumeFailed, which stays
+		//     outside this set. That leg self-arrests.
+		//
+		// An earlier version of this comment attributed self-arrest to "a resume
+		// that fails to LAUNCH", which is false for the first bullet and was the
+		// load-bearing sentence for the no-guard decision. Both legs are now
+		// pinned: …_DiedTransientLaunchFailureIsRetriableAndNotPromoted and
+		// …_DiedDoublyFailedResumeSelfArrests, plus
+		// …_DiedCrashSurvivorAutoResumes for the happy path.
+		//
+		// One caveat, pre-existing and identical for `suspended`: the
+		// post-success `Status = active` write below can race watchHandleExit's
+		// `died` write if the resumed session dies immediately, so the disk may
+		// read `active` with no live subprocess rather than `died`. Either token
+		// is inside the accept-set, so the next boot retries either way and the
+		// rate limit holds.
 		lv, ok := liveness.LivenessFromStatus(a.Status)
 		if !ok || (lv != liveness.Suspended && lv != liveness.Running && lv != liveness.Died) {
 			continue
