@@ -78,13 +78,13 @@ func (d *DiskAgents) list() func(string) ([]*state.AgentState, error) {
 
 // Snapshot reports this host's agents.
 //
-// InTurnObserved is FALSE for every entry, and that is a truthful answer rather
-// than a limitation to work around: turn state lives in the supervisor's
-// in-memory phase machine and has no on-disk representation, so a process
-// reading .sprawl/agents genuinely does not know. Reporting InTurn: false with
-// InTurnObserved: true would be a negative answer derived from an unavailable
-// observation — the shape internal/supervisor/runtime.go's InTurnObserved
-// already refuses — and it would make the sweeper poke every working agent.
+// Turn is TurnUnknown for every entry, and that is a truthful answer rather than
+// a limitation to work around: turn state lives in the supervisor's in-memory
+// phase machine and has no on-disk representation, so a process reading
+// .sprawl/agents genuinely does not know. Answering TurnIdle would be a negative
+// answer derived from an unavailable observation — the shape
+// internal/supervisor/runtime.go's InTurnObserved already refuses — and it would
+// make the sweeper poke every working agent.
 func (d *DiskAgents) Snapshot(context.Context) ([]store.LocalAgent, error) {
 	agents, err := d.list()(d.SprawlRoot)
 	if err != nil {
@@ -98,9 +98,16 @@ func (d *DiskAgents) Snapshot(context.Context) ([]store.LocalAgent, error) {
 			Branch:    a.Branch,
 			Worktree:  a.Worktree,
 			SessionID: a.SessionID,
-			// Deliberately not observed. See the doc comment.
-			InTurn:         false,
-			InTurnObserved: false,
+			// Turn is left at its ZERO VALUE, which is TurnUnknown. That is a
+			// truthful answer rather than a limitation to work around: turn state
+			// lives in the supervisor's in-memory phase machine and has no
+			// on-disk representation, so a process reading .sprawl/agents
+			// genuinely does not know. Claiming TurnIdle would be a negative
+			// answer derived from an unavailable observation, and it would make
+			// the sweeper poke every working agent.
+			//
+			// Not spelled explicitly, deliberately: the type's zero value is the
+			// safe one, so the safe answer is what a forgotten field gives.
 		})
 	}
 	return out, nil

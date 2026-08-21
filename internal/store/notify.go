@@ -5,7 +5,6 @@ import (
 	"encoding/json"
 	"fmt"
 	"log/slog"
-	"time"
 
 	"github.com/dmotles/sprawl/internal/state"
 
@@ -76,9 +75,13 @@ type EventLookup interface {
 
 // OpenNotify is an owner_notify with no close.
 type OpenNotify struct {
-	EventID    uuid.UUID
-	Recipient  string
-	WorkflowID uuid.UUID
+	EventID   uuid.UUID
+	Recipient string
+	// SubjectEventID is the landing event this notification is about. Carried so
+	// a reader can tie an outstanding notification back to its result without a
+	// second query.
+	SubjectEventID string
+	WorkflowID     uuid.UUID
 }
 
 // NotifyReader reads outstanding notifications.
@@ -90,8 +93,13 @@ type NotifyReader interface {
 type NotifyHandlerDeps struct {
 	Emitter  EventEmitter
 	Injector Injector
-	Claims   ClaimStore
 	Lookup   EventLookup
+	// Notifies answers "is this notification still outstanding". It is what
+	// makes a retry re-deliver instead of skipping: the derived event id makes
+	// the APPEND idempotent, so on a second pass the append is refused as a
+	// duplicate and the only remaining question is whether the injection ever
+	// happened. An open contract is the answer.
+	Notifies NotifyReader
 	Host     string
 	Consumer string
 	// Local and FallbackOwner enable owner-dead handling, and both are OPTIONAL:
@@ -101,7 +109,6 @@ type NotifyHandlerDeps struct {
 	// which is a contract nothing can ever ack.
 	Local         LocalAgents
 	FallbackOwner string
-	Lease         func() time.Duration
 	Logger        *slog.Logger
 }
 
@@ -109,13 +116,12 @@ type NotifyHandlerDeps struct {
 type NotifyHandler struct {
 	emitter  EventEmitter
 	injector Injector
-	claims   ClaimStore
 	lookup   EventLookup
+	notifies NotifyReader
 	host     string
 	consumer string
 	local    LocalAgents
 	fallback string
-	lease    func() time.Duration
 	log      *slog.Logger
 }
 
@@ -127,8 +133,8 @@ func NewNotifyHandler(d NotifyHandlerDeps) (*NotifyHandler, error) {
 		return nil, fmt.Errorf("store: notify handler needs an event emitter")
 	case d.Injector == nil:
 		return nil, fmt.Errorf("store: notify handler needs an injector")
-	case d.Claims == nil:
-		return nil, fmt.Errorf("store: notify handler needs a claim store; without one two hosts would both notify the same owner")
+	case d.Notifies == nil:
+		return nil, fmt.Errorf("store: notify handler needs a notify reader; without it a retry cannot tell an already-delivered notification from an undelivered one, and would skip both")
 	case d.Lookup == nil:
 		return nil, fmt.Errorf("store: notify handler needs an event lookup to resolve the contract being closed")
 	case d.Host == "":
@@ -137,13 +143,10 @@ func NewNotifyHandler(d NotifyHandlerDeps) (*NotifyHandler, error) {
 		return nil, fmt.Errorf("store: notify handler needs a consumer name")
 	}
 	h := &NotifyHandler{
-		emitter: d.Emitter, injector: d.Injector, claims: d.Claims, lookup: d.Lookup,
+		emitter: d.Emitter, injector: d.Injector, lookup: d.Lookup, notifies: d.Notifies,
 		host: d.Host, consumer: d.Consumer,
 		local: d.Local, fallback: d.FallbackOwner,
-		lease: d.Lease, log: d.Logger,
-	}
-	if h.lease == nil {
-		h.lease = func() time.Duration { return DefaultClaimLease }
+		log: d.Logger,
 	}
 	if h.log == nil {
 		h.log = slog.New(slog.DiscardHandler)
@@ -172,13 +175,6 @@ func ownerOf(ev DispatchedEvent) (string, error) {
 	}
 	return p.Owner, nil
 }
-
-// notifyConsumer is the per-recipient claim key.
-//
-// Per RECIPIENT, not per event: one landing result can owe notifications to more
-// than one party, and a claim keyed on the event alone would deliver to whoever
-// was resolved first and silently drop the rest.
-func notifyConsumer(recipient string) string { return "notify:" + recipient }
 
 // Handle notifies the owner of the contract this event closes.
 func (h *NotifyHandler) Handle(ctx context.Context, ev DispatchedEvent) error {
@@ -223,20 +219,16 @@ func (h *NotifyHandler) Handle(ctx context.Context, ev DispatchedEvent) error {
 		return err
 	}
 
-	won, err := h.claims.Claim(ctx, ev.ID, notifyConsumer(recipient), h.host, h.lease())
-	if err != nil {
-		return fmt.Errorf("store: claiming the notification of %q for event %s: %w", recipient, ev.ID, err)
-	}
-	if !won {
-		h.log.Debug("another host is notifying this recipient", "recipient", recipient, "event", ev.ID)
-		return nil
-	}
-
-	// Recorded BEFORE the injection, so a failed delivery leaves a sweepable
-	// contract rather than nothing at all.
-	if _, err := h.emitter.Emit(ctx, EmitRequest{
+	// RECORD FIRST, with a DERIVED ID. No claim: the id makes the append itself
+	// the exclusion mechanism, so a second host attempting the same notification
+	// is refused by `events.id UNIQUE` rather than by a convention. See
+	// derived.go for why the claim that used to be here was a permanent-loss
+	// defect rather than a redundancy.
+	notifyID := DerivedEventID(kindOwnerNotify, ev.ID.String(), recipient)
+	_, err = h.emitter.Emit(ctx, EmitRequest{
 		TypeName:           "owner_notify",
 		TypeVersion:        1,
+		EventID:            notifyID,
 		WorkflowInstanceID: ev.WorkflowInstanceID,
 		Payload: map[string]any{
 			"recipient":        recipient,
@@ -245,17 +237,59 @@ func (h *NotifyHandler) Handle(ctx context.Context, ev DispatchedEvent) error {
 			"reason":           opener.SchemaName + " closed by " + ev.SchemaName,
 			"host":             h.host,
 		},
-	}); err != nil {
+	})
+	switch {
+	case err == nil:
+		// Newly recorded by this host.
+	case IsUniqueViolation(err):
+		// Already recorded — by another host, or by an earlier pass of ours whose
+		// injection failed. NOT a reason to skip: the remaining question is
+		// whether the delivery ever happened, and the open contract answers it.
+		h.log.Debug("this notification is already recorded; checking whether it was ever delivered",
+			"recipient", recipient, "event", ev.ID)
+	default:
 		return fmt.Errorf("store: recording the notification of %q: %w (nothing was injected)", recipient, err)
 	}
 
+	// STILL OUTSTANDING? Then deliver — including on a retry, which is what makes
+	// a failed injection recoverable without a second contract. Once the
+	// recipient's turn boundary acks it, the contract closes and this becomes a
+	// no-op, so a delivered notification is never sent twice.
+	outstanding, err := h.stillOutstanding(ctx, ev.ProjectID, recipient, notifyID)
+	if err != nil {
+		return err
+	}
+	if !outstanding {
+		h.log.Debug("this notification has already been delivered and acked",
+			"recipient", recipient, "event", ev.ID)
+		return nil
+	}
+
 	if err := h.injector.Inject(ctx, recipient, notifyBody(ev, opener)); err != nil {
-		// The contract stays OPEN on purpose. That is what makes this
-		// recoverable: the sweeper finds the outstanding owner_notify and
-		// re-delivers, instead of the result sitting unobserved forever.
-		return fmt.Errorf("store: injecting the notification for %q (the owner_notify contract stays open and will be re-delivered): %w", recipient, err)
+		// The contract stays OPEN, and the dispatcher keeps its cursor on this
+		// event — so the next pass finds the contract outstanding and injects
+		// again. THAT is the re-delivery, and it is the dispatcher's retry rather
+		// than anything in the sweeper: an earlier version of this comment
+		// claimed the sweeper re-delivered, and no such code existed.
+		return fmt.Errorf("store: injecting the notification for %q (the contract stays open and the next dispatch pass will try again): %w", recipient, err)
 	}
 	return nil
+}
+
+// stillOutstanding reports whether this notification's contract is still open.
+func (h *NotifyHandler) stillOutstanding(ctx context.Context, projectID uuid.UUID, recipient string, notifyID uuid.UUID) (bool, error) {
+	open, err := h.notifies.OpenNotifies(ctx, projectID, recipient)
+	if err != nil {
+		// NOT read as "not outstanding". That would silently skip the delivery on
+		// a transport blip while the dispatcher recorded success and advanced.
+		return false, fmt.Errorf("store: checking whether %q's notification is still outstanding: %w", recipient, err)
+	}
+	for _, n := range open {
+		if n.EventID == notifyID {
+			return true, nil
+		}
+	}
+	return false, nil
 }
 
 // reassignIfOwnerIsGone returns the owner to notify, reassigning first if the
@@ -314,9 +348,15 @@ func (h *NotifyHandler) reassignIfOwnerIsGone(ctx context.Context, ev, opener Di
 		return recipient, nil
 	}
 
+	// A DERIVED ID here too. Reassignment is an audit record, and this path is now
+	// reached by every RETRY of the event (the notification append is idempotent,
+	// so a retry gets this far) — without a stable id each retry would write
+	// another "ownership moved" record for one move, which is exactly the
+	// unattributability the event exists to prevent.
 	if _, err := h.emitter.Emit(ctx, EmitRequest{
 		TypeName:           "ownership_reassigned",
 		TypeVersion:        1,
+		EventID:            DerivedEventID(kindOwnershipReassigned, opener.ID.String(), h.fallback),
 		WorkflowInstanceID: ev.WorkflowInstanceID,
 		Payload: map[string]any{
 			"contract_event_id": opener.ID.String(),
@@ -325,7 +365,7 @@ func (h *NotifyHandler) reassignIfOwnerIsGone(ctx context.Context, ev, opener Di
 			"reason":            "the owner is " + owner.Status + " with no recoverable session, so this result would otherwise land unobserved",
 			"host":              h.host,
 		},
-	}); err != nil {
+	}); err != nil && !IsUniqueViolation(err) {
 		return "", fmt.Errorf("store: reassigning ownership of %s from %q to %q: %w", opener.ID, recipient, h.fallback, err)
 	}
 	h.log.Warn("reassigned a contract whose owner is permanently gone",

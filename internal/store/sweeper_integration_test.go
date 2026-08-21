@@ -238,29 +238,42 @@ func TestSweepPg_ASecondOpenContractForTheSameOwnerIsCounted(t *testing.T) {
 	}
 }
 
-// An open OWNER_NOTIFY also blocks, which is what makes "an open question" count
-// without a question type existing yet.
+// AN UNACKED NOTIFICATION DOES NOT BLOCK ITS RECIPIENT.
 //
-// The term reads `owner` OR `recipient`, so any open contract addressed to the
-// agent counts — including the notification contracts commit 5 introduced. That
-// generality is deliberate: M3 adds USER_QUESTION and it will be counted without
-// this query changing.
-func TestSweepPg_AnOpenNotificationBlocksItsRecipient(t *testing.T) {
+// This test asserted the OPPOSITE until code review pointed out the inversion,
+// and the inversion is worth stating because it reads as reasonable: the blocking
+// term counts open contracts addressed to the agent, and an owner_notify IS
+// addressed to the agent — so an unacked notification counted as its recipient
+// being transitively blocked, and gate 4 skipped that owner's goal.
+//
+// But an agent that has missed a notification is precisely an agent that has not
+// taken a turn, i.e. EXACTLY the one the sweeper exists to nudge. So the unacked
+// notification was the thing stopping it being nudged: a sweeper gated by the
+// symptom it is meant to act on.
+//
+// The distinction the term now draws: a child goal or an unanswered question is
+// WORK PENDING and blocks; a notification is INFORMATION PENDING and does not.
+func TestSweepPg_AnUnackedNotificationDoesNotBlockItsRecipient(t *testing.T) {
 	e := newSweepEnv(t)
 	e.openGoal(t, "alice")
 
-	// Land a result for a DIFFERENT owner's goal, addressed to alice.
+	// Land a result for another of alice's goals, so she has an outstanding
+	// owner_notify.
 	notifyGoal := e.openGoal(t, "alice")
 	if err := e.handler(t, e.injector).Handle(context.Background(), e.closeGoal(t, notifyGoal)); err != nil {
 		t.Fatalf("notifying: %v", err)
+	}
+	if got := e.eventCount(t, "owner_notify"); got != 1 {
+		t.Fatalf("%d owner_notify events, want 1 — without an outstanding notification this test asserts nothing", got)
 	}
 
 	got := e.candidates(t)
 	if len(got) != 1 {
 		t.Fatalf("%d candidates, want 1: %+v", len(got), got)
 	}
-	if got[0].OtherOpenContracts == 0 {
-		t.Error("an unacked owner_notify addressed to alice does not block her goal; the sweeper would poke an agent that has a notification waiting")
+	if got[0].OtherOpenContracts != 0 {
+		t.Errorf("an unacked owner_notify counts as %d blocking contract(s) for alice; the sweeper would then refuse to poke the very agent that has not seen its notification",
+			got[0].OtherOpenContracts)
 	}
 }
 
@@ -292,10 +305,10 @@ func TestSweepPg_SweepPokesOnceThenRespectsItsOwnBackoff(t *testing.T) {
 	e := newSweepEnv(t)
 	e.openGoal(t, "alice")
 
-	local := &fakeLocalAgents{agents: []LocalAgent{{Name: "alice", Status: "active", InTurnObserved: true}}}
+	local := &fakeLocalAgents{agents: []LocalAgent{{Name: "alice", Status: "active", Turn: TurnIdle}}}
 	inj := &recordingInjector{}
 	deps := SweeperDeps{
-		Goals: e.reader, Local: local, Claims: &PgClaimStore{Pool: e.pool},
+		Goals: e.reader, Local: local,
 		Emitter: e.emitter, Injector: inj,
 		ProjectID: e.projectID, Host: "host-a",
 		// A ONE-NANOSECOND stall threshold rather than an advanced clock, and the
@@ -364,9 +377,9 @@ func TestSweepPg_TwoSweepersWithNoElectionProduceOnePoke(t *testing.T) {
 	shared := &recordingInjector{}
 	for _, host := range []string{"host-a", "host-b"} {
 		deps := SweeperDeps{
-			Goals:  frozen,
-			Local:  &fakeLocalAgents{agents: []LocalAgent{{Name: "alice", Status: "active", InTurnObserved: true}}},
-			Claims: &PgClaimStore{Pool: e.pool}, Emitter: e.emitter, Injector: shared,
+			Goals:   frozen,
+			Local:   &fakeLocalAgents{agents: []LocalAgent{{Name: "alice", Status: "active", Turn: TurnIdle}}},
+			Emitter: e.emitter, Injector: shared,
 			ProjectID: e.projectID, Host: host, StallAfter: time.Nanosecond,
 		}
 		if _, err := Sweep(context.Background(), deps); err != nil {
@@ -395,9 +408,9 @@ func TestSweepPg_APermanentlyStalledGoalReachesGoalStuckAndStops(t *testing.T) {
 	inj := &recordingInjector{}
 	clock := time.Now()
 	deps := SweeperDeps{
-		Goals:  e.reader,
-		Local:  &fakeLocalAgents{agents: []LocalAgent{{Name: "alice", Status: "active", InTurnObserved: true}}},
-		Claims: &PgClaimStore{Pool: e.pool}, Emitter: e.emitter, Injector: inj,
+		Goals:   e.reader,
+		Local:   &fakeLocalAgents{agents: []LocalAgent{{Name: "alice", Status: "active", Turn: TurnIdle}}},
+		Emitter: e.emitter, Injector: inj,
 		ProjectID: e.projectID, Host: "host-a", StallAfter: time.Minute,
 		Now: func() time.Time { return clock },
 	}
@@ -430,56 +443,5 @@ func TestSweepPg_APermanentlyStalledGoalReachesGoalStuckAndStops(t *testing.T) {
 	}
 	if got := inj.count(); got != before {
 		t.Errorf("a quarantined goal delivered %d further pokes across 10 sweeps, want 0 — this is the token burn AC6 exists to stop", got-before)
-	}
-}
-
-// ---------------------------------------------------------------------------
-// The election, for real
-// ---------------------------------------------------------------------------
-
-// The election is pg_try_advisory_xact_lock and it GRANTS on a free lock.
-//
-// Asserted because a knob nobody exercises is a knob that has quietly stopped
-// working: the whole sweeper suite runs with the election disabled, so without
-// this the real implementation could be permanently broken and every other test
-// would stay green.
-func TestSweepPg_ElectionGrantsOnAFreeLock(t *testing.T) {
-	e := newSweepEnv(t)
-	elect := PgSweepElection(e.pool, e.projectID)
-
-	won, err := elect(context.Background())
-	if err != nil {
-		t.Fatalf("election: %v", err)
-	}
-	if !won {
-		t.Error("the election declined on a free lock, so no host would ever sweep")
-	}
-}
-
-// A sweep with the REAL election wired still pokes.
-//
-// The composition check: the election being individually correct and the sweep
-// being individually correct would not catch a wiring mistake that made every
-// sweep decline.
-func TestSweepPg_SweepWithTheRealElectionStillPokes(t *testing.T) {
-	e := newSweepEnv(t)
-	e.openGoal(t, "alice")
-
-	inj := &recordingInjector{}
-	res, err := Sweep(context.Background(), SweeperDeps{
-		Goals:  e.reader,
-		Local:  &fakeLocalAgents{agents: []LocalAgent{{Name: "alice", Status: "active", InTurnObserved: true}}},
-		Claims: &PgClaimStore{Pool: e.pool}, Emitter: e.emitter, Injector: inj,
-		ProjectID: e.projectID, Host: "host-a", StallAfter: time.Nanosecond,
-		Elect: PgSweepElection(e.pool, e.projectID),
-	})
-	if err != nil {
-		t.Fatalf("Sweep: %v", err)
-	}
-	if !res.Elected {
-		t.Fatal("the sweep reported it was not elected against a free lock")
-	}
-	if got := inj.count(); got != 1 {
-		t.Errorf("delivered %d pokes with the real election wired, want 1", got)
 	}
 }

@@ -99,11 +99,20 @@ const openIntentsSQL = `
 	   AND e.payload->>'host_affinity' = $3
 	 ORDER BY e.seq`
 
-// failedIntentsSQL finds spawn intents already closed by a spawn_failed.
+// failedIntentsSQL finds spawn intents already closed by a spawn_failed AND not
+// yet reclaimed.
 //
 // The join is on closes_event_id, which is the log's own record of what closed
 // what — not on any derived state — so a stray is only ever reclaimed on the
 // strength of an event that says in as many words that this spawn failed.
+//
+// The NOT EXISTS leg BOUNDS the result. stray_reclaimed closes nothing (it
+// cannot — the intent is already closed by spawn_failed), so without it every
+// spawn failure this host has ever had is returned on every restart, forever,
+// and re-checked against local state. That is not only O(all history): it is what
+// makes a NAME COLLISION reachable years later, because agent names are reused
+// constantly in this repo and an ancient failed intent would keep matching new
+// agents that happen to take the same name.
 const failedIntentsSQL = `
 	SELECT i.id, i.payload, i.workflow_instance_id
 	  FROM events i
@@ -111,6 +120,11 @@ const failedIntentsSQL = `
 	 WHERE i.project_id = $1
 	   AND i.schema_id = ANY($2)
 	   AND i.payload->>'host_affinity' = $3
+	   AND NOT EXISTS (
+	         SELECT 1 FROM events sr
+	          WHERE sr.project_id = i.project_id
+	            AND sr.schema_id = ANY($5)
+	            AND sr.payload->>'intent_event_id' = i.id::text)
 	 ORDER BY i.seq`
 
 // intentPayload is the part of a spawn_intent payload the reconciler reads.
@@ -118,6 +132,7 @@ type intentPayload struct {
 	AgentName    string `json:"agent_name"`
 	AgentType    string `json:"agent_type"`
 	Branch       string `json:"branch"`
+	Worktree     string `json:"worktree"`
 	HostAffinity string `json:"host_affinity"`
 }
 
@@ -155,7 +170,8 @@ func (r *PgIntentReader) FailedIntents(ctx context.Context, projectID uuid.UUID,
 		return nil, fmt.Errorf("store: reading failed spawn intents requires a host; an empty one would license reclaiming another host's resources")
 	}
 	rows, err := r.Pool.Query(ctx, failedIntentsSQL,
-		projectID, schemaIDsFor(r.Registry, "spawn_intent"), host, schemaIDsFor(r.Registry, "spawn_failed"))
+		projectID, schemaIDsFor(r.Registry, "spawn_intent"), host,
+		schemaIDsFor(r.Registry, "spawn_failed"), schemaIDsFor(r.Registry, "stray_reclaimed"))
 	if err != nil {
 		return nil, fmt.Errorf("store: reading failed spawn intents: %w", err)
 	}
@@ -174,7 +190,7 @@ func (r *PgIntentReader) FailedIntents(ctx context.Context, projectID uuid.UUID,
 		if err := json.Unmarshal(payload, &p); err != nil {
 			return nil, fmt.Errorf("store: spawn intent %s has an unreadable payload: %w", in.EventID, err)
 		}
-		in.AgentName, in.Branch, in.HostAffinity = p.AgentName, p.Branch, p.HostAffinity
+		in.AgentName, in.Branch, in.Worktree, in.HostAffinity = p.AgentName, p.Branch, p.Worktree, p.HostAffinity
 		out = append(out, in)
 	}
 	return out, rows.Err()
@@ -191,7 +207,7 @@ func (r *PgIntentReader) FailedIntents(ctx context.Context, projectID uuid.UUID,
 // and the anti-join alternative would run on every turn boundary of every agent —
 // which is the single hottest path in this file.
 const openNotifiesSQL = `
-	SELECT e.id, e.workflow_instance_id
+	SELECT e.id, e.workflow_instance_id, COALESCE(e.payload->>'subject_event_id', '')
 	  FROM open_contracts oc
 	  JOIN events e ON e.id = oc.event_id
 	 WHERE e.project_id = $1
@@ -225,7 +241,7 @@ func (r *PgNotifyReader) OpenNotifies(ctx context.Context, projectID uuid.UUID, 
 	var out []OpenNotify
 	for rows.Next() {
 		n := OpenNotify{Recipient: recipient}
-		if err := rows.Scan(&n.EventID, &n.WorkflowID); err != nil {
+		if err := rows.Scan(&n.EventID, &n.WorkflowID, &n.SubjectEventID); err != nil {
 			return nil, fmt.Errorf("store: scanning an outstanding notification: %w", err)
 		}
 		out = append(out, n)

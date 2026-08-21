@@ -101,11 +101,10 @@ func newSweepFixture(t *testing.T) *sweepFixture {
 		// Idle well past the stall threshold.
 		LastOwnerActivity: now.Add(-2 * time.Hour),
 	}}
-	f.local.agents = []LocalAgent{{Name: "alice", Status: "active", InTurnObserved: true}}
+	f.local.agents = []LocalAgent{{Name: "alice", Status: "active", Turn: TurnIdle}}
 	f.deps = SweeperDeps{
 		Goals:      f.reader,
 		Local:      f.local,
-		Claims:     f.claims,
 		Emitter:    f.emitter,
 		Injector:   f.injector,
 		ProjectID:  uuid.New(),
@@ -147,8 +146,28 @@ func (f *sweepFixture) assertNotPoked(t *testing.T, why string) {
 	if got := f.emitter.names(); len(got) != 0 {
 		t.Errorf("%s: emitted %v, want nothing", why, got)
 	}
-	if got := f.claims.log(); len(got) != 0 {
-		t.Errorf("%s: claimed %v — a poke that is not going to happen must not consume the epoch's claim, or the real poke is suppressed later", why, got)
+}
+
+// assertGate asserts WHICH gate held the candidate back.
+//
+// Added because code review found the systemic version of a bug I had already
+// hand-fixed once: assertNotPoked reads only "nothing happened", so EVERY
+// negative leg is satisfied by ANY earlier gate. One test (human-owned) was
+// found asserting the not-on-this-host gate by accident; fixing that test left
+// the weakness in place for the rest, and a reordering of gateFor would leave the
+// whole file green while three gates went untested.
+//
+// gateFor already returns the reason precisely so this could be asserted, and
+// nothing was asserting it.
+func (f *sweepFixture) assertGate(t *testing.T, res SweepResult, wantSubstring string) {
+	t.Helper()
+	got, ok := res.SkipReasons[f.goalID]
+	if !ok {
+		t.Fatalf("no skip reason recorded for the goal; the sweep did not skip it at all (result %+v)", res)
+	}
+	if !strings.Contains(got, wantSubstring) {
+		t.Errorf("the goal was skipped for the reason %q, but this test is about %q — the assertion is aimed at a different gate than it names",
+			got, wantSubstring)
 	}
 }
 
@@ -186,8 +205,9 @@ func TestSweeper_ARecentlyActiveOwnerIsNotStalled(t *testing.T) {
 	f := newSweepFixture(t)
 	f.candidate().LastOwnerActivity = f.now.Add(-time.Minute) // threshold is 30m
 
-	f.sweep(t)
+	res := f.sweep(t)
 	f.assertNotPoked(t, "an owner active one minute ago")
+	f.assertGate(t, res, "stall threshold")
 }
 
 // LIVENESS COMES FROM TURN BOUNDARIES, NOT FROM WALL-CLOCK HEARTBEATS
@@ -232,10 +252,11 @@ func TestSweeper_AYoungGoalWithNoTurnBoundaryIsLeftAlone(t *testing.T) {
 // AgentState taxonomy is the sole wake arbiter and InTurn is its observation.
 func TestSweeper_DoesNotPokeAnInTurnOwner(t *testing.T) {
 	f := newSweepFixture(t)
-	f.local.agents = []LocalAgent{{Name: "alice", Status: "active", InTurn: true, InTurnObserved: true}}
+	f.local.agents = []LocalAgent{{Name: "alice", Status: "active", Turn: TurnInTurn}}
 
-	f.sweep(t)
+	res := f.sweep(t)
 	f.assertNotPoked(t, "an owner that is mid-turn")
+	f.assertGate(t, res, "mid-turn")
 }
 
 // GATE 1b — AN UNOBSERVED TURN STATE IS NOT AN IDLE ONE.
@@ -256,10 +277,11 @@ func TestSweeper_DoesNotPokeAnInTurnOwner(t *testing.T) {
 func TestSweeper_DoesNotPokeWhenTurnStateIsUnobservable(t *testing.T) {
 	f := newSweepFixture(t)
 	// The shape a non-supervisor process produces: idle-looking, but unknown.
-	f.local.agents = []LocalAgent{{Name: "alice", Status: "active", InTurn: false, InTurnObserved: false}}
+	f.local.agents = []LocalAgent{{Name: "alice", Status: "active", Turn: TurnUnknown}}
 
-	f.sweep(t)
+	res := f.sweep(t)
 	f.assertNotPoked(t, "an owner whose turn state this process cannot observe")
+	f.assertGate(t, res, "not observable")
 }
 
 // POSITIVE CONTROL for gate 1b: the same fixture with the observation available.
@@ -270,7 +292,7 @@ func TestSweeper_DoesNotPokeWhenTurnStateIsUnobservable(t *testing.T) {
 // hide.
 func TestSweeper_PokesWhenTurnStateIsObservedAndIdle(t *testing.T) {
 	f := newSweepFixture(t)
-	f.local.agents = []LocalAgent{{Name: "alice", Status: "active", InTurn: false, InTurnObserved: true}}
+	f.local.agents = []LocalAgent{{Name: "alice", Status: "active", Turn: TurnIdle}}
 
 	f.sweep(t)
 	f.assertPoked(t, "the identical fixture with turn state observed and idle")
@@ -279,7 +301,7 @@ func TestSweeper_PokesWhenTurnStateIsObservedAndIdle(t *testing.T) {
 // POSITIVE CONTROL for gate 1: the same fixture with InTurn false IS poked.
 func TestSweeper_PokesTheSameOwnerWhenNotInTurn(t *testing.T) {
 	f := newSweepFixture(t)
-	f.local.agents = []LocalAgent{{Name: "alice", Status: "active", InTurn: false, InTurnObserved: true}}
+	f.local.agents = []LocalAgent{{Name: "alice", Status: "active", Turn: TurnIdle}}
 
 	f.sweep(t)
 	f.assertPoked(t, "the identical fixture with InTurn flipped to false")
@@ -291,16 +313,17 @@ func TestSweeper_PokesTheSameOwnerWhenNotInTurn(t *testing.T) {
 // literal, so there is one definition of the taxonomy.
 func TestSweeper_DoesNotPokeAPausedOwner(t *testing.T) {
 	f := newSweepFixture(t)
-	f.local.agents = []LocalAgent{{Name: "alice", Status: pausedStatus, InTurnObserved: true}}
+	f.local.agents = []LocalAgent{{Name: "alice", Status: pausedStatus, Turn: TurnIdle}}
 
-	f.sweep(t)
+	res := f.sweep(t)
 	f.assertNotPoked(t, "an operator-paused owner")
+	f.assertGate(t, res, "operator-paused")
 }
 
 // POSITIVE CONTROL for gate 2: same fixture, status active.
 func TestSweeper_PokesTheSameOwnerWhenNotPaused(t *testing.T) {
 	f := newSweepFixture(t)
-	f.local.agents = []LocalAgent{{Name: "alice", Status: "active", InTurnObserved: true}}
+	f.local.agents = []LocalAgent{{Name: "alice", Status: "active", Turn: TurnIdle}}
 
 	f.sweep(t)
 	f.assertPoked(t, "the identical fixture with the status flipped to active")
@@ -325,10 +348,11 @@ func TestSweeper_DoesNotPokeAHumanOwnedWait(t *testing.T) {
 	// can hold — and it also asserts the property that actually matters: the
 	// human is never poked EVEN IF something answering to that name exists
 	// locally, so the gate does not depend on an absence to work.
-	f.local.agents = []LocalAgent{{Name: HumanOwner, Status: "active", InTurnObserved: true}}
+	f.local.agents = []LocalAgent{{Name: HumanOwner, Status: "active", Turn: TurnIdle}}
 
-	f.sweep(t)
+	res := f.sweep(t)
 	f.assertNotPoked(t, "a goal owned by the human, with that name resolvable locally")
+	f.assertGate(t, res, "human-owned")
 }
 
 // POSITIVE CONTROL for gate 3: the same fixture owned by an AGENT is poked.
@@ -355,8 +379,9 @@ func TestSweeper_DoesNotPokeATransitivelyBlockedOwner(t *testing.T) {
 	f := newSweepFixture(t)
 	f.candidate().OtherOpenContracts = 1
 
-	f.sweep(t)
+	res := f.sweep(t)
 	f.assertNotPoked(t, "an owner with another open contract outstanding")
+	f.assertGate(t, res, "transitively blocked")
 }
 
 // POSITIVE CONTROL for gate 4: same fixture with that contract closed.
@@ -375,7 +400,7 @@ func TestSweeper_PokesTheSameOwnerOnceItIsUnblocked(t *testing.T) {
 func TestSweeper_DoesNotPokeATerminalOwner(t *testing.T) {
 	for _, status := range terminalStatuses() {
 		f := newSweepFixture(t)
-		f.local.agents = []LocalAgent{{Name: "alice", Status: status, InTurnObserved: true}}
+		f.local.agents = []LocalAgent{{Name: "alice", Status: status, Turn: TurnIdle}}
 
 		f.sweep(t)
 		f.assertNotPoked(t, "an owner whose status is "+status)
@@ -391,7 +416,7 @@ func TestSweeper_DoesNotPokeATerminalOwner(t *testing.T) {
 func TestSweeper_PokesARevivableRestingOwner(t *testing.T) {
 	for _, status := range []string{"suspended", "idle", "complete"} {
 		f := newSweepFixture(t)
-		f.local.agents = []LocalAgent{{Name: "alice", Status: status, InTurnObserved: true}}
+		f.local.agents = []LocalAgent{{Name: "alice", Status: status, Turn: TurnIdle}}
 
 		f.sweep(t)
 		f.assertPoked(t, "an owner resting in status "+status+" (revivable, not terminal)")
@@ -435,8 +460,9 @@ func TestSweeper_RespectsTheBackoffWindow(t *testing.T) {
 	// so it would not distinguish the schedule from a flat delay.
 	f.candidate().LastPokeAt = f.now.Add(-pokeBackoff(1) + time.Second)
 
-	f.sweep(t)
+	res := f.sweep(t)
 	f.assertNotPoked(t, "a goal one second inside its backoff window")
+	f.assertGate(t, res, "backoff")
 }
 
 // POSITIVE CONTROL for the backoff: the same fixture with the window elapsed IS
@@ -526,60 +552,101 @@ func TestSweeper_JustBelowTheCapItStillPokes(t *testing.T) {
 // Poke discipline
 // ---------------------------------------------------------------------------
 
-// THE POKE IS A CONDITIONAL INSERT KEYED (goal, epoch), so a split-brain second
-// sweeper cannot double-poke (Appendix B item 3).
-func TestSweeper_PokeIsClaimedPerGoalAndEpoch(t *testing.T) {
-	f := newSweepFixture(t)
-	f.sweep(t)
-
-	consumers := f.claims.consumers()
-	if len(consumers) != 1 {
-		t.Fatalf("took %d claims, want 1", len(consumers))
-	}
-	if !strings.Contains(consumers[0], "sweeper.poke") {
-		t.Errorf("the poke claim consumer %q is not a sweeper poke key", consumers[0])
-	}
-	if !strings.Contains(consumers[0], "0") {
-		t.Errorf("the poke claim consumer %q does not carry the epoch, so every poke for this goal shares one key and only the first ever happens", consumers[0])
-	}
-	if got := f.claims.log()[0]; got != "claim:"+f.goalID.String() {
-		t.Errorf("the poke claim is keyed on %q, want the goal event id — keying it on anything else lets two sweepers both poke", got)
-	}
-}
-
-// The epoch really does advance with the poke count, so two sweeps at different
-// epochs take DIFFERENT claims.
+// THE POKE'S EVENT ID IS DERIVED FROM (goal, epoch), so a split-brain second
+// sweeper's poke collides in the DATABASE (Appendix B item 3).
 //
-// Positive control for the assertion above: a fixed epoch would satisfy "the key
-// contains an epoch" while making the second poke for a goal impossible forever.
-func TestSweeper_TheClaimKeyAdvancesWithTheEpoch(t *testing.T) {
-	seen := map[string]bool{}
-	for _, pokes := range []int{0, 1, 2} {
-		f := newSweepFixture(t)
-		f.candidate().Pokes = pokes
-		f.candidate().LastPokeAt = f.now.Add(-100 * time.Hour)
-		f.sweep(t)
-		key := f.claims.consumers()[0]
-		if seen[key] {
-			t.Errorf("epoch %d reuses the claim key %q, so only the first poke for a goal would ever be granted", pokes, key)
-		}
-		seen[key] = true
+// This replaced a claim. The claim was taken before the append and never
+// released, so an append that FAILED left the epoch unchanged and the claim
+// held — and every later sweep computed the same key, lost it to its own corpse,
+// and skipped. The goal was never poked again AND never quarantined, reported
+// under Skipped where it is indistinguishable from the five legitimate gates.
+// Verified with a probe in code review.
+func TestSweeper_PokeEventIDIsDerivedFromGoalAndEpoch(t *testing.T) {
+	f := newSweepFixture(t)
+	f.sweep(t)
+
+	pokes := f.emitter.byName("goal_poke")
+	if len(pokes) != 1 {
+		t.Fatalf("%d goal_poke events, want 1", len(pokes))
+	}
+	want := DerivedEventID(kindGoalPoke, f.goalID.String(), "0")
+	if pokes[0].EventID != want {
+		t.Errorf("goal_poke id = %s, want the derived %s — with a random id two sweepers both poke", pokes[0].EventID, want)
+	}
+	if claims := f.claims.log(); len(claims) != 0 {
+		t.Errorf("the sweeper took %v; holding a claim across the append is the defect this replaced", claims)
 	}
 }
 
-// LOSING THE POKE CLAIM MEANS NO POKE AND NO EVENT — the other sweeper is doing
-// it.
-func TestSweeper_LosingThePokeClaimPokesNothing(t *testing.T) {
+// THE EPOCH IS IN THE ID, so the NEXT poke for a goal is a different event while
+// a concurrent second sweeper's poke for the SAME epoch is the same one.
+//
+// Positive control for the test above: an id that ignored the epoch would satisfy
+// "the id is derived" while making only the first poke for a goal possible, ever.
+func TestSweeper_TheDerivedPokeIDAdvancesWithTheEpoch(t *testing.T) {
+	seen := map[uuid.UUID]bool{}
+	goal := uuid.New()
+	for epoch := 0; epoch < 3; epoch++ {
+		id := DerivedEventID(kindGoalPoke, goal.String(), fmt.Sprint(epoch))
+		if seen[id] {
+			t.Errorf("epoch %d derives an id already used, so only the first poke for a goal would ever be recorded", epoch)
+		}
+		seen[id] = true
+	}
+	// And a different goal at the same epoch is a different event.
+	if DerivedEventID(kindGoalPoke, goal.String(), "0") == DerivedEventID(kindGoalPoke, uuid.NewString(), "0") {
+		t.Error("two goals derive the same poke id at epoch 0, so poking one would suppress the other")
+	}
+}
+
+// A DUPLICATE POKE APPEND IS "ALREADY DONE", NOT A FAILURE.
+//
+// The split-brain resolution, and the assertion that the refusal is read
+// correctly: a second sweeper that treated 23505 as an error would fail its whole
+// pass over an event another host had legitimately handled.
+func TestSweeper_ADuplicatePokeAppendIsSkippedNotFailed(t *testing.T) {
 	f := newSweepFixture(t)
-	f.claims.refuse[f.goalID] = true
+	f.emitter.uniqueViolationOn = map[uuid.UUID]bool{
+		DerivedEventID(kindGoalPoke, f.goalID.String(), "0"): true,
+	}
+
+	res := f.sweep(t)
+	if res.Poked != 0 {
+		t.Errorf("Poked = %d, want 0 — another sweeper already poked this epoch", res.Poked)
+	}
+	if res.Skipped != 1 {
+		t.Errorf("Skipped = %d, want 1", res.Skipped)
+	}
+	if got := f.injector.count(); got != 0 {
+		t.Errorf("injected %d pokes for an epoch another sweeper already recorded", got)
+	}
+}
+
+// A FAILED POKE APPEND LEAVES THE GOAL POKEABLE.
+//
+// The second HIGH defect from code review, verified there with a probe. Because
+// the epoch is derived from the COUNT of goal_poke events, an append that failed
+// left the epoch unchanged — and the old code's claim, taken before the append and
+// never released, then blocked that exact epoch forever.
+func TestSweeper_AFailedPokeAppendLeavesTheGoalPokeable(t *testing.T) {
+	f := newSweepFixture(t)
+	f.emitter.err = errors.New("connection reset")
+
+	if _, err := Sweep(context.Background(), f.deps); err == nil {
+		t.Fatal("Sweep reported success although the poke could not be recorded")
+	}
+	if got := f.injector.count(); got != 0 {
+		t.Fatalf("injected %d pokes with nothing recorded", got)
+	}
+
+	// The condition clears. The epoch is unchanged (nothing was written), so the
+	// next sweep must poke this goal.
+	f.emitter.mu.Lock()
+	f.emitter.err = nil
+	f.emitter.mu.Unlock()
 
 	f.sweep(t)
-	if got := f.injector.count(); got != 0 {
-		t.Errorf("injected %d pokes without holding the claim; a split-brain sweeper would double-poke", got)
-	}
-	if got := f.emitter.names(); len(got) != 0 {
-		t.Errorf("emitted %v without holding the claim", got)
-	}
+	f.assertPoked(t, "the sweep after a failed poke append")
 }
 
 // THE POKE IS RECORDED BEFORE IT IS DELIVERED.
@@ -625,64 +692,6 @@ func TestSweeper_FailedDeliveryIsReportedButStillCountsAsAPoke(t *testing.T) {
 // Election
 // ---------------------------------------------------------------------------
 
-// THE SWEEPER IS CORRECT WITH THE ELECTION DISABLED.
-//
-// This is the AC7-shaped assertion for the sweeper, and it is the whole reason
-// the election is not load-bearing: because pokes are (goal, epoch) conditional
-// inserts, two sweepers running at once produce ONE poke by the same mechanism
-// that makes dispatch exactly-once. The advisory lock is an efficiency measure
-// with the same status as the NOTIFY doorbell — and the whole file runs without
-// it, since Elect is nil by default in the fixture.
-func TestSweeper_WorksWithNoElection(t *testing.T) {
-	f := newSweepFixture(t)
-	if f.deps.Elect != nil {
-		t.Fatal("the fixture is supposed to run with no election, so the suite proves the election is not required")
-	}
-	f.sweep(t)
-	f.assertPoked(t, "a sweep with no election at all")
-}
-
-// An election that DECLINES stops the sweep, and stops it quietly.
-//
-// A declined election is the normal state of every host that is not the elected
-// one, so it must not be an error — an error here would mean N-1 hosts logging a
-// failure on every sweep interval forever.
-func TestSweeper_ADeclinedElectionSweepsNothingQuietly(t *testing.T) {
-	f := newSweepFixture(t)
-	f.deps.Elect = func(context.Context) (bool, error) { return false, nil }
-
-	res := f.sweep(t)
-	f.assertNotPoked(t, "a host that did not win the election")
-	if res.Elected {
-		t.Error("Elected reported true after the election declined")
-	}
-}
-
-// POSITIVE CONTROL: an election that GRANTS sweeps normally. Without it, an
-// implementation that treated any configured election as a refusal would satisfy
-// the test above while disabling the sweeper on every host.
-func TestSweeper_AWonElectionSweepsNormally(t *testing.T) {
-	f := newSweepFixture(t)
-	f.deps.Elect = func(context.Context) (bool, error) { return true, nil }
-
-	res := f.sweep(t)
-	f.assertPoked(t, "a host that won the election")
-	if !res.Elected {
-		t.Error("Elected reported false after winning")
-	}
-}
-
-// An election that ERRORS stops the sweep and says so — distinct from declining.
-func TestSweeper_AnElectionErrorIsReported(t *testing.T) {
-	f := newSweepFixture(t)
-	f.deps.Elect = func(context.Context) (bool, error) { return false, errors.New("connection refused") }
-
-	if _, err := Sweep(context.Background(), f.deps); err == nil {
-		t.Fatal("Sweep succeeded although the election could not be decided; a database outage would look like 'another host is sweeping' forever")
-	}
-	f.assertNotPoked(t, "a sweep whose election errored")
-}
-
 // ---------------------------------------------------------------------------
 // Robustness
 // ---------------------------------------------------------------------------
@@ -698,8 +707,9 @@ func TestSweeper_AnUnknownOwnerIsSkippedNotPoked(t *testing.T) {
 	f := newSweepFixture(t)
 	f.local.agents = nil // alice is not on this host
 
-	f.sweep(t)
+	res := f.sweep(t)
 	f.assertNotPoked(t, "an owner this host cannot observe")
+	f.assertGate(t, res, "not on this host")
 }
 
 // An unreadable local snapshot stops the sweep.
@@ -722,7 +732,6 @@ func TestSweeper_RefusesAnIncompleteConfiguration(t *testing.T) {
 	cases := map[string]func(d *SweeperDeps){
 		"no goals":    func(d *SweeperDeps) { d.Goals = nil },
 		"no local":    func(d *SweeperDeps) { d.Local = nil },
-		"no claims":   func(d *SweeperDeps) { d.Claims = nil },
 		"no emitter":  func(d *SweeperDeps) { d.Emitter = nil },
 		"no injector": func(d *SweeperDeps) { d.Injector = nil },
 		"no host":     func(d *SweeperDeps) { d.Host = "" },

@@ -72,6 +72,7 @@ const openGoalsSQL = `
 	       JOIN events o2 ON o2.id = oc2.event_id
 	      WHERE o2.project_id = g.project_id
 	        AND o2.id <> g.id
+	        AND o2.schema_id <> ALL($6)
 	        AND COALESCE(o2.payload->>'owner', o2.payload->>'recipient', '')
 	            = g.payload->>'owner')                                     AS other_open
 	  FROM open_contracts oc
@@ -107,6 +108,7 @@ func (r *PgSweepReader) OpenGoals(ctx context.Context, projectID uuid.UUID) ([]S
 		schemaIDsFor(r.Registry, "goal_poke"),
 		schemaIDsFor(r.Registry, "goal_stuck"),
 		schemaIDsFor(r.Registry, "goal_opened"),
+		schemaIDsFor(r.Registry, "owner_notify"),
 	)
 	if err != nil {
 		return nil, fmt.Errorf("store: reading open goals for the sweeper: %w", err)
@@ -139,31 +141,4 @@ func (r *PgSweepReader) OpenGoals(ctx context.Context, projectID uuid.UUID) ([]S
 		out = append(out, c)
 	}
 	return out, rows.Err()
-}
-
-// PgSweepElection is the advisory-lock election.
-//
-// pg_try_advisory_xact_lock, never the session form: a session lock outlives an
-// abandoned transaction and would wedge the sweeper for every host until that
-// connection died, with no timeout and no local symptom. Appendix B item 7 and
-// the appender's own header say the same thing for the same reason.
-//
-// TRY rather than a blocking acquire, because losing the election is the normal
-// state of every host that is not the elected one — blocking would hold a
-// connection per host per sweep interval, forever.
-//
-// AND IT IS NOT LOAD-BEARING. Pokes are (goal, epoch) conditional inserts, so two
-// sweepers running concurrently already produce one poke. This is an efficiency
-// measure with exactly the status of the NOTIFY doorbell, and the whole sweeper
-// suite runs with it disabled — which is what proves the claim rather than
-// asserting it.
-func PgSweepElection(pool PgPool, projectID uuid.UUID) func(ctx context.Context) (bool, error) {
-	return func(ctx context.Context) (bool, error) {
-		var won bool
-		if err := pool.QueryRow(ctx,
-			`SELECT pg_try_advisory_xact_lock(hashtextextended($1::text, 0))`, projectID).Scan(&won); err != nil {
-			return false, fmt.Errorf("store: sweeper election: %w", err)
-		}
-		return won, nil
-	}
 }

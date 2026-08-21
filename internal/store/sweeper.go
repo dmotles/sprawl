@@ -4,6 +4,7 @@ import (
 	"context"
 	"fmt"
 	"log/slog"
+	"strconv"
 	"time"
 
 	"github.com/dmotles/sprawl/internal/state"
@@ -91,22 +92,19 @@ const (
 )
 
 // pokeBackoff is the wait before poke number `epoch` (0-based).
+// note records why a candidate was skipped.
+func (r *SweepResult) note(goal uuid.UUID, why string) {
+	if r.SkipReasons == nil {
+		r.SkipReasons = map[uuid.UUID]string{}
+	}
+	r.SkipReasons[goal] = why
+}
+
 func pokeBackoff(epoch int) time.Duration {
 	if epoch < 0 {
 		epoch = 0
 	}
 	return time.Duration(1<<epoch) * pokeBackoffBase
-}
-
-// pokeConsumer is the (goal, epoch) claim key — Appendix B item 3's conditional
-// insert, expressed in the claim table that already exists.
-//
-// The epoch is IN the key, so a split-brain second sweeper computing the same
-// epoch from the same log loses the insert and pokes nothing, while the NEXT
-// epoch is still a fresh key and remains pokeable. A key without the epoch would
-// make only the first poke for a goal possible, ever.
-func pokeConsumer(epoch int) string {
-	return fmt.Sprintf("sweeper.poke:%d", epoch)
 }
 
 // StalledCandidate is one open goal plus everything the gates need, computed by
@@ -147,7 +145,6 @@ type SweepReader interface {
 type SweeperDeps struct {
 	Goals    SweepReader
 	Local    LocalAgents
-	Claims   ClaimStore
 	Emitter  EventEmitter
 	Injector Injector
 
@@ -155,25 +152,27 @@ type SweeperDeps struct {
 	Host      string
 	// StallAfter overrides DefaultStallAfter.
 	StallAfter time.Duration
-	// Elect, when non-nil, gates the whole sweep. nil means "always sweep",
-	// which is what every test in sweeper_test.go uses — the election is an
-	// efficiency measure, not a correctness one, because pokes are already
-	// conditional inserts.
-	Elect  func(ctx context.Context) (bool, error)
-	Lease  func() time.Duration
-	Now    func() time.Time
-	Logger *slog.Logger
+	Now        func() time.Time
+	Logger     *slog.Logger
 }
 
 // SweepResult is what one pass did.
 type SweepResult struct {
-	Elected     bool
 	Considered  int
 	Poked       int
 	Quarantined int
 	// Skipped counts candidates a gate held back, so a sweep that pokes nothing
 	// can be told from one that saw nothing.
 	Skipped int
+	// SkipReasons maps a goal to the gate that held it back.
+	//
+	// EXPOSED SO A TEST CAN ASSERT WHICH GATE FIRED, which is not a convenience:
+	// without it every does-NOT-poke assertion is satisfied by ANY earlier gate,
+	// so the whole gate suite could stay green while three gates went untested
+	// after a reordering of gateFor. That is not hypothetical — one such test
+	// (the human-owned gate) was found asserting the not-on-this-host gate by
+	// accident, and hand-fixing it left the systemic weakness in place.
+	SkipReasons map[uuid.UUID]string
 }
 
 // Sweep runs one pass over the project's open goals.
@@ -184,8 +183,6 @@ func Sweep(ctx context.Context, d SweeperDeps) (SweepResult, error) {
 		return res, fmt.Errorf("store: sweeper needs a goal reader")
 	case d.Local == nil:
 		return res, fmt.Errorf("store: sweeper needs a view of local agents; without it the in-turn and operator-paused gates cannot be evaluated, and those gates are the only thing stopping it poking a working or deliberately-paused agent")
-	case d.Claims == nil:
-		return res, fmt.Errorf("store: sweeper needs a claim store; the (goal, epoch) claim is what stops a split-brain second sweeper double-poking")
 	case d.Emitter == nil:
 		return res, fmt.Errorf("store: sweeper needs an event emitter")
 	case d.Injector == nil:
@@ -203,30 +200,9 @@ func Sweep(ctx context.Context, d SweeperDeps) (SweepResult, error) {
 	if stallAfter <= 0 {
 		stallAfter = DefaultStallAfter
 	}
-	lease := d.Lease
-	if lease == nil {
-		lease = func() time.Duration { return DefaultClaimLease }
-	}
 	log := d.Logger
 	if log == nil {
 		log = slog.New(slog.DiscardHandler)
-	}
-
-	// The election, if configured. A DECLINE is not an error — it is the normal
-	// state of every host that is not the elected one, and treating it as a
-	// failure would have N-1 hosts logging one per sweep interval forever. An
-	// ERROR is an error: it means the election could not be decided, which is
-	// not the same as losing it.
-	res.Elected = true
-	if d.Elect != nil {
-		won, err := d.Elect(ctx)
-		if err != nil {
-			return res, fmt.Errorf("store: deciding the sweeper election: %w", err)
-		}
-		if !won {
-			res.Elected = false
-			return res, nil
-		}
 	}
 
 	// Local state FIRST, and a failure stops the pass. Every gate below reads
@@ -251,6 +227,7 @@ func Sweep(ctx context.Context, d SweeperDeps) (SweepResult, error) {
 		skip, why := gateFor(c, localByName, now(), stallAfter)
 		if skip {
 			res.Skipped++
+			res.note(c.GoalEventID, why)
 			log.Debug("not poking", "goal", c.GoalEventID, "owner", c.Owner, "reason", why)
 			continue
 		}
@@ -258,9 +235,15 @@ func Sweep(ctx context.Context, d SweeperDeps) (SweepResult, error) {
 		// AC6's cap, checked BEFORE the poke rather than after it: at the cap the
 		// goal is quarantined and nothing further is delivered, ever.
 		if c.Pokes >= maxGoalPokes {
+			// A DERIVED id: a goal is quarantined once, ever. Without it, N
+			// concurrently sweeping hosts each write a goal_stuck for one goal —
+			// harmless to behaviour, since quarantine is existence-based, but a
+			// duplicated side effect on the audit trail in the one place this
+			// file's own rule was not applied.
 			if _, err := d.Emitter.Emit(ctx, EmitRequest{
 				TypeName:           "goal_stuck",
 				TypeVersion:        1,
+				EventID:            DerivedEventID(kindGoalStuck, c.GoalEventID.String()),
 				WorkflowInstanceID: c.WorkflowID,
 				Payload: map[string]any{
 					"goal_event_id": c.GoalEventID.String(),
@@ -269,7 +252,7 @@ func Sweep(ctx context.Context, d SweeperDeps) (SweepResult, error) {
 					"reason":        fmt.Sprintf("no progress after %d pokes; quarantined and no longer poked", c.Pokes),
 					"host":          d.Host,
 				},
-			}); err != nil {
+			}); err != nil && !IsUniqueViolation(err) {
 				return res, fmt.Errorf("store: quarantining goal %s: %w", c.GoalEventID, err)
 			}
 			res.Quarantined++
@@ -278,36 +261,52 @@ func Sweep(ctx context.Context, d SweeperDeps) (SweepResult, error) {
 			continue
 		}
 
-		won, err := d.Claims.Claim(ctx, c.GoalEventID, pokeConsumer(c.Pokes), d.Host, lease())
-		if err != nil {
-			return res, fmt.Errorf("store: claiming poke %d for goal %s: %w", c.Pokes, c.GoalEventID, err)
-		}
-		if !won {
-			// Another sweeper has this (goal, epoch). Exactly the split-brain
-			// case Appendix B item 3 names, resolved without an election.
-			res.Skipped++
-			log.Debug("another sweeper holds this poke", "goal", c.GoalEventID, "epoch", c.Pokes)
-			continue
-		}
-
-		// RECORDED BEFORE DELIVERED. The poke count IS the epoch, so a delivery
-		// with no recorded event would leave the epoch unchanged — and the next
-		// sweep would poke again immediately, at the same backoff, forever.
+		// RECORDED BEFORE DELIVERED, with a DERIVED (goal, epoch) id and NO
+		// CLAIM. The id is what makes a split-brain second sweeper's poke collide
+		// — Appendix B item 3's conditional insert, expressed as the primary key
+		// of `events` rather than as a row in `event_claims`.
+		//
+		// The claim that used to be here was a permanent-loss defect, and the
+		// mechanism is worth restating because it is subtle: the epoch is derived
+		// from the COUNT of goal_poke events, so a claim taken before an append
+		// that then FAILED left the epoch unchanged and the claim held — and the
+		// next sweep computed the same key, lost it to its own corpse, and
+		// skipped. Forever. The goal was never poked again AND never quarantined,
+		// reported under `Skipped` where it is indistinguishable from the five
+		// legitimate gates. Verified with a probe in code review.
 		idle := now().Sub(activitySince(c))
-		if _, err := d.Emitter.Emit(ctx, EmitRequest{
-			TypeName:           "goal_poke",
-			TypeVersion:        1,
-			WorkflowInstanceID: c.WorkflowID,
-			Payload: map[string]any{
-				"goal_event_id": c.GoalEventID.String(),
-				"owner":         c.Owner,
-				"epoch":         c.Pokes,
-				"reason":        fmt.Sprintf("no turn boundary for %s while this goal is open", idle.Round(time.Minute)),
-				"host":          d.Host,
-				"idle_seconds":  int(idle.Seconds()),
-			},
-		}); err != nil {
-			return res, fmt.Errorf("store: recording poke %d for goal %s: %w", c.Pokes, c.GoalEventID, err)
+		pokeErr := func() error {
+			_, err := d.Emitter.Emit(ctx, EmitRequest{
+				TypeName:           "goal_poke",
+				TypeVersion:        1,
+				EventID:            DerivedEventID(kindGoalPoke, c.GoalEventID.String(), strconv.Itoa(c.Pokes)),
+				WorkflowInstanceID: c.WorkflowID,
+				Payload: map[string]any{
+					"goal_event_id": c.GoalEventID.String(),
+					"owner":         c.Owner,
+					"epoch":         c.Pokes,
+					"reason":        fmt.Sprintf("no turn boundary for %s while this goal is open", idle.Round(time.Minute)),
+					"host":          d.Host,
+					"idle_seconds":  int(idle.Seconds()),
+				},
+			})
+			return err
+		}()
+		if pokeErr != nil {
+			if IsUniqueViolation(pokeErr) {
+				// Another sweeper already poked this (goal, epoch). Skip — and
+				// note this is now decided by the DATABASE rather than by a
+				// claim, so there is no window in which the marker exists and
+				// the record does not.
+				res.Skipped++
+				log.Debug("another sweeper already poked this epoch",
+					"goal", c.GoalEventID, "epoch", c.Pokes)
+				continue
+			}
+			// A real failure. NOTHING was written, so the epoch is unchanged and
+			// the next sweep retries this exact poke — which is the whole point
+			// of not holding a claim across the append.
+			return res, fmt.Errorf("store: recording poke %d for goal %s: %w", c.Pokes, c.GoalEventID, pokeErr)
 		}
 		res.Poked++
 
@@ -374,11 +373,13 @@ func gateFor(c StalledCandidate, locals map[string]LocalAgent, now time.Time, st
 	// on every sweep, with the log showing nothing but a lot of pokes. Skipping
 	// is the safe direction and makes the limitation visible in the reason
 	// string rather than latent in the behaviour.
-	if !local.InTurnObserved {
+	switch local.Turn {
+	case TurnUnknown:
 		return true, "the owner's turn state is not observable from this process, and an unobserved turn state is not an idle one"
-	}
-	if local.InTurn {
+	case TurnInTurn:
 		return true, "the owner is mid-turn"
+	case TurnIdle:
+		// Observed idle: keep going.
 	}
 	if local.Status == state.StatusPaused {
 		return true, "the owner is operator-paused, which is deliberately excluded from auto-resume"

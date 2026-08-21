@@ -52,6 +52,7 @@ import (
 	"fmt"
 	"io"
 	"log/slog"
+	"os"
 	"time"
 
 	"github.com/dmotles/sprawl/internal/dispatchadapt"
@@ -109,6 +110,36 @@ func init() {
 	storeCmd.AddCommand(storeDispatchCmd)
 }
 
+// defaultHostIdentity is this process's host identity for claims, affinity and
+// reconciliation.
+//
+// IT MUST BE UNIQUE PER MACHINE, and the first version was not: it used
+// store.ProvisionalProjectID, i.e. `"local:" + sprawlRoot` — a FILESYSTEM PATH.
+// Two machines with the same checkout path (the normal case for a container
+// image, and exactly the deployment this milestone exists to serve) reported the
+// same host, and code review traced what that breaks:
+//
+//   - AFFINITY: both machines match `affinity == d.host`, so a worktree-bound
+//     event is claimable where the worktree does not exist.
+//   - RECONCILE: machine B reads machine A's intents as its own, finds no local
+//     trace, and past the grace period emits spawn_failed for an agent that is
+//     alive and well on A.
+//
+// Hostname AND root, because neither alone is enough: two checkouts on one
+// machine are two hosts for affinity purposes (they have different worktrees),
+// and two machines sharing a path are two hosts for every purpose.
+//
+// A hostname that cannot be read is a REFUSAL rather than a fallback to the path
+// alone: silently returning a non-unique identity is how the original defect
+// looked from the outside.
+func defaultHostIdentity(deps *storeDeps) string {
+	name, err := os.Hostname()
+	if err != nil || name == "" {
+		return ""
+	}
+	return name + ":" + deps.SprawlRoot
+}
+
 // dispatchSweepInterval is how often the sweeper runs.
 //
 // Far longer than the dispatch poll: the dispatcher is chasing latency on newly
@@ -142,7 +173,10 @@ func runStoreDispatch(ctx context.Context, deps *storeDeps) error {
 
 	host := dispatchHost
 	if host == "" {
-		host = store.ProvisionalProjectID(deps.SprawlRoot)
+		host = defaultHostIdentity(deps)
+	}
+	if host == "" {
+		return fmt.Errorf("could not determine a host identity for this machine (os.Hostname failed)\nnext: pass --host <stable-unique-id>; two machines sharing a host identity is a DATA-LOSS configuration — each reads the other's spawn intents as its own and can declare a live agent failed")
 	}
 	out := deps.Stdout
 
@@ -159,6 +193,7 @@ func runStoreDispatch(ctx context.Context, deps *storeDeps) error {
 	reader := &store.PgEventReader{Pool: pool, Registry: registry}
 	claims := &store.PgClaimStore{Pool: pool}
 	local := &dispatchadapt.DiskAgents{SprawlRoot: deps.SprawlRoot}
+	notifies := &store.PgNotifyReader{Pool: pool, Registry: registry}
 	injector := &dispatchadapt.QueueInjector{SprawlRoot: deps.SprawlRoot}
 
 	reportDispatchLimits(out, host)
@@ -166,6 +201,17 @@ func runStoreDispatch(ctx context.Context, deps *storeDeps) error {
 	// Startup reconciliation, BEFORE the loop. An orphan whose intent is still
 	// open must be adopted before anything else acts on the log, or the sweeper
 	// spends its first pass chasing a contract that is about to be closed.
+	// A RECONCILE FAILURE DOES NOT STOP THE PROCESS.
+	//
+	// It used to. Combined with DiskAgents.Reclaim refusing without a wired
+	// remover, ONE stray — a failed intent plus a local agent of that name —
+	// permanently prevented `store dispatch` from starting on that host, which
+	// stops notifications and acks: work with nothing to do with the stray. A
+	// transient database error inside reconcile had the same effect.
+	//
+	// Reconciliation is a best-effort tidy-up of a previous run. Refusing to
+	// dispatch because it could not be completed is the wrong blast radius, so it
+	// is reported loudly and the loop starts anyway.
 	if err := reportReconcile(ctx, out, store.ReconcileDeps{
 		Intents:   &store.PgIntentReader{Pool: pool, Registry: registry},
 		Local:     local,
@@ -174,14 +220,16 @@ func runStoreDispatch(ctx context.Context, deps *storeDeps) error {
 		Host:      host,
 		Logger:    logger,
 	}); err != nil {
-		return err
+		fmt.Fprintf(os.Stderr, "startup reconciliation did not complete: %v\n", err)
+		fmt.Fprintf(os.Stderr, "  continuing anyway: notifications and acks do not depend on it\n")
+		fmt.Fprintf(os.Stderr, "  next: `sprawl store doctor`, and check for a stray agent named by a failed spawn intent\n")
 	}
 
 	notify, err := store.NewNotifyHandler(store.NotifyHandlerDeps{
 		Emitter:  emitter,
 		Injector: injector,
-		Claims:   claims,
 		Lookup:   reader,
+		Notifies: notifies,
 		Local:    local,
 		// Ownership falls back to the root agent, which is what the plan means by
 		// "reassign to root/workflow engine". The engine takes over in M3a.
@@ -195,7 +243,7 @@ func runStoreDispatch(ctx context.Context, deps *storeDeps) error {
 	}
 	ack, err := store.NewNotifyAckHandler(store.NotifyAckHandlerDeps{
 		Emitter:  emitter,
-		Notifies: &store.PgNotifyReader{Pool: pool, Registry: registry},
+		Notifies: notifies,
 		Host:     host,
 		Logger:   logger,
 	})
@@ -237,13 +285,13 @@ func runStoreDispatch(ctx context.Context, deps *storeDeps) error {
 			return err
 		}
 		if !dispatchNoSweeper {
-			reportSweep(ctx, out, sweeperDeps(pool, registry, local, claims, emitter, injector, ledger.ProjectID(), host, logger))
+			reportSweep(ctx, out, sweeperDeps(pool, registry, local, emitter, injector, ledger.ProjectID(), host, logger))
 		}
 		return nil
 	}
 
 	if !dispatchNoSweeper {
-		go runSweepTicker(ctx, out, sweeperDeps(pool, registry, local, claims, emitter, injector, ledger.ProjectID(), host, logger))
+		go runSweepTicker(ctx, out, sweeperDeps(pool, registry, local, emitter, injector, ledger.ProjectID(), host, logger))
 	}
 	fmt.Fprintf(out, "dispatching (Ctrl-C to stop)\n")
 	return dispatcher.Run(ctx)
@@ -258,18 +306,16 @@ func runStoreDispatch(ctx context.Context, deps *storeDeps) error {
 const dispatchConsumer = "dispatcher"
 
 func sweeperDeps(pool *pgxpool.Pool, registry *store.Registry, local store.LocalAgents,
-	claims store.ClaimStore, emitter store.EventEmitter, injector store.Injector,
+	emitter store.EventEmitter, injector store.Injector,
 	projectID uuid.UUID, host string, sweepLogger *slog.Logger,
 ) store.SweeperDeps {
 	return store.SweeperDeps{
 		Goals:     &store.PgSweepReader{Pool: pool, Registry: registry},
 		Local:     local,
-		Claims:    claims,
 		Emitter:   emitter,
 		Injector:  injector,
 		ProjectID: projectID,
 		Host:      host,
-		Elect:     store.PgSweepElection(pool, projectID),
 		Logger:    sweepLogger,
 	}
 }
@@ -287,13 +333,12 @@ func runSweepTicker(ctx context.Context, out io.Writer, deps store.SweeperDeps) 
 	}
 }
 
-func reportSweep(ctx context.Context, out io.Writer, deps store.SweeperDeps) {
+func reportSweep(ctx context.Context, out io.Writer, deps store.SweeperDeps) { //nolint:revive // out is the success surface; failures go to stderr
 	res, err := store.Sweep(ctx, deps)
 	if err != nil {
-		fmt.Fprintf(out, "sweep failed: %v\n", err)
-		return
-	}
-	if !res.Elected {
+		// STDERR. Every other failure in this file goes there, and a failure on
+		// stdout is invisible to a caller that separates the streams.
+		fmt.Fprintf(os.Stderr, "sweep failed: %v\n", err)
 		return
 	}
 	// Reported even when nothing happened, and Skipped is reported alongside
@@ -309,7 +354,7 @@ func reportSweep(ctx context.Context, out io.Writer, deps store.SweeperDeps) {
 func reportReconcile(ctx context.Context, out io.Writer, deps store.ReconcileDeps) error {
 	res, err := store.Reconcile(ctx, deps)
 	if err != nil {
-		return fmt.Errorf("startup reconciliation: %w", err)
+		return err
 	}
 	fmt.Fprintf(out, "reconcile: adopted %d, failed %d, reclaimed %d, in flight %d, unattributed %d\n",
 		res.Adopted, res.Failed, res.Reclaimed, res.InFlight, res.Unattributed)

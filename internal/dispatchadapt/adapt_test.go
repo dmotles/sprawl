@@ -41,11 +41,25 @@ func TestDiskAgents_ReportsTurnStateAsUnobserved(t *testing.T) {
 	if len(got) != 1 {
 		t.Fatalf("%d agents, want 1", len(got))
 	}
-	if got[0].InTurnObserved {
-		t.Error("a disk-backed view claims to have OBSERVED turn state; it cannot, and the sweeper would treat every working agent as idle and poke it")
+	if got[0].Turn != store.TurnUnknown {
+		t.Errorf("a disk-backed view reports turn state %v; it cannot observe it at all, and any answer but TurnUnknown makes the sweeper act on a guess", got[0].Turn)
 	}
-	if got[0].InTurn {
-		t.Error("a disk-backed view reports InTurn true, which it has no way to know")
+}
+
+// TurnUnknown IS THE ZERO VALUE, so a forgotten field is the SAFE answer.
+//
+// The point of making this a named type rather than a bool pair: the first fix
+// used `InTurn bool` + `InTurnObserved bool`, which is correct but leaves
+// `LocalAgent{InTurnObserved: true}` — a claim of observation the caller does not
+// have — one keystroke away and spellable by accident. Code review flagged it as
+// unenforceable. Now the dangerous state has to be asked for by name.
+func TestLocalAgent_ZeroValueTurnStateIsUnknown(t *testing.T) {
+	var a store.LocalAgent
+	if a.Turn != store.TurnUnknown {
+		t.Errorf("the zero value of LocalAgent.Turn is %v, want TurnUnknown — a view that says nothing must not be read as saying 'idle'", a.Turn)
+	}
+	if store.TurnUnknown == store.TurnIdle {
+		t.Error("TurnUnknown and TurnIdle are the same value, so the distinction the sweeper gates on does not exist")
 	}
 }
 

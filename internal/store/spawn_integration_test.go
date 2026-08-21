@@ -311,7 +311,13 @@ func TestSpawnPg_ReconcileFailsATracelessIntentThenReclaimsTheStray(t *testing.T
 	if _, err := e.emitter.Emit(ctx, EmitRequest{
 		TypeName: "spawn_intent", TypeVersion: 1,
 		WorkflowInstanceID: uuid.New(),
-		Payload:            map[string]any{"agent_name": "ghost", "agent_type": "engineer", "host_affinity": "host-a"},
+		Payload: map[string]any{
+			"agent_name": "ghost", "agent_type": "engineer", "host_affinity": "host-a",
+			// The branch and worktree the spawn was going to create. Carried
+			// because reclaiming is now guarded on the resource matching, not
+			// merely on the name — see sameResource.
+			"branch": "dmotles/ghost", "worktree": "/wt/ghost",
+		},
 	}); err != nil {
 		t.Fatalf("emitting an intent: %v", err)
 	}
@@ -335,7 +341,7 @@ func TestSpawnPg_ReconcileFailsATracelessIntentThenReclaimsTheStray(t *testing.T
 
 	// Pass 2: the resource turns up AFTER we declared the spawn failed. That is
 	// the stray, and it is attributable, so it goes.
-	withGhost := &fakeLocalAgents{agents: []LocalAgent{{Name: "ghost", Worktree: "/wt/ghost"}}}
+	withGhost := &fakeLocalAgents{agents: []LocalAgent{{Name: "ghost", Branch: "dmotles/ghost", Worktree: "/wt/ghost"}}}
 	res2, err := Reconcile(ctx, ReconcileDeps{
 		Intents: e.intents, Local: withGhost, Emitter: e.emitter,
 		ProjectID: e.projectID, Host: "host-a",

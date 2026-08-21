@@ -191,3 +191,42 @@ func TestStoreDispatch_IsRegisteredWithItsFlags(t *testing.T) {
 		t.Fatal("`store dispatch` is not registered under `store`, so it is unreachable")
 	}
 }
+
+// THE DEFAULT HOST IDENTITY MUST BE UNIQUE PER MACHINE.
+//
+// The first version used store.ProvisionalProjectID — `"local:" + sprawlRoot`, a
+// FILESYSTEM PATH. Two machines with the same checkout path (the normal case for
+// a container image, and exactly the deployment this milestone exists to serve)
+// reported the same host, which breaks two of the three things host identity is
+// load-bearing for:
+//
+//	affinity  both machines match `affinity == d.host`, so a worktree-bound event
+//	          is claimable where the worktree does not exist.
+//	reconcile machine B reads machine A's intents as its own, finds no local
+//	          trace, and past the grace period emits spawn_failed for an agent
+//	          that is alive and well on A.
+//
+// Found in code review. Asserted as "contains the hostname AND the root" rather
+// than by comparing to a literal, because the exact format is not the property —
+// distinguishing two machines is.
+func TestDefaultHostIdentity_IsNotJustTheCheckoutPath(t *testing.T) {
+	deps, _ := newDispatchTestDeps(t)
+	got := defaultHostIdentity(deps)
+
+	if got == "" {
+		t.Skip("os.Hostname() failed on this host, so there is no identity to check")
+	}
+	if got == "local:"+deps.SprawlRoot || !strings.Contains(got, deps.SprawlRoot) {
+		t.Errorf("the default host identity is %q; it must distinguish two MACHINES sharing a checkout path, and it must still distinguish two checkouts on one machine", got)
+	}
+	name, err := os.Hostname()
+	if err == nil && !strings.Contains(got, name) {
+		t.Errorf("the default host identity %q does not contain the hostname, so two machines with the same checkout path report the same host — a data-loss configuration", got)
+	}
+	// Two different roots on this machine must still be two hosts: they have
+	// different worktrees, so affinity has to tell them apart.
+	other, _ := newDispatchTestDeps(t)
+	if defaultHostIdentity(other) == got {
+		t.Error("two different checkouts on one machine report the same host identity, so a worktree-bound event would be claimable in the wrong one")
+	}
+}

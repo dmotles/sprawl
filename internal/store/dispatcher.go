@@ -84,10 +84,12 @@ type DispatchedEvent struct {
 	ClosesEventID      *uuid.UUID
 	Payload            json.RawMessage
 	At                 time.Time
-	// HostAffinity, when non-empty, names the ONLY host that may claim this
-	// event. Empty means any host may. Populated from the payload — see
-	// hostAffinityOf.
-	HostAffinity string
+	// NOTE there is deliberately no HostAffinity field. There was one, it was
+	// NEVER WRITTEN by anything, and its doc comment said it "names the ONLY host
+	// that may claim this event" — so a future reader who used it would have got
+	// "" for every event and silently converted every worktree-bound event into
+	// one any host may claim. That is AC3's exact failure, reached by believing a
+	// comment. Affinity comes from hostAffinityOf(ev), which reads the payload.
 }
 
 // Handler acts on one event. Registered by schema NAME, because a handler
@@ -365,8 +367,13 @@ func (d *Dispatcher) Step(ctx context.Context) (StepResult, error) {
 				}
 				return res, err
 			}
+			// `advanced` is false only together with a non-nil error — all four
+			// of `one`'s return sites hold that — and the error branch above has
+			// already returned. Stated as an assertion rather than as a second
+			// branch, because an unreachable `if` reads as a handled case and
+			// invites someone to make it reachable without checking the caller.
 			if !advanced {
-				return res, flush()
+				return res, fmt.Errorf("store: internal: dispatcher declined to advance past %s at seq %d without reporting an error", ev.ID, ev.Seq)
 			}
 			cursor = ev.Seq
 			res.AdvancedTo = cursor
@@ -451,6 +458,17 @@ func (d *Dispatcher) one(ctx context.Context, ev DispatchedEvent) (advanced, han
 		if !took {
 			// A live lease. Advance — waiting for a peer's work to finish would
 			// make this host's progress hostage to that peer's liveness.
+			//
+			// RESIDUAL, and it is a real hole rather than a covered case, so it
+			// is written down rather than left to read as if the lease handled
+			// it: if the holder NEVER RETURNS (disk failure, decommissioned),
+			// its cursor dies with it while ours has advanced past this event.
+			// No lease expiry helps — nothing looks at this seq again from any
+			// host. The state IS detectable (a claim row with an expired
+			// lease_expires and no completing event is exactly the signature)
+			// and NOTHING DETECTS IT. Tracked as QUM-1272, which weighs a reaper
+			// pass against having Step re-scan from the lowest seq it skipped on a
+			// live foreign claim.
 			d.log.Debug("event already claimed and its lease is live, skipping",
 				"seq", ev.Seq, "event", ev.ID, "type", ev.SchemaName, "consumer", d.consumer)
 			return true, false, nil

@@ -69,28 +69,52 @@ type LocalAgent struct {
 	// owner-dead check: "died with no session" is the permanent case, where
 	// "died but a session is recorded" may still be revivable.
 	SessionID string
-	// InTurn and InTurnObserved are the sweeper's in-turn gate, and they are a
-	// TRI-STATE on purpose: in-turn, not-in-turn, and NOT KNOWN.
+	// Turn is the sweeper's in-turn gate, and it is a TRI-STATE whose ZERO VALUE
+	// IS "UNKNOWN".
 	//
-	// A plain bool here was a real defect, found while writing the adapters and
-	// fixed in the same commit. Turn state lives only in the supervisor's
-	// in-memory phase machine (internal/runtime's UnifiedRuntime.State().InTurn)
-	// and has NO on-disk representation — internal/state.AgentState carries no
-	// such field. So a process that is not the supervisor cannot observe it, and
-	// a plain bool forces such a process to report `false`, which the sweeper
-	// would read as "not in turn" and poke a working agent.
+	// A plain bool here was a real defect. Turn state lives only in the
+	// supervisor's in-memory phase machine (internal/runtime's
+	// UnifiedRuntime.State().InTurn) and has NO on-disk representation —
+	// internal/state.AgentState carries no such field — so a process that is not
+	// the supervisor cannot observe it, and with a bool it is FORCED to report
+	// `false`. The sweeper reads that as "idle" and pokes every working agent in
+	// the fleet, silently, on every sweep.
 	//
-	// That is precisely the defect internal/supervisor/runtime.go's
-	// InTurnObserved already names: "Accepting the session probe's 'not in turn'
-	// when the authority is absent would be a negative answer derived from an
-	// unavailable observation." Same shape, one layer up, so the same tri-state
-	// answer — and the sweeper SKIPS an agent whose turn state is unobserved
-	// rather than assuming it is idle.
-	InTurn bool
-	// InTurnObserved is false when this view cannot see turn state at all.
-	// A view that reports InTurn: false with InTurnObserved: false is saying
-	// "I do not know", not "it is idle".
-	InTurnObserved bool
+	// internal/supervisor/runtime.go's InTurnObserved already names this exact
+	// hazard: "Accepting the session probe's 'not in turn' when the authority is
+	// absent would be a negative answer derived from an unavailable observation."
+	//
+	// A NAMED TYPE rather than a bool pair, and specifically so the ZERO VALUE is
+	// the safe one. The first fix used `InTurn bool` + `InTurnObserved bool`,
+	// which is correct but leaves `LocalAgent{InTurnObserved: true}` — a claim of
+	// observation the caller does not have — one keystroke away and spellable by
+	// accident. With this type the default is TurnUnknown and the dangerous state
+	// has to be asked for by name.
+	Turn TurnState
+}
+
+// TurnState is what a view knows about an agent's turn.
+type TurnState int
+
+const (
+	// TurnUnknown is the ZERO VALUE, deliberately: a view that has not said
+	// anything has not claimed the agent is idle. The sweeper skips it.
+	TurnUnknown TurnState = iota
+	// TurnIdle means OBSERVED not-in-turn.
+	TurnIdle
+	// TurnInTurn means observed mid-turn.
+	TurnInTurn
+)
+
+func (t TurnState) String() string {
+	switch t {
+	case TurnIdle:
+		return "idle"
+	case TurnInTurn:
+		return "in-turn"
+	default:
+		return "unknown"
+	}
 }
 
 // LocalAgents is the host's own view of itself.
@@ -162,6 +186,26 @@ type ReconcileResult struct {
 	Reclaimed    int
 	Unattributed int
 	InFlight     int
+}
+
+// sameResource reports whether a local agent is the resource a failed intent
+// created.
+//
+// Matches on BRANCH or WORKTREE, either of which identifies the resource; the
+// name is deliberately not sufficient. An intent that named NEITHER is refused:
+// it cannot be tied to anything, and "cannot identify it" is not a licence to
+// delete it.
+func sameResource(in FailedIntent, local LocalAgent) bool {
+	if in.Branch == "" && in.Worktree == "" {
+		return false
+	}
+	if in.Branch != "" && in.Branch == local.Branch {
+		return true
+	}
+	if in.Worktree != "" && in.Worktree == local.Worktree {
+		return true
+	}
+	return false
 }
 
 // Reconcile brings the log and this host's disk back into agreement.
@@ -281,6 +325,29 @@ func Reconcile(ctx context.Context, d ReconcileDeps) (ReconcileResult, error) {
 		mentioned[in.AgentName] = true
 		local, exists := localByName[in.AgentName]
 		if !exists {
+			continue
+		}
+
+		// NAME ALONE IS NOT EVIDENCE THIS IS THE SAME RESOURCE.
+		//
+		// Agent names are REUSED constantly in this repo — that is the whole
+		// point of the retire/respawn cycle — so a failed intent for "zone" and a
+		// local agent called "zone" may be years apart and unrelated. Without
+		// this guard: a spawn of "zone" fails, "zone" is later created again by
+		// the legacy MCP path and is healthy and working, and the next reconcile
+		// tears down its worktree and records it as a stray. The one destructive
+		// path in this layer, aimed at a live agent.
+		//
+		// The intent already carries the branch and worktree it was going to
+		// create, so the guard is free: reclaim only when the local resource IS
+		// the one the intent named. When the intent named neither, refuse — an
+		// unidentifiable resource is exactly the case not to destroy.
+		if !sameResource(in, local) {
+			log.Warn("a failed spawn intent names an agent that exists locally, but its branch and worktree do not match the intent's; leaving it alone",
+				"agent", in.AgentName, "intent", in.EventID,
+				"intent_branch", in.Branch, "local_branch", local.Branch,
+				"intent_worktree", in.Worktree, "local_worktree", local.Worktree)
+			res.Unattributed++
 			continue
 		}
 

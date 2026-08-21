@@ -75,8 +75,8 @@ func (e *notifyEnv) handler(t *testing.T, inj Injector) *NotifyHandler {
 	h, err := NewNotifyHandler(NotifyHandlerDeps{
 		Emitter:  e.emitter,
 		Injector: inj,
-		Claims:   &PgClaimStore{Pool: e.pool},
 		Lookup:   e.reader(),
+		Notifies: e.notifies,
 		Host:     "host-a",
 		Consumer: "dispatcher",
 	})
@@ -194,35 +194,78 @@ func TestNotifyPg_FailedInjectionLeavesAnOutstandingContract(t *testing.T) {
 	}
 }
 
-// EXACTLY ONCE PER (EVENT, RECIPIENT) against a real claim table.
-func TestNotifyPg_TwoHostsNotifyTheOwnerOnce(t *testing.T) {
+// EXACTLY ONCE ACROSS TWO HOSTS — driven through the DISPATCHER, because that is
+// where the exclusion now lives.
+//
+// This test used to call NotifyHandler.Handle twice directly and rely on a claim
+// the handler took itself. That claim was removed: it was an "attempted" marker
+// used as a "done" marker and it silently dropped notifications (see derived.go).
+// So the honest question changed, and it is worth being precise about the answer:
+//
+//	the APPEND is idempotent, by the derived event id;
+//	the INJECTION is excluded by the DISPATCHER's per-event claim, one level up;
+//	and after a lease TAKEOVER a re-injection is possible — the same
+//	at-least-once trade claims.go already documents, and the right one, because
+//	the alternative is a result the owner never hears about.
+//
+// Calling the handler twice by hand tests none of that; it tests a path no
+// production caller takes. Two dispatchers is the real configuration.
+func TestNotifyPg_TwoDispatchersNotifyTheOwnerOnce(t *testing.T) {
 	e := newNotifyEnv(t)
 	ctx := context.Background()
-	closeEv := e.closeGoal(t, e.openGoal(t, "weave"))
+	e.closeGoal(t, e.openGoal(t, "weave"))
 
 	shared := &recordingInjector{}
 	for _, host := range []string{"host-a", "host-b"} {
-		h, err := NewNotifyHandler(NotifyHandlerDeps{
-			Emitter:  e.emitter,
-			Injector: shared,
-			Claims:   &PgClaimStore{Pool: e.pool},
-			Lookup:   e.reader(),
-			Host:     host,
-			Consumer: "dispatcher",
-		})
+		notify := e.handler(t, shared)
+		deps := e.deps(host, notify)
+		deps.Handlers = map[string]Handler{"goal_closed": notify}
+		deps.Cursor = &FileCursorStore{Root: t.TempDir()}
+		d, err := NewDispatcher(deps)
 		if err != nil {
-			t.Fatalf("NewNotifyHandler(%s): %v", host, err)
+			t.Fatalf("NewDispatcher(%s): %v", host, err)
 		}
-		if err := h.Handle(ctx, closeEv); err != nil {
-			t.Fatalf("Handle(%s): %v", host, err)
+		if _, err := d.Step(ctx); err != nil {
+			t.Fatalf("Step(%s): %v", host, err)
 		}
 	}
 
 	if got := shared.count(); got != 1 {
-		t.Errorf("the owner was notified %d times by two hosts, want exactly 1", got)
+		t.Errorf("the owner was notified %d times by two dispatchers, want exactly 1", got)
 	}
 	if got := e.eventCount(t, "owner_notify"); got != 1 {
-		t.Errorf("%d owner_notify events, want 1", got)
+		t.Errorf("%d owner_notify events, want 1 — the derived id should have made the second append a no-op", got)
+	}
+}
+
+// THE DERIVED ID MAKES A SECOND APPEND A NO-OP, asserted directly against
+// Postgres.
+//
+// The mechanism that replaced the claim, and the assertion that it is the
+// DATABASE enforcing it: a second Emit of the same logical notification is
+// refused with a unique violation rather than accepted as a second contract.
+func TestNotifyPg_ASecondAppendOfTheSameNotificationIsRefused(t *testing.T) {
+	e := newNotifyEnv(t)
+	ctx := context.Background()
+	closeEv := e.closeGoal(t, e.openGoal(t, "weave"))
+
+	req := EmitRequest{
+		TypeName: "owner_notify", TypeVersion: 1,
+		EventID:            DerivedEventID(kindOwnerNotify, closeEv.ID.String(), "weave"),
+		WorkflowInstanceID: uuid.New(),
+		Payload: map[string]any{
+			"recipient": "weave", "subject_event_id": closeEv.ID.String(),
+		},
+	}
+	if _, err := e.emitter.Emit(ctx, req); err != nil {
+		t.Fatalf("first append: %v", err)
+	}
+	_, err := e.emitter.Emit(ctx, req)
+	if err == nil {
+		t.Fatal("a second append of the same notification SUCCEEDED; the derived id is not excluding anything and two hosts would both notify")
+	}
+	if !IsUniqueViolation(err) {
+		t.Errorf("the second append failed with %v, which IsUniqueViolation does not recognise — the handler would treat it as a real failure and never deliver", err)
 	}
 }
 

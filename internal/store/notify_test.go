@@ -143,6 +143,7 @@ type notifyFixture struct {
 	injector *recordingInjector
 	lookup   *fakeEventLookup
 	handler  *NotifyHandler
+	notifies *trackingNotifies
 	local    *fakeLocalAgents
 	goalID   uuid.UUID
 	closeEv  DispatchedEvent
@@ -156,6 +157,7 @@ func newNotifyFixture(t *testing.T, owner string) *notifyFixture {
 	f := &notifyFixture{
 		trace:    tr,
 		claims:   claims,
+		notifies: newTrackingNotifies(),
 		emitter:  &recordingEmitter{trace: tr},
 		injector: &recordingInjector{trace: tr},
 		lookup:   &fakeEventLookup{events: map[uuid.UUID]DispatchedEvent{}},
@@ -177,11 +179,31 @@ func newNotifyFixture(t *testing.T, owner string) *notifyFixture {
 		Payload:            json.RawMessage(`{"outcome":"success","summary":"done"}`),
 	}
 
+	// Recording an owner_notify OPENS its contract, because that is what the
+	// appender does inside the append transaction. Without this the fixture's
+	// outstanding-check would always answer "not outstanding" and no test could
+	// reach the injection at all.
+	f.emitter.onEmit = func(req EmitRequest, id uuid.UUID) {
+		if req.TypeName != "owner_notify" {
+			return
+		}
+		// The RECIPIENT comes from the payload, not from a literal. An earlier
+		// version hardcoded "weave" here, so every fixture with a different owner
+		// opened its contract under the wrong name and the handler's
+		// outstanding-check answered "not outstanding" — which made five
+		// owner-dead tests fail for a reason that had nothing to do with them.
+		fields, ok := req.Payload.(map[string]any)
+		if !ok {
+			return
+		}
+		recipient, _ := fields["recipient"].(string)
+		f.notifies.opened(id, recipient)
+	}
 	h, err := NewNotifyHandler(NotifyHandlerDeps{
 		Emitter:  f.emitter,
 		Injector: f.injector,
-		Claims:   f.claims,
 		Lookup:   f.lookup,
+		Notifies: f.notifies,
 		Host:     "host-a",
 		Consumer: "dispatcher",
 	})
@@ -196,14 +218,17 @@ func newNotifyFixture(t *testing.T, owner string) *notifyFixture {
 // Delivery
 // ---------------------------------------------------------------------------
 
-// CLAIM, RECORD, THEN INJECT — in that order.
+// RECORD, THEN INJECT — in that order.
 //
-// The claim first because injection is a side effect and two hosts must not both
-// perform it. The record before the injection because a failed injection has to
-// leave something for the sweeper to find; the reverse order delivers with no
-// trace, so a delivery that half-happened is indistinguishable from one that
-// never did.
-func TestNotifyHandler_ClaimsRecordsThenInjects(t *testing.T) {
+// The record before the injection because a failed injection has to leave
+// something to retry against; the reverse order delivers with no trace, so a
+// half-happened delivery is indistinguishable from one that never started.
+//
+// There is no longer a claim in this sequence, and that is the code-review fix:
+// a claim taken before the record is an "attempted" marker used as a "done"
+// marker. Exclusion now comes from the derived event id and `events.id UNIQUE` —
+// the database rather than a convention. See derived.go.
+func TestNotifyHandler_RecordsThenInjects(t *testing.T) {
 	f := newNotifyFixture(t, "weave")
 
 	if err := f.handler.Handle(context.Background(), f.closeEv); err != nil {
@@ -211,61 +236,60 @@ func TestNotifyHandler_ClaimsRecordsThenInjects(t *testing.T) {
 	}
 
 	got := f.trace.all()
-	want := []string{"claim:" + f.closeEv.ID.String(), "emit:owner_notify", "inject:weave"}
+	want := []string{"emit:owner_notify", "inject:weave"}
 	if fmt.Sprint(got) != fmt.Sprint(want) {
 		t.Errorf("trace = %v, want %v", got, want)
 	}
+	if claims := f.claims.log(); len(claims) != 0 {
+		t.Errorf("the notify handler took %v; it must not hold a claim across its append — that was the permanent-loss defect", claims)
+	}
 }
 
-// The claim is keyed PER RECIPIENT, not per event.
+// A SECOND PASS OVER A DELIVERED NOTIFICATION DELIVERS NOTHING.
 //
-// One landing result can owe notifications to more than one party, and a claim
-// keyed on the event alone would deliver to the first and silently drop the rest.
-func TestNotifyHandler_ClaimIsScopedToTheRecipient(t *testing.T) {
+// Exactly-once, now carried by the derived id plus the contract state rather than
+// by a claim. The second pass's append is refused as a duplicate and the contract
+// has been acked, so there is nothing to do.
+func TestNotifyHandler_SecondPassOverADeliveredNotificationDoesNothing(t *testing.T) {
 	f := newNotifyFixture(t, "weave")
 	if err := f.handler.Handle(context.Background(), f.closeEv); err != nil {
-		t.Fatalf("Handle: %v", err)
+		t.Fatalf("first pass: %v", err)
 	}
+	f.notifies.ack(notifyIDFor(f.closeEv.ID, "weave"))
 
-	log := f.claims.log()
-	if len(log) == 0 {
-		t.Fatal("no claim was taken")
-	}
-	if !strings.Contains(f.claims.consumers()[0], "weave") {
-		t.Errorf("the claim consumer %q does not name the recipient, so a second recipient for the same event would be suppressed", f.claims.consumers()[0])
-	}
-}
-
-// EXACTLY ONCE PER (EVENT, RECIPIENT). Two passes, one injection.
-func TestNotifyHandler_SecondPassDoesNotRedeliver(t *testing.T) {
-	f := newNotifyFixture(t, "weave")
-	for i := 0; i < 2; i++ {
-		if err := f.handler.Handle(context.Background(), f.closeEv); err != nil {
-			t.Fatalf("Handle pass %d: %v", i, err)
-		}
+	if err := f.handler.Handle(context.Background(), f.closeEv); err != nil {
+		t.Fatalf("second pass: %v", err)
 	}
 	if got := f.injector.count(); got != 1 {
 		t.Errorf("injected %d times across two passes, want 1", got)
 	}
 	if got := len(f.emitter.byName("owner_notify")); got != 1 {
-		t.Errorf("%d owner_notify events, want 1 — the recipient would see the same result twice and the sweeper would chase two contracts", got)
+		t.Errorf("%d owner_notify events, want 1 — a second contract is a second thing the ack has to close", got)
 	}
 }
 
-// A LOSING claim means no injection AND no record. Both halves matter: a record
-// without an injection is an open contract nobody will ever ack.
-func TestNotifyHandler_LosingTheClaimDeliversNothing(t *testing.T) {
+// ANOTHER HOST'S RECORD SUPPRESSES THIS HOST'S DELIVERY.
+//
+// The database refused our append as a duplicate, so somebody else recorded it.
+// If their delivery is still outstanding this host WILL inject (that is the
+// retry), and if it is acked this host does nothing — asserted separately above.
+// What is asserted here is that a duplicate append is not read as a FAILURE: the
+// old code returned nil on a lost claim and the dispatcher advanced; this code
+// must neither fail the pass nor double-append.
+func TestNotifyHandler_ADuplicateAppendIsNotAFailure(t *testing.T) {
 	f := newNotifyFixture(t, "weave")
-	f.claims.refuse[f.closeEv.ID] = true
+	id := notifyIDFor(f.closeEv.ID, "weave")
+	// Another host got there first, and its delivery already landed and acked.
+	f.emitter.uniqueViolationOn = map[uuid.UUID]bool{id: true}
 
 	if err := f.handler.Handle(context.Background(), f.closeEv); err != nil {
-		t.Fatalf("Handle: %v", err)
+		t.Fatalf("Handle treated a duplicate append as a failure: %v", err)
+	}
+	if got := len(f.emitter.byName("owner_notify")); got != 0 {
+		t.Errorf("%d owner_notify events recorded despite the duplicate refusal", got)
 	}
 	if got := f.injector.count(); got != 0 {
-		t.Errorf("injected %d times without holding the claim", got)
-	}
-	if got := f.emitter.names(); len(got) != 0 {
-		t.Errorf("emitted %v without holding the claim; an owner_notify nobody delivers is an open contract nobody acks", got)
+		t.Errorf("injected %d times for a notification another host had already delivered and had acked", got)
 	}
 }
 
@@ -308,9 +332,11 @@ func TestNotifyHandler_NonClosingEventIsIgnored(t *testing.T) {
 
 // A FAILED INJECTION LEAVES THE CONTRACT OPEN, and reports the failure.
 //
-// This is the whole reason the record comes first. The contract stays open, so
-// the sweeper finds it and re-delivers; and the error surfaces, so the dispatcher
-// does not advance its cursor past a result nobody was told about.
+// This is the whole reason the record comes first. The contract stays open and the
+// error surfaces, so the dispatcher keeps its cursor on the event and the NEXT
+// PASS retries the delivery (see TestNotifyHandler_RetryAfterAFailedInjectionReDelivers).
+// An earlier version of this comment said the sweeper re-delivered; it does not,
+// and no such code ever existed.
 func TestNotifyHandler_FailedInjectionLeavesTheContractOpenAndReportsIt(t *testing.T) {
 	f := newNotifyFixture(t, "weave")
 	f.injector.err = errors.New("recipient stdin is wedged")
@@ -321,10 +347,10 @@ func TestNotifyHandler_FailedInjectionLeavesTheContractOpenAndReportsIt(t *testi
 	}
 	notifies := f.emitter.byName("owner_notify")
 	if len(notifies) != 1 {
-		t.Fatalf("%d owner_notify events, want 1 — a failed delivery must leave a sweepable record", len(notifies))
+		t.Fatalf("%d owner_notify events, want 1 — a failed delivery must leave a record to retry against", len(notifies))
 	}
 	if got := f.emitter.byName("notify_acked"); len(got) != 0 {
-		t.Errorf("emitted %v after a FAILED injection; the contract must stay open so the sweeper re-delivers", got)
+		t.Errorf("emitted %v after a FAILED injection; the contract must stay open so the next pass retries", got)
 	}
 }
 
@@ -564,8 +590,8 @@ func newDeadOwnerFixture(t *testing.T, owner string, local []LocalAgent) *notify
 	h, err := NewNotifyHandler(NotifyHandlerDeps{
 		Emitter:       f.emitter,
 		Injector:      f.injector,
-		Claims:        f.claims,
 		Lookup:        f.lookup,
+		Notifies:      f.notifies,
 		Local:         f.local,
 		FallbackOwner: "weave",
 		Host:          "host-a",
@@ -777,5 +803,205 @@ func TestOwnershipSeed_Shape(t *testing.T) {
 	}
 	if s.Spillable {
 		t.Error("ownership_reassigned is spillable; an ownership change recorded only on one host is invisible to every other reader of the contract")
+	}
+}
+
+// ---------------------------------------------------------------------------
+// The record-first rewrite (code-review fixes #1 and #3)
+// ---------------------------------------------------------------------------
+
+// trackingNotifies is an OpenNotify reader backed by the events the fixture's
+// emitter recorded, so "is this contract still open" is answered from the same
+// state a real database would answer it from.
+//
+// It exists because the notify handler's retry behaviour is now a FUNCTION of
+// whether the contract is open, and a fake that answered a fixed value could not
+// distinguish "delivered and acked" from "recorded but never delivered" — which
+// is the exact pair the two defects below turned on.
+type trackingNotifies struct {
+	mu       sync.Mutex
+	open     map[uuid.UUID]string // notify event id -> recipient
+	acked    map[uuid.UUID]bool
+	err      error
+	askedFor []string
+}
+
+func newTrackingNotifies() *trackingNotifies {
+	return &trackingNotifies{open: map[uuid.UUID]string{}, acked: map[uuid.UUID]bool{}}
+}
+
+func (t *trackingNotifies) OpenNotifies(_ context.Context, _ uuid.UUID, recipient string) ([]OpenNotify, error) {
+	t.mu.Lock()
+	defer t.mu.Unlock()
+	t.askedFor = append(t.askedFor, recipient)
+	if t.err != nil {
+		return nil, t.err
+	}
+	if recipient == "" {
+		return nil, errors.New("fake: an empty recipient would match every notification with no recipient")
+	}
+	var out []OpenNotify
+	for id, r := range t.open {
+		if r == recipient && !t.acked[id] {
+			out = append(out, OpenNotify{EventID: id, Recipient: r})
+		}
+	}
+	return out, nil
+}
+
+func (t *trackingNotifies) opened(id uuid.UUID, recipient string) {
+	t.mu.Lock()
+	defer t.mu.Unlock()
+	t.open[id] = recipient
+}
+
+func (t *trackingNotifies) ack(id uuid.UUID) {
+	t.mu.Lock()
+	defer t.mu.Unlock()
+	t.acked[id] = true
+}
+
+// notifyIDFor is the derived id the handler will use, computed independently.
+func notifyIDFor(subject uuid.UUID, recipient string) uuid.UUID {
+	return DerivedEventID(kindOwnerNotify, subject.String(), recipient)
+}
+
+// THE EVENT ID IS DERIVED FROM (subject, recipient), so two hosts attempting the
+// same notification collide in the DATABASE rather than in a convention.
+//
+// This is the mechanism that replaced a claim, and it is asserted directly
+// because everything below depends on it: if the id were random, every retry
+// would append a second contract and the "is it still outstanding" question
+// would be meaningless.
+func TestNotifyHandler_EventIDIsDerivedFromSubjectAndRecipient(t *testing.T) {
+	f := newNotifyFixture(t, "weave")
+	if err := f.handler.Handle(context.Background(), f.closeEv); err != nil {
+		t.Fatalf("Handle: %v", err)
+	}
+	got := f.emitter.byName("owner_notify")
+	if len(got) != 1 {
+		t.Fatalf("%d owner_notify events, want 1", len(got))
+	}
+	want := notifyIDFor(f.closeEv.ID, "weave")
+	if got[0].EventID != want {
+		t.Errorf("owner_notify id = %s, want the derived %s — with a random id a retry appends a second contract and nothing can dedup it",
+			got[0].EventID, want)
+	}
+	// Two different recipients for one result must NOT collide.
+	if notifyIDFor(f.closeEv.ID, "weave") == notifyIDFor(f.closeEv.ID, "alice") {
+		t.Error("two recipients of one result derive the same id, so only the first would ever be notified")
+	}
+	// The same recipient for two different results must not collide either.
+	if notifyIDFor(f.closeEv.ID, "weave") == notifyIDFor(uuid.New(), "weave") {
+		t.Error("two results derive the same id for one recipient, so only the first would ever be notified")
+	}
+}
+
+// A FAILED APPEND DOES NOT SILENCE THE NOTIFICATION PERMANENTLY.
+//
+// The first HIGH defect from code review, verified there with a probe. The old
+// code claimed `notify:<recipient>` BEFORE appending and never released it, so:
+// append fails -> retry -> the claim is lost to OUR OWN ROW -> "another host is
+// notifying this recipient" -> return nil -> the dispatcher records success and
+// advances past the event. No event, no injection, no contract, cursor advanced,
+// and one Debug line blaming a host that does not exist.
+//
+// A claim taken before the record is an ATTEMPTED marker being used as a DONE
+// marker, and the two differ exactly when something fails.
+func TestNotifyHandler_RetryAfterAFailedAppendStillDelivers(t *testing.T) {
+	f := newNotifyFixture(t, "weave")
+	f.emitter.err = errors.New("connection reset")
+
+	if err := f.handler.Handle(context.Background(), f.closeEv); err == nil {
+		t.Fatal("Handle reported success although the append failed")
+	}
+	if got := f.injector.count(); got != 0 {
+		t.Fatalf("injected %d times with no record written", got)
+	}
+
+	// The condition clears and the dispatcher retries the same event.
+	f.emitter.mu.Lock()
+	f.emitter.err = nil
+	f.emitter.mu.Unlock()
+
+	if err := f.handler.Handle(context.Background(), f.closeEv); err != nil {
+		t.Fatalf("retry: %v", err)
+	}
+	if got := len(f.emitter.byName("owner_notify")); got != 1 {
+		t.Errorf("%d owner_notify events after the retry, want 1 — the result would have landed unobserved with nothing able to discover it", got)
+	}
+	if got := f.injector.count(); got != 1 {
+		t.Errorf("injected %d times after the retry, want 1", got)
+	}
+}
+
+// A FAILED INJECTION IS RE-DELIVERED BY THE NEXT PASS, because the contract is
+// still open.
+//
+// The third HIGH defect: six comments claimed the SWEEPER re-delivered, and no
+// such code existed anywhere. The mechanism that does exist is the DISPATCHER's
+// retry — it keeps its cursor on a failing event — and it only works if the
+// handler re-injects when it finds the contract outstanding. The old code hit the
+// same lost-claim short-circuit and skipped.
+func TestNotifyHandler_RetryAfterAFailedInjectionReDelivers(t *testing.T) {
+	f := newNotifyFixture(t, "weave")
+	f.injector.err = errors.New("stdin is wedged")
+
+	if err := f.handler.Handle(context.Background(), f.closeEv); err == nil {
+		t.Fatal("Handle reported success although the injection failed")
+	}
+	// The contract is already open: the emitter's onEmit opened it when the
+	// record landed, exactly as the appender does inside its transaction.
+	f.injector.mu.Lock()
+	f.injector.err = nil
+	f.injector.mu.Unlock()
+
+	if err := f.handler.Handle(context.Background(), f.closeEv); err != nil {
+		t.Fatalf("retry: %v", err)
+	}
+	if got := f.injector.count(); got != 1 {
+		t.Errorf("injected %d times after the retry, want 1 — a failed delivery must be retried, and nothing in the sweeper does it", got)
+	}
+	// And exactly ONE contract, not two: the derived id made the append idempotent.
+	if got := len(f.emitter.byName("owner_notify")); got != 1 {
+		t.Errorf("%d owner_notify events after a retry, want 1 — a second contract is a second thing the ack has to close", got)
+	}
+}
+
+// AN ACKED NOTIFICATION IS NOT RE-DELIVERED.
+//
+// The positive control's counterpart, and the assertion that stops the retry
+// above from becoming a duplicate-delivery machine: once the contract is closed,
+// a pass over the same event injects nothing.
+func TestNotifyHandler_AnAckedNotificationIsNotReDelivered(t *testing.T) {
+	f := newNotifyFixture(t, "weave")
+	if err := f.handler.Handle(context.Background(), f.closeEv); err != nil {
+		t.Fatalf("Handle: %v", err)
+	}
+	// The recipient took a turn, so the contract is closed. The second append is
+	// a duplicate, which the emitter refuses because it has already recorded that
+	// id — the same refusal Postgres gives.
+	f.notifies.ack(notifyIDFor(f.closeEv.ID, "weave"))
+
+	if err := f.handler.Handle(context.Background(), f.closeEv); err != nil {
+		t.Fatalf("second pass: %v", err)
+	}
+	if got := f.injector.count(); got != 1 {
+		t.Errorf("injected %d times in total, want 1 — an acked notification was delivered again", got)
+	}
+}
+
+// An unreadable outstanding-notification check is an ERROR, not "not
+// outstanding".
+//
+// Reading it as not-outstanding would skip the delivery on a transport blip while
+// the dispatcher recorded success and advanced — the same permanent loss the
+// claim short-circuit caused, arriving through the replacement mechanism.
+func TestNotifyHandler_UnreadableOutstandingCheckIsAnError(t *testing.T) {
+	f := newNotifyFixture(t, "weave")
+	f.notifies.err = errors.New("connection refused")
+
+	if err := f.handler.Handle(context.Background(), f.closeEv); err == nil {
+		t.Fatal("Handle succeeded although it could not tell whether the notification was still outstanding")
 	}
 }

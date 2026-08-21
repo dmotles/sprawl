@@ -38,9 +38,10 @@
 # consumer claim present, cursor file written, AC1 no-duplicate after cursor
 # reset, AC1 no duplicate envelope, AC2 second host handled nothing new, AC2 one
 # owner_notify total, ack closes the contract, sweeper reached and poked nothing,
+# one owner_notify per pair and NO notify claim (the derived id replaced it),
 # plus the ledger-opened and seeding-succeeded preconditions (both of which are
 # real assertions: the row silently measured nothing without them).
-MIN_ASSERTIONS=20
+MIN_ASSERTIONS=21
 
 test_metadata() {
     echo "needs_claude=0 needs_tmux=0"
@@ -255,10 +256,26 @@ test_run() {
 
     # The claim keys are decisions made in cmd/store_dispatch.go and asserted
     # nowhere else.
-    if [ "$(psql_q "SELECT count(*) FROM event_claims WHERE consumer='notify:weave'")" = "1" ]; then
-        pass "the notification claim is keyed per recipient (notify:weave)"
+    # THE NOTIFICATION IS EXCLUDED BY ITS DERIVED EVENT ID, NOT BY A CLAIM.
+    #
+    # This assertion used to look for a `notify:weave` claim row. That claim was
+    # REMOVED after code review proved it silently dropped notifications: taken
+    # before the append and never released, it turned a failed append into a
+    # permanent skip ("another host is notifying this recipient" — about a host
+    # that did not exist). Exclusion now comes from the derived event id and
+    # `events.id UNIQUE`, i.e. from the database rather than a convention.
+    #
+    # The row asserts the CONSEQUENCE it can see: exactly one owner_notify per
+    # (subject, recipient), and no notify claim at all.
+    if [ "$(psql_q "SELECT count(*) FROM events e JOIN event_type_schemas s ON s.id=e.schema_id WHERE s.name='owner_notify'")" = "1" ]; then
+        pass "exactly one owner_notify exists for this (result, recipient) pair"
     else
-        fail "no per-recipient notification claim: $(psql_q "SELECT string_agg(consumer, ',') FROM event_claims")"
+        fail "$(psql_q "SELECT count(*) FROM events e JOIN event_type_schemas s ON s.id=e.schema_id WHERE s.name='owner_notify'") owner_notify events, want 1"
+    fi
+    if [ "$(psql_q "SELECT count(*) FROM event_claims WHERE consumer LIKE 'notify:%'")" = "0" ]; then
+        pass "no per-recipient notify claim exists; the derived event id is the exclusion mechanism"
+    else
+        fail "a notify claim is being taken again: $(psql_q "SELECT string_agg(consumer, ',') FROM event_claims WHERE consumer LIKE 'notify:%'") — a claim held across an append silently drops notifications"
     fi
     if [ "$(psql_q "SELECT count(*) FROM event_claims WHERE consumer='dispatcher'")" -ge "1" ]; then
         pass "the dispatch claim uses the shared, host-independent consumer name"
