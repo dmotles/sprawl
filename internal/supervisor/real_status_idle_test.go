@@ -68,7 +68,21 @@ func TestRecoverAgents_BootResumeAcceptSet(t *testing.T) {
 		{state.StatusFaulted, false},  // genuine fault
 		{state.StatusPaused, false},   // operator rest state
 		{state.StatusKilled, false},
-		{state.StatusDied, false},
+		// QUM-1265: `died` RESUMES. It is watchHandleExit's unexpected-exit
+		// stamp — the same crash survivor the StatusActive row above exists
+		// for, differing only in whether sprawl outlived the child long enough
+		// to observe the exit. Observation order is a kernel-reap race, and a
+		// race is not a resume policy.
+		//
+		// History, stated precisely because the sloppy version of it is
+		// tempting: before QUM-1260 this exclusion WAS an accident — `died`
+		// was not a case in LivenessFromStatus, so it fell through the
+		// unrecognised-status arm and this row recorded a default. QUM-1260
+		// made it recognised-and-excluded and deliberately DEFERRED the
+		// question, in a comment on the accept-set saying so. So from QUM-1260
+		// to QUM-1265 the exclusion was a documented deferral, not a default.
+		// QUM-1265 answers it. Do not read this row as correcting an oversight.
+		{state.StatusDied, true},
 		{state.StatusRetired, false},
 		{state.StatusRetiring, false},
 		{state.StatusResumeFailed, false},

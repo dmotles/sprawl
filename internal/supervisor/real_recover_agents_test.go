@@ -16,6 +16,7 @@ import (
 	"github.com/dmotles/sprawl/internal/agent"
 	backendpkg "github.com/dmotles/sprawl/internal/backend"
 	"github.com/dmotles/sprawl/internal/state"
+	"github.com/dmotles/sprawl/internal/supervisor/liveness"
 )
 
 // QUM-1186: TestRealRecoverAgents_SettlePassFlipsZombieStatus was removed
@@ -848,5 +849,123 @@ func TestRealRecoverAgents_PausedIsStillSkippedForTheStatedReason(t *testing.T) 
 	}
 	if loaded.Status != state.StatusPaused {
 		t.Errorf("Status = %q, want %q", loaded.Status, state.StatusPaused)
+	}
+}
+
+// TestRealRecoverAgents_DiedCrashSurvivorAutoResumes — QUM-1265.
+//
+// `died` is AgentRuntime.watchHandleExit's unexpected-exit stamp: the agent's
+// subprocess went away and nobody asked it to. That is the same crash survivor
+// the accept-set's Running arm exists for — its own comment says the Running arm
+// is there so "crash-survivors (process died without a clean Shutdown→suspend)
+// still auto-resume" — differing only in whether sprawl was alive long enough to
+// notice and write a resting status instead of leaving `active` untouched.
+//
+// Measured in the paused-persistence P2 row: one "simulated crash" left the child
+// at `active`, `suspended`, `paused` or `died` on different runs depending on
+// which process the kernel reaped first, and `died` never came back on any later
+// `sprawl enter`. A kernel reap race is not a resume policy.
+//
+// The exclusion was an accident of the unrecognised-status arm until QUM-1260,
+// which made it recognised-and-excluded and explicitly deferred the decision;
+// QUM-1265 is that decision. It was not a silent oversight after QUM-1260.
+//
+// NO crash-loop guard accompanies this, deliberately, and the reason is a
+// property rather than an opinion. RecoverAgents runs ONCE per boot: if the
+// resumed session dies again it is restamped `died` and nothing retries until
+// the next `sprawl enter` or an explicit `wake`, so one attempt per boot is
+// already the natural rate limit. And a resume that fails to LAUNCH lands at
+// StatusResumeFailed, which stays outside the accept-set — so that class
+// self-arrests with no extra machinery. The companion test below
+// (…_DiedResumeFailureSelfArrests) is what makes that second half a checked
+// claim instead of prose.
+func TestRealRecoverAgents_DiedCrashSurvivorAutoResumes(t *testing.T) {
+	r, tmpDir := newFakeReal(t)
+	starter := &recoverTestStarter{session: recoverTestSession("sess-zombie")}
+	installStarter(r, starter)
+
+	saveRecoverAgent(t, tmpDir, "zombie", state.StatusDied, "weave")
+
+	resumed, failed, errs := r.RecoverAgents(context.Background())
+	if resumed != 1 || failed != 0 || len(errs) != 0 {
+		t.Fatalf("RecoverAgents = (%d,%d,%v), want (1,0,nil) — a died agent is a crash survivor and must auto-resume", resumed, failed, errs)
+	}
+	if len(starter.specs) != 1 {
+		t.Fatalf("starter.specs len = %d, want 1", len(starter.specs))
+	}
+	if !starter.specs[0].Resume {
+		t.Errorf("spec.Resume = false, want true — the existing transcript is what makes this a resume rather than a fresh start")
+	}
+	if starter.specs[0].SessionID != "sess-zombie" {
+		t.Errorf("spec.SessionID = %q, want the persisted %q", starter.specs[0].SessionID, "sess-zombie")
+	}
+	// The boot resume path owes this agent the restart-injection prompt just
+	// like any other crash survivor — it is the literal paused-persistence P2
+	// greps for, so a died agent that resumed without it would come back mute.
+	if starter.specs[0].RestartInjection != agent.RestartInjectionPrompt {
+		t.Errorf("spec.RestartInjection = %q, want the canonical RestartInjectionPrompt", starter.specs[0].RestartInjection)
+	}
+	loaded, err := state.LoadAgent(tmpDir, "zombie")
+	if err != nil {
+		t.Fatalf("LoadAgent: %v", err)
+	}
+	if loaded.Status != state.StatusActive {
+		t.Errorf("Status = %q, want %q", loaded.Status, state.StatusActive)
+	}
+	// Deliberately NOT asserting LivenessFromStatus("died") here: the only way
+	// RecoverAgents can resume this agent is through that projection returning
+	// (Died, true), so such an assertion is downstream of the ones above and
+	// cannot fail while they pass. The projection table is owned by
+	// TestLivenessFromStatus_PausedAndDiedAreRecognised, which has its own
+	// unknown-status negative control.
+}
+
+// TestRealRecoverAgents_DiedResumeFailureSelfArrests backs the "no crash-loop
+// guard needed" half of QUM-1265's decision with a check instead of a sentence.
+//
+// The argument for shipping without a guard is that a died agent whose resume
+// cannot LAUNCH lands at StatusResumeFailed, which the accept-set excludes, so
+// the retry loop terminates by itself. The accept-set table proves
+// resume_failed is excluded; this proves a DIED subject actually gets there.
+// Without it the safety story rests on a comment.
+//
+// Note this starter fails EVERY call and never fires the resume-cookie marker,
+// so it models a transient/environmental launch failure — the case QUM-1260
+// established must NOT trigger the fresh-session fallback. One attempt, and the
+// status is whatever it already was.
+func TestRealRecoverAgents_DiedResumeFailureSelfArrests(t *testing.T) {
+	r, tmpDir := newFakeReal(t)
+	starter := &recoverTestStarter{
+		session:   recoverTestSession("sess-zombie"),
+		errByName: map[string]error{"zombie": errors.New("fork/exec: too many open files")},
+	}
+	installStarter(r, starter)
+
+	saveRecoverAgent(t, tmpDir, "zombie", state.StatusDied, "weave")
+
+	resumed, failed, errs := r.RecoverAgents(context.Background())
+	if resumed != 0 || failed != 1 || len(errs) != 1 {
+		t.Fatalf("RecoverAgents = (%d,%d,%v), want (0,1,one error)", resumed, failed, errs)
+	}
+	if len(starter.specs) != 1 {
+		t.Errorf("starter.specs len = %d, want 1 — a launch failure with no cookie rejection must not be retried as a fresh session (QUM-1260)", len(starter.specs))
+	}
+	loaded, err := state.LoadAgent(tmpDir, "zombie")
+	if err != nil {
+		t.Fatalf("LoadAgent: %v", err)
+	}
+	// It stays `died` rather than being promoted to active: nothing launched.
+	// Either way the point is that it is NOT `active`, so the loop made no
+	// false claim about a subprocess that does not exist.
+	if loaded.Status == state.StatusActive {
+		t.Errorf("Status = %q after a failed launch; want anything but active — the agent has no live subprocess", loaded.Status)
+	}
+	// And whatever it rests at must be a status a LATER boot can act on, so the
+	// once-per-boot rate limit is a rate limit and not a dead end.
+	if loaded.Status == state.StatusResumeFailed {
+		lv, ok := liveness.LivenessFromStatus(loaded.Status)
+		if ok && lv != liveness.Suspended && lv != liveness.Running && lv != liveness.Died {
+			t.Logf("rests at %q, outside the boot accept-set: self-arrested, which is the intended terminus", loaded.Status)
+		}
 	}
 }

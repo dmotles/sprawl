@@ -506,7 +506,8 @@ func (r *AgentRuntime) startWithSpec(spec RuntimeStartSpec) (RuntimeHandle, erro
 //
 // Production wiring: called by Real.RecoverAgents during sprawl-enter startup
 // for every persisted child agent whose status is in {suspended, active,
-// running} and whose worktree still exists. An OnResumeFailure closure can be
+// running, died} and whose worktree still exists (QUM-1265 added died; the
+// accept-set in RecoverAgents is the authority, not this sentence). An OnResumeFailure closure can be
 // installed via the matching field on RuntimeStartSpec — currently this method
 // reads it from the runtime starter's bound state, but tests inject through
 // AgentRuntimeConfig / RuntimeStartSpec seams as documented in

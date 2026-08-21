@@ -400,6 +400,21 @@ test_run() {
         echo "  NOTE: P2 shutdown forced"
     fi
 
+    # QUM-1265: record WHICH post-crash status the kernel's reap order left
+    # behind, because this phase's assertion ("reached active post-restart") is
+    # status-agnostic and therefore cannot say which resume it exercised. The
+    # same simulated crash has been observed leaving `active` (sprawl died
+    # before observing anything), `suspended` (graceful shutdown, idle arm),
+    # `paused` (graceful shutdown, in-turn arm — QUM-1260) and `died`
+    # (watchHandleExit saw the child exit first). Only the first two were ever
+    # resumable before QUM-1260/QUM-1265 admitted the other two paths' outcomes.
+    # This is a DIAGNOSTIC, not an assertion: it adds no pass site, and it is
+    # what makes a green run interpretable as evidence for a particular draw
+    # rather than for "some draw".
+    local P2_PRECRASH_STATUS
+    P2_PRECRASH_STATUS=$(jq -r '.status // empty' "$P2_STATE" 2>/dev/null || true)
+    echo "  P2: post-crash disk status before relaunch = '${P2_PRECRASH_STATUS}' (QUM-1265 draw)"
+
     # Re-launch.
     local SESSION_P2B="sprawl-paused-p2b-${SUFFIX}"
     echo "  P2: re-launching sprawl on same SPRAWL_ROOT (session=$SESSION_P2B)"
@@ -412,6 +427,7 @@ test_run() {
 
     if ! pause_wait_active "$P2_STATE" 90; then
         fail "P2: child did not reach active post-restart (RecoverAgents resume failed?)"
+        echo "  P2: post-crash status was '${P2_PRECRASH_STATUS}' — if that is outside RecoverAgents' boot accept-set, the resume was never attempted (QUM-1265)" >&2
         cat "$P2_STATE" >&2 2>/dev/null || true
         # QUM-1260: sprawl's own resume diagnosis lives here and nowhere else —
         # `[enter] resume error: …` is the line that names the cause. Without it

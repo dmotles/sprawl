@@ -1291,26 +1291,38 @@ func (r *Real) RecoverAgents(_ context.Context) (resumed int, failed int, errs [
 		// liveness.LivenessFromStatus keeps the two axes literally separate — a
 		// future Status value or projection tweak can't silently re-conflate
 		// liveness with outcome (the exact bug this refactor exists to kill).
-		// Accept-set is {Suspended, Running}: Running covers disk "active"/"running"
-		// crash-survivors (process died without a clean Shutdown→suspend), so they
-		// still auto-resume. Faulted/Stopped/ResumeFailed/Killed/Retired/Retiring
-		// (and any unrecognized status) are not auto-resumed. QUM-723: Paused is
-		// also excluded — it is an explicit user-initiated rest state.
+		// Accept-set is {Suspended, Running, Died}: Running covers disk
+		// "active"/"running" crash-survivors (process died without a clean
+		// Shutdown→suspend), so they still auto-resume.
+		// Faulted/Stopped/ResumeFailed/Killed/Retired/Retiring (and any
+		// unrecognized status) are not auto-resumed. QUM-723: Paused is also
+		// excluded — it is an explicit user-initiated rest state.
 		//
-		// QUM-1260: liveness.Died is OUTSIDE this set, and whether it should be
-		// is an open question rather than an oversight-with-an-obvious-fix. A
-		// `died` agent is watchHandleExit's unexpected-exit stamp — the same
-		// crash survivor the Running arm exists for, observed one step later
-		// because sprawl was alive long enough to notice — so excluding it means
-		// a restart-time race decides whether an agent ever comes back. Measured
-		// in the paused-persistence P2 row: one "simulated crash" left the child
-		// at active, suspended, paused or died depending on which process the
-		// kernel reaped first, and died never resumed. But the exclusion IS
-		// pinned by TestRecoverAgents_BootResumeAcceptSet, so widening it is a
-		// deliberate contract reversal and is not being slipped in here. Tracked
-		// separately; do not "fix" this line without reading that issue.
+		// QUM-1265 admitted liveness.Died, reversing a contract that
+		// TestRecoverAgents_BootResumeAcceptSet pins — read that row's comment
+		// before touching this line. The argument: `died` is watchHandleExit's
+		// unexpected-exit stamp, i.e. the SAME crash survivor the Running arm
+		// exists for, differing only in whether sprawl outlived the child long
+		// enough to observe the exit and write a resting status instead of
+		// leaving "active" untouched. Excluding it meant a kernel reap race
+		// decided whether an agent ever came back. Measured in the
+		// paused-persistence P2 row: one "simulated crash" left the child at
+		// active, suspended, paused or died on different runs depending on which
+		// process was reaped first, and only died never resumed. Supporting: the
+		// `wake` verb has always accepted Died, so this removes an inconsistency
+		// between two paths rather than adding capability.
+		//
+		// NO crash-loop guard accompanies it, and that is a property rather than
+		// an oversight. This loop runs ONCE per boot: a resumed session that
+		// dies again is restamped `died` with nothing retrying until the next
+		// `sprawl enter` or an explicit `wake`, so one attempt per boot is the
+		// natural rate limit. And a resume that fails to LAUNCH rests at
+		// StatusResumeFailed, which stays outside this set — that class
+		// self-arrests. Both halves are pinned by
+		// TestRealRecoverAgents_DiedCrashSurvivorAutoResumes and
+		// TestRealRecoverAgents_DiedResumeFailureSelfArrests.
 		lv, ok := liveness.LivenessFromStatus(a.Status)
-		if !ok || (lv != liveness.Suspended && lv != liveness.Running) {
+		if !ok || (lv != liveness.Suspended && lv != liveness.Running && lv != liveness.Died) {
 			continue
 		}
 		// QUM-723: `paused` is an explicit user-initiated rest state — paused agents
