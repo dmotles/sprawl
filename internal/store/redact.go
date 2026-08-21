@@ -17,7 +17,7 @@ import (
 //
 // Round two (QUM-1281) killed the claim, implied by the shape of the original
 // patterns, that the operator's configured DSN form decides what leaks. It does
-// not. `pgconn.ConnectError.Error()` (pgconn/errors.go:69) renders
+// not. `pgconn.ConnectError.Error()` renders
 //
 //	failed to connect to `user=%s database=%s`:
 //
@@ -34,7 +34,7 @@ import (
 //	10.20.30.40:5432 (db.internal.example): dial error: dial tcp ...: connection refused
 //
 // the first from `net.DNSError.Error()`, the second from pgconn's
-// `perDialConnectError` (`"%s (%s): %s"`, errors.go:87). Widening the keyword
+// `perDialConnectError.Error()` (`"%s (%s): %s"`). Widening the keyword
 // pattern alone would therefore have redacted the user and the database and
 // left the hostname — the item CLAUDE.md most clearly forbids in a public repo
 // — fully intact. Hence the two anchored tail patterns.
@@ -102,24 +102,59 @@ var (
 	// deliberately still INCLUDES `,`: libpq multi-host is
 	// `host=db1.internal,db2.internal`, and stopping at the comma would redact
 	// the first host and leak the second.
-	dsnKeywordRe = regexp.MustCompile(`(?i)\b(password|pgpassword|hostaddr|host|user|database|dbname)\s*=\s*('[^']*'|"[^"]*"|[^\s"')` + "`" + `]+)`)
+	//
+	// `(?:pg|ssl)?password` rather than an explicit `password|pgpassword`
+	// alternation: `\b` cannot match a keyword sitting behind a word character,
+	// so spelling only the two left `sslpassword` — libpq's private-key
+	// passphrase, a real secret that pgx does NOT mask — passing through
+	// verbatim. (`pghost` is likewise not covered, and is left that way: it is
+	// identity, not a credential, and pgx does not emit it.)
+	//
+	// The FINAL value arm is the unbalanced-quote fallback. The balanced arms
+	// come first and win; without a fallback, truncated error text (a log line
+	// limit, a `%.100s`) leaves `password='hunter2` matching NOTHING — the exact
+	// total-passthrough failure the quoted arms were added to fix, closed for
+	// the balanced case and left open for the unbalanced one. It stops at
+	// whitespace or `)` so it cannot swallow the rest of the message.
+	dsnKeywordRe = regexp.MustCompile(`(?i)\b((?:pg|ssl)?password|hostaddr|host|user|database|dbname)\s*=\s*('[^']*'|"[^"]*"|[^\s"')` + "`" + `]+|['"][^\s)]*)`)
 	// pgconn's own resolver-failure prefix. Anchored on that literal text so a
 	// SINGLE-LABEL internal hostname is covered too — the dotted pattern below
 	// cannot safely match one.
 	pgconnResolveRe = regexp.MustCompile(`(?i)(hostname resolving error:\s+lookup\s+)[^\s:]+`)
 	// net.DNSError renders "lookup <name> on <server>: <err>", or, when the cgo
 	// resolver leaves Server empty, "lookup <name>: <err>". Both delimiters are
-	// captured because RE2 has no lookahead. Restricted to DOTTED names so it
-	// does not fire on prose like "lookup table on disk: not found"; pgconn
-	// joins per-host failures with errors.Join, and only the FIRST line carries
-	// the prefix pgconnResolveRe keys on, so this is what covers the rest.
-	dnsLookupRe = regexp.MustCompile(`(?i)\b(lookup\s+)[A-Za-z0-9_-]+(?:\.[A-Za-z0-9_-]+)+([\s:])`)
+	// captured because RE2 has no lookahead.
+	//
+	// TWO patterns, not one, because the two renderings admit different
+	// name classes safely. pgconn joins per-host failures with errors.Join and
+	// the "hostname resolving error:" prefix wraps the WHOLE join, so it exists
+	// on the FIRST line only — lines 2..N are bare, and a multi-host DSN of
+	// SINGLE-LABEL internal names leaked every host but the first until these
+	// were split.
+	//
+	//   - with a server clause, the server is itself `<addr>:<port>` (the
+	//     resolver's address), which is specific enough to admit ANY name,
+	//     single-label or rooted, without matching prose: "lookup table on
+	//     disk: not found" has no `:<port>` after the "on".
+	//   - without one, there is nothing to anchor against, so the name must be
+	//     DOTTED — a trailing dot is allowed, since a rooted FQDN is legal in a
+	//     host= value and a pattern that cannot end on a dot leaks the name
+	//     whole.
+	dnsLookupServerRe = regexp.MustCompile(`(?i)\b(lookup\s+)[^\s:]+(\s+on\s+[^\s:]+:\d{1,5})`)
+	dnsLookupRe       = regexp.MustCompile(`(?i)\b(lookup\s+)[A-Za-z0-9_-]+(?:\.[A-Za-z0-9_-]+)+\.?([\s:])`)
 	// pgconn's perDialConnectError: "<addr> (<originalHostname>): <cause>".
-	// The address prefix must end in :<port>, which keeps this off prose like
-	// "see docs/foo.md (2 files)", and the parenthesised group forbids spaces,
-	// which keeps it off "connect to 127.0.0.1:5432 (retry 3)". Bracketed IPv6
-	// addresses satisfy the prefix as written.
-	dialHostRe = regexp.MustCompile(`([^\s()]+:\d+ )\(([^()\s]+)\)`)
+	//
+	// The address prefix is required to be IP-SHAPED — a dotted quad or a
+	// bracketed IPv6 literal — rather than merely "a token ending in :<port>".
+	// pgconn resolves the host before dialling, so the address it prints is
+	// always a literal IP; the looser prefix additionally fired on ordinary
+	// `token:digits (token)` prose, measured in review (zone, F3) on
+	// "events.sql:12 (syntax)" and "12:30 (UTC)". Those near-misses are now in
+	// the negative control. The parenthesised group forbids spaces, which is
+	// what keeps this off "connect to 127.0.0.1:5432 (retry 3)" — a separate
+	// property from the prefix, and the one the control was accidentally
+	// relying on for everything.
+	dialHostRe = regexp.MustCompile(`((?:\d{1,3}(?:\.\d{1,3}){3}|\[[0-9a-fA-F:.]+\]):\d{1,5} )\(([^()\s]+)\)`)
 )
 
 // RedactSecrets removes anything DSN-shaped from s.
@@ -133,6 +168,7 @@ func RedactSecrets(s string) string {
 	}
 	out := dsnURLRe.ReplaceAllString(s, "postgres://[redacted]")
 	out = pgconnResolveRe.ReplaceAllString(out, "${1}[redacted]")
+	out = dnsLookupServerRe.ReplaceAllString(out, "${1}[redacted]${2}")
 	out = dnsLookupRe.ReplaceAllString(out, "${1}[redacted]${2}")
 	out = dialHostRe.ReplaceAllString(out, "${1}([redacted])")
 	out = dsnKeywordRe.ReplaceAllStringFunc(out, func(m string) string {

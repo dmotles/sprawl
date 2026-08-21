@@ -121,7 +121,7 @@ func TestRedactError_OnARealPgxConnectError(t *testing.T) {
 
 	_, err = pool.Begin(context.Background())
 	if err == nil {
-		t.Skip("port 1 unexpectedly accepted a connection; nothing to redact")
+		t.Fatal("port 1 unexpectedly accepted a connection; there is nothing to redact and this row would otherwise be green having asserted nothing")
 	}
 	got := RedactError(err)
 	if strings.Contains(got, pw) {
@@ -169,6 +169,13 @@ func TestRedactSecrets_LeavesOrdinaryTextAlone(t *testing.T) {
 		// A real caller: cmd/store.go routes filesystem-path errors through
 		// RedactError too.
 		"open /var/lib/sprawl/spill: permission denied",
+		// `<token>:<digits> (<token>)` — the per-dial grammar's shape with a
+		// NON-address prefix. Review (zone, F3) measured these firing while the
+		// rows above stayed quiet for an unrelated reason (a space inside the
+		// parens), so the control was passing without constraining the pattern.
+		"migration failed at events.sql:12 (syntax)",
+		"snapshot taken 12:30 (UTC) failed",
+		"cannot open /var/log/app.log:2 (rotated)",
 	} {
 		if got := RedactSecrets(in); got != in {
 			t.Errorf("RedactSecrets altered text containing no secret:\n in:  %q\n out: %q", in, got)
@@ -241,6 +248,27 @@ func TestRedactSecrets_StripsKeywordFormIdentity(t *testing.T) {
 			in:    "failed (host=db1.internal.example,db2.internal.example user=sprawlrole): timeout",
 			leaks: []string{"db1.internal.example", "db2.internal.example", "sprawlrole"},
 			keeps: []string{"host=[redacted]", "): timeout"},
+		},
+		{
+			// sslpassword is the private-key passphrase — a real secret, and one
+			// pgx does NOT mask. `\b` cannot match a keyword behind a word
+			// character, so listing `pgpassword` alone left it exposed.
+			name:  "sslpassword is a real credential",
+			in:    "failed (sslpassword=hunter2 dbname=sprawldb): timeout",
+			leaks: []string{"hunter2", "sprawldb"},
+			keeps: []string{"sslpassword=[redacted]", "): timeout"},
+		},
+		{
+			// The unbalanced half of the bug the quoted arms were added for:
+			// truncated error text (log limits, %.100s) leaves an opening quote
+			// with no closing one, and both the quoted arms and the bare class
+			// then matched NOTHING — the password survived verbatim.
+			name:  "unterminated quote must not pass the value through",
+			in:    "failed (password='hunter2 dbname=sprawldb): timeout",
+			leaks: []string{"hunter2"},
+			// The fallback arm must still stop at whitespace, or it eats the
+			// rest of the message.
+			keeps: []string{"dbname=[redacted]", "): timeout"},
 		},
 		{
 			name:  "repeated keys",
@@ -364,16 +392,23 @@ func dnsErrLookup(server string) func(context.Context, string) ([]string, error)
 func TestRedactError_OnARealPgxDNSFailure(t *testing.T) {
 	const host = "db-probe.internal.example"
 	cases := map[string]struct {
+		host   string
 		server string
 		keeps  []string
 	}{
-		"resolver server reported": {server: "127.0.0.53:53", keeps: []string{"127.0.0.53:53", "no such host"}},
-		"resolver server empty":    {server: "", keeps: []string{"no such host"}},
+		"resolver server reported": {host: host, server: "127.0.0.53:53", keeps: []string{"127.0.0.53:53", "no such host"}},
+		"resolver server empty":    {host: host, server: "", keeps: []string{"no such host"}},
+		// A single-label internal name is an ordinary DSN host and has no dot
+		// for a dotted-name pattern to key on.
+		"single-label host": {host: "pgdb", server: "127.0.0.53:53", keeps: []string{"127.0.0.53:53", "no such host"}},
+		// A rooted FQDN is legal in a host= value; a name pattern that cannot
+		// end on a dot fails to match it and then leaks the whole name.
+		"rooted fqdn": {host: "db-probe.internal.example.", server: "127.0.0.53:53", keeps: []string{"no such host"}},
 	}
 	for name, tc := range cases {
 		t.Run(name, func(t *testing.T) {
-			got := RedactError(realPgxConnectError(t, host, dnsErrLookup(tc.server)))
-			assertRedactedConnectError(t, got, host, tc.keeps)
+			got := RedactError(realPgxConnectError(t, tc.host, dnsErrLookup(tc.server)))
+			assertRedactedConnectError(t, got, tc.host, tc.keeps)
 		})
 	}
 }
@@ -413,13 +448,24 @@ func TestRedactError_OnARealPgxDialFailure(t *testing.T) {
 // newline-separated `lookup …` lines rather than one. A pattern that is
 // accidentally line- or greedy-tail sensitive leaks every host but the first.
 func TestRedactError_OnARealPgxMultiHostFailure(t *testing.T) {
-	const hostA, hostB = "db-a.internal.example", "db-b.internal.example"
-	got := RedactError(realPgxConnectError(t, hostA+","+hostB, dnsErrLookup("127.0.0.53:53")))
-	if !strings.Contains(got, "\n") {
-		t.Fatalf("expected a joined multi-line pgx error, got a single line: %q", got)
+	// Both dotted AND single-label, because the two are covered by different
+	// patterns: pgconn's "hostname resolving error:" prefix wraps the WHOLE
+	// errors.Join, so it appears on the FIRST line only, and lines 2..N are a
+	// bare "lookup <host> on <server>". A single-label host on line 2 is
+	// therefore reachable by neither the prefix-anchored pattern nor a
+	// dotted-name one — measured leaking in review (zone, F1), and invisible to
+	// a test whose hosts are all dotted.
+	for _, hosts := range [][2]string{
+		{"db-a.internal.example", "db-b.internal.example"},
+		{"pgdb1", "pgdb2"},
+	} {
+		got := RedactError(realPgxConnectError(t, hosts[0]+","+hosts[1], dnsErrLookup("127.0.0.53:53")))
+		if !strings.Contains(got, "\n") {
+			t.Fatalf("expected a joined multi-line pgx error, got a single line: %q", got)
+		}
+		assertRedactedConnectError(t, got, hosts[0], []string{"no such host"})
+		assertRedactedConnectError(t, got, hosts[1], nil)
 	}
-	assertRedactedConnectError(t, got, hostA, []string{"no such host"})
-	assertRedactedConnectError(t, got, hostB, nil)
 }
 
 func assertRedactedConnectError(t *testing.T, got, host string, keeps []string) {
@@ -439,5 +485,41 @@ func assertRedactedConnectError(t *testing.T, got, host string, keeps []string) 
 		if !strings.Contains(got, keep) {
 			t.Errorf("redaction destroyed the diagnosis fragment %q: %q", keep, got)
 		}
+	}
+}
+
+// TestRedactSecrets_AcceptedOverRedactions pins the cases where the widened
+// patterns fire on text that is NOT a secret. Each is a deliberate trade, made
+// in the direction CLAUDE.md prescribes — over-redacting a database name is
+// free, under-redacting a hostname is not — and each was found by review
+// (zone, F4) rather than by design, so pinning them turns an unnoticed
+// side effect into a recorded decision with a tripwire.
+//
+// Direction: these assert the CURRENT behaviour, not the desired one. A future
+// tightening SHOULD break this test; update it deliberately and say why.
+func TestRedactSecrets_AcceptedOverRedactions(t *testing.T) {
+	cases := map[string]struct{ in, want string }{
+		// `user` is a SQL reserved word, and a statement fragment can reach
+		// RedactError via the sweep printer. Redacting it costs a fragment of
+		// diagnosis; NOT redacting it would need the key list to guess whether
+		// it is looking at a DSN or at SQL, which it cannot.
+		"SQL fragment naming a reserved word": {
+			in:   "query failed: syntax error at or near WHERE user = 'admin'",
+			want: "query failed: syntax error at or near WHERE user =[redacted]",
+		},
+		// The value class keeps `,` so libpq multi-host `host=a,b` redacts BOTH
+		// hosts rather than leaking the second. The cost is that a comma used
+		// as prose punctuation is swallowed with the value.
+		"prose comma after a keyword value": {
+			in:   "failed (host=db1.internal, retrying)",
+			want: "failed (host=[redacted] retrying)",
+		},
+	}
+	for name, tc := range cases {
+		t.Run(name, func(t *testing.T) {
+			if got := RedactSecrets(tc.in); got != tc.want {
+				t.Errorf("accepted over-redaction changed shape:\n in:   %q\n got:  %q\n want: %q", tc.in, got, tc.want)
+			}
+		})
 	}
 }
