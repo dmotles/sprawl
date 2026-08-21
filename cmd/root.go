@@ -47,7 +47,8 @@ func executeTo(w io.Writer, cmd *cobra.Command) int {
 // writeExecError renders err with DSN-shaped text removed (QUM-1280).
 //
 // This is the sink for EVERY error any cobra command returns, which makes it the
-// single widest credential carrier in the tree: `store migrate`'s raw pgx
+// widest credential carrier in the `sprawl` binary (cmd/hubd is a separate main
+// with its own unredacted sink — QUM-1292): `store migrate`'s raw pgx
 // failure is produced FROM the DSN, and `store dispatch`'s degraded refusal
 // wraps a pgx connect error. This repo is public and the real DSN arrives at
 // runtime, so the concrete failure mode is an operator pasting a terminal error

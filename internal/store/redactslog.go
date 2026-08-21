@@ -51,6 +51,10 @@ import (
 //   - Non-string kinds (Int64, Bool, Duration, Time, Float64, Uint64). They
 //     cannot carry DSN text, and stringifying them to check would destroy their
 //     type in structured output.
+//   - attribute KEYS and group names. Only values are redacted. Every key and
+//     group name in this repo is a source literal, and the DSN arrives at
+//     runtime, so a key cannot carry it — but the omission is stated because an
+//     unstated non-goal is read as protection that is not there.
 //   - process.go's "no origin remote" WARN, which logs through slog.Default()
 //     and is therefore outside both wrap points. Checked rather than assumed:
 //     its attrs are a git remote URL and a git error, with no DSN on any path.
@@ -59,7 +63,10 @@ import (
 //     secret.
 //
 // A record that redaction does not change is passed through UNTOUCHED, byte for
-// byte: the clean path allocates nothing and cannot perturb structured output.
+// byte, so the clean path cannot perturb structured output. (It is not
+// allocation-free: Handle builds the candidate attr slice before it knows
+// whether anything changed. Byte-identity is the guarantee; zero-allocation is
+// not.)
 type redactHandler struct {
 	inner slog.Handler
 }
