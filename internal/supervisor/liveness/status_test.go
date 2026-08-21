@@ -76,3 +76,56 @@ func TestStatus_TransientsProjectEmpty(t *testing.T) {
 		})
 	}
 }
+
+// TestLivenessFromStatus_PausedAndDiedAreRecognised — QUM-1260.
+//
+// Both were absent from the switch, so both decoded to (0, false) and
+// RecoverAgents' accept-set skipped them via its unrecognised-status branch.
+// For `paused` that produced the RIGHT behaviour for the WRONG reason: the
+// explicit `lv == liveness.Paused` guard in RecoverAgents, added so "a future
+// projection tweak can't silently regress this contract" (QUM-723), was dead
+// code, and the contract it documents was being upheld by a default arm that
+// knows nothing about pausing. For `died` it produced the wrong behaviour
+// outright: a crash survivor whose subprocess exit sprawl happened to observe
+// before dying itself is stamped `died` and then never auto-resumes on any
+// later `sprawl enter` — measured in the paused-persistence P2 row, where the
+// same "simulated crash" was observed leaving `active`, `suspended`, `paused`
+// and `died` on different runs depending on the kernel's reap order.
+//
+// This change is behaviour-PRESERVING by construction and that is the point:
+// paused and died were skipped as unrecognised and are now skipped as
+// recognised-and-excluded. What it buys is that the exclusions are readable,
+// that QUM-723's guard is live code again, and that whether `died` SHOULD be
+// excluded becomes a question someone can see and answer rather than an
+// accident of a default arm. That question is tracked separately; nothing here
+// widens the accept-set.
+func TestLivenessFromStatus_PausedAndDiedAreRecognised(t *testing.T) {
+	for _, tc := range []struct {
+		status string
+		want   AgentLiveness
+	}{
+		{"paused", Paused},
+		{"died", Died},
+	} {
+		got, ok := LivenessFromStatus(tc.status)
+		if !ok {
+			t.Errorf("LivenessFromStatus(%q) not recognised; a status the product writes must not decode through the unknown branch", tc.status)
+			continue
+		}
+		if got != tc.want {
+			t.Errorf("LivenessFromStatus(%q) = %v, want %v", tc.status, got, tc.want)
+		}
+	}
+}
+
+// TestLivenessFromStatus_UnknownStillUnrecognised is the negative control for
+// the test above: adding cases must not turn the switch into a function that
+// accepts anything. Without it, `return Suspended, true` for every input would
+// satisfy every assertion above.
+func TestLivenessFromStatus_UnknownStillUnrecognised(t *testing.T) {
+	for _, s := range []string{"", "banana", "Paused", "DIED", "pause"} {
+		if got, ok := LivenessFromStatus(s); ok {
+			t.Errorf("LivenessFromStatus(%q) = (%v, true), want not recognised", s, got)
+		}
+	}
+}

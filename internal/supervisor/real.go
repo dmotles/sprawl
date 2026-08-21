@@ -1296,6 +1296,19 @@ func (r *Real) RecoverAgents(_ context.Context) (resumed int, failed int, errs [
 		// still auto-resume. Faulted/Stopped/ResumeFailed/Killed/Retired/Retiring
 		// (and any unrecognized status) are not auto-resumed. QUM-723: Paused is
 		// also excluded — it is an explicit user-initiated rest state.
+		//
+		// QUM-1260: liveness.Died is OUTSIDE this set, and whether it should be
+		// is an open question rather than an oversight-with-an-obvious-fix. A
+		// `died` agent is watchHandleExit's unexpected-exit stamp — the same
+		// crash survivor the Running arm exists for, observed one step later
+		// because sprawl was alive long enough to notice — so excluding it means
+		// a restart-time race decides whether an agent ever comes back. Measured
+		// in the paused-persistence P2 row: one "simulated crash" left the child
+		// at active, suspended, paused or died depending on which process the
+		// kernel reaped first, and died never resumed. But the exclusion IS
+		// pinned by TestRecoverAgents_BootResumeAcceptSet, so widening it is a
+		// deliberate contract reversal and is not being slipped in here. Tracked
+		// separately; do not "fix" this line without reading that issue.
 		lv, ok := liveness.LivenessFromStatus(a.Status)
 		if !ok || (lv != liveness.Suspended && lv != liveness.Running) {
 			continue

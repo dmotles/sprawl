@@ -55,6 +55,18 @@ func LivenessFromStatus(status string) (AgentLiveness, bool) {
 		return Suspended, true
 	case "resume_failed":
 		return ResumeFailed, true
+	// QUM-1260: `paused` and `died` were both absent here, so both decoded
+	// through the unknown branch below and RecoverAgents' accept-set skipped
+	// them as unrecognised. For `paused` that was the right behaviour reached by
+	// the wrong route — the explicit `lv == liveness.Paused` guard in
+	// RecoverAgents, added by QUM-723 precisely so a projection tweak could not
+	// silently regress the contract, was dead code. For `died` it was simply
+	// wrong: a crash survivor whose subprocess exit sprawl observed before dying
+	// itself never auto-resumed on any later `sprawl enter`.
+	case "paused":
+		return Paused, true
+	case "died":
+		return Died, true
 	case "killed":
 		return Killed, true
 	case "retired":

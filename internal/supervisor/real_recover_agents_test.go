@@ -816,3 +816,37 @@ func TestRecoverAgentsPassesRestartInjection(t *testing.T) {
 			got.RestartInjection, agent.RestartInjectionPrompt)
 	}
 }
+
+// TestRealRecoverAgents_PausedIsStillSkippedForTheStatedReason is the NEGATIVE
+// control for the change above, and it is aimed at the mechanism rather than
+// only the outcome. Making `paused` a recognised liveness moves its exclusion
+// from the unknown-status default arm onto the explicit `lv == liveness.Paused`
+// guard — the one QUM-723 added so "a future projection tweak can't silently
+// regress this contract" and which was, until now, dead code. The behaviour must
+// be identical; what changes is which line enforces it.
+//
+// Distinct from the existing paused tests above (which assert the disk status
+// survives): this one asserts the STARTER was never invoked, so a paused agent
+// is not merely left labelled correctly but genuinely not relaunched.
+func TestRealRecoverAgents_PausedIsStillSkippedForTheStatedReason(t *testing.T) {
+	r, tmpDir := newFakeReal(t)
+	starter := &recoverTestStarter{session: recoverTestSession("sess-snoozy")}
+	installStarter(r, starter)
+
+	saveRecoverAgent(t, tmpDir, "snoozy", state.StatusPaused, "weave")
+
+	resumed, failed, errs := r.RecoverAgents(context.Background())
+	if resumed != 0 || failed != 0 || len(errs) != 0 {
+		t.Fatalf("RecoverAgents = (%d,%d,%v), want (0,0,nil)", resumed, failed, errs)
+	}
+	if len(starter.specs) != 0 {
+		t.Errorf("starter invoked %d time(s) for a paused agent, want 0 — paused revives only via the explicit `wake` verb (QUM-723)", len(starter.specs))
+	}
+	loaded, err := state.LoadAgent(tmpDir, "snoozy")
+	if err != nil {
+		t.Fatalf("LoadAgent: %v", err)
+	}
+	if loaded.Status != state.StatusPaused {
+		t.Errorf("Status = %q, want %q", loaded.Status, state.StatusPaused)
+	}
+}
