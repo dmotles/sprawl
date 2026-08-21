@@ -538,3 +538,46 @@ func TestTransport_Send_PrecancelledCtxReturnsImmediately(t *testing.T) {
 		t.Fatal("Send did not return promptly when ctx was already cancelled")
 	}
 }
+
+// QUM-1276: the adapter is the single place SessionSpec.Effort becomes
+// `--effort` in the real argv, and nothing pinned that mapping before.
+func TestAdapter_StartMapsEffortIntoArgv(t *testing.T) {
+	tests := []struct {
+		name   string
+		effort string
+		want   bool
+	}{
+		{"effort set emits flag", "low", true},
+		{"effort empty omits flag", "", false},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			starter := &mockStarter{transport: &mockManagedTransport{}}
+			adapter := NewAdapter(Config{
+				LookPath: func(string) (string, error) { return "/usr/bin/claude", nil },
+				Starter:  starter,
+			})
+
+			if _, err := adapter.Start(context.Background(), backendpkg.SessionSpec{
+				WorkDir:    "/repo",
+				Identity:   "weave",
+				SprawlRoot: "/repo",
+				SessionID:  "sess-1",
+				Effort:     tt.effort,
+			}); err != nil {
+				t.Fatalf("Start() error: %v", err)
+			}
+			if len(starter.specs) != 1 {
+				t.Fatalf("starter specs = %d, want 1", len(starter.specs))
+			}
+			args := starter.specs[0].Args
+
+			if got := argsContain(args, "--effort"); got != tt.want {
+				t.Errorf("argv `--effort` flag present = %v, want %v (args %v)", got, tt.want, args)
+			}
+			if tt.want && !argsContainPair(args, "--effort", tt.effort) {
+				t.Errorf("argv missing `--effort %s` (args %v)", tt.effort, args)
+			}
+		})
+	}
+}

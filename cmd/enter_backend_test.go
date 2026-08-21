@@ -1,10 +1,14 @@
 package cmd
 
 import (
+	"context"
 	"io"
 	"testing"
 
+	"github.com/dmotles/sprawl/internal/backend"
+	claudebackend "github.com/dmotles/sprawl/internal/backend/claude"
 	"github.com/dmotles/sprawl/internal/host"
+	"github.com/dmotles/sprawl/internal/protocol"
 	"github.com/dmotles/sprawl/internal/rootinit"
 	"github.com/dmotles/sprawl/internal/sprawlmcp"
 )
@@ -180,5 +184,113 @@ func TestBuildEnterInitSpec_UsesSprawlOpsBridge(t *testing.T) {
 	}
 	if initSpec.ToolBridge != bridge {
 		t.Fatal("ToolBridge should be the provided MCP bridge")
+	}
+}
+
+// QUM-1276: weave launches at `--effort low`. The field was absent from the
+// root spec entirely before this change, so weave inherited whatever the
+// claude CLI defaulted to.
+func TestBuildEnterSessionSpec_EffortLow(t *testing.T) {
+	for name, prepared := range map[string]*rootinit.PreparedSession{
+		"fresh":  freshPrepared(),
+		"resume": resumePrepared(),
+	} {
+		t.Run(name, func(t *testing.T) {
+			spec := buildEnterSessionSpec("/repo", prepared, io.Discard, func() {}, "")
+			if spec.Effort != "low" {
+				t.Errorf("Effort = %q, want \"low\"", spec.Effort)
+			}
+		})
+	}
+}
+
+// captureStarter records the ExecSpec the claude adapter builds, so a cmd-side
+// test can assert on the real argv weave's subprocess would receive rather
+// than on a hand-copied mirror of the adapter's LaunchOpts literal.
+type captureStarter struct{ specs []claudebackend.ExecSpec }
+
+func (s *captureStarter) Start(spec claudebackend.ExecSpec) (backend.ManagedTransport, error) {
+	s.specs = append(s.specs, spec)
+	return noopTransport{}, nil
+}
+
+type noopTransport struct{}
+
+func (noopTransport) Send(context.Context, any) error { return nil }
+func (noopTransport) Recv(context.Context) (*protocol.Message, error) {
+	return nil, io.EOF
+}
+func (noopTransport) Close() error { return nil }
+func (noopTransport) Wait() error  { return nil }
+func (noopTransport) Kill() error  { return nil }
+func (noopTransport) Pid() int     { return 0 }
+
+// weaveArgv starts the real claude adapter against a capturing starter and
+// returns the argv it built for the given weave session spec.
+func weaveArgv(t *testing.T, spec backend.SessionSpec) []string {
+	t.Helper()
+	starter := &captureStarter{}
+	adapter := claudebackend.NewAdapter(claudebackend.Config{
+		LookPath: func(string) (string, error) { return "/usr/bin/claude", nil },
+		Starter:  starter,
+	})
+	if _, err := adapter.Start(context.Background(), spec); err != nil {
+		t.Fatalf("adapter.Start() error: %v", err)
+	}
+	if len(starter.specs) != 1 {
+		t.Fatalf("starter specs = %d, want 1", len(starter.specs))
+	}
+	return starter.specs[0].Args
+}
+
+func enterArgvHasPair(args []string, flag, value string) bool {
+	for i := 0; i+1 < len(args); i++ {
+		if args[i] == flag && args[i+1] == value {
+			return true
+		}
+	}
+	return false
+}
+
+func enterArgvHasToken(args []string, token string) bool {
+	for _, a := range args {
+		if a == token {
+			return true
+		}
+	}
+	return false
+}
+
+// QUM-1276: weave's actual claude argv carries `--effort low` on the fresh
+// path. The `--session-id` present / `--resume` absent assertions are the
+// aimed-ness control for TestBuildEnterSessionSpec_ResumeArgvUnchanged below,
+// which asserts the inverse on the same probe.
+func TestBuildEnterSessionSpec_EffortLowReachesWeaveArgv(t *testing.T) {
+	args := weaveArgv(t, buildEnterSessionSpec("/repo", freshPrepared(), io.Discard, func() {}, ""))
+
+	if !enterArgvHasPair(args, "--effort", "low") {
+		t.Errorf("weave claude argv missing `--effort low` (got %v)", args)
+	}
+	if !enterArgvHasPair(args, "--session-id", "fake-session-uuid") {
+		t.Errorf("weave fresh argv missing `--session-id fake-session-uuid` (got %v)", args)
+	}
+	if enterArgvHasToken(args, "--resume") {
+		t.Errorf("weave fresh argv must not carry --resume (got %v)", args)
+	}
+}
+
+// QUM-1276: adding Effort must not perturb the resume argv path, which emits
+// `--resume <sid>` and deliberately omits `--session-id`.
+func TestBuildEnterSessionSpec_ResumeArgvUnchanged(t *testing.T) {
+	args := weaveArgv(t, buildEnterSessionSpec("/repo", resumePrepared(), io.Discard, func() {}, ""))
+
+	if !enterArgvHasPair(args, "--resume", "prior-session-uuid") {
+		t.Errorf("weave resume argv missing `--resume prior-session-uuid` (got %v)", args)
+	}
+	if enterArgvHasToken(args, "--session-id") {
+		t.Errorf("weave resume argv must omit --session-id (got %v)", args)
+	}
+	if !enterArgvHasPair(args, "--effort", "low") {
+		t.Errorf("weave resume argv missing `--effort low` (got %v)", args)
 	}
 }

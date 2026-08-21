@@ -124,8 +124,8 @@ func TestBuildAgentSessionSpec_ModelByAgentType(t *testing.T) {
 			if spec.Model != tt.wantModel {
 				t.Errorf("Model = %q, want %q for agent type %q", spec.Model, tt.wantModel, tt.agentType)
 			}
-			if spec.Effort != "medium" {
-				t.Errorf("Effort = %q, want \"medium\"", spec.Effort)
+			if spec.Effort != "low" {
+				t.Errorf("Effort = %q, want \"low\"", spec.Effort)
 			}
 		})
 	}
@@ -225,4 +225,53 @@ func TestBuildAgentSessionSpec_EnablesReplayUserMessages(t *testing.T) {
 	if !found {
 		t.Errorf("claude argv missing --replay-user-messages: %v", args)
 	}
+}
+
+// TestBuildAgentSessionSpec_EffortLowRoundTripsToLaunchArgs pins QUM-1276:
+// every child agent type launches at `--effort low`. Asserting the struct
+// field alone is not enough — BuildArgs drops Effort entirely when empty, so
+// the flag itself is what has to be pinned.
+func TestBuildAgentSessionSpec_EffortLowRoundTripsToLaunchArgs(t *testing.T) {
+	for _, agentType := range []string{"engineer", "researcher", "manager", "qa", "weave"} {
+		t.Run(agentType, func(t *testing.T) {
+			agentState := &state.AgentState{
+				Name:      "test-agent",
+				Type:      agentType,
+				Worktree:  "/tmp/worktrees/test",
+				SessionID: "sess-test",
+			}
+			spec := BuildAgentSessionSpec(agentState, "/tmp/prompt.md", "/tmp/root", io.Discard)
+
+			args := claude.LaunchOpts{
+				Model:          spec.Model,
+				Effort:         spec.Effort,
+				PermissionMode: spec.PermissionMode,
+				SessionID:      spec.SessionID,
+			}.BuildArgs()
+
+			if !argsContainPair(args, "--effort", "low") {
+				t.Errorf("claude argv missing `--effort low` for agent type %q (got %v)", agentType, args)
+			}
+			effortFlags := 0
+			for _, a := range args {
+				if a == "--effort" {
+					effortFlags++
+				}
+			}
+			if effortFlags != 1 {
+				t.Errorf("claude argv has %d `--effort` flags for agent type %q, want exactly 1 (got %v)", effortFlags, agentType, args)
+			}
+		})
+	}
+}
+
+// argsContainPair reports whether flag is immediately followed by value in args.
+// Adjacency matters: a substring/join match is satisfied by unrelated tokens.
+func argsContainPair(args []string, flag, value string) bool {
+	for i := 0; i+1 < len(args); i++ {
+		if args[i] == flag && args[i+1] == value {
+			return true
+		}
+	}
+	return false
 }

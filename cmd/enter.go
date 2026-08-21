@@ -465,6 +465,7 @@ func buildEnterSessionSpec(sprawlRoot string, prepared *rootinit.PreparedSession
 		SprawlRoot:      sprawlRoot,
 		SessionID:       prepared.SessionID,
 		Model:           model,
+		Effort:          "low",
 		PermissionMode:  "bypassPermissions",
 		AllowedTools:    allowed,
 		DisallowedTools: prepared.Disallowed,
