@@ -350,8 +350,12 @@ func reportSweep(ctx context.Context, out, errOut io.Writer, deps store.SweeperD
 	}
 }
 
-// reportReconcileFailure states that startup reconciliation did not complete and
-// that the loop is starting anyway.
+// reportReconcileFailure reports a startup reconciliation that did not complete.
+//
+// A FUNCTION RATHER THAN THREE INLINE Fprintfs so the failure surface is
+// reachable without a live Postgres: everything above its call site in
+// runStoreDispatch needs a real pool, so inline this and the redaction below is
+// testable only from the dispatch e2e rows.
 func reportReconcileFailure(errOut io.Writer, err error) {
 	fmt.Fprintf(errOut, "startup reconciliation did not complete: %s\n", store.RedactError(err))
 	fmt.Fprintf(errOut, "  continuing anyway: notifications and acks do not depend on it\n")

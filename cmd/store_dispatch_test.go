@@ -314,17 +314,24 @@ func TestStoreDispatch_SweepAndReconcileFailuresDoNotPrintTheDSN(t *testing.T) {
 
 	cases := []struct {
 		name string
-		// run drives one failure surface and returns everything it emitted.
-		run func(t *testing.T) string
+		// run drives one failure surface and returns what it emitted on
+		// stdout and on the failure stream, separately.
+		run func(t *testing.T) (out, errOut string)
 		// wants are fragments of the surviving diagnosis. They are NOT static
 		// banner text: a print that dropped the error entirely, or reduced it
 		// to "[redacted]", loses them — so they guard both vacuity and the
 		// over-redaction that makes an error worth deleting the redaction for.
 		wants []string
+		// errOnly is text that must appear on the failure stream and must NOT
+		// appear on stdout. It pins the ROUTING claim in reportSweep's comment
+		// — "a failure on stdout is invisible to a caller that separates the
+		// streams" — which the concatenated leak assertions cannot see. Empty
+		// for the control row, whose surface is stdout by design.
+		errOnly string
 	}{
 		{
 			name: "sweep failure",
-			run: func(t *testing.T) string {
+			run: func(t *testing.T) (string, string) {
 				t.Helper()
 				var out, errOut bytes.Buffer
 				reportSweep(ctx, &out, &errOut, store.SweeperDeps{
@@ -335,13 +342,14 @@ func TestStoreDispatch_SweepAndReconcileFailuresDoNotPrintTheDSN(t *testing.T) {
 					ProjectID: uuid.New(),
 					Host:      "probe-host",
 				})
-				return out.String() + errOut.String()
+				return out.String(), errOut.String()
 			},
-			wants: []string{"sweep failed", "cannot read local agent state", "invalid port"},
+			errOnly: "sweep failed",
+			wants:   []string{"sweep failed", "cannot read local agent state", "invalid port"},
 		},
 		{
 			name: "startup reconciliation failure",
-			run: func(t *testing.T) string {
+			run: func(t *testing.T) (string, string) {
 				t.Helper()
 				var out, errOut bytes.Buffer
 				err := reportReconcile(ctx, &out, store.ReconcileDeps{
@@ -355,16 +363,26 @@ func TestStoreDispatch_SweepAndReconcileFailuresDoNotPrintTheDSN(t *testing.T) {
 					t.Fatal("reportReconcile returned nil; the probe never reached the failure path")
 				}
 				reportReconcileFailure(&errOut, err)
-				return out.String() + errOut.String()
+				return out.String(), errOut.String()
 			},
-			wants: []string{"startup reconciliation did not complete", "cannot read local agent state", "invalid port", "next:"},
+			errOnly: "startup reconciliation did not complete",
+			wants: []string{
+				"startup reconciliation did not complete",
+				"cannot read local agent state",
+				"invalid port",
+				// The line that tells an operator the process did NOT die.
+				// Losing it would turn a best-effort tidy-up into what looks
+				// like a fatal startup failure.
+				"continuing anyway",
+				"next:",
+			},
 		},
 		{
 			// NEGATIVE CONTROL: a surface already routed through RedactError.
 			// It must be quiet both before and after the fix, which is what
 			// shows the probe discriminates rather than firing on everything.
 			name: "control: doctor, already redacted",
-			run: func(t *testing.T) string {
+			run: func(t *testing.T) (string, string) {
 				t.Helper()
 				deps, buf := newDispatchTestDeps(t)
 				deps.OpenLedger = func(context.Context, string) (*store.Ledger, error) {
@@ -373,7 +391,7 @@ func TestStoreDispatch_SweepAndReconcileFailuresDoNotPrintTheDSN(t *testing.T) {
 				if err := runStoreDoctor(ctx, deps); err != nil {
 					t.Fatalf("runStoreDoctor: %v", err)
 				}
-				return buf.String()
+				return buf.String(), ""
 			},
 			wants: []string{"connection: FAILED", "invalid port"},
 		},
@@ -381,7 +399,16 @@ func TestStoreDispatch_SweepAndReconcileFailuresDoNotPrintTheDSN(t *testing.T) {
 
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
-			got := tc.run(t)
+			out, errOut := tc.run(t)
+			got := out + errOut
+			if tc.errOnly != "" {
+				if !strings.Contains(errOut, tc.errOnly) {
+					t.Errorf("%q is not on the failure stream; got stderr:\n%s", tc.errOnly, errOut)
+				}
+				if strings.Contains(out, tc.errOnly) {
+					t.Errorf("%q reached stdout, where a caller separating the streams cannot see it as a failure; got stdout:\n%s", tc.errOnly, out)
+				}
+			}
 			for _, want := range tc.wants {
 				if !strings.Contains(got, want) {
 					t.Fatalf("output does not contain %q, so either the diagnosis was lost or the absence assertions below would pass vacuously; got:\n%s", want, got)
