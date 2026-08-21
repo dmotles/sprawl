@@ -10,8 +10,13 @@
 #          (catches deadlocks in the coalescer's Close path).
 
 # QUM-1029: the number of assertions a COMPLETE, PASSING run of this row
-# makes. Three assertions on the green path; all three failure paths return without reaching the aggregator.
-MIN_ASSERTIONS=3
+# makes. Four assertions on the green path; every failure path returns without
+# reaching the aggregator.
+#
+# QUM-1277: 3 -> 4. Resolving the sprawl pid now records a `pass` of its own.
+# It used to assert nothing on success, which is why this row could die at that
+# step having measured nothing while its declared floor stayed satisfiable.
+MIN_ASSERTIONS=4
 
 test_metadata() {
     echo "needs_claude=1 needs_tmux=1"
@@ -81,25 +86,36 @@ test_run() {
     # input panel is actually able to receive keystrokes.
     sleep 5
 
-    # Capture the sprawl PID via the tmux pane's foreground process. The pane's
-    # shell forks the sprawl binary; walk children of the pane PID until we
-    # find one whose comm is "sprawl".
-    local PANE_PID SPRAWL_PID=""
+    # Capture the sprawl PID at or under the tmux pane's foreground process.
+    #
+    # QUM-1277: this used to walk `pgrep -P "$PANE_PID"` for a CHILD named
+    # sprawl, which made the row a test of the pane shell. zsh (tmux's
+    # default-shell on this host) exec-optimizes e2e_launch_tui's single command
+    # string, so the pane pid IS sprawl and has no such child, and the row died
+    # here before asserting anything about paste coalescing; dash and bash fork,
+    # so the same row passed elsewhere. e2e_resolve_pane_process is
+    # self-inclusive and recursive, so it never asks what the shell did.
+    #
+    # The needle is the binary's own basename, not the literal "sprawl":
+    # e2e-matrix.sh rebuilds needs_build_tags rows as sprawl-matrix-<row>.
+    local PANE_PID SPRAWL_PID="" RESOLVE_RC=0
     PANE_PID=$(_stmux display -t "$SESSION" -p '#{pane_pid}' 2>/dev/null || true)
-    if [ -n "$PANE_PID" ]; then
-        local cand
-        for cand in $(pgrep -P "$PANE_PID" 2>/dev/null || true); do
-            if [ "$(cat "/proc/$cand/comm" 2>/dev/null || true)" = "sprawl" ]; then
-                SPRAWL_PID="$cand"
-                break
-            fi
-        done
-    fi
-    if [ -z "$SPRAWL_PID" ]; then
-        fail "could not locate sprawl process PID under tmux pane (pane_pid=$PANE_PID)"
+    SPRAWL_PID=$(e2e_resolve_pane_process "$PANE_PID" "$(basename "$SPRAWL_BIN")") || RESOLVE_RC=$?
+    if [ "$RESOLVE_RC" -eq 2 ]; then
+        fail "tmux pane has no usable PID (pane_pid='$PANE_PID') — the pane is gone, so the sprawl process could not be looked for"
         return 1
     fi
-    echo "  sprawl PID=$SPRAWL_PID (under tmux pane PID=$PANE_PID)"
+    if [ "$RESOLVE_RC" -ne 0 ] || [ -z "$SPRAWL_PID" ]; then
+        fail "could not locate sprawl process PID under tmux pane (pane_pid=$PANE_PID)"
+        echo "  pane comm: $(cat "/proc/$PANE_PID/comm" 2>/dev/null || echo '<unreadable>')" >&2
+        # Children read the same way the resolver reads them (not via pgrep):
+        # this is a diagnostic for a /proc walk, so it should show what that
+        # walk saw.
+        echo "  pane children: $(cat "/proc/$PANE_PID/task/"*/children 2>/dev/null | tr '\n' ' ')" >&2
+        echo "  looking for comm: $(basename "$SPRAWL_BIN")" >&2
+        return 1
+    fi
+    pass "resolved sprawl PID=$SPRAWL_PID at or under tmux pane PID=$PANE_PID"
 
     # --- Phase 1: paste burst ---
     echo ""

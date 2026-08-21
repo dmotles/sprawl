@@ -211,7 +211,15 @@ FAIL=0
 # against $MAKEFILE and shared no state with the loop. Net effect: +1 control
 # (3 -> 4) +1 iteration-count arm = +2. Re-measured on a FULL GREEN run — 656
 # passed / 0 failed.
-MIN_ASSERTIONS=656
+#
+# 656 -> 675 with QUM-1277's section [24] (18 arms: the shell-independent
+# pane-process resolver's two-directional control, its negative controls, and
+# the paste-coalesce call-site pins with their mutant controls) plus one more in
+# the [2] function census. Section [24] is pass/fail-invariant — its
+# precondition else-branch emits exactly the assertions it replaces, and it is
+# 18 either way on a host with or without zsh. Re-measured on a FULL GREEN run:
+# 675 passed / 0 failed.
+MIN_ASSERTIONS=675
 # A [16b] nested child deliberately does NOT re-run section [16] (recursing would
 # fork-bomb, and counting there would corrupt the parity comparison), so it asserts
 # strictly fewer things and needs its own floor. Measured at de22410: 237; 238 after
@@ -282,7 +290,15 @@ MIN_ASSERTIONS=656
 # from the parent deltas): [19e] does not reference UNIT_NESTED_SEAM_CHECK, so
 # a nested child runs it in full and gains the same net assertions the parent
 # did. Measured directly with a valid nonce: "636 passed / 0 failed".
-MIN_ASSERTIONS_NESTED=636
+#
+# 636 -> 655 for QUM-1277's section [24] and its [2] census entry (+19, the same
+# delta as the parent above — neither references UNIT_NESTED_SEAM_CHECK, so a
+# nested child runs both in full and skips only [16] as before). Measured
+# directly with a valid nonce:
+#   NONCE=$(mktemp /tmp/qum1277-nonce.XXXXXX); printf 'nested-seam-check\n' >"$NONCE"
+#   UNIT_NESTED_SEAM_CHECK=$NONCE bash scripts/test-e2e-matrix-unit.sh | tail -2
+#   -> "655 passed / 0 failed"
+MIN_ASSERTIONS_NESTED=655
 
 # Pin the temp root. This suite runs inside `make validate` and therefore inside
 # the pre-commit hook, so it must not inherit the committing agent's TMPDIR:
@@ -447,6 +463,7 @@ EXPECTED_FUNCS=(
 	wait_for_substring_fast
 	e2e_launch_tui
 	e2e_attach_phantom_client
+	e2e_resolve_pane_process
 	e2e_send_user_prompt
 	pass
 	fail
@@ -7232,6 +7249,415 @@ if [ -n "$P23_FIX" ] && [ -d "$P23_FIX" ]; then
 	case "$P23_FIX" in
 		"$UNIT_TMP_ROOT"/e2e-matrix-unit-p23.*) rm -rf -- "$P23_FIX" ;;
 		*) echo "  NOTE: refusing to remove unexpected fixture dir '$P23_FIX'" >&2 ;;
+	esac
+fi
+
+# ----------------------------------------------------------------------------
+# 24. QUM-1277 e2e_resolve_pane_process — pane-process resolution must not
+#     depend on what the pane's shell did with the command string.
+#
+# The defect this section guards: paste-coalesce.sh resolved the sprawl pid with
+# a depth-1 `pgrep -P $PANE_PID` child walk. Whether that child exists is a
+# property of the PANE SHELL, not of sprawl — measured on this host, with the
+# exact command shape e2e_launch_tui builds ("VAR=x '/path/bin' arg 2>'log'"):
+#
+#   /bin/sh (dash) -> top comm=sh,    child comm=<subject>   FORKS
+#   /usr/bin/bash  -> top comm=bash,  child comm=<subject>   FORKS
+#   /usr/bin/zsh   -> top comm=<subject>, no children        EXECS
+#
+# tmux's default-shell here is the login shell /bin/zsh, so the exec arm is the
+# live one and the row failed before asserting anything about paste coalescing.
+# On a forking host the same row passes — which is how a mandatory gate rotted
+# silently. Hence both arms below: a one-directional control is what let the
+# shell-dependency hide, and only ever driving zsh would re-arm it.
+#
+# A host without zsh fails all of these loudly rather than skipping: the
+# exec-optimizing direction is the one the defect lives in, so a run that cannot
+# drive it has not checked the thing this section exists to check. The count is
+# the same in either direction, so the suite floor is unaffected.
+#
+# tmux-free by construction: the `-c` invocations reproduce the launch shape
+# without a pane, so this runs inside `make validate` in well under a second.
+# ----------------------------------------------------------------------------
+echo "[24] QUM-1277 pane-process resolution is shell-independent (exec'd and forked panes)"
+
+P24_DIR=""
+P24_PIDS=()
+
+# Run the resolver in a subshell under the SAME shell options the matrix driver
+# imposes on a row (`set -euo pipefail`, scripts/e2e-matrix.sh:5) — a helper that
+# only works without -e would pass a bare-shell test and kill the real row.
+_p24_resolve() {
+	(
+		# shellcheck disable=SC1090
+		. "$LIB" >/dev/null 2>&1 || exit 99
+		set -euo pipefail
+		e2e_resolve_pane_process "$1" "$2"
+	)
+}
+
+# Spawn <shell> -c "<env prefix> '<subject>' <secs> 2>/dev/null" — byte-for-byte
+# the shape of e2e_launch_tui's tmux command string, which is what triggers (or
+# does not trigger) a shell's single-command exec optimization.
+#
+# Sets P24_LAST_PID rather than echoing: a `$(_p24_spawn …)` command
+# substitution would background the child inside a subshell, so the parent could
+# neither `wait` nor reap it and every arm would leak a sleep into the host.
+# $2 = "track" to register the pid for cleanup; a pid that is deliberately
+# reaped must NOT be tracked — signalling a reaped pid later can hit whatever
+# the kernel recycled it into, and every agent on this box shares a uid.
+_p24_spawn() {
+	local shell="$1" track="$2" body="$3"
+	"$shell" -c "$body" >/dev/null 2>&1 &
+	P24_LAST_PID=$!
+	if [ "$track" = track ]; then
+		P24_PIDS+=("$P24_LAST_PID")
+	fi
+}
+
+# Readiness uses `pgrep -x`, deliberately a DIFFERENT mechanism from the /proc
+# walk under test: polling with the predicate until it agrees, then asserting it
+# agrees, is not a test. (`pgrep -x` refuses patterns over 15 chars outright,
+# hence the cut at the long-name call site.)
+_p24_wait_ready() {
+	local comm15="$1" i=0
+	while [ "$i" -lt 100 ]; do
+		if pgrep -x "$comm15" >/dev/null 2>&1; then
+			return 0
+		fi
+		sleep 0.02
+		i=$((i + 1))
+	done
+	return 1
+}
+
+_p24_comm() { cat "/proc/$1/comm" 2>/dev/null; }
+
+# The pre-fix predicate, re-implemented verbatim. Used twice: by 24c to show the
+# exec fixture still reproduces the defect, and by 24e to pin that its subject is
+# genuinely deeper than depth 1 rather than trusting dash to nest.
+_p24_prefix_walk() {
+	local root="$1" want="$2" cand
+	for cand in $(pgrep -P "$root" 2>/dev/null); do
+		if [ "$(cat "/proc/$cand/comm" 2>/dev/null)" = "$want" ]; then
+			echo "$cand"
+			return 0
+		fi
+	done
+	return 1
+}
+
+P24_ZSH=$(command -v zsh 2>/dev/null || true)
+P24_NONCE=$(head -c3 /dev/urandom | od -An -tx1 | tr -d ' \n')
+if ! command -v pgrep >/dev/null 2>&1 || ! command -v pkill >/dev/null 2>&1; then
+	P24_NONCE=""
+fi
+if [ -n "$P24_NONCE" ]; then
+	P24_DIR=$(mktemp -d "$UNIT_TMP_ROOT/e2e-matrix-unit-p24.XXXXXX" 2>/dev/null || true)
+fi
+
+if [ -n "$P24_NONCE" ] && [ -n "$P24_ZSH" ] && [ -n "$P24_DIR" ] && [ -x /bin/sh ] && [ -x /bin/sleep ]; then
+	# comm follows the symlink's own name, so a link is a sufficient subject and
+	# needs no compiler. Distinct names per arm keep the pgrep readiness probe
+	# from matching another arm's (or another agent's) leftovers.
+	P24_FORK="$P24_DIR/qf$P24_NONCE"
+	P24_EXEC="$P24_DIR/qx$P24_NONCE"
+	P24_DEEP="$P24_DIR/qd$P24_NONCE"
+	# The nonce is INSIDE comm's first 15 bytes here on purpose: the readiness
+	# probe can only see a 15-byte pattern, and a nonce past that boundary would
+	# let one run's probe report ready off a CONCURRENT run's subject —
+	# overlapping validates are the normal condition on this host, and section
+	# [24] alone runs 7 times per validate.
+	P24_LONG="$P24_DIR/q$P24_NONCE-long-subject"
+	ln -s /bin/sleep "$P24_FORK"
+	ln -s /bin/sleep "$P24_EXEC"
+	ln -s /bin/sleep "$P24_DEEP"
+	ln -s /bin/sleep "$P24_LONG"
+
+	# --- 24a: a FORKING pane shell (/bin/sh -> dash here) ---
+	_p24_spawn /bin/sh track "FOO=1 BAR=2 '$P24_FORK' 60 2>/dev/null"
+	P24_FORK_TOP=$P24_LAST_PID
+	if _p24_wait_ready "$(basename "$P24_FORK")"; then
+		P24_A_RC=0
+		P24_A_OUT=$(_p24_resolve "$P24_FORK_TOP" "$(basename "$P24_FORK")") || P24_A_RC=$?
+		if [ "$P24_A_RC" -eq 0 ] && [ -n "$P24_A_OUT" ]; then
+			pass "24a: resolver finds the subject under a FORKING pane shell (rc 0, pid=$P24_A_OUT)"
+		else
+			fail "24a: resolver did not find the subject under a forking pane shell (rc=$P24_A_RC out='$P24_A_OUT')"
+		fi
+		# This arm, not 24c, is what pins the fork direction: were /bin/sh ever to
+		# start exec-optimizing, it fires instead of quietly becoming a copy of 24b.
+		if [ "$P24_A_OUT" != "$P24_FORK_TOP" ] && [ "$(_p24_comm "$P24_A_OUT")" = "$(basename "$P24_FORK")" ]; then
+			pass "24a: the forking arm resolves the DESCENDANT, not the wrapper shell (top=$P24_FORK_TOP)"
+		else
+			fail "24a: the forking arm returned '$P24_A_OUT' (top=$P24_FORK_TOP, comm='$(_p24_comm "$P24_A_OUT")') — expected the descendant"
+		fi
+	else
+		fail "24a: forking-shell subject never became visible to pgrep — the fixture, not the resolver, is broken"
+		fail "24a: (consequently) the descendant-vs-wrapper arm could not be checked"
+	fi
+
+	# --- 24b: an EXEC-OPTIMIZING pane shell (zsh — the arm the pre-fix code
+	#     cannot pass, and the live one on this host) ---
+	_p24_spawn "$P24_ZSH" track "FOO=1 BAR=2 '$P24_EXEC' 60 2>/dev/null"
+	P24_EXEC_TOP=$P24_LAST_PID
+	if _p24_wait_ready "$(basename "$P24_EXEC")"; then
+		P24_B_RC=0
+		P24_B_OUT=$(_p24_resolve "$P24_EXEC_TOP" "$(basename "$P24_EXEC")") || P24_B_RC=$?
+		if [ "$P24_B_RC" -eq 0 ] && [ "$P24_B_OUT" = "$P24_EXEC_TOP" ]; then
+			pass "24b: resolver finds the subject AT the pane pid under an EXEC-optimizing pane shell (pid=$P24_B_OUT)"
+		else
+			fail "24b: exec-optimizing arm resolved '$P24_B_OUT' rc=$P24_B_RC — expected the top pid $P24_EXEC_TOP itself"
+		fi
+		# 24c is an ATTRIBUTION control, not a vacuity guard: a forking zsh would
+		# make 24b go red on its own (it pins the pid, not just success). What 24c
+		# buys is that the red then reads "the fixture stopped reproducing the
+		# QUM-1277 defect" instead of "the resolver is broken".
+		if _p24_prefix_walk "$P24_EXEC_TOP" "$(basename "$P24_EXEC")" >/dev/null; then
+			fail "24c: the pre-fix depth-1 child walk FOUND the subject — this shell no longer exec-optimizes, so 24b's fixture no longer reproduces the QUM-1277 defect"
+		else
+			pass "24c: the pre-fix depth-1 child walk finds nothing here — the exec fixture still reproduces the QUM-1277 defect"
+		fi
+	else
+		fail "24b: exec-shell subject never became visible to pgrep — the fixture, not the resolver, is broken"
+		fail "24c: (consequently) the pre-fix-predicate control could not be checked"
+	fi
+
+	# --- 24d: negative control. A resolver that cannot fail is not a check. ---
+	if [ -d "/proc/$P24_FORK_TOP" ]; then
+		P24_D_RC=0
+		P24_D_OUT=$(_p24_resolve "$P24_FORK_TOP" "qum1277-absent-$P24_NONCE") || P24_D_RC=$?
+		if [ "$P24_D_RC" -eq 1 ]; then
+			pass "24d: resolver returns rc 1 for a live pane with no matching process (negative control)"
+		else
+			fail "24d: resolver returned rc=$P24_D_RC for an absent subject — expected 1"
+		fi
+		# rc is re-checked here rather than testing emptiness alone: EVERY failure
+		# mode (missing function, unsourceable lib, crash) prints nothing, so a bare
+		# `-z` arm would pass for reasons that have nothing to do with the contract.
+		if [ "$P24_D_RC" -eq 1 ] && [ -z "$P24_D_OUT" ]; then
+			pass "24d: resolver prints nothing when it does not resolve (an unconditional echo of the pane pid would pass on rc alone)"
+		else
+			fail "24d: resolver printed '$P24_D_OUT' for an absent subject (rc=$P24_D_RC) — expected rc 1 and empty output"
+		fi
+	else
+		fail "24d: the forking fixture's wrapper exited before the negative control ran — the fixture, not the resolver, is broken"
+		fail "24d: (consequently) the empty-output arm could not be checked"
+	fi
+
+	# --- 24e: depth >= 2. The pre-fix walk was depth-1. ---
+	_p24_spawn /bin/sh track "/bin/sh -c \"FOO=1 '$P24_DEEP' 60\" 2>/dev/null"
+	P24_DEEP_TOP=$P24_LAST_PID
+	if _p24_wait_ready "$(basename "$P24_DEEP")"; then
+		P24_E_RC=0
+		P24_E_OUT=$(_p24_resolve "$P24_DEEP_TOP" "$(basename "$P24_DEEP")") || P24_E_RC=$?
+		# The depth is PINNED with the pre-fix predicate rather than assumed from
+		# `!= $top`: "not the top pid" is satisfied by a depth-1 tree, and how deep
+		# a given shell nests is exactly the kind of host-dependence this section
+		# exists to stop trusting.
+		if [ "$P24_E_RC" -eq 0 ] && [ -n "$P24_E_OUT" ] \
+			&& [ "$(_p24_comm "$P24_E_OUT")" = "$(basename "$P24_DEEP")" ] \
+			&& ! pgrep -P "$P24_DEEP_TOP" 2>/dev/null | grep -qx "$P24_E_OUT" \
+			&& ! _p24_prefix_walk "$P24_DEEP_TOP" "$(basename "$P24_DEEP")" >/dev/null; then
+			pass "24e: resolver descends past depth 1 — subject pid=$P24_E_OUT is not a direct child of top=$P24_DEEP_TOP"
+		else
+			fail "24e: depth>=2 arm unsatisfied (rc=$P24_E_RC out='$P24_E_OUT' top=$P24_DEEP_TOP) — either the resolver stopped at depth 1, or the fixture is no longer nested"
+		fi
+	else
+		fail "24e: nested subject never became visible to pgrep — the fixture, not the resolver, is broken"
+	fi
+
+	# --- 24f: /proc/<pid>/comm is truncated to 15 bytes, and e2e-matrix.sh
+	#     rebuilds needs_build_tags rows as `sprawl-matrix-<row>` (e.g.
+	#     `sprawl-matrix-wake-live` reads back as `sprawl-matrix-w`), so callers
+	#     legitimately pass a needle longer than comm can hold. ---
+	_p24_spawn "$P24_ZSH" track "FOO=1 '$P24_LONG' 60 2>/dev/null"
+	P24_LONG_TOP=$P24_LAST_PID
+	if _p24_wait_ready "$(basename "$P24_LONG" | cut -c1-15)"; then
+		P24_F_RC=0
+		P24_F_OUT=$(_p24_resolve "$P24_LONG_TOP" "$(basename "$P24_LONG")") || P24_F_RC=$?
+		if [ "$P24_F_RC" -eq 0 ] && [ "$P24_F_OUT" = "$P24_LONG_TOP" ]; then
+			pass "24f: a needle longer than comm's 15-byte limit still matches (pid=$P24_F_OUT)"
+		else
+			fail "24f: over-long needle did not match (rc=$P24_F_RC out='$P24_F_OUT' top=$P24_LONG_TOP) — comm is truncated to 15 bytes"
+		fi
+		# Truncating the needle must not become prefix matching: the near-miss
+		# below differs from the subject INSIDE comm's 15-byte window, so an
+		# implementation that matched on prefix rather than on the truncated
+		# string would resolve this and 24f above would not notice.
+		P24_F2_RC=0
+		P24_F2_OUT=$(_p24_resolve "$P24_LONG_TOP" "q$P24_NONCE-longXsubject") || P24_F2_RC=$?
+		if [ "$P24_F2_RC" -eq 1 ] && [ -z "$P24_F2_OUT" ]; then
+			pass "24f: a needle differing only WITHIN comm's 15 bytes does not match (truncation, not prefix matching)"
+		else
+			fail "24f: a near-miss needle resolved to '$P24_F2_OUT' rc=$P24_F2_RC — the implementation is prefix-matching, not truncating"
+		fi
+	else
+		fail "24f: long-named subject never became visible to pgrep — the fixture, not the resolver, is broken"
+		fail "24f: (consequently) the truncation-not-prefix arm could not be checked"
+	fi
+
+	# --- 24g: an unusable root pid is a DISTINCT failure from "no match", so the
+	#     row can say "the pane died" instead of "sprawl is missing". ---
+	P24_G1_RC=0
+	_p24_resolve "" "$(basename "$P24_FORK")" >/dev/null || P24_G1_RC=$?
+	if [ "$P24_G1_RC" -eq 2 ]; then
+		pass "24g: an empty root pid returns rc 2 (pane unusable), not rc 1 (no match)"
+	else
+		fail "24g: empty root pid returned rc=$P24_G1_RC — expected 2"
+	fi
+	# Deliberately NOT tracked for cleanup: it is reaped below, and a reaped pid
+	# in the kill list is a pid-reuse hazard aimed at other agents' processes.
+	# The arm itself races reuse only in principle — pids here run ~6 digits
+	# against a far larger pid_max, so the window is a rounding error, and losing
+	# it produces a loud local failure rather than a false green.
+	_p24_spawn /bin/sh notrack "exit 0"
+	P24_DEAD=$P24_LAST_PID
+	wait "$P24_DEAD" 2>/dev/null || true
+	P24_G2_RC=0
+	_p24_resolve "$P24_DEAD" "$(basename "$P24_FORK")" >/dev/null || P24_G2_RC=$?
+	if [ "$P24_G2_RC" -eq 2 ]; then
+		pass "24g: a root pid with no /proc entry returns rc 2 (pane unusable), not rc 1"
+	else
+		fail "24g: dead root pid $P24_DEAD returned rc=$P24_G2_RC — expected 2"
+	fi
+else
+	fail "24a: fixture preconditions unmet (zsh='$P24_ZSH' nonce='$P24_NONCE' (empty also means pgrep/pkill missing) fixture_dir='$P24_DIR') — the two-directional control could not run"
+	fail "24a: (consequently) the descendant-vs-wrapper arm could not be checked"
+	fail "24b: (consequently) the exec-optimizing arm could not be checked"
+	fail "24c: (consequently) the pre-fix-predicate control could not be checked"
+	fail "24d: (consequently) the rc-1 negative control could not be checked"
+	fail "24d: (consequently) the empty-output arm could not be checked"
+	fail "24e: (consequently) the depth>=2 arm could not be checked"
+	fail "24f: (consequently) the comm-truncation arm could not be checked"
+	fail "24f: (consequently) the truncation-not-prefix arm could not be checked"
+	fail "24g: (consequently) the empty-root-pid arm could not be checked"
+	fail "24g: (consequently) the dead-root-pid arm could not be checked"
+fi
+
+# Cleanup. Killing the tracked wrapper pids is not enough: on a FORKING shell the
+# wrapper's death leaves the subject running (measured), so each forked arm would
+# leak a sleep into a shared host on every one of the 8 runs `make validate`
+# performs. Every subject's argv carries this section's own mktemp'd fixture
+# path, so matching on that path scopes the pkill to processes this section
+# started — a bare nonce match could collide with another agent's argv.
+for _p24_pid in ${P24_PIDS+"${P24_PIDS[@]}"}; do
+	kill "$_p24_pid" 2>/dev/null || true
+	wait "$_p24_pid" 2>/dev/null || true
+done
+if [ -n "$P24_DIR" ]; then
+	pkill -f "$P24_DIR/" 2>/dev/null || true
+fi
+if [ -n "$P24_DIR" ] && [ -d "$P24_DIR" ]; then
+	case "$P24_DIR" in
+		"$UNIT_TMP_ROOT"/e2e-matrix-unit-p24.*) rm -rf -- "$P24_DIR" ;;
+		*) echo "  NOTE: refusing to remove unexpected fixture dir '$P24_DIR'" >&2 ;;
+	esac
+fi
+
+# --- 24h: the row must actually route through the helper, the pre-fix walk must
+#     be GONE (calling the helper while keeping the broken walk as a fallback
+#     would satisfy a bare name-grep), and the miss path must stay a `fail`.
+#     QUM-1277's explicit constraint was "do not downgrade the fail to a skip to
+#     get green"; nothing else in this tree guards it.
+#
+#     Each predicate is run against the real row AND against a mutant in which
+#     the defect is re-introduced, because a grep pinned to text that already
+#     exists has never been watched fail. ---
+P24_ROW="$REPO_ROOT/scripts/e2e-tests/paste-coalesce.sh"
+
+# Matched as a CALL, not as a name: the bare name also occurs in prose.
+_p24_row_uses_helper() { grep -qE 'e2e_resolve_pane_process[[:space:]]+"' "$1"; }
+# Spelling-agnostic: `pgrep -P $PANE_PID`, `"${PANE_PID}"` and `--parent` all
+# re-introduce the same depth-1 walk, and a pin on one literal spelling would be
+# a check on vocabulary rather than on mechanism. `^[^#]*` keeps it a check on
+# CODE: the row's comment explains the walk it removed, and a walk described in
+# prose is not a walk.
+_p24_row_has_depth1_walk() { grep -qE '^[^#]*pgrep[[:space:]]+(-P|--parent)' "$1"; }
+# Scoped to the pid-resolution block (helper call through the fail), NOT the
+# whole file: rows legitimately call e2e_skip_row for unrelated preconditions,
+# and a whole-file ban would go red for a reason unrelated to QUM-1277.
+_p24_row_block_fails_loudly() {
+	local block
+	# `{p;/Phase 1/q;}` rather than a bare range: a plain sed range RESTARTS on a
+	# later `PANE_PID=`, and one with no following `Phase 1` would widen the block
+	# to EOF — i.e. silently become the whole-file scope this is avoiding.
+	block=$(sed -n '/PANE_PID=/,/Phase 1/{p;/Phase 1/q;}' "$1")
+	printf '%s' "$block" | grep -q 'fail "could not locate sprawl process' \
+		&& ! printf '%s' "$block" | grep -q 'e2e_skip_row'
+}
+
+P24_MUT_DIR=$(mktemp -d "$UNIT_TMP_ROOT/e2e-matrix-unit-p24mut.XXXXXX" 2>/dev/null || true)
+if [ -r "$P24_ROW" ] && [ -n "$P24_MUT_DIR" ]; then
+	# Mutant 1: helper call removed (back to a hand-rolled walk).
+	sed 's/e2e_resolve_pane_process/pgrep_children_only/g' "$P24_ROW" >"$P24_MUT_DIR/no-helper.sh"
+	# Mutant 2: the pre-fix depth-1 walk re-introduced alongside the helper, in a
+	# DIFFERENT spelling from the one the row ever used — a mutant built from the
+	# predicate's own literal would only prove the grep matches itself.
+	{
+		cat "$P24_ROW"
+		printf '%s\n' '        for cand in $(pgrep --parent ${PANE_PID} 2>/dev/null); do :; done'
+	} >"$P24_MUT_DIR/walk-back.sh"
+	# Mutant 3: the loud fail downgraded to a skip.
+	sed 's/fail "could not locate sprawl process/e2e_skip_row "could not locate sprawl process/' \
+		"$P24_ROW" >"$P24_MUT_DIR/skip-instead.sh"
+	# Mutant 4: the fail KEPT but a skip added alongside it in the resolution
+	# block. Without this, the `! e2e_skip_row` half of the predicate is never
+	# watched fire — mutant 3 flips the other half, and the row contains no
+	# e2e_skip_row anywhere today.
+	awk '/could not locate sprawl process/ { print "        e2e_skip_row \"pane pid unresolved\"" } { print }' \
+		"$P24_ROW" >"$P24_MUT_DIR/skip-alongside.sh"
+
+	if _p24_row_uses_helper "$P24_ROW"; then
+		pass "24h: paste-coalesce.sh resolves its sprawl pid through e2e_resolve_pane_process"
+	else
+		fail "24h: paste-coalesce.sh does not call e2e_resolve_pane_process — it is back on a hand-rolled walk"
+	fi
+	if _p24_row_uses_helper "$P24_MUT_DIR/no-helper.sh"; then
+		fail "24h: the helper-call predicate passed a mutant with the call removed — it cannot detect the regression it guards"
+	else
+		pass "24h: (control) the helper-call predicate fires on a mutant with the call removed"
+	fi
+
+	if _p24_row_has_depth1_walk "$P24_ROW"; then
+		fail "24h: paste-coalesce.sh still contains the pre-fix depth-1 'pgrep -P \$PANE_PID' walk"
+	else
+		pass "24h: the pre-fix depth-1 'pgrep -P \$PANE_PID' walk is gone from paste-coalesce.sh"
+	fi
+	if _p24_row_has_depth1_walk "$P24_MUT_DIR/walk-back.sh"; then
+		pass "24h: (control) the depth-1-walk predicate fires on a mutant that re-introduces the walk"
+	else
+		fail "24h: the depth-1-walk predicate did not fire on a mutant that re-introduces the walk — it cannot detect a fallback walk"
+	fi
+
+	if _p24_row_block_fails_loudly "$P24_ROW"; then
+		pass "24h: paste-coalesce.sh's unresolvable-pid path is still a fail, not a skip"
+	else
+		fail "24h: paste-coalesce.sh's unresolvable-pid path no longer fails loudly (fail line missing, or the block now skips)"
+	fi
+	if _p24_row_block_fails_loudly "$P24_MUT_DIR/skip-instead.sh"; then
+		fail "24h: the fail-not-skip predicate passed a mutant that downgrades the fail to a skip — it cannot detect the downgrade it guards"
+	else
+		pass "24h: (control) the fail-not-skip predicate fires on a mutant that downgrades the fail to a skip"
+	fi
+	if _p24_row_block_fails_loudly "$P24_MUT_DIR/skip-alongside.sh"; then
+		fail "24h: the fail-not-skip predicate passed a mutant that adds a skip ALONGSIDE the fail — its no-skip half is unexercised"
+	else
+		pass "24h: (control) the fail-not-skip predicate fires on a mutant that adds a skip alongside the fail"
+	fi
+else
+	fail "24h: paste-coalesce.sh unreadable or the mutant fixture dir could not be created, so the helper call site could not be checked"
+	fail "24h: (consequently) the helper-call mutant control could not be checked"
+	fail "24h: (consequently) the depth-1-walk pin could not be checked"
+	fail "24h: (consequently) the depth-1-walk mutant control could not be checked"
+	fail "24h: (consequently) the fail-not-skip pin could not be checked"
+	fail "24h: (consequently) the fail-not-skip mutant control could not be checked"
+	fail "24h: (consequently) the skip-alongside-fail mutant control could not be checked"
+fi
+if [ -n "$P24_MUT_DIR" ] && [ -d "$P24_MUT_DIR" ]; then
+	case "$P24_MUT_DIR" in
+		"$UNIT_TMP_ROOT"/e2e-matrix-unit-p24mut.*) rm -rf -- "$P24_MUT_DIR" ;;
+		*) echo "  NOTE: refusing to remove unexpected fixture dir '$P24_MUT_DIR'" >&2 ;;
 	esac
 fi
 

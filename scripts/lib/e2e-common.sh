@@ -1088,6 +1088,77 @@ e2e_attach_phantom_client() {
     sleep 1
 }
 
+# e2e_resolve_pane_process <root_pid> <comm-needle> — print the pid of the
+# process AT or UNDER <root_pid> whose /proc comm matches <comm-needle>.
+#
+#   rc 0 -> match; the pid is on stdout
+#   rc 1 -> <root_pid> is usable but nothing under it matches (the real
+#           "the process we launched is not there" signal — a caller must
+#           treat this as a failure, never as a skip)
+#   rc 2 -> <root_pid> is missing, malformed, or has no /proc entry: the pane
+#           itself is gone, which is a different diagnosis from rc 1
+#
+# QUM-1277: callers used to walk `pgrep -P $PANE_PID` for a matching CHILD.
+# Whether that child exists is a property of the PANE SHELL, not of the process
+# being looked for: given e2e_launch_tui's single command string
+# ("VAR=x '/path/bin' arg 2>'log'"), zsh exec-optimizes it — so the pane pid IS
+# the target and has no children — while dash and bash fork. tmux's
+# default-shell here is /bin/zsh, so paste-coalesce failed on this host and
+# would have passed on a forking one. Being SELF-INCLUSIVE and RECURSIVE is what
+# makes this shell-independent: it never asks what the shell did.
+#
+# The search is confined to the pane's own subtree deliberately. A pid resolved
+# from a global scan could belong to another agent's concurrent run or to a
+# leaked session on the same root, and callers go on to signal what they
+# resolve — so a broader fallback would trade a diagnosable failure for a run
+# that may pass against the wrong process.
+#
+# /proc/<pid>/comm is truncated to TASK_COMM_LEN-1 = 15 bytes, so the needle is
+# truncated to match (e2e-matrix.sh builds `sprawl-matrix-<row>` binaries for
+# needs_build_tags rows, e.g. `sprawl-matrix-wake-live` -> `sprawl-matrix-w`).
+# Two binaries agreeing in their first 15 bytes are indistinguishable here.
+e2e_resolve_pane_process() {
+    local root_pid="${1:-}" needle="${2:-}"
+    case "$root_pid" in
+        '' | *[!0-9]*) return 2 ;;
+    esac
+    [ -n "$needle" ] || return 2
+    [ -d "/proc/$root_pid" ] || return 2
+    needle="${needle:0:15}"
+
+    # Cursor-indexed queue rather than array reslicing: O(n) instead of O(n^2),
+    # and no empty-array expansion to trip over under `set -u`. The node budget
+    # bounds the walk if pid reuse makes `seen` miss a revisit.
+    local queue=("$root_pid") cursor=0 budget=4096 seen=" "
+    local pid comm kids kid
+    while [ "$cursor" -lt "${#queue[@]}" ]; do
+        pid="${queue[$cursor]}"
+        cursor=$((cursor + 1))
+        budget=$((budget - 1))
+        [ "$budget" -gt 0 ] || return 1
+        case "$seen" in
+            *" $pid "*) continue ;;
+        esac
+        seen="$seen$pid "
+
+        comm=$(cat "/proc/$pid/comm" 2>/dev/null || true)
+        if [ "$comm" = "$needle" ]; then
+            printf '%s\n' "$pid"
+            return 0
+        fi
+
+        # Every task dir, not just task/<pid>: a Go program's children can be
+        # forked from any thread, so a single-task read would miss them.
+        for kids in "/proc/$pid/task/"*/children; do
+            [ -r "$kids" ] || continue
+            for kid in $(cat "$kids" 2>/dev/null || true); do
+                queue+=("$kid")
+            done
+        done
+    done
+    return 1
+}
+
 e2e_send_user_prompt() {
     # QUM-432: the TUI's paste classifier reclassifies an Enter arriving
     # < 10ms after a printable key as an embedded newline (stripped-
