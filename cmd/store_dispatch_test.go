@@ -240,9 +240,9 @@ func TestDefaultHostIdentity_IsNotJustTheCheckoutPath(t *testing.T) {
 // the pinned pgx v5.10.0 — the password is masked as `xxxxxx` in parse errors
 // and omitted from connect errors. So the synthetic password below is testing
 // PROSPECTIVE hardening (a future driver, or another library handed a DSN),
-// while the host and database name in URL form are a leak that exists today and
-// that CLAUDE.md forbids in a public repo. Read redact.go before restating what
-// pgx leaks; the unmeasured version of that claim was already wrong once.
+// while the host and database name are a leak that CLAUDE.md forbids in a public
+// repo. Read redact.go before restating what pgx leaks; the unmeasured version
+// of that claim was already wrong once.
 //
 // THE ASSERTION IS ABSENCE OF THE SECRET, NOT PRESENCE OF A MARKER. A test that
 // checks for "[redacted]" passes while the password sits next to the marker,
@@ -263,8 +263,13 @@ func TestDefaultHostIdentity_IsNotJustTheCheckoutPath(t *testing.T) {
 // only by the dispatch e2e rows.
 const (
 	probeDSNPassword = "sup3r-synthetic-not-a-real-password"
-	// Covered in URL form only: RedactSecrets replaces a DSN-shaped URL
-	// wholesale, but does NOT redact a bare hostname elsewhere in a message.
+	// Covered in URL form here, but no longer ONLY in URL form: since QUM-1281
+	// RedactSecrets also redacts keyword-form host/user/database values and a
+	// hostname in the two error grammars pgx and net.DNSError actually emit. A
+	// bare hostname in arbitrary prose remains an explicit non-goal — see the
+	// non-goals list in internal/store/redact.go. The keyword and connect-error
+	// shapes are covered at that level, in internal/store/redact_test.go, where
+	// the subject can be a real pgx error rather than a fabricated one.
 	probeDSNHost = "leak-probe.invalid"
 	probeDSNURL  = "postgres://leakuser:" + probeDSNPassword + "@" + probeDSNHost + ":5432/sprawl?sslmode=require"
 )
