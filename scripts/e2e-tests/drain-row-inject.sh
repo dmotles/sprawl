@@ -7,8 +7,29 @@
 # drain-row citation pipeline is exercised end-to-end.
 
 # QUM-1029: the number of assertions a COMPLETE, PASSING run of this row
-# makes. The unconditional pass after launch plus three symmetric gates.
-MIN_ASSERTIONS=4
+# makes. The unconditional pass after launch plus three symmetric gates, plus
+# the three QUM-1276 --effort argv gates (weave low, child low, neither
+# medium) added below the spawn gate.
+MIN_ASSERTIONS=7
+
+# --- Test-local helpers (single-test scope, not promoted to lib). ---
+
+# _drain_claude_argv <agent-name> — newline-separated argv of the claude
+# subprocess launched for <agent-name>, scoped to this sandbox by the
+# --system-prompt-file argv pointing at that agent's SYSTEM.md under
+# SPRAWL_ROOT (state.WriteSystemPrompt). Empty output + rc 1 when not found.
+_drain_claude_argv() {
+    local want="$SPRAWL_ROOT/.sprawl/agents/$1/SYSTEM.md" pid
+    pid=$(pgrep -af 'claude' 2>/dev/null | awk -v p="$want" 'index($0, p) > 0 { print $1; exit }')
+    [ -n "$pid" ] && [ -r "/proc/$pid/cmdline" ] || return 1
+    tr '\0' '\n' < "/proc/$pid/cmdline"
+}
+
+# _drain_argv_effort — echoes the value following the first --effort token on
+# stdin (one argv token per line), or nothing when the flag is absent.
+_drain_argv_effort() {
+    awk '/^--effort$/ { getline v; print v; exit }'
+}
 
 test_metadata() {
     echo "needs_claude=1 needs_tmux=1 needs_jq=1"
@@ -125,6 +146,46 @@ test_run() {
         capture_pane "$SESSION" | tail -40 >&2
         e2e_print_results
         return 1
+    fi
+
+    echo ""
+    echo "=== QUM-1276: --effort low reached the real claude argv ==="
+    # A unit test asserting SessionSpec.Effort proves nothing about the flag a
+    # real subprocess received. Both weave and the child are known live here
+    # (weave drove the spawn; the child's state file just landed), so a pid we
+    # cannot resolve is a failure, never a skip.
+    local WEAVE_ARGV CHILD_ARGV WEAVE_EFFORT CHILD_EFFORT
+    # The state file can land a beat before the subprocess is up, so poll.
+    local ARGV_WAIT=0
+    while [ "$ARGV_WAIT" -lt 30 ]; do
+        WEAVE_ARGV=$(_drain_claude_argv weave || true)
+        CHILD_ARGV=$(_drain_claude_argv "$CHILD_NAME" || true)
+        [ -n "$WEAVE_ARGV" ] && [ -n "$CHILD_ARGV" ] && break
+        sleep 2
+        ARGV_WAIT=$((ARGV_WAIT + 2))
+    done
+    WEAVE_EFFORT=$(printf '%s\n' "$WEAVE_ARGV" | _drain_argv_effort)
+    CHILD_EFFORT=$(printf '%s\n' "$CHILD_ARGV" | _drain_argv_effort)
+
+    if [ "$WEAVE_EFFORT" = "low" ]; then
+        pass "weave claude argv carries --effort low"
+    else
+        fail "weave claude argv effort = '${WEAVE_EFFORT:-<absent>}', want low"
+        printf '%s\n' "$WEAVE_ARGV" | sed 's/^/    /' >&2
+    fi
+
+    if [ "$CHILD_EFFORT" = "low" ]; then
+        pass "child $CHILD_NAME claude argv carries --effort low"
+    else
+        fail "child $CHILD_NAME claude argv effort = '${CHILD_EFFORT:-<absent>}', want low"
+        printf '%s\n' "$CHILD_ARGV" | sed 's/^/    /' >&2
+    fi
+
+    # Catches a partial edit: one of the two paths still on the old default.
+    if [ "$WEAVE_EFFORT" != "medium" ] && [ "$CHILD_EFFORT" != "medium" ]; then
+        pass "neither weave nor $CHILD_NAME carries the old --effort medium default"
+    else
+        fail "stale --effort medium survives (weave='$WEAVE_EFFORT' child='$CHILD_EFFORT')"
     fi
 
     echo ""
