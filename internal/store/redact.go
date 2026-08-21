@@ -79,6 +79,27 @@ import (
 // values wherever they occur. That is zero-over-redaction and grammar-agnostic,
 // but it requires threading the DSN to every RedactError call site, so it is a
 // follow-up rather than part of this change.
+// pgconnConnectErrorMarker gates the three tail patterns below.
+//
+// Their grammars are NOT rare: `lookup <token>` collides with a filename
+// ("failed to lookup migration.sql: no such file" — where the filename IS the
+// diagnosis), and `<ip>:<port> (<token>)` collides with any one-word
+// parenthetical ("dial 127.0.0.1:5432 (timeout)"). QA measured six such
+// collisions. The patterns are only unambiguous INSIDE a pgx connect error, so
+// that is where they are allowed to run.
+//
+// `pgconn.ConnectError.Error()` emits this prefix UNCONDITIONALLY — it is a
+// plain Sprintf with no branch — so gating on it costs no coverage of the
+// grammars it protects, and it survives redaction of the value that follows,
+// which keeps RedactSecrets idempotent.
+//
+// The cost, stated because it is a real narrowing: a hostname emitted in one of
+// these grammars by something OTHER than a pgx connect error is no longer
+// redacted. That is the deliberate trade — the alternative is eating filenames
+// out of every unrelated error on the same stream, and an error message made
+// useless is one somebody deletes the redaction to fix.
+const pgconnConnectErrorMarker = "failed to connect to `user="
+
 var (
 	// URL form: postgres:// or postgresql:// through to the next whitespace,
 	// backtick, or quote. Deliberately greedy about the tail — over-redacting a
@@ -106,8 +127,23 @@ var (
 	// `(?:pg|ssl)?password` rather than an explicit `password|pgpassword`
 	// alternation: `\b` cannot match a keyword sitting behind a word character,
 	// so spelling only the two left `sslpassword` — libpq's private-key
-	// passphrase, a real secret that pgx does NOT mask — passing through
-	// verbatim. (`pghost` is likewise not covered, and is left that way: it is
+	// passphrase — passing through.
+	//
+	// CORRECTED, and the correction is the point. This comment previously said
+	// pgx does NOT mask `sslpassword`. Measured, that is FALSE: `pgconn`'s
+	// `redactPW` applies an UNANCHORED `password=[^ ]*`, which matches the
+	// `password=` substring inside `sslpassword=` and rewrites it to
+	// `sslpassword=xxxxx`. And `redactPW` has exactly one caller —
+	// `ParseConfigError.Error`, the only pgx error that carries a connstring at
+	// all — so there is no pgx error in which `sslpassword` reaches this
+	// function unmasked. The original claim was measured against a hand-written
+	// string pgx cannot emit, which is the third time prose in this file was
+	// written down unmeasured and was wrong.
+	//
+	// The coverage still stands, as PROSPECTIVE hardening for a DSN arriving
+	// from a non-pgx source — the same justification the synthetic password in
+	// `cmd/store_dispatch_test.go` already rests on. Only the reason changed.
+	// (`pghost` is likewise unreachable behind `\b` and is left that way: it is
 	// identity, not a credential, and pgx does not emit it.)
 	//
 	// The FINAL value arm is the unbalanced-quote fallback. The balanced arms
@@ -133,14 +169,17 @@ var (
 	// were split.
 	//
 	//   - with a server clause, the server is itself `<addr>:<port>` (the
-	//     resolver's address), which is specific enough to admit ANY name,
+	//     resolver's address, rendered through net.JoinHostPort — so a resolver
+	//     reached over IPv6 gives `on [::1]:53`, and the class must admit a
+	//     bracketed literal or it stops firing and strands a single-label name),
+	//     which is specific enough to admit ANY name,
 	//     single-label or rooted, without matching prose: "lookup table on
 	//     disk: not found" has no `:<port>` after the "on".
 	//   - without one, there is nothing to anchor against, so the name must be
 	//     DOTTED — a trailing dot is allowed, since a rooted FQDN is legal in a
 	//     host= value and a pattern that cannot end on a dot leaks the name
 	//     whole.
-	dnsLookupServerRe = regexp.MustCompile(`(?i)\b(lookup\s+)[^\s:]+(\s+on\s+[^\s:]+:\d{1,5})`)
+	dnsLookupServerRe = regexp.MustCompile(`(?i)\b(lookup\s+)[^\s:]+(\s+on\s+(?:\[[0-9a-fA-F:.]+\]|[^\s:]+):\d{1,5})`)
 	dnsLookupRe       = regexp.MustCompile(`(?i)\b(lookup\s+)[A-Za-z0-9_-]+(?:\.[A-Za-z0-9_-]+)+\.?([\s:])`)
 	// pgconn's perDialConnectError: "<addr> (<originalHostname>): <cause>".
 	//
@@ -167,10 +206,12 @@ func RedactSecrets(s string) string {
 		return s
 	}
 	out := dsnURLRe.ReplaceAllString(s, "postgres://[redacted]")
-	out = pgconnResolveRe.ReplaceAllString(out, "${1}[redacted]")
-	out = dnsLookupServerRe.ReplaceAllString(out, "${1}[redacted]${2}")
-	out = dnsLookupRe.ReplaceAllString(out, "${1}[redacted]${2}")
-	out = dialHostRe.ReplaceAllString(out, "${1}([redacted])")
+	if strings.Contains(out, pgconnConnectErrorMarker) {
+		out = pgconnResolveRe.ReplaceAllString(out, "${1}[redacted]")
+		out = dnsLookupServerRe.ReplaceAllString(out, "${1}[redacted]${2}")
+		out = dnsLookupRe.ReplaceAllString(out, "${1}[redacted]${2}")
+		out = dialHostRe.ReplaceAllString(out, "${1}([redacted])")
+	}
 	out = dsnKeywordRe.ReplaceAllStringFunc(out, func(m string) string {
 		key := m
 		if i := strings.IndexByte(m, '='); i >= 0 {

@@ -176,6 +176,16 @@ func TestRedactSecrets_LeavesOrdinaryTextAlone(t *testing.T) {
 		"migration failed at events.sql:12 (syntax)",
 		"snapshot taken 12:30 (UTC) failed",
 		"cannot open /var/log/app.log:2 (rotated)",
+		// QA (sentry, F-B/C/D) measured all six of these being eaten. Each is a
+		// TRUE match for one of the tail patterns' grammars but is NOT pgx
+		// connect-error text, which is what the marker gate now discriminates
+		// on. F-B is the worst of them: the filename IS the diagnosis.
+		"failed to lookup migration.sql: no such file",
+		"failed to lookup config.yaml: parse error",
+		"lookup failed on 127.0.0.1:5432: timeout",
+		"dial 127.0.0.1:5432 (timeout): giving up",
+		"listening on 10.0.0.1:8080 (ipv4)",
+		"probe 127.0.0.1:5432 (TLS): handshake failure",
 	} {
 		if got := RedactSecrets(in); got != in {
 			t.Errorf("RedactSecrets altered text containing no secret:\n in:  %q\n out: %q", in, got)
@@ -404,6 +414,13 @@ func TestRedactError_OnARealPgxDNSFailure(t *testing.T) {
 		// A rooted FQDN is legal in a host= value; a name pattern that cannot
 		// end on a dot fails to match it and then leaks the whole name.
 		"rooted fqdn": {host: "db-probe.internal.example.", server: "127.0.0.53:53", keeps: []string{"no such host"}},
+		// net.DNSError renders Server through net.JoinHostPort, so a resolver
+		// reached over IPv6 (`nameserver ::1`) really does produce `on [::1]:53`
+		// — and a server class that cannot match a bracketed literal stops
+		// firing, which strands a single-label name with nothing else to catch
+		// it. QA (sentry, F-A) measured this leaking.
+		"ipv6 resolver address":                    {host: host, server: "[::1]:53", keeps: []string{"[::1]:53", "no such host"}},
+		"ipv6 resolver address, single-label host": {host: "pgdb", server: "[::1]:53", keeps: []string{"[::1]:53", "no such host"}},
 	}
 	for name, tc := range cases {
 		t.Run(name, func(t *testing.T) {
@@ -455,11 +472,19 @@ func TestRedactError_OnARealPgxMultiHostFailure(t *testing.T) {
 	// therefore reachable by neither the prefix-anchored pattern nor a
 	// dotted-name one — measured leaking in review (zone, F1), and invisible to
 	// a test whose hosts are all dotted.
-	for _, hosts := range [][2]string{
-		{"db-a.internal.example", "db-b.internal.example"},
-		{"pgdb1", "pgdb2"},
+	for _, tc := range []struct {
+		hosts  [2]string
+		server string
+	}{
+		{[2]string{"db-a.internal.example", "db-b.internal.example"}, "127.0.0.53:53"},
+		{[2]string{"pgdb1", "pgdb2"}, "127.0.0.53:53"},
+		// Single-label names AND an IPv6 resolver: line 1 is saved by the
+		// pgconn prefix, line 2 has only the server clause to key on, and a
+		// server class that cannot match `[::1]:53` leaks it (sentry, F-A).
+		{[2]string{"pgdb1", "pgdb2"}, "[::1]:53"},
 	} {
-		got := RedactError(realPgxConnectError(t, hosts[0]+","+hosts[1], dnsErrLookup("127.0.0.53:53")))
+		hosts := tc.hosts
+		got := RedactError(realPgxConnectError(t, hosts[0]+","+hosts[1], dnsErrLookup(tc.server)))
 		if !strings.Contains(got, "\n") {
 			t.Fatalf("expected a joined multi-line pgx error, got a single line: %q", got)
 		}
@@ -521,5 +546,63 @@ func TestRedactSecrets_AcceptedOverRedactions(t *testing.T) {
 				t.Errorf("accepted over-redaction changed shape:\n in:   %q\n got:  %q\n want: %q", tc.in, got, tc.want)
 			}
 		})
+	}
+}
+
+// TestRedactSecrets_TailPatternsRequireThePgconnMarker pins the discriminator
+// that makes the three tail patterns safe.
+//
+// Their grammars — `lookup <h> on <s>`, `<addr> (<h>)` — are not rare shapes;
+// they collide with filenames, timestamps and one-word parentheticals in
+// ordinary error prose, and QA (sentry, F-B/C/D) measured six such collisions.
+// They are only unambiguous INSIDE a pgconn connect error, so they now fire
+// only when pgconn's own unconditional prefix is present.
+//
+// The two halves must be asserted TOGETHER. Without the negative half the gate
+// could be absent; without the positive half the gate could be permanently
+// closed, which would silently restore the very leak this issue fixed.
+func TestRedactSecrets_TailPatternsRequireThePgconnMarker(t *testing.T) {
+	const tail = "hostname resolving error: lookup db.internal.example on 127.0.0.53:53: no such host"
+
+	unmarked := RedactSecrets("some other library says: " + tail)
+	if !strings.Contains(unmarked, "db.internal.example") {
+		t.Errorf("tail patterns fired on text carrying no pgconn connect-error marker: %q", unmarked)
+	}
+
+	marked := RedactSecrets("failed to connect to `user=u database=d`: " + tail)
+	if strings.Contains(marked, "db.internal.example") {
+		t.Errorf("tail patterns did NOT fire inside a pgconn connect error — the gate is closed and the hostname leaks: %q", marked)
+	}
+	if !strings.Contains(marked, "no such host") {
+		t.Errorf("redaction destroyed the diagnosis: %q", marked)
+	}
+}
+
+// TestPgxMasksSslpassword pins the CORRECTED claim from QA (sentry, F-E)
+// against the driver rather than against anyone's model of it.
+//
+// redact.go used to assert pgx does not mask `sslpassword`. That was false, and
+// it was false because it was measured on a hand-written string pgx cannot
+// emit. pgconn's redactPW applies an UNANCHORED `password=[^ ]*`, which matches
+// the substring inside `sslpassword=` and rewrites it.
+//
+// This asserts on pgx's OWN output, before RedactSecrets touches it, so it
+// fails if a future pgx anchors that pattern — at which point `sslpassword`
+// really would reach us unmasked and the comment would need correcting back.
+// The redaction covers it either way; only the stated reason depends on this.
+func TestPgxMasksSslpassword(t *testing.T) {
+	const passphrase = "synthetic-passphrase-PROBE"
+	// sslmode is deliberately invalid so ParseConfig fails and renders the
+	// connstring — the only pgx error that quotes one at all.
+	_, err := pgxpool.ParseConfig("host=db.internal.example user=u dbname=d sslpassword=" + passphrase + " sslmode=bogusvalue")
+	if err == nil {
+		t.Fatal("expected ParseConfig to reject sslmode=bogusvalue; without an error there is no connstring to inspect")
+	}
+	raw := err.Error()
+	if !strings.Contains(raw, "sslpassword=") {
+		t.Fatalf("pgx no longer renders the sslpassword key at all, so this test is not measuring what it claims: %q", raw)
+	}
+	if strings.Contains(raw, passphrase) {
+		t.Errorf("pgx did NOT mask sslpassword — redact.go's stated reason for covering it is now wrong: %q", raw)
 	}
 }
