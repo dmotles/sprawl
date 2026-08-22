@@ -24,6 +24,7 @@ import (
 	backendpkg "github.com/dmotles/sprawl/internal/backend"
 	"github.com/dmotles/sprawl/internal/state"
 	"github.com/dmotles/sprawl/internal/supervisor/liveness"
+	"github.com/dmotles/sprawl/internal/testutil"
 )
 
 // wakeCapturingStarter is a RuntimeStarter that records every Start call's
@@ -134,9 +135,15 @@ func shortenWakeTimeouts(t *testing.T) {
 	})
 }
 
-// drainForWoken waits up to 2s for a RuntimeEventWoken event on ch. Returns
-// the count of woken events observed plus the count of stopped events for
-// negative assertions.
+// drainForWoken drains ch for the whole of window and tallies the events seen.
+// It ALWAYS costs window, because it cannot know a further event will not
+// arrive until the window is out.
+//
+// That makes it the right tool for a PURELY NEGATIVE assertion ("no woken event
+// was emitted") and the wrong tool for a positive one. Positive callers should
+// use awaitExactlyOneWoken, which exits as soon as the event lands. Do not
+// "optimise" this function into a poll: for a negative caller, returning early
+// because the count is still zero would assert nothing at all (QUM-1288).
 func drainForWoken(t *testing.T, ch <-chan RuntimeEvent, window time.Duration) (woken, stopped int) {
 	t.Helper()
 	deadline := time.After(window)
@@ -157,6 +164,52 @@ func drainForWoken(t *testing.T, ch <-chan RuntimeEvent, window time.Duration) (
 		}
 	}
 }
+
+// awaitExactlyOneWoken waits for exactly one RuntimeEventWoken on ch and then
+// holds a settle window to establish that no SECOND one follows. It fails the
+// test if the first never arrives, or if the count ever leaves 1.
+//
+// This replaces drainForWoken at the positive call sites, which each paid a
+// flat 2s. The event itself lands in single-digit milliseconds; the 2s was
+// entirely the cost of proving the negative half.
+//
+// The settle window is the honest cost of that conversion, and it is a real
+// reduction in reach, not a free win: the old fixed window would have caught a
+// spurious second woken event arriving up to 2s after the first, and this
+// catches one arriving within wokenSettle. Both are bounded and neither is a
+// proof; this one is 8x shorter. It is called out here rather than buried
+// because a reviewer should get to disagree with it.
+func awaitExactlyOneWoken(t *testing.T, ch <-chan RuntimeEvent, timeout time.Duration) (woken, stopped int) {
+	t.Helper()
+	var w, s int
+	drainReady := func() {
+		for {
+			select {
+			case ev, ok := <-ch:
+				if !ok {
+					return
+				}
+				switch ev.Kind {
+				case RuntimeEventWoken:
+					w++
+				case RuntimeEventStopped:
+					s++
+				}
+			default:
+				return
+			}
+		}
+	}
+	testutil.EventuallyStable(t, timeout, wokenSettle, "exactly one RuntimeEventWoken", func() bool {
+		drainReady()
+		return w == 1
+	})
+	return w, s
+}
+
+// wokenSettle is how long awaitExactlyOneWoken holds after the first woken
+// event to establish that no second one follows.
+const wokenSettle = 250 * time.Millisecond
 
 // runWakeAcceptanceTest exercises the common shape for the three offline-
 // state acceptance tests (Paused / Killed / Died). It seeds an AgentState
@@ -215,7 +268,7 @@ func runWakeAcceptanceTest(t *testing.T, diskStatus string) {
 	if got := rt.Snapshot().Liveness; got != liveness.Running {
 		t.Errorf("Liveness after Wake = %q, want %q", got, liveness.Running)
 	}
-	if woken, _ := drainForWoken(t, events, 2*time.Second); woken != 1 {
+	if woken, _ := awaitExactlyOneWoken(t, events, 2*time.Second); woken != 1 {
 		t.Errorf("RuntimeEventWoken count = %d, want 1", woken)
 	}
 }
@@ -309,7 +362,7 @@ func TestWake_FallbackOnResumeRejected(t *testing.T) {
 	if got := rt.Snapshot().Status; got != state.StatusActive {
 		t.Errorf("disk Status after fallback Wake = %q, want %q (no transient resume_failed persistence)", got, state.StatusActive)
 	}
-	if woken, _ := drainForWoken(t, events, 2*time.Second); woken != 1 {
+	if woken, _ := awaitExactlyOneWoken(t, events, 2*time.Second); woken != 1 {
 		t.Errorf("RuntimeEventWoken count = %d, want 1 (fallback success emits one event)", woken)
 	}
 }
@@ -373,7 +426,7 @@ func TestWake_FallbackOnHealthProbeFail(t *testing.T) {
 	if got := rt.Snapshot().Status; got != state.StatusActive {
 		t.Errorf("disk Status after fallback Wake = %q, want %q", got, state.StatusActive)
 	}
-	if woken, _ := drainForWoken(t, events, 2*time.Second); woken != 1 {
+	if woken, _ := awaitExactlyOneWoken(t, events, 2*time.Second); woken != 1 {
 		t.Errorf("RuntimeEventWoken count = %d, want 1", woken)
 	}
 }
@@ -434,6 +487,10 @@ func TestWake_FallbackFailureSurfacesError(t *testing.T) {
 	} else if loaded.Status != state.StatusResumeFailed {
 		t.Errorf("on-disk Status after doubly-failed Wake = %q, want %q", loaded.Status, state.StatusResumeFailed)
 	}
+	// Deliberately NOT awaitExactlyOneWoken. This assertion is purely
+	// negative — it claims no woken event was emitted — so the only way to
+	// establish it is to watch for the whole window. A poll here would return
+	// the instant it saw zero, which is immediately, and assert nothing.
 	woken, _ := drainForWoken(t, events, 1*time.Second)
 	if woken != 0 {
 		t.Errorf("RuntimeEventWoken emitted %d times on failed Wake; want 0", woken)
