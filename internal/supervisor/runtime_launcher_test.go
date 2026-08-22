@@ -800,8 +800,8 @@ func TestUnifiedHandle_StopUnsubscribesEventBus(t *testing.T) {
 // pipe-drain cannot wedge retire. SIGKILL still fires (QUM-543), the OS reaps
 // the zombie eventually, and Stop returns within seconds.
 func TestUnifiedHandle_Stop_BoundedWhenSessionWaitWedges(t *testing.T) {
-	shortenStopWaitTimeout(t)
 	uh, fakeSession, _ := buildStartedUnifiedHandleForTest(t, backend.Capabilities{})
+	shortenStopWaitTimeout(t, uh)
 
 	// Arm Wait() to block forever. Ensure cleanup unblocks it so the goroutine
 	// the handle leaves behind isn't a permanent test leak.
@@ -873,8 +873,8 @@ func TestUnifiedHandle_StopWaitTimedOut_FalseOnCleanStop(t *testing.T) {
 // Mirrors TestUnifiedHandle_Stop_BoundedWhenSessionWaitWedges (QUM-542) for
 // the timeout-detection seam.
 func TestUnifiedHandle_StopWaitTimedOut_TrueOnTimeout(t *testing.T) {
-	shortenStopWaitTimeout(t)
 	uh, fakeSession, _ := buildStartedUnifiedHandleForTest(t, backend.Capabilities{})
+	shortenStopWaitTimeout(t, uh)
 
 	block := make(chan struct{})
 	fakeSession.mu.Lock()
@@ -1922,9 +1922,7 @@ func TestBuildAgentSystemPrompt_NoAppendWhenEmpty(t *testing.T) {
 func TestUnifiedHandleStopWaitTimeout_IsOverridableSeam(t *testing.T) {
 	uh, fakeSession, _ := buildStartedUnifiedHandleForTest(t, backend.Capabilities{})
 
-	prev := unifiedHandleStopWaitTimeout.get()
-	t.Cleanup(func() { unifiedHandleStopWaitTimeout.set(prev) })
-	unifiedHandleStopWaitTimeout.set(50 * time.Millisecond)
+	shortenStopWaitTimeout(t, uh)
 
 	block := make(chan struct{})
 	fakeSession.mu.Lock()
@@ -1952,13 +1950,13 @@ func TestUnifiedHandleStopWaitTimeout_IsOverridableSeam(t *testing.T) {
 	}
 }
 
-// shortenStopWaitTimeout lowers the post-Kill session.Wait bound for a test
-// that deliberately wedges Wait, so the test pays milliseconds instead of the
-// full production 5s. It shortens the bound; it does not disable it — each
-// caller still asserts the bounded wait fired.
-func shortenStopWaitTimeout(t *testing.T) {
+// shortenStopWaitTimeout lowers the post-Kill session.Wait bound on ONE handle,
+// so a test that deliberately wedges Wait pays milliseconds instead of the full
+// production 5s. It shortens the bound; it does not disable it — each caller
+// still asserts the bounded wait fired.
+//
+// Per-handle, so it needs no save/restore and cannot leak into a sibling test.
+func shortenStopWaitTimeout(t *testing.T, uh *unifiedHandle) {
 	t.Helper()
-	prev := unifiedHandleStopWaitTimeout.get()
-	t.Cleanup(func() { unifiedHandleStopWaitTimeout.set(prev) })
-	unifiedHandleStopWaitTimeout.set(50 * time.Millisecond)
+	uh.stopWaitTimeout.set(50 * time.Millisecond)
 }

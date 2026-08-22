@@ -366,6 +366,14 @@ func TestRealPeek_PopulatesLiveness(t *testing.T) {
 // 1s wall-clock. Each agent ends with disk Status=paused (not killed).
 func TestRealShutdown_AllIdleCompletesQuickly(t *testing.T) {
 	r, tmpDir := newFakeReal(t)
+	// Restore the PRODUCTION budget for this test specifically, against
+	// newTestSupervisor's 50ms default. The "< 1s" bound below is a proxy for
+	// "idle agents never enter the pause drain at all", and it only means that
+	// if entering the drain would be expensive: at 50ms, three agents burning
+	// the whole budget in parallel still finish in ~50ms and the bound stops
+	// being able to fail. This costs nothing on a green run — idle agents take
+	// the polite-Stop arm and never wait on the budget (QUM-1288).
+	r.shutdownPauseBudget.set(defaultShutdownPauseBudget)
 	for _, n := range []string{"a", "b", "c"} {
 		saveTestAgent(t, tmpDir, &state.AgentState{Name: n, Parent: "weave", Status: state.StatusActive})
 		h := &pauseRecordingHandle{}

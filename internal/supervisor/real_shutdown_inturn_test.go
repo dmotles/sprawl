@@ -87,6 +87,13 @@ func completeTurnUntil(h *shutdownTurnHandle, done <-chan struct{}) *sync.WaitGr
 // resume accept-set includes.
 func TestRealShutdown_InTurnCleanDrainRestsAtSuspendedNotPaused(t *testing.T) {
 	r, tmpDir := newFakeReal(t)
+	// This test needs the drain to complete CLEANLY, so it must not race
+	// newTestSupervisor's shortened 50ms budget — an escalation here would be a
+	// loud failure rather than a silent pass (the assertions Fatalf on
+	// Status==killed), but a flaky loud failure is still a flake. Generous is
+	// free: a clean drain returns as soon as the turn boundary is observed and
+	// never spends the budget (QUM-1288).
+	r.shutdownPauseBudget.set(defaultShutdownPauseBudget)
 	saveTestAgent(t, tmpDir, &state.AgentState{Name: "busy", Parent: "weave", Status: state.StatusActive})
 
 	h := newShutdownTurnHandle("busy")

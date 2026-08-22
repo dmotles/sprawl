@@ -49,17 +49,17 @@ type Config struct {
 	ChildAllowedTools []string
 }
 
+// defaultShutdownPauseBudget is the production value of Real.shutdownPauseBudget:
+// how long an in-turn agent gets to drain its turn during Shutdown before the
+// escalation to StopAbandon.
+const defaultShutdownPauseBudget = 5 * time.Second
+
 // Real is the production implementation of Supervisor.
 //
 // Spawn/Merge/Retire/Kill delegate to internal/agentops, which contains the
 // shared logic used by the spawn/merge/retire/kill MCP tools (and the
 // `sprawl merge` CLI command, which is still surfaced standalone).
 //
-// defaultShutdownPauseBudget is the production value of Real.shutdownPauseBudget:
-// how long an in-turn agent gets to drain its turn during Shutdown before the
-// escalation to StopAbandon.
-const defaultShutdownPauseBudget = 5 * time.Second
-
 // The *Fn fields are test seams: tests can swap them to exercise Real's
 // wiring without touching the underlying agentops machinery (which is
 // already covered by cmd/*_test.go and internal/agentops tests).

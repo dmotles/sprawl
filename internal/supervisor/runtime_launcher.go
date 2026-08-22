@@ -194,20 +194,21 @@ func (s *inProcessUnifiedStarter) Start(spec RuntimeStartSpec) (RuntimeHandle, e
 	// Phase 6: assemble the handle. Single linear block, no closures already
 	// in flight observe partial state.
 	handle := &unifiedHandle{
-		rt:           rt,
-		session:      session,
-		capabilities: caps,
-		sessionID:    session.SessionID(),
-		activityFile: prep.activityFile,
-		stopActivity: stopActivity,
-		stopDelivery: stopDelivery,
-		stopFault:    stopFault,
-		stopUsage:    stopUsage,
-		stopLedger:   stopLedger,
-		sprawlRoot:   spec.SprawlRoot,
-		name:         spec.Name,
-		coord:        coord,
-		ring:         prep.ring,
+		stopWaitTimeout: newAtomicDuration(defaultUnifiedHandleStopWaitTimeout),
+		rt:              rt,
+		session:         session,
+		capabilities:    caps,
+		sessionID:       session.SessionID(),
+		activityFile:    prep.activityFile,
+		stopActivity:    stopActivity,
+		stopDelivery:    stopDelivery,
+		stopFault:       stopFault,
+		stopUsage:       stopUsage,
+		stopLedger:      stopLedger,
+		sprawlRoot:      spec.SprawlRoot,
+		name:            spec.Name,
+		coord:           coord,
+		ring:            prep.ring,
 	}
 
 	// Phase 7: bind the coordinator's wake function. Closure captures the
@@ -499,6 +500,9 @@ type unifiedHandle struct {
 
 	stopWaitTimedOut atomic.Bool
 
+	// stopWaitTimeout bounds the post-Kill session.Wait in stopOnceWith.
+	stopWaitTimeout *atomicDuration
+
 	// coord owns the QUM-580 sweep state and the runtime callbacks that
 	// touch it (OnQueueItemDelivered, PostTurnSweep). Extracted from the
 	// handle in QUM-584 so the runtime callbacks no longer capture a
@@ -556,12 +560,15 @@ func (h *unifiedHandle) drainPendingToStdin() error {
 // a multi-minute hang. Bounding the wait keeps retire snappy; the OS reaps
 // the SIGKILL'd process eventually.
 //
-// atomicDuration per the repo-wide CLAUDE.md convention rather than a plain
-// var: production reads it from stopOnceWith, which runs on whichever
-// goroutine drove the teardown, and tests override it — so a plain var would be
-// a live race under -race. The two tests that deliberately wedge session.Wait
-// paid the full 5s each before this became a seam (QUM-1288).
-var unifiedHandleStopWaitTimeout = newAtomicDuration(5 * time.Second)
+// It is the DEFAULT for unifiedHandle.stopWaitTimeout, not the value production
+// reads. Per-handle rather than a package-level knob because tests override it:
+// a global would only be safe to mutate as long as no test that touches
+// stopOnceWith runs in parallel, and internal/supervisor already has
+// t.Parallel() tests. atomicDuration for the field itself, per the repo-wide
+// CLAUDE.md convention, since production reads it from whichever goroutine drove
+// the teardown. The two tests that deliberately wedge session.Wait paid the full
+// 5s each before this became a seam (QUM-1288).
+const defaultUnifiedHandleStopWaitTimeout = 5 * time.Second
 
 func (h *unifiedHandle) Stop(ctx context.Context) error {
 	return h.stopOnceWith(ctx, func(ctx context.Context) error { return h.rt.Stop(ctx) })
@@ -618,7 +625,7 @@ func (h *unifiedHandle) stopOnceWith(ctx context.Context, stopRuntime func(conte
 		// QUM-546: capture the bounded-Wait timeout signal so Real.Retire/Kill
 		// can surface it via the retire.runtime-stop-done / kill.runtime-stop-done
 		// MCP-call checkpoints.
-		if teardownSession(h.session, unifiedHandleStopWaitTimeout.get(), "handle", "unifiedHandle", "session_id", h.sessionID) {
+		if teardownSession(h.session, h.stopWaitTimeout.get(), "handle", "unifiedHandle", "session_id", h.sessionID) {
 			h.stopWaitTimedOut.Store(true)
 		}
 		if h.activityFile != nil || h.activityClose != nil {

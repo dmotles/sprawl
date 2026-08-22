@@ -9,12 +9,12 @@ import (
 	"github.com/dmotles/sprawl/internal/testutil"
 )
 
-// waitTimeout is the ceiling every wait below shares. It is a TIMEOUT, not a
+// spinnerWaitTimeout is the ceiling every wait below shares. It is a TIMEOUT, not a
 // wait: the spinner ticks every 150ms (spinner.go), so each of these tests used
 // to sleep 500ms — or 2s in the frame-cycling case — and pay it in full on every
 // green run. testutil.Eventually exits as soon as the output it is waiting for
 // appears, so the ceiling can be generous without costing anything.
-const waitTimeout = 5 * time.Second
+const spinnerWaitTimeout = 5 * time.Second
 
 // syncBuffer is a thread-safe buffer for capturing spinner output in tests.
 type syncBuffer struct {
@@ -39,7 +39,7 @@ func TestSpinner_StartsAndStops(t *testing.T) {
 
 	var buf syncBuffer
 	sp := startSpinner(&buf, "[root-loop]", "testing...")
-	testutil.Eventually(t, waitTimeout, "spinner to render its label", func() bool {
+	testutil.Eventually(t, spinnerWaitTimeout, "spinner to render its label", func() bool {
 		return strings.Contains(buf.String(), "testing...")
 	})
 	sp.stop()
@@ -54,7 +54,7 @@ func TestSpinner_DisplaysElapsedTime(t *testing.T) {
 
 	var buf syncBuffer
 	sp := startSpinner(&buf, "[root-loop]", "working...")
-	testutil.Eventually(t, waitTimeout, "spinner to render an elapsed time", func() bool {
+	testutil.Eventually(t, spinnerWaitTimeout, "spinner to render an elapsed time", func() bool {
 		out := buf.String()
 		return strings.Contains(out, "(0s)") || strings.Contains(out, "(1s)")
 	})
@@ -73,7 +73,7 @@ func TestSpinner_StopClearsLine(t *testing.T) {
 	sp := startSpinner(&buf, "[root-loop]", "clearing...")
 	// Wait for at least one frame, so the clear-line suffix under test is
 	// genuinely clearing something rather than being the only output.
-	testutil.Eventually(t, waitTimeout, "spinner to render a first frame", func() bool {
+	testutil.Eventually(t, spinnerWaitTimeout, "spinner to render a first frame", func() bool {
 		return strings.Contains(buf.String(), "clearing...")
 	})
 	sp.stop()
@@ -89,19 +89,19 @@ func TestSpinner_CyclesThroughFrames(t *testing.T) {
 
 	var buf syncBuffer
 	sp := startSpinner(&buf, "[root-loop]", "cycling...")
-	testutil.Eventually(t, waitTimeout, "spinner to render >=2 distinct frames", func() bool {
-		return distinctFrames(buf.String()) >= 2
+	testutil.Eventually(t, spinnerWaitTimeout, "spinner to render >=2 distinct frames", func() bool {
+		return spinnerDistinctFrames(buf.String()) >= 2
 	})
 	sp.stop()
 
 	out := buf.String()
-	if distinct := distinctFrames(out); distinct < 2 {
+	if distinct := spinnerDistinctFrames(out); distinct < 2 {
 		t.Errorf("expected >=2 distinct frames, got %d in %q", distinct, out)
 	}
 }
 
-// distinctFrames counts how many of the spinner's frame runes appear in out.
-func distinctFrames(out string) int {
+// spinnerDistinctFrames counts how many of the spinner's frame runes appear in out.
+func spinnerDistinctFrames(out string) int {
 	frames := []rune{'⠋', '⠙', '⠹', '⠸', '⠼', '⠴', '⠦', '⠧', '⠇', '⠏'}
 	distinct := 0
 	for _, f := range frames {
@@ -117,7 +117,7 @@ func TestSpinner_IncludesPrefix(t *testing.T) {
 
 	var buf syncBuffer
 	sp := startSpinner(&buf, "[root-loop]", "prefixed...")
-	testutil.Eventually(t, waitTimeout, "spinner to render its prefix", func() bool {
+	testutil.Eventually(t, spinnerWaitTimeout, "spinner to render its prefix", func() bool {
 		return strings.Contains(buf.String(), "[root-loop]")
 	})
 	sp.stop()
@@ -131,7 +131,7 @@ func TestSpinner_UsesCustomPrefix(t *testing.T) {
 
 	var buf syncBuffer
 	sp := startSpinner(&buf, "[enter]", "prefixed...")
-	testutil.Eventually(t, waitTimeout, "spinner to render its custom prefix", func() bool {
+	testutil.Eventually(t, spinnerWaitTimeout, "spinner to render its custom prefix", func() bool {
 		return strings.Contains(buf.String(), "[enter]")
 	})
 	sp.stop()
@@ -149,7 +149,7 @@ func TestSpinner_EmptyPrefix(t *testing.T) {
 
 	var buf syncBuffer
 	sp := startSpinner(&buf, "", "naked...")
-	testutil.Eventually(t, waitTimeout, "spinner to render its label", func() bool {
+	testutil.Eventually(t, spinnerWaitTimeout, "spinner to render its label", func() bool {
 		return strings.Contains(buf.String(), "naked...")
 	})
 	sp.stop()
