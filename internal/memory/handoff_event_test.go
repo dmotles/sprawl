@@ -7,6 +7,7 @@ import (
 	"errors"
 	"log/slog"
 	"net"
+	"os"
 	"path/filepath"
 	"strings"
 	"testing"
@@ -393,4 +394,63 @@ func TestWarnHandoffPanic_LeavesABenignPanicValueUntouched(t *testing.T) {
 	if rec.Msg != "recording the handoff event panicked; the summary file is unaffected" {
 		t.Errorf("the message was altered: %q", rec.Msg)
 	}
+}
+
+// TestRecordHandoffInEventLog_WiresTheRedactedSink guards the PRODUCTION WIRING,
+// not the seam.
+//
+// WHY THIS EXISTS SEPARATELY. Every other test above calls warnLedgerUnusable
+// directly, so all of them stay green if a future edit inlines
+// `slog.Warn("...", "error", err)` back into recordHandoffInEventLog — which is
+// EXACTLY the regression QUM-1294 fixed. Four sinks in this chain were each
+// found by a wider grep than the last, so "that regression is unlikely" is not
+// an available assumption. This test drives the real production function through
+// slog.Default() and asserts on what actually reaches the log.
+//
+// It pins slog.Default() rather than taking a logger, because the whole point is
+// that the production call site chooses the logger. Not parallel-safe for that
+// reason; nothing in this package runs parallel.
+//
+// EVIDENCE OF EXECUTION IS ASSERTED POSITIVELY. Two vacuous "clean" scans have
+// already happened in this chain — one with the event log disabled so nothing
+// ever connected, one where a command variable never word-split so every
+// invocation was a no-op. Both would have passed an absence-only check. So a run
+// that does not reach the warn at all is a FAILURE here, not a pass.
+//
+// NOTE on store.Process's sync.Once: this is the only test in the package that
+// reaches it, and it must be, since the Once means the first caller's config
+// decides the outcome for the whole test binary. If a second one is ever added,
+// this test will fail loudly on the evidence-of-execution assertion rather than
+// silently passing — which is the correct direction to fail in.
+func TestRecordHandoffInEventLog_WiresTheRedactedSink(t *testing.T) {
+	root := t.TempDir()
+	if err := os.MkdirAll(filepath.Join(root, ".sprawl"), 0o755); err != nil {
+		t.Fatalf("mkdir: %v", err)
+	}
+	// Enabled but pointed at a malformed DSN: the live "enabled but unusable"
+	// path, which is the only one that reaches the warn.
+	if err := os.WriteFile(filepath.Join(root, ".sprawl", "config.yaml"),
+		[]byte("event_log.enabled: \"true\"\n"), 0o644); err != nil {
+		t.Fatalf("write config: %v", err)
+	}
+	t.Setenv("SPRAWL_DB_DSN",
+		"postgres://"+probeUser+":"+probePass+"@"+probeHost+":5432/"+probeDB+"?sslmode=bogusvalue")
+
+	var buf bytes.Buffer
+	prev := slog.Default()
+	slog.SetDefault(bufLogger(&buf))
+	defer slog.SetDefault(prev)
+
+	recordHandoffInEventLog(root, Session{SessionID: "wiring", Handoff: true}, "the summary")
+
+	got := buf.String()
+	// POSITIVE evidence that the sink was reached. Without this, a run in which
+	// the store was never consulted would satisfy every leak check below.
+	if !strings.Contains(got, "event log unusable") {
+		t.Fatalf("the warn was never reached, so this run measured NOTHING and is a failed run rather than a clean one.\nlogged: %q", got)
+	}
+	assertWarnIsSafe(t, got,
+		[]string{probeUser, probeHost, probeDB, probePass},
+		[]string{"event log unusable", "sslmode is invalid"},
+	)
 }

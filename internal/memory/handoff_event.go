@@ -84,40 +84,27 @@ func emitHandoffEvent(sprawlRoot string, session Session, body string) {
 
 // warnLedgerUnusable reports a store.Process failure with DSN secrets removed.
 //
-// THE DECISION, and the two options it was chosen over (QUM-1294). This is the
-// fourth unredacted DSN sink found in this chain, so "route this one line
-// through RedactError" needed an argument beyond being the smallest diff.
+// REDACTION AT THE PRINT, NEVER AT THE RETURN. This wraps the LOGGER rather than
+// stringifying the error, so the error value is untouched and errors.Is still
+// matches for in-process callers — TestStoreDispatch_PropagatesAnOpenFailure
+// depends on that identity. Wrapping the logger (rather than
+// `"error", store.RedactError(err)`) also covers the message and any attr a
+// later edit adds to this line, and leaves a DSN-free error byte-identical in
+// structured output.
 //
-// REJECTED: have store.Process return a pre-redacted error, so every caller is
-// safe however it prints. Redaction then happens at the RETURN, which replaces
-// the value and breaks errors.Is for in-process callers —
-// TestStoreDispatch_PropagatesAnOpenFailure depends on that identity. Rejected
-// on the record in QUM-1294 rather than by omission.
-//
-// REJECTED: wrap slog.Default()'s handler process-wide, the only option that
-// pre-empts sink number five. Measured rather than argued: the cheap form,
-// slog.SetDefault(slog.New(wrap(slog.Default().Handler()))), DEADLOCKS the
-// process on its first log line. slog.SetDefault installs a log.SetOutput
-// pointing at the new handler for any handler that is not slog's internal
-// *defaultHandler, but slog.Default()'s handler IS that defaultHandler, and it
-// writes through the log package — so the wrapper's inner Handle re-enters
-// log.Logger's own mutex. The only working form installs a FRESH concrete
-// handler, which changes the output format of every existing slog.Default() call
-// in the binary at once (idlereap, drain, runtime, sweep_coordinator, and
-// store/process.go itself) and is a repo-wide output decision, not a leak fix.
-// Recorded on QUM-1296, which owns the durable class guard, so it is not
-// designed around a construction that cannot work.
-//
-// CHOSEN: wrap the LOGGER here, with store.RedactingLogger — the same mechanism
-// and the same shape as the two existing wrap points (store.Open's cfg.Logger,
-// cmd/store_dispatch.go's dispatch logger). This is a third wrap point of an
-// audited kind rather than a fourth kind of fix, and unlike
-// `"error", store.RedactError(err)` it also covers the message and any attr a
-// later edit adds to this line. It redacts at the PRINT, so the error value
-// itself is untouched and errors.Is is unaffected by construction.
+// This is the THIRD wrap point of one audited mechanism, not a fourth kind of
+// fix: store.Open wraps cfg.Logger and cmd/store_dispatch.go wraps the dispatch
+// logger the same way. The two options rejected to get here — a pre-redacted
+// return value, and wrapping slog.Default() process-wide, which deadlocks in its
+// cheap form — are recorded with their measurements on QUM-1294 and in
+// CHANGELOG.md, and the process-wide one on QUM-1296, which owns the durable
+// class guard.
 //
 // NOT a coverage claim: this covers THIS sink. cmd/hubd is a separate main with
 // its own print (QUM-1292), and nothing here stops a fifth sink being added.
+// The production WIRING of this helper is pinned by
+// TestRecordHandoffInEventLog_WiresTheRedactedSink — without it, inlining a raw
+// slog.Warn back into the caller would leave the seam tests green.
 func warnLedgerUnusable(log *slog.Logger, err error) {
 	store.RedactingLogger(log).Warn("event log unusable, handoff recorded to memory only", "error", err)
 }
