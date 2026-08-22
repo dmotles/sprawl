@@ -41,11 +41,25 @@ VALIDATE_STEPS := build hooks-armed proto-check fmt-check lint test-lint-pin \
 #  3. Each step is its own make process, so `build` runs twice — once as a step,
 #     once as `hooks-armed`'s prerequisite. Measured cost is one warm `go build`;
 #     it is reported in the baseline's driver overhead rather than papered over.
+#  4. The driver is resolved from $(CURDIR), NOT from $(dir $(THIS_MAKEFILE)).
+#     Those differ exactly when someone runs `make -f <copy> validate`, which is
+#     what scripts/test-race-gate.sh's RACE_GATE_MAKEFILE seam does to
+#     DEMONSTRATE that the race gate can fail. Keyed to the makefile's own
+#     directory, a copy in /tmp looked for /tmp/scripts/validate-timed.sh, the
+#     expansion died at rc 127 with no `go test` line in it, and every group-[1]
+#     leg failed — for the wrong reason. A reader would have seen red and
+#     concluded the gate was armed. THIS_MAKEFILE is still what the sub-makes
+#     re-enter, which is the half that must follow the copy.
+#
+# VALIDATE_TOLERATE is empty for every ordinary run; see validate-baseline.
+VALIDATE_TOLERATE ?=
+
 validate:
 	@MAKE_CMD='$(MAKE) --no-print-directory' \
 	SPRAWL_VALIDATE_MAKE_F='$(THIS_MAKEFILE)' \
 	SPRAWL_VALIDATE_MAKE_C='$(CURDIR)' \
-	bash '$(dir $(THIS_MAKEFILE))scripts/validate-timed.sh' $(VALIDATE_STEPS)
+	SPRAWL_VALIDATE_TOLERATE_STEPS='$(VALIDATE_TOLERATE)' \
+	bash '$(CURDIR)/scripts/validate-timed.sh' $(VALIDATE_STEPS)
 
 # Introspection seam, in the same spirit as lint-cache-dir below: one step per
 # line, so scripts/check-validate-baseline.sh and
@@ -80,8 +94,23 @@ check-validate-baseline:
 # every package is really measured, and the baseline records go_cache=cold to say
 # so. A command-line variable assignment propagates through MAKEFLAGS to the
 # driver's sub-makes, which is why this works without threading it by hand.
+#
+# VALIDATE_TOLERATE names the two SELF-REFERENTIAL steps. Both fail when the step
+# set drifts — which is exactly when a fresh baseline is needed — so with plain
+# fail-fast `make validate` AND `make validate-baseline` both failed and there
+# was no supported way to record one, while the baseline file itself says DO NOT
+# HAND-EDIT. Tolerating them here unwedges that recovery path without softening
+# either gate: they still run, still report, and still make the run exit
+# non-zero. The leading `-` accepts that non-zero so the promotion below is
+# reached; the driver refuses to write an artifact unless every step ran, so a
+# genuinely broken run cannot be promoted.
 validate-baseline:
-	@$(MAKE) validate TEST_RACE_FLAGS=-count=1
+	-@$(MAKE) validate TEST_RACE_FLAGS=-count=1 \
+		VALIDATE_TOLERATE='test-validate-timing-unit check-validate-baseline'
+	@bash scripts/check-validate-baseline.sh .validate-timings/baseline.observed || { \
+		echo "validate-baseline: REFUSING to promote. The run above did not produce a complete, cache-bypassed observation, so there is nothing honest to record — and note this checks the ARTIFACT, not just its existence: an earlier run's file sitting in .validate-timings/ is a stale measurement, which is worse than a missing one. Fix the failure above and re-run." >&2; \
+		exit 1; \
+	}
 	@cp .validate-timings/baseline.observed scripts/testdata/validate-baseline.observed
 	@echo "Recorded a fresh baseline in scripts/testdata/validate-baseline.observed — review the diff and commit it."
 

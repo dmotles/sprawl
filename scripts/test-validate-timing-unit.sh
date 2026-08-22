@@ -113,8 +113,8 @@ trap cleanup EXIT
 # It is deliberately set to the EXACT total rather than to a loose minimum, so a
 # leg that silently becomes conditional is caught as well as an early death.
 # Adding an assertion means bumping this in the same commit.
-#   [0] 3  [1] 5  [2] 8  [3] 4  [4] 3  [5] 4  [6] 5  [7] 4  [8] 7  [9] 10  [10] 3
-MIN_ASSERTIONS=56
+#   [0] 3  [1] 5  [2] 8  [3] 4  [4] 3  [5] 4  [6] 5  [7] 4  [8] 8  [9] 10  [10] 5  [11] 5
+MIN_ASSERTIONS=64
 
 PASSES=0
 FAILURES=0
@@ -512,10 +512,17 @@ else
 fi
 # Provenance closure: the driver must not be able to MINT a 'go test' string, or
 # the next leg proves nothing about the Makefile.
-if [ -r "$DRIVER" ] && ! grep -q 'go test' "$DRIVER"; then
-  ok "the driver contains no literal 'go test' — a 'go test' line in validate's expansion can only come from the Makefile"
+# COMMENT LINES ARE EXCLUDED, and that is a correction rather than a loophole:
+# the property is that no EXECUTABLE line of the driver can emit a `go test`
+# string, so that a `go test` line in validate's expansion is necessarily the
+# Makefile's. Matching the whole file also matched the driver's prose about the
+# orphaned `go test -race ./...` it now reaps — a false ALARM, which is the
+# cheaper direction to be wrong in but still wrong. The `-r` guard keeps an
+# unreadable driver a failure rather than a clean scan.
+if [ -r "$DRIVER" ] && ! grep -vE '^[[:space:]]*#' "$DRIVER" | grep -q 'go test'; then
+  ok "no executable line of the driver contains 'go test' — a 'go test' line in validate's expansion can only come from the Makefile"
 else
-  fail "the driver contains the string 'go test' (or is unreadable) — [8]'s next leg could be satisfied by driver-minted output"
+  fail "an executable line of the driver contains 'go test' (or the driver is unreadable) — [8]'s next leg could be satisfied by driver-minted output"
 fi
 LIVE_DRY=$(env -u MAKEFLAGS -u MFLAGS -u MAKELEVEL \
   SPRAWL_VALIDATE_TIMING_OUT="$SCRATCH/live-dry" \
@@ -594,6 +601,24 @@ else
   fail "the driver ignored SPRAWL_VALIDATE_MAKE_F and read the default Makefile — test-race-gate.sh's RACE_GATE_MAKEFILE seam is now inert: $(printf '%s' "$D8C" | tr '\n' '|')"
 fi
 
+# The RACE_GATE_MAKEFILE seam, from this side. scripts/test-race-gate.sh proves
+# it can fail by running `make -f <copy> -n validate` on a copy with -race
+# removed; that only demonstrates anything if the copy's expansion still REACHES
+# `go test`. It did not: with the driver resolved from the makefile's own
+# directory, a copy in /tmp looked for /tmp/scripts/validate-timed.sh, died at rc
+# 127, and every group-[1] leg failed for an unrelated reason — red, and
+# evidentially worthless.
+F8D="$SCRATCH/f8d"
+mkdir -p "$F8D"
+sed 's/go test -race /go test /' "$MAKEFILE_TEXT" >"$F8D/Makefile-norace"
+D8D=$(run_make -C "$REPO_ROOT" -f "$F8D/Makefile-norace" -n validate 2>&1)
+if printf '%s\n' "$D8D" | grep -qE '(^|[[:space:]])go test([[:space:]]|$)' &&
+  ! printf '%s\n' "$D8D" | grep -q 'No such file or directory'; then
+  ok "a makefile COPY outside the repo still expands a go test line (RACE_GATE_MAKEFILE seam can still demonstrate a failure)"
+else
+  fail "a makefile copy outside the repo lost its go test line — test-race-gate.sh's demo mode now fails for the wrong reason and proves nothing: $(printf '%s' "$D8D" | tail -2 | tr '\n' '|')"
+fi
+
 echo "=== [9] the recorded baseline is a checked artifact, not a remembered one (LIVE)"
 CHECKER_OK=0
 if [ -r "$CHECKER" ]; then
@@ -667,7 +692,7 @@ pc() { # pc <label> <mutant-file> <reason-regex>
 }
 MUT="$SCRATCH/baseline-nostep.observed"
 grep -v "^step	$(printf '%s\n' "$STEPS_LIVE" | head -1)	" "$BASELINE" >"$MUT" 2>/dev/null
-pc "a baseline missing a live step" "$MUT" 'step'
+pc "a baseline missing a live step" "$MUT" 'missing a live validate step'
 MUT2="$SCRATCH/baseline-leak.observed"
 {
   cat "$BASELINE" 2>/dev/null
@@ -678,20 +703,29 @@ MUT3="$SCRATCH/baseline-future.observed"
 sed "s/^recorded=.*/recorded=$(date -d '+400 days' +%Y-%m-%d)/" "$BASELINE" >"$MUT3" 2>/dev/null
 pc "a baseline dated in the future" "$MUT3" 'future|date'
 
-echo "=== [10] interruption is reported, never silently green"
+echo "=== [10] interruption is reported, and the step's whole tree is reaped"
 F10="$SCRATCH/f10"
 new_fixture "$F10"
 # `kill -0` first, and FAIL rather than sleep if the pid is not there: an unset
 # SPRAWL_VALIDATE_DRIVER_PID otherwise burns the whole sleep and reports two
 # unattributable failures. The outer `timeout` makes a non-delivered signal fail
-# deterministically in 15s instead of racing a 30s sleep under fleet load.
+# deterministically instead of racing the sleep under fleet load.
+#
+# The backgrounded sleep is the LEAK PROBE. Before the driver ran each step in
+# its own process group, TERM reached only the driver's direct child, so this
+# grandchild survived — and because it inherited the command-substitution pipe,
+# DRIVE_OUT below blocked for its full lifetime. That was ~27s of every single
+# `make validate`, and the "exits 143" leg alone was perfectly happy with it.
 append_step "$F10" victim \
   'test -n "${SPRAWL_VALIDATE_DRIVER_PID:-}" || { echo NO_DRIVER_PID; exit 66; }' \
   'kill -0 "$SPRAWL_VALIDATE_DRIVER_PID" || { echo PID_NOT_LIVE; exit 67; }' \
+  'sleep 3007 &' \
+  'echo "VICTIM_CHILD=$!"' \
+  'kill -0 "$!" && echo VICTIM_CHILD_LIVE' \
   'echo KILL_TARGET_LIVE' \
   'kill -TERM "$SPRAWL_VALIDATE_DRIVER_PID"' \
-  'sleep 30'
-DRIVE_OUT=$(timeout 15 env -u MAKEFLAGS -u MFLAGS -u MAKELEVEL \
+  'wait'
+DRIVE_OUT=$(timeout 20 env -u MAKEFLAGS -u MFLAGS -u MAKELEVEL \
   SPRAWL_VALIDATE_MAKE_F="$F10/Makefile" SPRAWL_VALIDATE_MAKE_C="$F10" \
   SPRAWL_VALIDATE_TIMING_OUT="$F10/out" STUB_DIR="$F10/stub" \
   MAKE_CMD="bash $SCRATCH/fakemake" \
@@ -700,17 +734,96 @@ DRIVE_RC=$?
 if printf '%s\n' "$DRIVE_OUT" | grep -q 'KILL_TARGET_LIVE'; then
   ok "the driver exports a live SPRAWL_VALIDATE_DRIVER_PID (the signal had a real target)"
 else
-  fail "no live driver pid to signal — the interruption legs below would measure nothing: $(printf '%s' "$DRIVE_OUT" | tail -2 | tr '\n' '|')"
+  fail "no live driver pid to signal — the legs below would measure nothing: $(printf '%s' "$DRIVE_OUT" | tail -2 | tr '\n' '|')"
 fi
 if [ "$DRIVE_RC" -eq 143 ]; then
   ok "a TERM'd run exits 143 (128+15), not 0 and not the timeout's 124"
 else
-  fail "TERM'd run exited $DRIVE_RC, want 143 — an interrupted validate can report success (124 = the driver ignored the signal)"
+  fail "TERM'd run exited $DRIVE_RC, want 143 — an interrupted validate can report success (124 = the driver ignored the signal, or a leaked child held the pipe open)"
 fi
 if printf '%s\n' "$DRIVE_OUT" | grep -q 'INTERRUPTED during step victim'; then
   ok "the in-flight step is named on interruption (this is the git-commit-timeout diagnosis)"
 else
   fail "interruption did not name the in-flight step: $(printf '%s' "$DRIVE_OUT" | tail -3 | tr '\n' '|')"
+fi
+# The positive control for the leak leg: the grandchild must be shown to have
+# EXISTED, or "it is gone now" is a statement about a process that never ran.
+VICTIM_PID=$(printf '%s\n' "$DRIVE_OUT" | sed -n 's/^VICTIM_CHILD=\([0-9]*\)$/\1/p' | head -1)
+if [ -n "$VICTIM_PID" ] && printf '%s\n' "$DRIVE_OUT" | grep -q 'VICTIM_CHILD_LIVE'; then
+  ok "positive control: the step's grandchild (pid $VICTIM_PID) was observed alive before the interrupt"
+else
+  fail "no live grandchild was ever observed (pid='${VICTIM_PID:-<none>}') — the reap leg below would pass vacuously"
+fi
+# Bounded wait: reaping is a signal delivery, not an atomic act.
+REAPED=0
+for _ in 1 2 3 4 5 6 7 8 9 10; do
+  if [ -z "$VICTIM_PID" ] || ! kill -0 "$VICTIM_PID" 2>/dev/null; then
+    REAPED=1
+    break
+  fi
+  command sleep 0.5
+done
+if [ -n "$VICTIM_PID" ] && [ "$REAPED" -eq 1 ]; then
+  ok "the interrupted step's whole process tree was reaped — no orphan survives the driver"
+else
+  fail "the step's grandchild (pid ${VICTIM_PID:-<none>}) SURVIVED the driver — an interrupted validate leaks the in-flight step's process tree (e.g. a whole go test run), and the leak also stalls this suite"
+  kill -TERM "$VICTIM_PID" 2>/dev/null || true
+fi
+
+echo "=== [11] the machine-readable artifact is never partial"
+F11="$SCRATCH/f11"
+new_fixture "$F11"
+append_step "$F11" a-ok 'true'
+append_step "$F11" b-bad 'exit 5'
+append_step "$F11" c-ok 'true'
+drive "$F11" -- a-ok b-bad c-ok
+if [ ! -e "$F11/out/baseline.observed" ]; then
+  ok "a run that stopped early wrote NO baseline artifact (a partial baseline is a wrong number, not an absent one)"
+else
+  fail "a failed run wrote $F11/out/baseline.observed with $(grep -c '^step	' "$F11/out/baseline.observed") of 3 steps — promoting that would record a baseline for a gate that was never fully run"
+fi
+# Refusing to WRITE a partial artifact is only half the property: a promotion
+# guard that merely asks "does an artifact exist?" then promotes the previous
+# run's file. Measured happening — a warm-cache artifact from an earlier run was
+# promoted over a run that had correctly declined to record, which is a stale
+# measurement dressed as a current one.
+echo "stale=yes" >"$F11/out/baseline.observed"
+drive "$F11" -- a-ok b-bad c-ok
+if [ ! -e "$F11/out/baseline.observed" ]; then
+  ok "a run that stopped early DELETES any previous artifact, so a stale one cannot be promoted in its place"
+else
+  fail "a previous artifact survived an incomplete run ($(cat "$F11/out/baseline.observed" | head -1)) — a promotion guard would record a measurement from a different run"
+fi
+
+F11B="$SCRATCH/f11b"
+new_fixture "$F11B"
+append_step "$F11B" a-ok 'true'
+append_step "$F11B" b-ok 'true'
+drive "$F11B" -- a-ok b-ok
+if [ -s "$F11B/out/baseline.observed" ] &&
+  [ "$(grep -c '^step	' "$F11B/out/baseline.observed")" -eq 2 ]; then
+  ok "a complete run DOES write the artifact, with every step (negative control for the leg above)"
+else
+  fail "a complete run wrote no usable artifact — the leg above would pass for the wrong reason"
+fi
+# Tolerate mode exists solely so `make validate-baseline` can still record when
+# the two SELF-REFERENTIAL baseline steps are failing. It must not become a
+# silent-success path: the run continues, and still exits non-zero.
+F11C="$SCRATCH/f11c"
+new_fixture "$F11C"
+append_step "$F11C" t-first 'true'
+append_step "$F11C" t-bad 'exit 7'
+append_step "$F11C" t-last "touch $F11C/last.sentinel"
+drive "$F11C" SPRAWL_VALIDATE_TOLERATE_STEPS=t-bad -- t-first t-bad t-last
+if [ -e "$F11C/last.sentinel" ] && [ -s "$F11C/out/baseline.observed" ]; then
+  ok "a TOLERATED step's failure does not stop the run, so a complete artifact is still recorded"
+else
+  fail "tolerate mode did not continue past the failure: last.sentinel=$([ -e "$F11C/last.sentinel" ] && echo yes || echo no), artifact=$([ -s "$F11C/out/baseline.observed" ] && echo yes || echo no)"
+fi
+if [ "$DRIVE_RC" -eq 7 ]; then
+  ok "tolerate mode still exits non-zero with the tolerated step's code (7) — it defers the stop, it does not forgive the failure"
+else
+  fail "tolerate mode exited $DRIVE_RC, want 7 — tolerating a step turned a real failure green, which is the exact class this whole suite exists to stop"
 fi
 
 TOTAL=$((PASSES + FAILURES))

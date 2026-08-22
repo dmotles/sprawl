@@ -35,6 +35,17 @@
 #
 # There is deliberately no skip path: an unreadable baseline is exit 2, never 0.
 #
+# PORTABILITY: the date legs use GNU `date -d`. On a host without it every date
+# check reports "not a parseable date" and validate goes red for an environmental
+# reason rather than a real one. That is acceptable here because this repo is
+# Linux-only in practice (the same assumption the e2e harness already makes for
+# setsid/flock), and it fails LOUDLY rather than silently skipping — but if that
+# ever stops being true, this is the line to revisit.
+#
+# SPRAWL_BASELINE_MAX_AGE_DAYS is a knob for testing the age leg. Note what it
+# cannot do: it does not affect the step-set assertion, which is the load-bearing
+# gate here, so turning the age window up does not disarm drift detection.
+#
 # usage: check-validate-baseline.sh <baseline-file> [expected-steps-file]
 # With no expected-steps-file, the live step set is read from
 # `make print-validate-steps` in the repo containing this script.

@@ -62,6 +62,15 @@ read -r -a MAKE_ARR <<<"$MAKE_CMD"
 MK_F=${SPRAWL_VALIDATE_MAKE_F:-}
 MK_C=${SPRAWL_VALIDATE_MAKE_C:-$PWD}
 CAPTURE_STEPS=${SPRAWL_VALIDATE_CAPTURE_STEPS:-test-race}
+# Steps whose failure is RECORDED but does not stop the run. Exists for exactly
+# one caller: `make validate-baseline`. The two baseline-checking steps are
+# self-referential — they fail when the step set drifts, which is precisely when
+# a fresh baseline is needed — so with plain fail-fast both `make validate` and
+# `make validate-baseline` fail and there is NO supported way to record one,
+# while the baseline file says DO NOT HAND-EDIT. This unwedges that without
+# softening anything: a tolerated failure still appears in the table with its rc
+# and still makes the driver exit non-zero.
+TOLERATE_STEPS=${SPRAWL_VALIDATE_TOLERATE_STEPS:-}
 TOP_N=${SPRAWL_VALIDATE_TOP_N:-5}
 
 if [ $# -eq 0 ]; then
@@ -73,25 +82,41 @@ STEPS=("$@")
 # ------------------------------------------------------------ dry-run mode ----
 # GNU make puts single-letter options in MAKEFLAGS without a leading dash, so a
 # dry run shows up as `n` (possibly with other letters) in the first word.
+#
+# `q` (question) and `t` (touch) are here too, and NOT for symmetry: make runs a
+# $(MAKE)-bearing recipe line under all three, so without them `make -q validate`
+# executed the driver, wrote artifacts, and printed an all-zero table (its
+# sub-makes inherit `q` and do nothing) — an all-zero table being exactly the
+# "renders a number it did not measure" shape. A dry run that writes is not a dry
+# run, in any of the three modes.
 is_dry_run() {
   local flags=${MAKEFLAGS:-} first
   first=${flags%% *}
   case "$first" in
     -*) ;;
-    *n*) return 0 ;;
+    *[nqt]*) return 0 ;;
   esac
   case " $flags " in
-    *" --dry-run "* | *" --just-print "* | *" --recon "*) return 0 ;;
+    *" --dry-run "* | *" --just-print "* | *" --recon "* | \
+      *" --question "* | *" --touch "*) return 0 ;;
   esac
   return 1
 }
 
+# The argv for one step, built once into an array so every launch path (dry-run
+# passthrough, plain step, captured step) invokes make identically. -f is NOT
+# propagated by make to sub-makes, so it has to be re-stated here or a run
+# launched with `make -f <copy>` would silently re-enter the DEFAULT Makefile —
+# which is what scripts/test-race-gate.sh's RACE_GATE_MAKEFILE seam depends on.
+step_argv() {
+  STEP_CMD=("${MAKE_ARR[@]}" -C "$MK_C")
+  [ -n "$MK_F" ] && STEP_CMD+=(-f "$MK_F")
+  STEP_CMD+=("$1")
+}
+
 make_step() {
-  if [ -n "$MK_F" ]; then
-    "${MAKE_ARR[@]}" -C "$MK_C" -f "$MK_F" "$1"
-  else
-    "${MAKE_ARR[@]}" -C "$MK_C" "$1"
-  fi
+  step_argv "$1"
+  "${STEP_CMD[@]}"
 }
 
 if is_dry_run; then
@@ -115,9 +140,47 @@ mkdir -p "$OUT" || {
   echo "validate-timed: cannot create artifact dir $OUT" >&2
   exit 2
 }
+# Delete any PREVIOUS observation before running a single step. Refusing to
+# write a partial one is not enough on its own: a promotion guard that only asks
+# "is there an artifact?" then promotes the LAST GOOD run's file, and a stale
+# measurement presented as this run's is the exact defect QUM-1286 exists to fix.
+# Measured doing precisely that — a warm-cache artifact from an earlier run got
+# promoted over a run that had correctly declined to record.
+rm -f "$OUT/baseline.observed"
 
 # Children signal this to make an interruption reportable rather than mysterious.
 export SPRAWL_VALIDATE_DRIVER_PID=$$
+
+# Each step runs in its OWN PROCESS GROUP so an interrupt can reap its whole
+# tree. Without this the driver TERMs only its direct child — `make`, or the
+# capture subshell — and make does not forward signals, so an interrupted
+# validate left `go test -race ./...` chewing cores on a box that runs several
+# agents at once. Measured while reviewing this file: the leak was real and this
+# suite's own interrupt fixture waited out its orphan's full 30s sleep, ~27s of
+# which landed in EVERY validate run.
+#
+# Degrades rather than breaks where setsid(1) is absent (it is util-linux, so
+# present on Linux, absent on macOS): USED_SETSID gates the negative-pid kill.
+# That gate is not optional — `kill -- -$PID` on a process that is NOT a group
+# leader targets some OTHER group, and the driver's own group is a live
+# candidate.
+if command -v setsid >/dev/null 2>&1; then
+  SETSID=(setsid)
+  USED_SETSID=1
+else
+  SETSID=()
+  USED_SETSID=0
+fi
+
+kill_step_tree() {
+  local pid=$1
+  [ -n "$pid" ] || return 0
+  if [ "$USED_SETSID" -eq 1 ]; then
+    kill -TERM -- "-$pid" 2>/dev/null || true
+  else
+    kill -TERM "$pid" 2>/dev/null || true
+  fi
+}
 
 now() { printf '%s' "${EPOCHREALTIME:-0}"; }
 since() { awk -v a="$1" -v b="$2" 'BEGIN{printf "%.2f", b-a}'; }
@@ -130,6 +193,8 @@ CHILD_PID=""
 RUN_T0=$(now)
 CAPTURED_ANY=0
 CAPTURED_FILES=()
+INTERRUPTED=0
+STEP_T0=""
 
 lint_cache_state() {
   local dir=${GOLANGCI_LINT_CACHE:-}
@@ -219,7 +284,17 @@ print_table() {
     fi
   fi
   printf '  artifacts: %s\n' "$OUT"
-  write_baseline "$total"
+  # A PARTIAL baseline is a wrong number, not an absent one — and a wrong number
+  # that reads as current is the whole defect QUM-1286 exists to fix. So the
+  # machine-readable artifact is written only when every requested step actually
+  # ran; a failed or interrupted run leaves any previous one untouched and says
+  # why.
+  if [ "${#STEP_NAMES[@]}" -eq "${#STEPS[@]}" ] && [ "$INTERRUPTED" -eq 0 ]; then
+    write_baseline "$total"
+  else
+    printf '  baseline: NOT recorded — %s of %s steps ran, so a promoted baseline would be missing steps\n' \
+      "${#STEP_NAMES[@]}" "${#STEPS[@]}"
+  fi
 }
 
 # The machine-readable sibling of the table, in the format
@@ -270,7 +345,15 @@ write_baseline() {
 
 on_signal() {
   local num=$1
-  [ -n "$CHILD_PID" ] && kill -TERM "$CHILD_PID" 2>/dev/null
+  INTERRUPTED=1
+  kill_step_tree "$CHILD_PID"
+  # The in-flight step is named in the banner AND recorded in the table: a step
+  # missing from the table reads as one that never started.
+  if [ -n "$CURRENT_STEP" ]; then
+    STEP_NAMES+=("$CURRENT_STEP")
+    STEP_SECS+=("$(since "${STEP_T0:-$RUN_T0}" "$(now)")")
+    STEP_RCS+=("$((128 + num))")
+  fi
   printf '=== validate INTERRUPTED during step %s after %ss (signal %s) ===\n' \
     "${CURRENT_STEP:-<none>}" "$(since "$RUN_T0" "$(now)")" "$num"
   print_table
@@ -286,6 +369,13 @@ on_signal() {
 trap 'on_signal 15' TERM
 trap 'on_signal 2' INT
 
+is_tolerated() {
+  case " $TOLERATE_STEPS " in
+    *" $1 "*) return 0 ;;
+  esac
+  return 1
+}
+
 is_captured() {
   case " $CAPTURE_STEPS " in
     *" $1 "*) return 0 ;;
@@ -298,19 +388,19 @@ FAILED_STEP=""
 for step in "${STEPS[@]}"; do
   CURRENT_STEP=$step
   t0=$(now)
+  STEP_T0=$t0
   if is_captured "$step"; then
     capfile="$OUT/$step.txt"
     rcfile="$OUT/.rc.$step"
     rm -f "$rcfile"
+    step_argv "$step"
     # Streams AND preserves the exit status without depending on pipefail: the
     # status is carried out of the subshell in a file rather than inferred from
-    # the pipeline. `tee` is what makes a multi-minute step still watchable.
-    {
-      {
-        make_step "$step" 2>&1
-        echo $? >"$rcfile"
-      } | tee "$capfile"
-    } &
+    # the pipeline, which is the tee-eats-exit-status hazard this issue names.
+    # `tee` is what keeps a multi-minute step watchable.
+    SPRAWL_RCFILE="$rcfile" SPRAWL_CAPFILE="$capfile" "${SETSID[@]}" bash -c '
+      { "$@" 2>&1; echo $? >"$SPRAWL_RCFILE"; } | tee "$SPRAWL_CAPFILE"
+    ' _ "${STEP_CMD[@]}" &
     CHILD_PID=$!
     wait "$CHILD_PID"
     rc=$(cat "$rcfile" 2>/dev/null || echo 1)
@@ -322,7 +412,8 @@ for step in "${STEPS[@]}"; do
     CAPTURED_FILES+=("$capfile")
     parse_captured "$capfile"
   else
-    make_step "$step" &
+    step_argv "$step"
+    "${SETSID[@]}" "${STEP_CMD[@]}" &
     CHILD_PID=$!
     wait "$CHILD_PID"
     rc=$?
@@ -332,9 +423,14 @@ for step in "${STEPS[@]}"; do
   STEP_SECS+=("$(since "$t0" "$(now)")")
   STEP_RCS+=("$rc")
   if [ "$rc" -ne 0 ]; then
-    RC=$rc
-    FAILED_STEP=$step
-    break
+    [ "$RC" -eq 0 ] && RC=$rc
+    [ -z "$FAILED_STEP" ] && FAILED_STEP=$step
+    if is_tolerated "$step"; then
+      printf '  note: step %s failed (rc=%s) and is TOLERATED for this run — continuing, and this run will still exit non-zero\n' \
+        "$step" "$rc" >&2
+    else
+      break
+    fi
   fi
 done
 CURRENT_STEP=""
