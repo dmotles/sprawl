@@ -315,8 +315,16 @@ func TestWarnLedgerUnusable_RedactsARealPgxConnectError(t *testing.T) {
 }
 
 // TestWarnHandoffPanic_RedactsAPgxErrorInThePanicValue covers the sibling warn
-// in the same function. The recovered value can be any pgx error from under
-// store.Process, so it carries the same DSN exposure.
+// in the same function.
+//
+// PROSPECTIVE, not a live leak, and labelled so because an earlier version of
+// this comment claimed the live version as fact. Measured at bfad40a:
+// `grep -rn "panic(" internal/store/` returns ZERO (tests included), and pgx
+// v5.10.0's only linked panic(err) is a pbkdf2 failure carrying no DSN. So no
+// DSN-bearing value reaches this warn today. The test pins that IF one ever
+// does — a future explicit panic(someStoreError) — it is redacted, which is
+// cheap insurance on a path that only runs after something impossible happened.
+// It is not counted as live coverage.
 func TestWarnHandoffPanic_RedactsAPgxErrorInThePanicValue(t *testing.T) {
 	err := parseClassError(t)
 

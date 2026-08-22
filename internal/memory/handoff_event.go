@@ -111,10 +111,24 @@ func warnLedgerUnusable(log *slog.Logger, err error) {
 
 // warnHandoffPanic reports a recovered panic from the event-log hook.
 //
-// Redacted for the same reason and by the same mechanism: the recovered value
-// can be a pgx error from anywhere under store.Process, and a sibling line in
-// the same function that prints the same class of value unredacted is how the
-// next sink gets born.
+// Redacted by the same mechanism as warnLedgerUnusable, but on a PROSPECTIVE
+// justification rather than a live leak, and the difference is stated because an
+// earlier version of this comment asserted the live one as fact and was wrong.
+//
+// MEASURED at bfad40a, not assumed: nothing under store.Process panics with a
+// DSN-bearing value today. `grep -rn "panic(" internal/store/` returns ZERO
+// matches, tests included. In the pinned pgx (v5.10.0) every panic in linked
+// product code is a constant BUG string except one — pgconn/auth_scram.go's
+// `panic(err)` on a pbkdf2 failure — and that error carries no DSN. (The other
+// `panic(err)` hits are in pgx's own examples/ and testsetup/, which are not
+// linked into this binary.) A runtime panic — nil deref, index out of range —
+// yields a runtime.Error, which likewise carries no DSN.
+//
+// So this is hardening, NOT a second live leak: it costs one wrapped logger on a
+// path that already only runs after something impossible happened, and it means
+// a future explicit panic(someStoreError) cannot open a sink here. Leaving one
+// of two adjacent prints in the same function unredacted is the documented way
+// the next sink gets born; that, not a measured leak, is the argument.
 func warnHandoffPanic(log *slog.Logger, r any) {
 	store.RedactingLogger(log).Warn("recording the handoff event panicked; the summary file is unaffected", "panic", r)
 }
