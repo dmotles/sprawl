@@ -67,7 +67,7 @@ cd "$REPO_ROOT" || {
 # Assertion-count floor. A hardcoded literal, NOT derived from anything this
 # suite measures — a floor computed from the corpus it checks is satisfied by an
 # empty corpus. Update it in the same commit as any change to the assertions.
-MIN_ASSERTIONS=7
+MIN_ASSERTIONS=9
 
 PASS=0
 FAIL=0
@@ -96,6 +96,14 @@ git rev-parse HEAD >/dev/null 2>&1 || {
 # below compares the Makefile's expansion against an INDEPENDENTLY computed
 # value, so a Makefile that stamped some other stable-but-wrong thing (say the
 # empty string, or the author date) fails instead of agreeing with itself.
+#
+# BOUNDARY OF WHAT B2 PROVES, stated because the first draft of this comment
+# overclaimed and a reviewer caught it: recomputing with the same expression
+# catches an empty stamp, a wall-clock stamp and the author date, but it does NOT
+# catch `format:` vs `format-local:` — those two diverge only on a commit whose
+# committer offset is non-UTC, and every commit in this repo is +00:00, so B2
+# would stay green through exactly that regression. B2t below is the leg that can
+# fire on it.
 #
 # `format-local:` is LOAD-BEARING and `format:` is a measured trap. `--date=format:`
 # renders the committer's OWN recorded offset and ignores TZ entirely; only
@@ -189,6 +197,31 @@ if printf '%s' "$LD1" | grep -qF -- "-X main.date=$EXPECTED_STAMP"; then
 	pass "B2 LDFLAGS stamp main.date with HEAD's committer date ($EXPECTED_STAMP)"
 else
 	fail "B2 LDFLAGS do not carry -X main.date=$EXPECTED_STAMP; got [$LD1]"
+fi
+
+# ---------------------------------------------------------------------------
+# B2t: TEXTUAL pin on the `format-local:` choice, because it is the only form of
+# that assertion which can fail on this repo's commits (see B2's boundary note).
+# A textual pin is weaker than a behavioural one in general; here it is the
+# stronger of the two available, which is the reason to prefer it.
+# ---------------------------------------------------------------------------
+DATE_LINE=$(grep -n '^DATE[ \t]*?*=' "$REPO_ROOT/Makefile")
+date_line_is_local() {
+	printf '%s' "$1" | grep -q -- '--date=format-local:' && ! printf '%s' "$1" | grep -q -- '--date=format:'
+}
+if date_line_is_local "$DATE_LINE"; then
+	pass "B2t the Makefile's DATE line uses --date=format-local:, not the TZ-ignoring --date=format:"
+else
+	fail "B2t the Makefile's DATE line does not use --date=format-local:. With bare --date=format: the stamp is a LOCAL wall-clock time labelled 'Z' on any commit made at a non-UTC offset, and B2 above cannot see that. Line: [$DATE_LINE]"
+fi
+
+# B2tc — POSITIVE CONTROL for B2t: the same predicate against the bare `format:`
+# form must report the failing verdict. Without it, B2t's grep could be
+# mis-anchored and pass over anything.
+if date_line_is_local 'DATE    ?= $(shell TZ=UTC0 git log -1 --format=%cd --date=format:%Y-%m-%dT%H:%M:%SZ)'; then
+	fail "B2tc control did NOT fire: the predicate accepted a bare --date=format: line, so B2t cannot detect the regression it names"
+else
+	pass "B2tc control fired: the predicate rejects a bare --date=format: line, so B2t can fail"
 fi
 
 # ---------------------------------------------------------------------------

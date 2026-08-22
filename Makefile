@@ -199,12 +199,23 @@ COMMIT  ?= $(shell git rev-parse HEAD 2>/dev/null || echo none)
 # `format-local:` with TZ=UTC0, NOT `format:`. `--date=format:` renders the
 # committer's own recorded offset and ignores TZ entirely, so on a commit made at
 # a non-UTC offset it yields a local wall-clock time suffixed with a literal `Z`
-# — wrong by the offset, yet self-consistent. Asserted by scripts/test-build-stamp.sh.
+# — wrong by the offset, yet self-consistent.
+#
+# BE PRECISE ABOUT WHAT IS ASSERTED, because the first draft of this comment
+# claimed more than the test delivers. scripts/test-build-stamp.sh B2 recomputes
+# the stamp with the SAME expression, so it catches an empty stamp, a wall-clock
+# stamp and the author date — but not `format:` vs `format-local:`, which only
+# diverge on a commit whose committer offset is non-UTC, and every commit in this
+# repo is +00:00. B2t is therefore a TEXTUAL pin on this line: it is what can
+# actually fire here.
 #
 # $(or ...) rather than a `||` fallback inside $(shell): outside a checkout
 # `git log` exits 128 and a `||` still lets the EMPTY success through, stamping
 # `-X main.date=` with nothing. buildinfo's own default for an unstamped build is
-# "unknown", so that is the word used here too.
+# "unknown", so that is the word used here too. The fallback is applied again at
+# the LDFLAGS use site because `?=` lets an explicitly empty command-line
+# `DATE=` win before $(or ...) is ever evaluated — measured: `make print-ldflags
+# DATE=` stamped `-X main.date=` with nothing. Two ways in, both closed.
 #
 # `built:` therefore under-reports on a dirty tree: a binary built from
 # uncommitted work claims its parent commit's time. That is inherent to making
@@ -219,7 +230,7 @@ DATE    ?= $(or $(shell TZ=UTC0 git log -1 --format=%cd --date=format-local:%Y-%
 LDFLAGS = -s -w \
 	-X main.version=$(VERSION) \
 	-X main.commit=$(COMMIT) \
-	-X main.date=$(DATE)
+	-X main.date=$(or $(strip $(DATE)),unknown)
 
 # Introspection seam, in the same spirit as print-validate-steps and
 # lint-cache-dir: it lets scripts/test-build-stamp.sh assert the stamp's
@@ -333,6 +344,16 @@ FMT_SCOPE ?= ./...
 # the check DID NOT RUN, which must never read as a clean tree. The diff is
 # printed (it was previously swallowed) with the actionable line last.
 #
+# Output is checked BEFORE status on purpose: `fmt --diff` exits 1 when it finds
+# a diff, so a non-zero status is the normal case there. The rc is reported
+# alongside the diff anyway, because a formatter that crashes AFTER writing to
+# stdout would otherwise be diagnosed as "needs formatting" — a loud red either
+# way, but a misleading one.
+#
+# `exit $$rc` propagates the value no further than this recipe: make maps any
+# recipe failure to its own exit 2, so a caller sees 2, never 1 or 7. Only the
+# non-zero-NESS crosses the boundary, which is all F1/F2 assert.
+#
 # Note this is NOT redundant with `lint`, despite `golangci-lint run` also
 # reporting formatter findings in v2 — measured, "File is not properly formatted
 # (gofumpt)". `run` only loads files satisfying the host's build constraints,
@@ -346,6 +367,9 @@ fmt-check:
 	@out=$$($(GOLANGCI_LINT) fmt --diff $(FMT_SCOPE)); rc=$$?; \
 	if [ -n "$$out" ]; then \
 		printf '%s\n' "$$out"; \
+		if [ "$$rc" -gt 1 ]; then \
+			echo "NOTE: the formatter also exited $$rc, so the output above may be a crash rather than a diff."; \
+		fi; \
 		echo "Files need formatting. Run 'make fmt' to fix."; \
 		exit 1; \
 	fi; \

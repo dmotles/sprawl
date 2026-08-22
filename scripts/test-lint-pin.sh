@@ -47,7 +47,7 @@ GOLANGCI_CONFIG="$REPO_ROOT/.golangci.yml"
 # suite measures — a floor computed from the corpus it checks is satisfied by an
 # empty corpus, which is the exact false-green it exists to stop. Update it in
 # the same commit as any change to the number of assertions below.
-MIN_ASSERTIONS=31
+MIN_ASSERTIONS=33
 
 PASS=0
 FAIL=0
@@ -415,6 +415,21 @@ scratch_lint() {
 	SL_RC=$?
 }
 
+# scratch_fmt is scratch_lint's `fmt --diff` sibling, same private-TMPDIR
+# discipline. Used by C2 to compare what the two subcommands can SEE.
+scratch_fmt() {
+	LINT_LEG=$((LINT_LEG + 1))
+	local tmp="$SCRATCH_ROOT/tmpdir-$LINT_LEG"
+	mkdir -p "$tmp" "$2" || {
+		SL_OUT="scratch_fmt: could not create $tmp or $2"
+		SL_RC=99
+		return
+	}
+	SL_OUT=$(cd "$1" && env TMPDIR="$tmp" GOLANGCI_LINT_CACHE="$2" \
+		go run "github.com/golangci/golangci-lint/v2/cmd/golangci-lint@v$EXPECTED_VERSION" fmt --diff ./... 2>&1)
+	SL_RC=$?
+}
+
 # ---------------------------------------------------------------------------
 # A8: the Makefile resolves a cache dir INSIDE this worktree — derived from the
 # TREE, and immune to a hostile inherited value.
@@ -753,14 +768,12 @@ else
 fi
 
 # ---------------------------------------------------------------------------
-# C1 (QUM-1287): the PREMISE for keeping fmt-check as a second pass over the
-# tree. `golangci-lint run` does report formatter findings in v2 (measured:
-# a misformatted file gave "File is not properly formatted (gofumpt)"), so
-# fmt-check looks redundant — but `run` only loads files that satisfy the host's
-# build constraints, while `fmt` walks the source. This tree has files that only
-# the latter can see, so collapsing the two would SILENTLY stop checking them.
-#
-# Positive control below proves this probe can return the other verdict.
+# C1 (QUM-1287): the EXISTENCE half of the premise for keeping fmt-check as a
+# second pass over the tree. The argument is written out once, in the Makefile's
+# `fmt-check` comment; in short, `run` only loads files satisfying the host's
+# build constraints while `fmt` walks the source, so collapsing the two would
+# silently stop checking the files only `fmt` can see. C1 asserts those files
+# still exist; C2 below asserts the behaviour that makes their existence matter.
 # ---------------------------------------------------------------------------
 IGNORED=$(cd "$REPO_ROOT" && go list -f '{{.IgnoredGoFiles}}' ./... 2>/dev/null | grep -v '^\[\]$')
 if [ -n "$IGNORED" ]; then
@@ -769,27 +782,53 @@ else
 	fail "C1 the premise for keeping fmt-check as a separate pass has GONE: no build-constraint-excluded files remain, so 'golangci-lint run' may now cover the whole tree. This is not a broken tree — re-evaluate collapsing fmt-check into lint (QUM-1287)."
 fi
 
-# C1c — POSITIVE CONTROL for C1, aimed at the empty verdict: the identical
-# computation over a scratch module with no tag-gated file must come back EMPTY.
-# Otherwise C1 is a tautology over `go list` output and could not distinguish the
-# two worlds it claims to.
-C1_DIR=$(mktemp -d "${TMPDIR:-/tmp}/sprawl-lint-premise-XXXXXX")
-case "$C1_DIR" in
-/tmp/*)
-	printf 'module premise\n\ngo 1.26\n' >"$C1_DIR/go.mod"
-	printf 'package premise\n\nfunc F() {}\n' >"$C1_DIR/a.go"
-	C1_CTL=$(cd "$C1_DIR" && go list -f '{{.IgnoredGoFiles}}' ./... 2>/dev/null | grep -v '^\[\]$')
-	if [ -z "$C1_CTL" ]; then
-		pass "C1c control: the same probe reports EMPTY on a module with no build-constraint-excluded file, so C1 can fail"
-	else
-		fail "C1c control did NOT behave: probe reported [$C1_CTL] on a scratch module that has no tag-gated file — C1 is unproven"
-	fi
-	rm -rf "$C1_DIR"
-	;;
-*)
-	fail "C1c could not obtain a scratch dir under /tmp (got [$C1_DIR]); C1 is unproven"
-	;;
-esac
+# C2 (QUM-1287): the BEHAVIOURAL half of the premise, and the load-bearing one.
+# C1 above proves the tag-gated files still exist; it does not prove that `fmt`
+# inspects them while `run` does not. Without C2, a golangci-lint that stopped
+# formatting build-constraint-excluded files would leave C1 green while
+# `fmt-check` silently stopped adding any coverage and the recorded "cannot
+# collapse" finding quietly became wrong. Replaces the earlier C1c, which only
+# proved the `go list` probe was not a tautology — subsumed by this.
+#
+# Costs three linter invocations on a two-file scratch module, each with a
+# private TMPDIR so the machine-wide lock is never touched (see the LINT_SCOPE
+# note at the top of this file). Paid deliberately: it is the assertion that
+# makes the decision self-maintaining.
+C2_DIR="$SCRATCH_ROOT/premise"
+mkdir -p "$C2_DIR"
+printf 'module premise\n\ngo 1.26\n' >"$C2_DIR/go.mod"
+cp "$GOLANGCI_CONFIG" "$C2_DIR/.golangci.yml"
+printf 'package premise\n\nfunc Ordinary() {}\n' >"$C2_DIR/ordinary.go"
+# Misformatted, and excluded from every build by an unsatisfiable constraint.
+printf '//go:build never\n\npackage premise\n\nfunc  Gated( ) {\n\tx :=  1\n\t_ = x\n}\n' >"$C2_DIR/gated.go"
+
+scratch_fmt "$C2_DIR" "$SCRATCH_ROOT/premise-cache"
+if echo "$SL_OUT" | grep -q 'gated.go'; then
+	pass "C2a 'fmt --diff' DOES inspect a build-constraint-excluded file (reported gated.go)"
+else
+	fail "C2a 'fmt --diff' did NOT report the misformatted, build-excluded gated.go. The premise for keeping fmt-check as a second pass is gone: it no longer covers anything lint misses. Re-evaluate collapsing it (QUM-1287). Output: $(printf '%s' "$SL_OUT" | tail -3)"
+fi
+
+scratch_lint "$C2_DIR" "$SCRATCH_ROOT/premise-cache"
+if echo "$SL_OUT" | grep -q 'gated.go'; then
+	fail "C2b 'run' now DOES see build-constraint-excluded files, so fmt-check may be redundant after all. This is good news, not a broken tree: re-evaluate collapsing fmt-check into lint (QUM-1287). Output: $(printf '%s' "$SL_OUT" | tail -3)"
+else
+	pass "C2b 'run' stays silent about the build-constraint-excluded file, so lint cannot cover what fmt-check does"
+fi
+
+# C2c — POSITIVE CONTROL for C2b, aimed at `run` REPORTING the file: the same
+# misformatted content with the build constraint removed must be reported. If it
+# is not, C2b's silence means "run does not report formatting at all" (or the
+# fixture is broken) rather than "run cannot see gated files", and C2b would then
+# be incapable of firing on the change it guards.
+rm -f "$C2_DIR/gated.go"
+printf 'package premise\n\nfunc  Ungated( ) {\n\tx :=  1\n\t_ = x\n}\n' >"$C2_DIR/ungated.go"
+scratch_lint "$C2_DIR" "$SCRATCH_ROOT/premise-cache"
+if echo "$SL_OUT" | grep -q 'ungated.go'; then
+	pass "C2c control fired: 'run' DOES report the identical violation once the build constraint is gone, so C2b can fail"
+else
+	fail "C2c control did NOT fire: 'run' ignored the same misformatted content with no build constraint. C2b's silence proves nothing about build constraints. Output: $(printf '%s' "$SL_OUT" | tail -3)"
+fi
 
 # ---------------------------------------------------------------------------
 # Summary + assertion-count floor.
