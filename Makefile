@@ -77,10 +77,14 @@ test-validate-timing-unit:
 	bash scripts/test-validate-timing-unit.sh
 
 # QUM-1286: the recorded baseline is a CHECKED artifact, not a remembered one.
-# The previous baseline was prose in this file (see test-race below) and it
-# drifted ~25s silently. This asserts the recorded step set still equals
-# VALIDATE_STEPS, that the measurement is dated and in-window, and that no
-# checkout path leaked into a PUBLIC repo.
+# The previous baseline was prose in this file (see test-race below), undated and
+# unchecked, and nobody could tell whether it still described the tree. Do not
+# quote a drift magnitude for it: that comparison is cross-host and the "~25s"
+# figure this comment used to carry was confounded — see the CONFOUND note in
+# scripts/validate-timed.sh, which resolves it with matched-core-count numbers.
+# This asserts the recorded step set still equals VALIDATE_STEPS in both content
+# and ORDER, that every step passed, that the measurement is dated and in-window
+# and non-degenerate, and that no checkout path leaked into a PUBLIC repo.
 check-validate-baseline:
 	bash scripts/check-validate-baseline.sh scripts/testdata/validate-baseline.observed
 
@@ -322,8 +326,18 @@ test:
 # baseline lives in scripts/testdata/validate-baseline.observed and is checked by
 # `make check-validate-baseline`; `make validate-baseline` re-measures it.
 #
-# The REASONING survives, because it is not a measurement: -race is cheap on this
-# suite because the suite is sleep/timeout-bound rather than CPU-bound, and a
+# One piece of the old REASONING survives and one piece of it was WRONG, and the
+# distinction is now measured rather than asserted:
+#
+#   * `internal/supervisor`, the dominant package, really is sleep/timeout-bound
+#     and barely responds to core count — 100.1s on 4 cores vs 103.6s on 8.
+#   * the SUITE TOTAL is not. It parallelises across 44 packages and is ~24%
+#     faster on 8 cores (164.4s vs ~125s). The old comment's "the suite is
+#     sleep/timeout-bound, not CPU-bound" elided that, which is exactly why its
+#     core-count-blind totals could not be compared against anything.
+#
+# Numbers here only because they are the *subject* of that correction; the live
+# ones live in the checked baseline. The other half of the reasoning stands: a
 # targeted "concurrency-heavy packages" subset was rejected — it covers a handful
 # of ~40 packages and needs a hand-maintained list that silently stops covering
 # any newly-concurrent package.

@@ -18,8 +18,11 @@
 # code, name THAT step, and skip everything after it.
 #
 # Section [9] is the second regression, and it is the one QUM-1286 exists
-# because of: the only recorded validate baseline was undated prose in a
-# Makefile comment, and it drifted ~25s with nobody noticing. The baseline is
+# because of: the only recorded validate baseline was undated prose in a Makefile
+# comment that nothing could check, so nobody could tell whether it still
+# described the tree. Do not quote a drift magnitude for it — that comparison is
+# cross-host, and the CONFOUND note in scripts/validate-timed.sh resolves it with
+# matched-core-count numbers instead. The baseline is
 # now a checked artifact whose step set must equal the live VALIDATE_STEPS, so
 # adding or removing a validate step forces a re-measurement in the same commit.
 #
@@ -113,8 +116,8 @@ trap cleanup EXIT
 # It is deliberately set to the EXACT total rather than to a loose minimum, so a
 # leg that silently becomes conditional is caught as well as an early death.
 # Adding an assertion means bumping this in the same commit.
-#   [0] 3  [1] 5  [2] 8  [3] 4  [4] 3  [5] 4  [6] 5  [7] 5  [8] 8  [9] 19  [10] 5  [11] 5
-MIN_ASSERTIONS=74
+#   [0] 3  [1] 5  [2] 8  [3] 4  [4] 3  [5] 4  [6] 5  [7] 5  [8] 8  [9] 20  [10] 5  [11] 5
+MIN_ASSERTIONS=75
 
 PASSES=0
 FAILURES=0
@@ -745,6 +748,29 @@ if [ "$BASELINE_OK" -eq 1 ] && [ -z "$NORC" ] && { [ -z "$BADRC" ] || [ "$IS_BOO
   ok "committed baseline step rows all carry an rc, and any failure is explicitly marked provisional (bootstrap=$IS_BOOT)"
 else
   fail "committed baseline step rows lack an rc column [$NORC], or record an UNMARKED failing step [$BADRC] — a failing step's duration is a time-to-failure, not the cost of the work"
+fi
+# forge round 2, item 3: validate's own checker step is deliberately LENIENT about
+# bootstrap=true — it has to be, or `make validate-baseline`'s confirming pass
+# could never run against the provisional file that pass 1 promotes. But leniency
+# there means a lingering provisional baseline could be COMMITTED while validate
+# stayed green forever, which is a stale-measurement-as-current hole in the exact
+# shape this issue exists to close.
+#
+# The guard therefore keys on the STAGED content rather than the working tree.
+# That is the distinction that actually matters: a provisional file in the
+# worktree mid-recovery is legitimate and transient, whereas one in the index is
+# about to become history. The pre-commit hook runs validate with the index
+# already holding what is about to be committed, so this fires at exactly the
+# right moment. Verified both directions by hand: staging a marked file makes
+# `git show :<path>` report it, unstaging clears it.
+STAGED_BASELINE=$(git -C "$REPO_ROOT" show ":scripts/testdata/validate-baseline.observed" 2>/dev/null)
+STAGED_RC=$?
+if [ "$STAGED_RC" -ne 0 ]; then
+  fail "cannot read the STAGED baseline (git show :<path> rc=$STAGED_RC) — this leg cannot certify that a provisional baseline is not about to be committed, and an unreadable subject is a failed check, not a clean one"
+elif printf '%s\n' "$STAGED_BASELINE" | grep -qx 'bootstrap=true'; then
+  fail "the STAGED baseline is marked bootstrap=true — it was measured while the tree was inconsistent and records a failing step, so committing it would put a provisional measurement into history where it reads as current. Finish the recovery with 'make validate-baseline' before committing"
+else
+  ok "the STAGED baseline carries no bootstrap marker (a provisional measurement cannot reach history, even though validate's own gate tolerates one mid-recovery)"
 fi
 MUT3="$SCRATCH/baseline-future.observed"
 sed "s/^recorded=.*/recorded=$(date -d '+400 days' +%Y-%m-%d)/" "$PC_BASE" >"$MUT3" 2>/dev/null
