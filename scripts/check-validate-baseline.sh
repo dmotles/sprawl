@@ -6,11 +6,12 @@
 # validate` timing baseline.
 #
 # WHY A CHECKER AND NOT A DOC. The tree's previous validate baseline was prose in
-# a Makefile comment. It rotted: `internal/supervisor` grew ~33% and the recorded
-# whole-suite figure drifted ~25s, and nobody found out until someone happened to
-# re-measure. A number a human must remember to update is a number that goes
-# stale silently, and a stale measurement that reads as current is worse than
-# none. So the baseline lives in a data file with a checker wired into `make
+# a Makefile comment, undated and unchecked, and nobody could tell whether it
+# still described the tree — see the CONFOUND note in scripts/validate-timed.sh
+# for why the size of its drift is NOT derivable from it. A number a human must
+# remember to update is a number that goes stale silently, and a stale
+# measurement that reads as current is worse than none, because a reader reasons
+# from it. So the baseline lives in a data file with a checker wired into `make
 # validate`, on the same pattern as
 # scripts/testdata/always-loaded-manifest.observed.
 #
@@ -22,10 +23,12 @@
 # changes.
 #
 # WHAT IT DELIBERATELY DOES NOT CHECK: today's durations against the recorded
-# ones. Duration is bimodal by construction (test-race carries no -count=1;
-# GOLANGCI_LINT_CACHE is per-worktree, measured 18.6s cold vs 1.6s warm) and this
-# host runs several agents concurrently, so a percentage threshold on wall clock
-# would be a flake generator, not a gate. Do not add one.
+# ones. Duration is bimodal by construction (test-race carries no -count=1, and
+# GOLANGCI_LINT_CACHE is per-worktree) and this host runs several agents
+# concurrently, so a percentage threshold on wall clock would be a flake
+# generator, not a gate. Do not add one. The magnitudes behind that claim are in
+# the baseline itself, dated; this comment deliberately quotes none, because an
+# unchecked number in a comment is the artifact this file replaces.
 #
 # EXIT CODES
 #   0  baseline is well-formed, dated, in-window, leak-clean, and matches the
@@ -46,7 +49,25 @@
 # cannot do: it does not affect the step-set assertion, which is the load-bearing
 # gate here, so turning the age window up does not disarm drift detection.
 #
-# usage: check-validate-baseline.sh <baseline-file> [expected-steps-file]
+# THE BOOTSTRAP CIRCULARITY, and why `bootstrap=true` exists.
+#
+# Two validate steps assert properties of a file validate itself produces, so a
+# drifted step set fails BOTH `make validate` and `make validate-baseline`, and
+# there is no way to record a fresh baseline — while the file says DO NOT
+# HAND-EDIT. Escaping that needs exactly one promotion of a file measured while
+# the tree was still inconsistent, and such a file necessarily records a FAILING
+# step (rc != 0), whose duration is a time-to-failure rather than the cost of the
+# work.
+#
+# So a file carrying `bootstrap=true` — written by the driver itself, only when a
+# step actually failed, never by hand — is accepted here with a loud NOTE on
+# every run rather than rejected. That is not a silent success: it prints on
+# every single `make validate` until it is gone, which is the opposite of silent.
+# `--final` is the arm that refuses it, and `make validate-baseline` uses
+# `--final` on its confirming pass, so the state that gets COMMITTED is always
+# from a fully green run. A bootstrap file cannot persist quietly.
+#
+# usage: check-validate-baseline.sh [--final] <baseline-file> [expected-steps-file]
 # With no expected-steps-file, the live step set is read from
 # `make print-validate-steps` in the repo containing this script.
 set -uo pipefail
@@ -69,8 +90,13 @@ bad() {
   echo "check-validate-baseline: $1" >&2
 }
 
+FINAL=0
+if [ "${1:-}" = "--final" ]; then
+  FINAL=1
+  shift
+fi
 if [ $# -lt 1 ] || [ $# -gt 2 ]; then
-  echo "usage: check-validate-baseline.sh <baseline-file> [expected-steps-file]" >&2
+  echo "usage: check-validate-baseline.sh [--final] <baseline-file> [expected-steps-file]" >&2
   exit 2
 fi
 FILE=$1
@@ -121,10 +147,17 @@ else
   fi
 fi
 
-# --- step set equality, both directions
-BSTEPS=$(sed -n 's/^step\t\([^\t]*\)\t.*/\1/p' "$FILE" | sort -u)
-ESTEPS=$(printf '%s\n' "$EXPECTED_STEPS" | grep . | sort -u)
-if [ -z "$BSTEPS" ]; then
+# --- step rows: set equality, ORDER, duplicates, and exit status
+#
+# Order matters now and did not before. Since validate became a serialized recipe
+# driven by $(VALIDATE_STEPS), that variable determines EXECUTION ORDER, so a
+# reorder changes what validate does. A set comparison (`sort -u` both sides)
+# cannot see a reorder, and cannot see a duplicate either.
+BSTEPS_ORDERED=$(sed -n 's/^step\t\([^\t]*\)\t.*/\1/p' "$FILE")
+ESTEPS_ORDERED=$(printf '%s\n' "$EXPECTED_STEPS" | grep .)
+BSTEPS=$(printf '%s\n' "$BSTEPS_ORDERED" | sort -u)
+ESTEPS=$(printf '%s\n' "$ESTEPS_ORDERED" | sort -u)
+if [ -z "$BSTEPS_ORDERED" ]; then
   bad "baseline records no 'step' rows at all"
 else
   MISSING=$(comm -13 <(printf '%s\n' "$BSTEPS") <(printf '%s\n' "$ESTEPS") | tr '\n' ' ')
@@ -135,6 +168,41 @@ else
   if [ -n "$EXTRA" ]; then
     bad "baseline records a step that validate no longer runs: $EXTRA — re-measure with 'make validate-baseline'"
   fi
+  # Duplicates: a step recorded twice would also satisfy set equality.
+  DUPES=$(printf '%s\n' "$BSTEPS_ORDERED" | sort | uniq -d | tr '\n' ' ')
+  if [ -n "$DUPES" ]; then
+    bad "baseline records a step more than once: $DUPES"
+  fi
+  # Order, checked only once the sets agree, so a drifted set reports as drift
+  # rather than as a confusing order mismatch.
+  if [ -z "$MISSING" ] && [ -z "$EXTRA" ] && [ -z "$DUPES" ] &&
+    [ "$BSTEPS_ORDERED" != "$ESTEPS_ORDERED" ]; then
+    bad "baseline records validate's steps in a DIFFERENT ORDER than VALIDATE_STEPS: baseline=[$(printf '%s' "$BSTEPS_ORDERED" | tr '\n' ' ')] live=[$(printf '%s' "$ESTEPS_ORDERED" | tr '\n' ' ')] — order is execution order since validate became a serialized recipe, so this is a real change to what the gate does"
+  fi
+fi
+
+# Every step row must carry an rc, and it must be 0. A failing step exits EARLY,
+# so its duration is time-to-failure rather than the cost of the work — recording
+# that as a baseline is a wrong number, not a missing one. RECORDING_PASS exists
+# for `make validate-baseline`'s bootstrap pass only; see the Makefile.
+NO_RC=$(awk -F'\t' '$1=="step" && NF<4 {print $2}' "$FILE" | tr '\n' ' ')
+if [ -n "$NO_RC" ]; then
+  bad "step row(s) carry no exit status: $NO_RC — re-record with 'make validate-baseline' (the rc column was added by QUM-1286 rework; an older baseline predates it)"
+fi
+IS_BOOTSTRAP=0
+grep -qx 'bootstrap=true' "$FILE" && IS_BOOTSTRAP=1
+BAD_RC=$(awk -F'\t' '$1=="step" && NF>=4 && $4+0 != 0 {printf "%s(rc=%s) ", $2, $4}' "$FILE")
+if [ "$IS_BOOTSTRAP" -eq 1 ] && [ "$FINAL" -eq 1 ]; then
+  bad "this baseline is marked bootstrap=true — it was measured while the tree was inconsistent and records a failing step ($BAD_RC). A bootstrap file must never be the committed end state; re-run 'make validate-baseline' and let its confirming pass replace it"
+elif [ -n "$BAD_RC" ]; then
+  if [ "$IS_BOOTSTRAP" -eq 1 ]; then
+    echo "check-validate-baseline: NOTE — PROVISIONAL BASELINE (bootstrap=true): step(s) $BAD_RC failed when this was recorded, so their durations are times-to-failure, not costs of the work. Finish the recovery with 'make validate-baseline'." >&2
+  else
+    bad "step row(s) record a FAILING step: $BAD_RC — that duration is a time-to-failure, not the cost of the work. Re-record from a green run with 'make validate-baseline'"
+  fi
+fi
+if [ "$IS_BOOTSTRAP" -eq 1 ] && [ -z "$BAD_RC" ]; then
+  bad "bootstrap=true is set but no step row records a failure — the marker is written by the driver only when a step failed, so this file has been hand-edited"
 fi
 
 # --- the recorded run must have BYPASSED the package cache.
@@ -156,6 +224,23 @@ NPKG=$(grep -c '^pkg	' "$FILE")
 [ -n "$NPKG" ] || NPKG=0
 if [ "$NPKG" -lt "$MIN_PKG_ROWS" ]; then
   bad "baseline records $NPKG per-package rows, want at least $MIN_PKG_ROWS"
+fi
+
+# --- numeric sanity. An all-zero artifact satisfied every check above, because
+# they only asserted non-emptiness — and an all-zero table is precisely what a
+# dry run produces, which is the shape the driver's -n/-q/-t guard exists to
+# prevent. A baseline of zeros is not a cheap gate, it is an unmeasured one.
+TOTAL_WALL=$(sed -n 's/^total_wall_s=\(.*\)$/\1/p' "$FILE" | head -1)
+if ! awk -v v="${TOTAL_WALL:-0}" 'BEGIN{exit !(v+0 > 0)}'; then
+  bad "total_wall_s='${TOTAL_WALL:-<absent>}' is not greater than zero — this artifact records no measurement at all"
+fi
+STEP_SUM=$(awk -F'\t' '$1=="step"{s+=$3} END{printf "%.2f", s+0}' "$FILE")
+if ! awk -v v="$STEP_SUM" 'BEGIN{exit !(v+0 > 0)}'; then
+  bad "every recorded step duration is zero (sum=$STEP_SUM) — an all-zero table is what a DRY RUN produces, not a measurement"
+fi
+ZERO_PKG=$(awk -F'\t' '$1=="pkg" && $3+0 <= 0 {printf "%s ", $2}' "$FILE")
+if [ -n "$ZERO_PKG" ]; then
+  bad "package row(s) record a non-positive duration: $ZERO_PKG — a package cannot take zero time; this is an unmeasured row"
 fi
 
 # --- leak hygiene. This repo is PUBLIC, and a timing artifact is exactly the

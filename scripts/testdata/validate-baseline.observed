@@ -15,6 +15,11 @@
 # reported rather than required — GOLANGCI_LINT_CACHE is per-worktree, so a
 # fresh agent worktree pays cold and an established one does not.
 #
+# Row format: step<TAB>name<TAB>seconds<TAB>rc  and  pkg<TAB>import-path<TAB>seconds.
+# A step row's rc must be 0 in a promoted baseline: a failing step exits
+# early, so its duration is time-to-failure rather than the cost of the
+# work, and that is a wrong number rather than a missing one.
+#
 # Fields: total_wall_s is measured end to end. driver_overhead_s is this
 # script's own cost (probes and bookkeeping) and excludes the two structural
 # costs of stepwise timing, which are one duplicate warm 'build' (validate
@@ -26,27 +31,27 @@ go=go1.26.6
 os_arch=linux/arm64
 go_cache=cold
 lint_cache=warm
-total_wall_s=284.53
-driver_overhead_s=0.03
-step	build	1.54
-step	hooks-armed	1.53
-step	proto-check	0.75
-step	fmt-check	7.01
-step	lint	1.59
-step	test-lint-pin	12.76
-step	test-race-gate	1.64
-step	test-race	125.08
-step	test-wirelog-helpers-unit	0.35
-step	test-e2e-lockwait-unit	14.77
-step	test-e2e-matrix-unit	97.46
-step	test-always-loaded-budget-unit	14.28
-step	always-loaded-budget	0.47
-step	test-gitignore-classes	2.72
-step	test-validate-timing-unit	1.38
-step	check-validate-baseline	0.04
-step	leak-scan	1.13
-pkg	github.com/dmotles/sprawl/internal/supervisor	103.599
-pkg	github.com/dmotles/sprawl/cmd	44.982
-pkg	github.com/dmotles/sprawl/internal/hub	33.596
-pkg	github.com/dmotles/sprawl/internal/runtime	24.012
-pkg	github.com/dmotles/sprawl/internal/githooks	15.352
+total_wall_s=282.63
+driver_overhead_s=0.06
+step	build	1.49	0
+step	hooks-armed	1.52	0
+step	proto-check	0.72	0
+step	fmt-check	7.01	0
+step	lint	1.80	0
+step	test-lint-pin	12.80	0
+step	test-race-gate	1.63	0
+step	test-race	123.49	0
+step	test-wirelog-helpers-unit	0.36	0
+step	test-e2e-lockwait-unit	15.16	0
+step	test-e2e-matrix-unit	96.39	0
+step	test-always-loaded-budget-unit	13.75	0
+step	always-loaded-budget	0.47	0
+step	test-gitignore-classes	2.58	0
+step	test-validate-timing-unit	2.23	0
+step	check-validate-baseline	0.06	0
+step	leak-scan	1.11	0
+pkg	github.com/dmotles/sprawl/internal/supervisor	102.050
+pkg	github.com/dmotles/sprawl/cmd	43.616
+pkg	github.com/dmotles/sprawl/internal/hub	33.581
+pkg	github.com/dmotles/sprawl/internal/runtime	23.990
+pkg	github.com/dmotles/sprawl/internal/githooks	14.701

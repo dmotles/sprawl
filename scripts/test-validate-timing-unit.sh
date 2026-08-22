@@ -113,8 +113,8 @@ trap cleanup EXIT
 # It is deliberately set to the EXACT total rather than to a loose minimum, so a
 # leg that silently becomes conditional is caught as well as an early death.
 # Adding an assertion means bumping this in the same commit.
-#   [0] 3  [1] 5  [2] 8  [3] 4  [4] 3  [5] 4  [6] 5  [7] 4  [8] 8  [9] 10  [10] 5  [11] 5
-MIN_ASSERTIONS=64
+#   [0] 3  [1] 5  [2] 8  [3] 4  [4] 3  [5] 4  [6] 5  [7] 5  [8] 8  [9] 19  [10] 5  [11] 5
+MIN_ASSERTIONS=74
 
 PASSES=0
 FAILURES=0
@@ -498,6 +498,24 @@ else
   fail "warm run reported cold too, or produced no cache line: '${WARM_LINE:-<no cache line>}'"
 fi
 
+# item 6b: with GOLANGCI_LINT_CACHE unset the driver asks make for the cache dir.
+# If that call's STATUS is swallowed, a broken lint-cache-dir target makes this
+# field report a plausible value forever with nothing failing anywhere.
+#
+# The fixture must print a VALID, POPULATED path and THEN exit non-zero. An
+# absent target was the first thing I tried and it does not discriminate: it
+# yields empty stdout, which the separate empty-dir guard catches, so the leg
+# passed with the status check mutated out. Mutate along the axis the assertion
+# constrains — here that axis is the exit status, not the output.
+append_step "$F7" lint-cache-dir "echo $F7/warmcache" "exit 1"
+drive "$F7" GOLANGCI_LINT_CACHE= -- noop
+UNK_LINE=$(printf '%s\n' "$DRIVE_OUT" | grep -o 'cache:.*' | head -1)
+if printf '%s' "$UNK_LINE" | grep -q 'lint=unknown'; then
+  ok "a lint-cache-dir probe that prints a populated path but EXITS NON-ZERO reports lint=unknown, not the warm it would look like"
+else
+  fail "a failing lint-cache-dir probe reported '${UNK_LINE:-<no cache line>}' — its status was swallowed, so this field renders a measurement that was never taken"
+fi
+
 echo "=== [8] make -n fidelity — the scripts/test-race-gate.sh compatibility guard (LIVE)"
 # The -race assertion is derived from `make -n test-race`, whose recipe contains
 # no $(MAKE) and so is genuinely only expanded, never executed. Deriving it from
@@ -638,6 +656,22 @@ if [ "$CHECKER_OK" -eq 1 ] && [ "$BASELINE_OK" -eq 1 ] && [ "$CHK_RC" -eq 0 ]; t
 else
   fail "committed baseline does not pass its checker (checker=$CHECKER_OK baseline=$BASELINE_OK rc=$CHK_RC): $(printf '%s' "$CHK_OUT" | tr '\n' '|')"
 fi
+# EVERY mutant below is derived from this NORMALIZED copy, not from the committed
+# file. Deriving from the live baseline was a real defect, caught in anger: mid
+# `make validate-baseline` the committed file is legitimately PROVISIONAL
+# (bootstrap=true), so the "checker must reject an unmarked failing step" and
+# "must reject a hand-edited marker" mutants silently inherited the marker and
+# were accepted — two positive controls reporting the checker was broken when the
+# fixtures were. A control whose subject varies with unrelated tree state is not
+# a control.
+PC_BASE="$SCRATCH/baseline-clean.observed"
+grep -v '^bootstrap=true$' "$BASELINE" 2>/dev/null |
+  awk -F'\t' 'BEGIN{OFS="\t"} $1=="step" && NF>=4 {$4=0} {print}' >"$PC_BASE"
+if [ -s "$PC_BASE" ] && [ "$CHECKER_OK" -eq 1 ] && bash "$CHECKER" --final "$PC_BASE" >/dev/null 2>&1; then
+  ok "the normalized mutation base passes even the strict --final gate (so every mutant below starts from a known-clean subject)"
+else
+  fail "the normalized mutation base does not pass --final — every positive control below would be measuring the base, not the mutation: $(bash "$CHECKER" --final "$PC_BASE" 2>&1 | tr '\n' '|')"
+fi
 BSTEPS=$(sed -n 's/^step\t\([^\t]*\)\t.*/\1/p' "$BASELINE" 2>/dev/null | sort)
 if [ -n "$BSTEPS" ] && [ "$BSTEPS" = "$(printf '%s\n' "$STEPS_LIVE" | sort)" ]; then
   ok "baseline step set equals the live VALIDATE_STEPS (no drift)"
@@ -678,7 +712,7 @@ pc() { # pc <label> <mutant-file> <reason-regex>
     fail "positive control '$label' cannot run: checker absent or it rejects the clean baseline"
     return
   fi
-  if cmp -s "$BASELINE" "$mut"; then
+  if cmp -s "$PC_BASE" "$mut"; then
     fail "positive control '$label' MUTATED NOTHING — the mutant is byte-identical to the baseline"
     return
   fi
@@ -691,17 +725,67 @@ pc() { # pc <label> <mutant-file> <reason-regex>
   fi
 }
 MUT="$SCRATCH/baseline-nostep.observed"
-grep -v "^step	$(printf '%s\n' "$STEPS_LIVE" | head -1)	" "$BASELINE" >"$MUT" 2>/dev/null
+grep -v "^step	$(printf '%s\n' "$STEPS_LIVE" | head -1)	" "$PC_BASE" >"$MUT" 2>/dev/null
 pc "a baseline missing a live step" "$MUT" 'missing a live validate step'
 MUT2="$SCRATCH/baseline-leak.observed"
 {
-  cat "$BASELINE" 2>/dev/null
+  cat "$PC_BASE" 2>/dev/null
   echo "# measured in /home/someone/checkout"
 } >"$MUT2"
 pc "a baseline containing a home path" "$MUT2" 'home|path|leak'
+NORC=$(awk -F'\t' '$1=="step" && NF<4 {print $2}' "$BASELINE" 2>/dev/null | tr '\n' ' ')
+BADRC=$(awk -F'\t' '$1=="step" && NF>=4 && $4+0 != 0 {printf "%s ", $2}' "$BASELINE" 2>/dev/null)
+# Accepts a PROVISIONAL (bootstrap=true) file on purpose: this step is itself one
+# of the two the bootstrap pass exists to unwedge, so rejecting it here would make
+# the recovery unreachable. An UNMARKED failing step is still rejected, and
+# `check-validate-baseline --final` is what refuses a provisional end state.
+IS_BOOT=0
+grep -qx 'bootstrap=true' "$BASELINE" 2>/dev/null && IS_BOOT=1
+if [ "$BASELINE_OK" -eq 1 ] && [ -z "$NORC" ] && { [ -z "$BADRC" ] || [ "$IS_BOOT" -eq 1 ]; }; then
+  ok "committed baseline step rows all carry an rc, and any failure is explicitly marked provisional (bootstrap=$IS_BOOT)"
+else
+  fail "committed baseline step rows lack an rc column [$NORC], or record an UNMARKED failing step [$BADRC] — a failing step's duration is a time-to-failure, not the cost of the work"
+fi
 MUT3="$SCRATCH/baseline-future.observed"
-sed "s/^recorded=.*/recorded=$(date -d '+400 days' +%Y-%m-%d)/" "$BASELINE" >"$MUT3" 2>/dev/null
+sed "s/^recorded=.*/recorded=$(date -d '+400 days' +%Y-%m-%d)/" "$PC_BASE" >"$MUT3" 2>/dev/null
 pc "a baseline dated in the future" "$MUT3" 'future|date'
+# item 3 — a step row must carry rc, and it must be 0
+MUT4="$SCRATCH/baseline-failing-step.observed"
+awk -F'\t' 'BEGIN{OFS="\t"} $1=="step" && !done {$4=1; done=1} {print}' "$PC_BASE" >"$MUT4" 2>/dev/null
+pc "a baseline recording a FAILING step" "$MUT4" 'FAILING step'
+# A hatch nobody has watched both accept and reject is not a bounded hatch.
+# The provisional escape hatch must be BOUNDED in both directions: a marked
+# bootstrap file passes the ordinary gate (so the recovery can run at all) and is
+# REFUSED by --final (so it can never become the committed end state).
+MUT4B="$SCRATCH/baseline-bootstrap.observed"
+{ echo "bootstrap=true"; cat "$MUT4" 2>/dev/null; } >"$MUT4B"
+if [ "$CHECKER_OK" -eq 1 ] && [ "$CHK_RC" -eq 0 ] &&
+  bash "$CHECKER" "$MUT4B" >/dev/null 2>&1 &&
+  ! bash "$CHECKER" --final "$MUT4B" >/dev/null 2>&1; then
+  ok "a bootstrap=true baseline passes the ordinary gate but is REFUSED by --final (the provisional state cannot become the committed one)"
+else
+  fail "the bootstrap escape hatch is mis-bounded: ordinary gate accepts=$(bash "$CHECKER" "$MUT4B" >/dev/null 2>&1 && echo yes || echo no), --final refuses=$(bash "$CHECKER" --final "$MUT4B" >/dev/null 2>&1 && echo no || echo yes)"
+fi
+# ...and the marker cannot launder a clean-looking file: bootstrap=true with no
+# failing step means somebody hand-edited it.
+MUT4C="$SCRATCH/baseline-bootstrap-nofail.observed"
+{ echo "bootstrap=true"; cat "$PC_BASE" 2>/dev/null; } >"$MUT4C"
+pc "a bootstrap marker with no failing step (hand-edited)" "$MUT4C" 'hand-edited|no step row'
+# item 4 — a set comparison can see neither of these
+MUT5="$SCRATCH/baseline-reordered.observed"
+awk -F'\t' '$1=="step"{n++; rows[n]=$0; next} {print} END{if (n>=2) {print rows[2]; print rows[1]; for(i=3;i<=n;i++) print rows[i]} else {for(i=1;i<=n;i++) print rows[i]}}' "$PC_BASE" >"$MUT5" 2>/dev/null
+pc "a baseline whose steps are in a different ORDER" "$MUT5" 'DIFFERENT ORDER'
+MUT6="$SCRATCH/baseline-duplicate.observed"
+{ cat "$PC_BASE" 2>/dev/null; grep -m1 '^step	' "$PC_BASE" 2>/dev/null; } >"$MUT6"
+pc "a baseline recording a step twice" "$MUT6" 'more than once'
+# item 5 — an all-zero artifact satisfied every non-emptiness check above, and
+# all-zero is exactly what a dry run produces
+MUT7="$SCRATCH/baseline-zero-total.observed"
+sed 's/^total_wall_s=.*/total_wall_s=0.00/' "$PC_BASE" >"$MUT7" 2>/dev/null
+pc "a baseline whose total_wall_s is zero" "$MUT7" 'greater than zero'
+MUT8="$SCRATCH/baseline-zero-steps.observed"
+awk -F'\t' 'BEGIN{OFS="\t"} $1=="step"{$3="0.00"} {print}' "$PC_BASE" >"$MUT8" 2>/dev/null
+pc "a baseline whose every step duration is zero" "$MUT8" 'DRY RUN|all-zero|zero'
 
 echo "=== [10] interruption is reported, and the step's whole tree is reaped"
 F10="$SCRATCH/f10"

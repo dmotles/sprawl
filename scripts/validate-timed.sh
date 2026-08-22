@@ -9,8 +9,47 @@
 # WHY THIS EXISTS. `make validate` was perceived to be getting slower and that
 # perception was unfalsifiable: no per-step timing anywhere, no CI running
 # validate, and the tree's only recorded baseline was undated prose in a Makefile
-# comment which had silently drifted ~25s. Concretely it costs every agent
-# independently — the pre-commit hook runs validate, validate now outruns an
+# comment that nothing could check.
+#
+# ON THE SIZE OF THAT DRIFT — read this before quoting a number, because the
+# obvious comparison is CONFOUNDED and QUM-1286 shipped it as fact once already.
+# The removed comment said "4 cores"; this host has 8, and it is a different
+# machine (the 2026-08-13 migration). So comparing its 122.2s whole-suite figure
+# against a run here establishes NOTHING about drift, in either direction, and
+# neither does the tempting counter-claim that the suite figure was fine and only
+# the package grew. Both are cross-host.
+#
+# It is resolvable, and it was resolved rather than hedged. Pinning this host to
+# 4 cores with `taskset -c 0-3 go test -race -count=1 ./...` on 2026-08-22 gives
+# matched-core-count measurements for BOTH figures:
+#
+#                        recorded (4 cores)   now (4 cores)   now (8 cores)
+#   whole suite -race          122.2s            164.4s          ~125s
+#   internal/supervisor         75.0s            100.1s          103.6s
+#
+# So the answer is neither of the two the issue offered: BOTH grew, by about a
+# third each, and the original either/or was a false dichotomy. The whole-suite
+# figure was not "stale" and the package growth does not account for it alone.
+#
+# Note the two rows behave differently under core count, which is why they had to
+# be measured separately rather than reasoned about together: `internal/supervisor`
+# is one sleep-bound package and barely moves (100.1 vs 103.6), while the SUITE
+# parallelises across 44 packages and is ~24% faster on 8 cores (164.4 vs ~125).
+# The removed comment's "sleep/timeout-bound, not CPU-bound" claim is therefore
+# true of the dominant package and NOT true of the suite total — a distinction it
+# elided, and one that makes any core-count-blind comparison of the totals
+# meaningless.
+#
+# The residual limit, stated because a limitation nobody states gets forgotten:
+# `taskset` matches core COUNT, not CPU model or clock, so this is not a
+# same-machine measurement. What licenses the last step is the sleep-boundness
+# above — a suite whose time is dominated by waiting is insensitive to both, and
+# the 4-vs-8-core pair is the evidence for that rather than an assumption. If
+# someone later shows this suite has become CPU-bound, this paragraph is the one
+# to re-derive. Note the direction it would fail in: a faster per-core host would
+# make the growth look SMALLER than it is, so ~a third is a floor, not a ceiling.
+#
+# Concretely the cost falls on every agent independently — the pre-commit hook runs validate, validate now outruns an
 # agent's default 2-minute Bash timeout, and `git commit` gets killed mid-hook
 # with no indication of which step it died in. The INTERRUPTED banner below is
 # that indication.
@@ -26,8 +65,11 @@
 # WHAT IT DELIBERATELY DOES NOT DO. It does not change what validate runs, and
 # it asserts nothing about durations. Duration here is bimodal by design —
 # `test-race` deliberately carries no -count=1, so an unchanged tree re-runs
-# from the package cache, and GOLANGCI_LINT_CACHE is per-worktree (measured 18.6s
-# cold vs 1.6s warm) — and this box runs several agents at once. A threshold on
+# from the package cache, and GOLANGCI_LINT_CACHE is per-worktree (the Makefile's
+# QUM-1232 comment measured 18.6s cold vs 1.6s warm; this file does not re-assert
+# that number — the live per-step figure is in the checked baseline, dated, and
+# `lint` measured 21.99s cold vs 1.58-1.94s warm on 2026-08-21) — and this box
+# runs several agents at once. A threshold on
 # wall clock would be a flake generator, so the numbers are reported and the
 # CACHE STATE is reported beside them. A timing without its cache state is not a
 # baseline.
@@ -155,9 +197,11 @@ export SPRAWL_VALIDATE_DRIVER_PID=$$
 # tree. Without this the driver TERMs only its direct child — `make`, or the
 # capture subshell — and make does not forward signals, so an interrupted
 # validate left `go test -race ./...` chewing cores on a box that runs several
-# agents at once. Measured while reviewing this file: the leak was real and this
-# suite's own interrupt fixture waited out its orphan's full 30s sleep, ~27s of
-# which landed in EVERY validate run.
+# agents at once. Measured 2026-08-22 on 8 cores while reviewing this file: the
+# leak was real and this suite's own interrupt fixture waited out its orphan's
+# full 30s sleep, so scripts/test-validate-timing-unit.sh took 31.36s instead of
+# 1.54s and that difference landed in EVERY validate run. Both figures are in the
+# checked baseline's history rather than only here.
 #
 # Degrades rather than breaks where setsid(1) is absent (it is util-linux, so
 # present on Linux, absent on macOS): USED_SETSID gates the negative-pid kill.
@@ -197,11 +241,23 @@ INTERRUPTED=0
 STEP_T0=""
 
 lint_cache_state() {
-  local dir=${GOLANGCI_LINT_CACHE:-}
+  local dir=${GOLANGCI_LINT_CACHE:-} rc=0
   if [ -z "$dir" ]; then
-    dir=$( (make_step lint-cache-dir) 2>/dev/null | tail -1)
+    # Do NOT swallow make's status. Renaming or losing the lint-cache-dir target
+    # would otherwise make this report `cold` forever, with no failure anywhere —
+    # a diagnostic field silently pinned to one value is worse than an absent
+    # one, because a reader reasons from it. `unknown` is a real value here.
+    dir=$( (make_step lint-cache-dir) 2>/dev/null | tail -1) || rc=$?
+    if [ "$rc" -ne 0 ]; then
+      echo unknown
+      return
+    fi
   fi
-  if [ -z "$dir" ] || [ ! -d "$dir" ]; then
+  if [ -z "$dir" ]; then
+    echo unknown
+    return
+  fi
+  if [ ! -d "$dir" ]; then
     echo cold
     return
   fi
@@ -303,6 +359,10 @@ print_table() {
 # go version / os-arch: this is a PUBLIC repo, so no hostname and no paths.
 write_baseline() {
   local total=$1 i
+  ANY_STEP_FAILED=0
+  for i in "${!STEP_RCS[@]}"; do
+    [ "${STEP_RCS[$i]}" -ne 0 ] && ANY_STEP_FAILED=1
+  done
   {
     echo "# RECORDED BASELINE for \`make validate\`. Generated by"
     echo "# scripts/validate-timed.sh; promote a fresh one with 'make validate-baseline'."
@@ -321,6 +381,11 @@ write_baseline() {
     echo "# reported rather than required — GOLANGCI_LINT_CACHE is per-worktree, so a"
     echo "# fresh agent worktree pays cold and an established one does not."
     echo "#"
+    echo "# Row format: step<TAB>name<TAB>seconds<TAB>rc  and  pkg<TAB>import-path<TAB>seconds."
+    echo "# A step row's rc must be 0 in a promoted baseline: a failing step exits"
+    echo "# early, so its duration is time-to-failure rather than the cost of the"
+    echo "# work, and that is a wrong number rather than a missing one."
+    echo "#"
     echo "# Fields: total_wall_s is measured end to end. driver_overhead_s is this"
     echo "# script's own cost (probes and bookkeeping) and excludes the two structural"
     echo "# costs of stepwise timing, which are one duplicate warm 'build' (validate"
@@ -330,12 +395,22 @@ write_baseline() {
     echo "cores=$(getconf _NPROCESSORS_ONLN 2>/dev/null || echo unknown)"
     echo "go=$(go env GOVERSION 2>/dev/null || echo unknown)"
     echo "os_arch=$(go env GOOS 2>/dev/null || echo unknown)/$(go env GOARCH 2>/dev/null || echo unknown)"
+    if [ "$ANY_STEP_FAILED" -eq 1 ]; then
+      echo "bootstrap=true"
+    fi
     echo "go_cache=$GO_CACHE"
     echo "lint_cache=$LINT_CACHE"
     echo "total_wall_s=$total"
     echo "driver_overhead_s=$(printf '%s\n' "${STEP_SECS[@]:-0}" | awk -v t="$total" '{s+=$1} END{d=t-s; if(d<0)d=0; printf "%.2f", d}')"
+    # rc is recorded per step, and that is load-bearing rather than tidy. A
+    # FAILING step exits EARLY, so its duration is the time-to-failure, not the
+    # cost of doing the work — and in a `make validate-baseline` recording pass
+    # the two self-referential baseline steps are deliberately tolerated, so at
+    # least one recorded duration WILL be a failing invocation's. Without rc that
+    # is indistinguishable from a passing one: a wrong number, not an absent one,
+    # which is the exact shape this whole change exists to prevent.
     for i in "${!STEP_NAMES[@]}"; do
-      printf 'step\t%s\t%s\n' "${STEP_NAMES[$i]}" "${STEP_SECS[$i]}"
+      printf 'step\t%s\t%s\t%s\n' "${STEP_NAMES[$i]}" "${STEP_SECS[$i]}" "${STEP_RCS[$i]}"
     done
     [ -n "$PKG_TOP" ] && printf '%s\n' "$PKG_TOP" | while IFS=$'\t' read -r d p; do
       printf 'pkg\t%s\t%s\n' "$p" "$d"
@@ -439,7 +514,7 @@ CURRENT_STEP=""
 # per-package measurement measured NOTHING, and an empty top-5 table reads
 # exactly like a fast run. Fail loudly instead.
 VACUOUS=0
-if [ "$CAPTURED_ANY" -eq 1 ] && [ "$PKG_TOTAL" -eq 0 ]; then
+if [ "$CAPTURED_ANY" -eq 1 ] && [ "${PKG_TOTAL:-0}" -eq 0 ]; then
   VACUOUS=1
 fi
 

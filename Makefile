@@ -104,11 +104,27 @@ check-validate-baseline:
 # non-zero. The leading `-` accepts that non-zero so the promotion below is
 # reached; the driver refuses to write an artifact unless every step ran, so a
 # genuinely broken run cannot be promoted.
+# TWO PASSES, and the second one is the point. Pass 1 tolerates the two
+# self-referential steps so a DRIFTED step set can be bootstrapped at all; its
+# artifact therefore legitimately contains a failing step, whose duration is a
+# time-to-failure rather than the cost of the work. Promoting that would record a
+# wrong number, so pass 1 exists only to make the gate self-consistent. Pass 2 is
+# a plain, fully-gated run: it must be green, and the file that actually gets
+# committed is always its artifact, with rc=0 on every step. Costs two validate
+# runs; re-recording is rare and a baseline nobody can trust is worse.
 validate-baseline:
+	@echo "validate-baseline: pass 1/2 — bootstrapping (the two baseline-checking steps are tolerated)"
 	-@$(MAKE) validate TEST_RACE_FLAGS=-count=1 \
 		VALIDATE_TOLERATE='test-validate-timing-unit check-validate-baseline'
 	@bash scripts/check-validate-baseline.sh .validate-timings/baseline.observed || { \
-		echo "validate-baseline: REFUSING to promote. The run above did not produce a complete, cache-bypassed observation, so there is nothing honest to record — and note this checks the ARTIFACT, not just its existence: an earlier run's file sitting in .validate-timings/ is a stale measurement, which is worse than a missing one. Fix the failure above and re-run." >&2; \
+		echo "validate-baseline: REFUSING to promote. Pass 1 produced no complete, cache-bypassed observation, so there is nothing honest to record — and note this checks the ARTIFACT, not merely its existence: an earlier run's file sitting in .validate-timings/ is a stale measurement, which is worse than a missing one. Fix the failure above and re-run." >&2; \
+		exit 1; \
+	}
+	@cp .validate-timings/baseline.observed scripts/testdata/validate-baseline.observed
+	@echo "validate-baseline: pass 2/2 — confirming on a fully-gated run (nothing tolerated)"
+	@$(MAKE) validate TEST_RACE_FLAGS=-count=1
+	@bash scripts/check-validate-baseline.sh --final .validate-timings/baseline.observed || { \
+		echo "validate-baseline: pass 2 did not produce a promotable observation. The tree is left with pass 1's bootstrap baseline, which records a tolerated failure — do NOT commit it; fix the failure above and re-run." >&2; \
 		exit 1; \
 	}
 	@cp .validate-timings/baseline.observed scripts/testdata/validate-baseline.observed
@@ -296,11 +312,13 @@ test:
 #
 # NO MEASUREMENTS HERE. The numbers that used to sit in this comment (a "4
 # cores" host, `go test ./...` 99.0s vs `-race` 122.2s, "internal/supervisor
-# alone is 75s of the 122s") were undated and had rotted: re-measured on
-# 2026-08-21, internal/supervisor alone was 99.9s test time, so either the
-# package had grown ~33% or the whole-suite figure was ~25s stale, and nothing
-# could tell you which. That drift is QUM-1286's entire reason for existing, and
-# re-adding a number here would recreate it. The live, dated, cache-annotated
+# alone is 75s of the 122s") were undated and unchecked, and this host is a
+# different, 8-core machine — so they could not be compared against a run here at
+# all, in either direction. QUM-1286 settled it by pinning this host to 4 cores
+# (`taskset -c 0-3`): internal/supervisor measured 100.09s against the recorded
+# 75s at the same core count, so the package grew by about a third. Re-adding a
+# number to this comment would recreate exactly the artifact that made that
+# question unanswerable for months. The live, dated, cache-annotated
 # baseline lives in scripts/testdata/validate-baseline.observed and is checked by
 # `make check-validate-baseline`; `make validate-baseline` re-measures it.
 #
