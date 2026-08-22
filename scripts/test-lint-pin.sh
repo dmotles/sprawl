@@ -47,7 +47,7 @@ GOLANGCI_CONFIG="$REPO_ROOT/.golangci.yml"
 # suite measures — a floor computed from the corpus it checks is satisfied by an
 # empty corpus, which is the exact false-green it exists to stop. Update it in
 # the same commit as any change to the number of assertions below.
-MIN_ASSERTIONS=33
+MIN_ASSERTIONS=37
 
 PASS=0
 FAIL=0
@@ -828,6 +828,60 @@ if echo "$SL_OUT" | grep -q 'ungated.go'; then
 	pass "C2c control fired: 'run' DOES report the identical violation once the build constraint is gone, so C2b can fail"
 else
 	fail "C2c control did NOT fire: 'run' ignored the same misformatted content with no build constraint. C2b's silence proves nothing about build constraints. Output: $(printf '%s' "$SL_OUT" | tail -3)"
+fi
+
+# ---------------------------------------------------------------------------
+# S (QUM-1287, review round 2): the REAL gate still walks the whole tree.
+#
+# LINT_SCOPE and FMT_SCOPE are `?=`, so the ENVIRONMENT wins over the default.
+# That is what makes them usable as seams, and it is also a hole: an inherited
+# `FMT_SCOPE=./internal/foo/...` silently narrows what `make validate` checks,
+# with no failure and nothing in the output saying the gate got smaller. A
+# narrowed gate is invisible in exactly the direction that matters — it passes.
+#
+# Deliberately reads the AMBIENT environment: no scrubbing, no `env -i`. The
+# subject of this assertion is "what would validate's own fmt-check/lint expand
+# to, here, now", so an inherited value MUST make it red rather than being
+# normalised away. The suite's other legs pass their scope as a make
+# command-line variable, which does not leak in.
+#
+# `make -n` and not a text grep of the Makefile: the value a recipe actually gets
+# is the thing at issue, and a grep of the assignment line cannot see the
+# environment overriding it. Costs no linter invocation at all.
+scope_is_whole_tree() {
+	printf '%s' "$1" | grep -qE ' \./\.\.\.( |$|\))'
+}
+
+S1_OUT=$(cd "$REPO_ROOT" && make -n fmt-check 2>&1 | grep -- 'fmt --diff')
+if scope_is_whole_tree "$S1_OUT"; then
+	pass "S1 validate's fmt-check still expands to ./... in this environment"
+else
+	fail "S1 fmt-check does NOT expand to ./... here: an inherited FMT_SCOPE has silently narrowed the formatting gate. Recipe: [$S1_OUT]"
+fi
+# S1c — POSITIVE CONTROL, aimed at the narrowed verdict: the identical probe under
+# an explicit override must report the failing verdict. Without it, S1's grep could
+# be mis-anchored and accept anything.
+S1_CTL=$(cd "$REPO_ROOT" && env FMT_SCOPE=./internal/hooks/... make -n fmt-check 2>&1 | grep -- 'fmt --diff')
+if scope_is_whole_tree "$S1_CTL"; then
+	fail "S1c control did NOT fire: the probe still read './...' under FMT_SCOPE=./internal/hooks/..., so S1 cannot detect a narrowed gate. Recipe: [$S1_CTL]"
+else
+	pass "S1c control fired: an environment FMT_SCOPE does narrow the recipe, and the probe sees it"
+fi
+
+# S2/S2c — the same pair for LINT_SCOPE. Its hole predates QUM-1287 (the seam is
+# older), but it is the same hole, one grep away, and there is no reason to assert
+# one and not the other.
+S2_OUT=$(cd "$REPO_ROOT" && make -n lint 2>&1 | grep -- 'golangci-lint@')
+if scope_is_whole_tree "$S2_OUT"; then
+	pass "S2 validate's lint still expands to ./... in this environment"
+else
+	fail "S2 lint does NOT expand to ./... here: an inherited LINT_SCOPE has silently narrowed the lint gate. Recipe: [$S2_OUT]"
+fi
+S2_CTL=$(cd "$REPO_ROOT" && env LINT_SCOPE=./internal/hooks/... make -n lint 2>&1 | grep -- 'golangci-lint@')
+if scope_is_whole_tree "$S2_CTL"; then
+	fail "S2c control did NOT fire: the probe still read './...' under LINT_SCOPE=./internal/hooks/..., so S2 cannot detect a narrowed gate. Recipe: [$S2_CTL]"
+else
+	pass "S2c control fired: an environment LINT_SCOPE does narrow the recipe, and the probe sees it"
 fi
 
 # ---------------------------------------------------------------------------
