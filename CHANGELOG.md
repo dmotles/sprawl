@@ -24,7 +24,7 @@ not strictly semver while we are pre-1.0.
 
 ### Fixed
 
-- **Database errors are now redacted on the last two surfaces of the `sprawl` binary that still printed them raw** (QUM-1280; `cmd/hubd` is a separate `main` with its own unredacted sink, tracked as QUM-1292) — `cmd/root.go`'s `Execute` sink and the `slog` records `internal/store` emits.
+- **Database errors are now redacted at two more surfaces** (QUM-1280) — but **not everywhere**, and the earlier wording here claiming these were "the last two" was false twice over: QA found a fourth in-binary sink at `internal/memory/handoff_event.go` (tracked as **QUM-1295**, High — it logs `store.Process`'s error through `slog.Default()`, which neither wrap point below reaches), and `cmd/hubd` is a separate `main` with its own unredacted sink (**QUM-1292**). Four sinks have now been found one at a time, each by a wider grep than the last, so treat any "that's all of them" claim in this chain as unmeasured until a class guard exists — QUM-1295 owns that. — `cmd/root.go`'s `Execute` sink and the `slog` records `internal/store` emits.
 
   `Execute` is the sink for *every* error any cobra command returns, which made it the widest credential carrier in the tree: `store migrate`'s pgx failure is produced from the DSN itself, and `store dispatch`'s degraded refusal wraps a pgx connect error. It now renders through `store.RedactError` in `writeExecError`. **Redaction happens at the PRINT, never at the return** — sanitising where the error is produced would replace the value with a string and break `errors.Is` for in-process callers.
 

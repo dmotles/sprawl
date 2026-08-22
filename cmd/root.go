@@ -47,8 +47,7 @@ func executeTo(w io.Writer, cmd *cobra.Command) int {
 // writeExecError renders err with DSN-shaped text removed (QUM-1280).
 //
 // This is the sink for EVERY error any cobra command returns, which makes it the
-// widest credential carrier in the `sprawl` binary (cmd/hubd is a separate main
-// with its own unredacted sink — QUM-1292): `store migrate`'s raw pgx
+// widest credential carrier among the paths that RETURN an error: `store migrate`'s raw pgx
 // failure is produced FROM the DSN, and `store dispatch`'s degraded refusal
 // wraps a pgx connect error. This repo is public and the real DSN arrives at
 // runtime, so the concrete failure mode is an operator pasting a terminal error
@@ -65,6 +64,13 @@ func executeTo(w io.Writer, cmd *cobra.Command) int {
 //
 // The nil guard matters: RedactError(nil) is "", so an unconditional Fprintln
 // would print a blank line.
+//
+// THIS IS NOT THE ONLY SINK, and an earlier version of this comment implied it
+// was the last one left. A path that SWALLOWS its error and logs it never
+// arrives here: internal/memory/handoff_event.go does exactly that through
+// slog.Default(), which no wrapper installed by this change reaches (QUM-1295),
+// and cmd/hubd is a separate main with its own print (QUM-1292). Do not read
+// this function as coverage of the binary.
 func writeExecError(w io.Writer, err error) {
 	if err == nil {
 		return

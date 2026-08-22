@@ -160,8 +160,11 @@ func redactAttr(a slog.Attr) (slog.Attr, bool) {
 
 func redactValue(v slog.Value) (slog.Value, bool) {
 	// Resolve FIRST: a LogValuer whose LogValue() yields the DSN is invisible
-	// behind an unresolved KindAny. Resolve caps at 5 hops and recovers panics,
-	// and the inner handler resolving again is idempotent.
+	// behind an unresolved KindAny. Resolve is bounded (log/slog's maxLogValues,
+	// 100 hops as of go1.26 — an earlier version of this comment said 5, which
+	// is the frame count in its panic stack trace, not the hop cap) and it
+	// recovers panics, so this cannot crash the wrapper. The inner handler
+	// resolving again is idempotent.
 	resolved := v.Resolve()
 	switch resolved.Kind() {
 	case slog.KindGroup:
