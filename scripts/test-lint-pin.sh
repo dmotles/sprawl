@@ -47,7 +47,7 @@ GOLANGCI_CONFIG="$REPO_ROOT/.golangci.yml"
 # suite measures — a floor computed from the corpus it checks is satisfied by an
 # empty corpus, which is the exact false-green it exists to stop. Update it in
 # the same commit as any change to the number of assertions below.
-MIN_ASSERTIONS=24
+MIN_ASSERTIONS=31
 
 PASS=0
 FAIL=0
@@ -169,24 +169,40 @@ fi
 
 # A2d — same for fmt-check, which is a separate target with its own invocation.
 #
-# Deliberately asserts ONLY on the exit status, with no sentinel-in-output
-# branch. fmt-check's recipe is `@test -z "$$($(GOLANGCI_LINT) fmt --diff ...)"`,
-# so the linter's stdout is captured by the INNER $( ) and consumed by
-# `test -z`; it never reaches an outer capture. A sentinel branch here would be
-# unreachable code masquerading as an assertion — measured in a scratch dir with
-# an unpinned recipe and the decoy on PATH: rc=2, and the sentinel was INVISIBLE
-# in the captured output.
+# QUM-1287 REWROTE this block. It used to argue at length that a
+# sentinel-in-output assertion here was unreachable, because the recipe was
+# `@test -z "$$($(GOLANGCI_LINT) fmt --diff ./...)"` and the linter's stdout was
+# consumed by the inner $( ) and never reached an outer capture. That was true and
+# is now false: the recipe captures the output and PRINTS it (it also propagates
+# the exit status, which it previously discarded — see F1/F2 below). So the
+# sentinel leg is now live, and asserting it is strictly stronger than the
+# exit-status-only form, which could not distinguish "the pin bound" from "the
+# decoy ran and happened to satisfy the check".
 #
-# The exit status is a sound discriminator anyway, and note WHY it is not the
-# same tautology as A2c: the decoy prints a line to stdout and exits 0, so under
-# an unpinned fmt-check `test -z` sees NON-empty output and fails the target.
-# So an unpinned fmt-check is red here, a pinned one green.
-FMT_OUT=$(cd "$REPO_ROOT" && PATH="$DECOY_DIR:$PATH" make fmt-check 2>&1)
+# Scoped via FMT_SCOPE for the same reason A2b/A2c use LINT_SCOPE: this asks
+# WHICH BINARY ran, not what it found.
+FMT_OUT=$(cd "$REPO_ROOT" && PATH="$DECOY_DIR:$PATH" make fmt-check FMT_SCOPE="$LINT_SCOPE" 2>&1)
 FMT_RC=$?
 if [ "$FMT_RC" -eq 0 ]; then
 	pass "A2d make fmt-check ignored the PATH decoy and passed"
 else
-	fail "A2d make fmt-check returned $FMT_RC with the decoy on PATH; expected 0. Either the pin does not bind for fmt-check, or the tree genuinely needs formatting: $(printf '%s' "$FMT_OUT" | tail -2)"
+	fail "A2d make fmt-check returned $FMT_RC with the decoy on PATH; expected 0. Either the pin does not bind for fmt-check, or the tree genuinely needs formatting: $(printf '%s' "$FMT_OUT" | tail -3)"
+fi
+if echo "$FMT_OUT" | grep -q 'SPRAWL-LINT-PIN-DECOY-SENTINEL'; then
+	fail "A2e make fmt-check ran the PATH decoy instead of the pinned binary — the pin does not bind for fmt-check"
+else
+	pass "A2e make fmt-check output carries no decoy sentinel"
+fi
+# A2f — POSITIVE CONTROL for A2e, aimed at the sentinel appearing. The decoy IS
+# the tool here (GOLANGCI_LINT points at it), so the sentinel MUST show up in the
+# captured output. Without this, A2e is indistinguishable from a recipe whose
+# output never reaches the caller — the exact false-green this block used to
+# document as unavoidable.
+FMT_CTL=$(cd "$REPO_ROOT" && make fmt-check GOLANGCI_LINT="$DECOY_DIR/golangci-lint" FMT_SCOPE="$LINT_SCOPE" 2>&1)
+if echo "$FMT_CTL" | grep -q 'SPRAWL-LINT-PIN-DECOY-SENTINEL'; then
+	pass "A2f control fired: with the decoy AS the formatter its sentinel is visible, so A2e can fail"
+else
+	fail "A2f control did NOT fire: the decoy's sentinel was invisible even when it was the formatter, so A2e proves nothing. Output: $(printf '%s' "$FMT_CTL" | tail -3)"
 fi
 
 # ---------------------------------------------------------------------------
@@ -693,6 +709,87 @@ else
 	fail "A11a fixture missing at $STALE_WT; A10a must have failed to create it"
 	fail "A11b fixture missing at $STALE_WT; A10a must have failed to create it"
 fi
+
+# ---------------------------------------------------------------------------
+# F (QUM-1287): fmt-check must not be able to pass without checking.
+#
+# `fmt-check`'s recipe was `@test -z "$$($(GOLANGCI_LINT) fmt --diff ./...)"`,
+# which captures stdout and THROWS THE EXIT STATUS AWAY. So any tool failure
+# that prints nothing to stdout was a green: measured on the parent commit,
+#   make fmt-check GOLANGCI_LINT='false'                            -> rc=0
+#   make fmt-check GOLANGCI_LINT='sh -c "echo boom >&2; exit 7" --'  -> rc=0, printed "boom"
+# i.e. the repo's formatting gate could silently not happen. These two legs are
+# the non-asserting fallback CLAUDE.md forbids, in the gate itself.
+#
+# They are also the cheapest assertions in this file: neither runs the real
+# linter, and both are scoped to one small package for the same reason A2b/A2c
+# are (see the LINT_SCOPE note at the top of this file).
+# ---------------------------------------------------------------------------
+F1_OUT=$(cd "$REPO_ROOT" && make fmt-check GOLANGCI_LINT='false' FMT_SCOPE="$LINT_SCOPE" 2>&1)
+F1_RC=$?
+if [ "$F1_RC" -ne 0 ]; then
+	pass "F1 fmt-check FAILS when the formatter cannot run at all (rc=$F1_RC)"
+else
+	fail "F1 fmt-check returned 0 with a formatter that exits non-zero and prints nothing. The formatting check did not run and reported success: $(printf '%s' "$F1_OUT" | tail -2)"
+fi
+
+F2_OUT=$(cd "$REPO_ROOT" && make fmt-check GOLANGCI_LINT='sh -c "echo boom >&2; exit 7" --' FMT_SCOPE="$LINT_SCOPE" 2>&1)
+F2_RC=$?
+if [ "$F2_RC" -ne 0 ]; then
+	pass "F2 fmt-check propagates a formatter failure that only wrote to stderr (rc=$F2_RC)"
+else
+	fail "F2 fmt-check returned 0 over a formatter that exited 7; the diagnostic went to stderr and was ignored"
+fi
+
+# F3 — NEGATIVE control for F1/F2, subject known clean: with the REAL pinned
+# formatter, the same invocation must stay quiet. Without this, F1/F2 are equally
+# consistent with a recipe that always fails.
+F3_OUT=$(cd "$REPO_ROOT" && make fmt-check FMT_SCOPE="$LINT_SCOPE" 2>&1)
+F3_RC=$?
+if [ "$F3_RC" -eq 0 ]; then
+	pass "F3 negative control stayed quiet: fmt-check passes on a correctly formatted subject"
+else
+	fail "F3 negative control FIRED: fmt-check returned $F3_RC on $LINT_SCOPE with the real formatter. Either that package genuinely needs 'make fmt', or the recipe now fails unconditionally and F1/F2 above prove nothing: $(printf '%s' "$F3_OUT" | tail -3)"
+fi
+
+# ---------------------------------------------------------------------------
+# C1 (QUM-1287): the PREMISE for keeping fmt-check as a second pass over the
+# tree. `golangci-lint run` does report formatter findings in v2 (measured:
+# a misformatted file gave "File is not properly formatted (gofumpt)"), so
+# fmt-check looks redundant — but `run` only loads files that satisfy the host's
+# build constraints, while `fmt` walks the source. This tree has files that only
+# the latter can see, so collapsing the two would SILENTLY stop checking them.
+#
+# Positive control below proves this probe can return the other verdict.
+# ---------------------------------------------------------------------------
+IGNORED=$(cd "$REPO_ROOT" && go list -f '{{.IgnoredGoFiles}}' ./... 2>/dev/null | grep -v '^\[\]$')
+if [ -n "$IGNORED" ]; then
+	pass "C1 premise holds: build-constraint-excluded files exist ($(printf '%s\n' "$IGNORED" | wc -l) packages), so 'lint' cannot see everything 'fmt-check' does"
+else
+	fail "C1 the premise for keeping fmt-check as a separate pass has GONE: no build-constraint-excluded files remain, so 'golangci-lint run' may now cover the whole tree. This is not a broken tree — re-evaluate collapsing fmt-check into lint (QUM-1287)."
+fi
+
+# C1c — POSITIVE CONTROL for C1, aimed at the empty verdict: the identical
+# computation over a scratch module with no tag-gated file must come back EMPTY.
+# Otherwise C1 is a tautology over `go list` output and could not distinguish the
+# two worlds it claims to.
+C1_DIR=$(mktemp -d "${TMPDIR:-/tmp}/sprawl-lint-premise-XXXXXX")
+case "$C1_DIR" in
+/tmp/*)
+	printf 'module premise\n\ngo 1.26\n' >"$C1_DIR/go.mod"
+	printf 'package premise\n\nfunc F() {}\n' >"$C1_DIR/a.go"
+	C1_CTL=$(cd "$C1_DIR" && go list -f '{{.IgnoredGoFiles}}' ./... 2>/dev/null | grep -v '^\[\]$')
+	if [ -z "$C1_CTL" ]; then
+		pass "C1c control: the same probe reports EMPTY on a module with no build-constraint-excluded file, so C1 can fail"
+	else
+		fail "C1c control did NOT behave: probe reported [$C1_CTL] on a scratch module that has no tag-gated file — C1 is unproven"
+	fi
+	rm -rf "$C1_DIR"
+	;;
+*)
+	fail "C1c could not obtain a scratch dir under /tmp (got [$C1_DIR]); C1 is unproven"
+	;;
+esac
 
 # ---------------------------------------------------------------------------
 # Summary + assertion-count floor.

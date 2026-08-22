@@ -72,7 +72,8 @@ make              # runs full validation. Its steps are declared in the Makefile
                   # VALIDATE_STEPS by
                   # TestSprawlInternalsSkillBuildTargetsMatchMakefile, so if the two
                   # ever disagree the test is what tells you, not this text:
-                  #   build hooks-armed proto-check fmt-check lint test-lint-pin
+                  #   build test-build-stamp hooks-armed proto-check fmt-check
+                  #   lint test-lint-pin
                   #   test-race-gate test-race test-wirelog-helpers-unit
                   #   test-e2e-lockwait-unit test-e2e-matrix-unit
                   #   test-always-loaded-budget-unit always-loaded-budget
@@ -90,13 +91,23 @@ make              # runs full validation. Its steps are declared in the Makefile
 make validate     # same as above — the default target
 make build        # builds ./sprawl binary
 make fmt          # auto-fix formatting
-make fmt-check    # check formatting without fixing (used in CI/hooks)
+make fmt-check    # check formatting without fixing (used in CI/hooks). NOT redundant with
+                  # `lint`, even though `golangci-lint run` also reports formatter
+                  # findings in v2: `run` only loads files satisfying the host's build
+                  # constraints, while `fmt` walks the source, and this tree has 17
+                  # build-constraint-excluded files in 6 packages. FMT_SCOPE narrows it
+                  # for the pin suite; validate always runs it over ./... (QUM-1287)
 make lint         # run golangci-lint
 make test         # run all unit tests WITHOUT -race — a convenience run, NOT what validate uses
 make test-race    # go test -race ./... — THE enforced gate; validate depends on this, not `test`
 make test-race-gate  # shell unit test proving validate's go-test invocation still carries -race,
                      # and that -race really detects a planted race in this toolchain
 make test-lint-pin   # proves the golangci-lint version pin actually BINDS, not just that lint passed
+make test-build-stamp  # proves `make build` relinks to BYTE-IDENTICAL binaries on an unchanged
+                       # tree. main.date is HEAD's committer date, not wall clock, so the link is
+                       # cacheable; on a dirty tree `built:` therefore reports the parent commit's
+                       # time (QUM-1287)
+make print-ldflags     # the resolved LDFLAGS — the seam test-build-stamp reads without compiling
 make test-e2e-matrix-unit  # shell unit tests for the e2e matrix driver (fast, no claude)
 make test-e2e-lockwait-unit      # bash unit tests for the e2e harness' weave.lock release wait
 make test-always-loaded-budget-unit  # fixture-only unit suite for the always-loaded budget resolver

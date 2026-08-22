@@ -31,27 +31,28 @@ go=go1.26.6
 os_arch=linux/arm64
 go_cache=cold
 lint_cache=warm
-total_wall_s=282.63
-driver_overhead_s=0.06
-step	build	1.49	0
-step	hooks-armed	1.52	0
-step	proto-check	0.72	0
-step	fmt-check	7.01	0
-step	lint	1.80	0
-step	test-lint-pin	12.80	0
-step	test-race-gate	1.63	0
-step	test-race	123.49	0
+total_wall_s=285.17
+driver_overhead_s=0.07
+step	build	0.40	0
+step	test-build-stamp	5.16	0
+step	hooks-armed	0.44	0
+step	proto-check	0.75	0
+step	fmt-check	7.31	0
+step	lint	1.77	0
+step	test-lint-pin	8.04	0
+step	test-race-gate	1.69	0
+step	test-race	124.68	0
 step	test-wirelog-helpers-unit	0.36	0
-step	test-e2e-lockwait-unit	15.16	0
-step	test-e2e-matrix-unit	96.39	0
-step	test-always-loaded-budget-unit	13.75	0
-step	always-loaded-budget	0.47	0
-step	test-gitignore-classes	2.58	0
-step	test-validate-timing-unit	2.23	0
-step	check-validate-baseline	0.06	0
-step	leak-scan	1.11	0
-pkg	github.com/dmotles/sprawl/internal/supervisor	102.050
-pkg	github.com/dmotles/sprawl/cmd	43.616
-pkg	github.com/dmotles/sprawl/internal/hub	33.581
-pkg	github.com/dmotles/sprawl/internal/runtime	23.990
-pkg	github.com/dmotles/sprawl/internal/githooks	14.701
+step	test-e2e-lockwait-unit	13.96	0
+step	test-e2e-matrix-unit	96.45	0
+step	test-always-loaded-budget-unit	17.35	0
+step	always-loaded-budget	0.48	0
+step	test-gitignore-classes	2.73	0
+step	test-validate-timing-unit	2.32	0
+step	check-validate-baseline	0.08	0
+step	leak-scan	1.13	0
+pkg	github.com/dmotles/sprawl/internal/supervisor	102.086
+pkg	github.com/dmotles/sprawl/cmd	44.201
+pkg	github.com/dmotles/sprawl/internal/hub	33.838
+pkg	github.com/dmotles/sprawl/internal/runtime	24.011
+pkg	github.com/dmotles/sprawl/internal/githooks	16.003

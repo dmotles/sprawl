@@ -1,4 +1,4 @@
-.PHONY: lint-cache-dir test-lint-pin validate build hooks-armed proto-check proto-gen proto-gen-web hub-web fmt-check lint test clean install fmt hooks leak-scan test-handoff-e2e test-exit-code-preservation test-parallel-agent-viewport-e2e test-tui-e2e test-leak-resistance-e2e test-e2e-matrix test-e2e-matrix-unit test-hooks-e2e test-hub-bootstrap test-hub-e2e test-store-pg test-wirelog-helpers-unit test-e2e-lockwait-unit test-gitignore-classes test-race test-race-gate always-loaded-budget test-always-loaded-budget-unit print-validate-steps test-validate-timing-unit check-validate-baseline validate-baseline
+.PHONY: lint-cache-dir test-lint-pin validate build hooks-armed proto-check proto-gen proto-gen-web hub-web fmt-check lint test clean install fmt hooks leak-scan test-handoff-e2e test-exit-code-preservation test-parallel-agent-viewport-e2e test-tui-e2e test-leak-resistance-e2e test-e2e-matrix test-e2e-matrix-unit test-hooks-e2e test-hub-bootstrap test-hub-e2e test-store-pg test-wirelog-helpers-unit test-e2e-lockwait-unit test-gitignore-classes test-race test-race-gate always-loaded-budget test-always-loaded-budget-unit print-validate-steps test-validate-timing-unit check-validate-baseline validate-baseline print-ldflags test-build-stamp
 
 # THIS_MAKEFILE must be resolved HERE, above any include, where MAKEFILE_LIST's
 # last entry is still this file. Files named in the MAKEFILES environment
@@ -14,7 +14,8 @@ THIS_MAKEFILE := $(abspath $(lastword $(MAKEFILE_LIST)))
 # scripts/testdata/validate-baseline.observed is checked against it — so a step
 # added or removed here propagates everywhere instead of leaving a second,
 # hand-maintained list to rot.
-VALIDATE_STEPS := build hooks-armed proto-check fmt-check lint test-lint-pin \
+VALIDATE_STEPS := build test-build-stamp hooks-armed proto-check fmt-check \
+	lint test-lint-pin \
 	test-race-gate test-race test-wirelog-helpers-unit test-e2e-lockwait-unit \
 	test-e2e-matrix-unit test-always-loaded-budget-unit always-loaded-budget \
 	test-gitignore-classes test-validate-timing-unit check-validate-baseline \
@@ -187,7 +188,29 @@ hub-web:
 
 VERSION ?= $(shell git describe --tags --always 2>/dev/null || echo dev)
 COMMIT  ?= $(shell git rev-parse HEAD 2>/dev/null || echo none)
-DATE    ?= $(shell date -u +%Y-%m-%dT%H:%M:%SZ)
+# QUM-1287: the stamp is HEAD's COMMITTER DATE, not wall-clock build time (the
+# reproducible-builds SOURCE_DATE_EPOCH convention). It was `date -u`, which
+# changes on every invocation and made the link output unreusable BY
+# CONSTRUCTION: every `make validate` — so every pre-commit hook, for every
+# agent — relinked both binaries even when nothing had changed. Measured: two
+# consecutive `make build` runs on an unchanged tree produced different hashes,
+# and a changed stamp costs ~1.3s of relink against ~0.2s for a cached one.
+#
+# `format-local:` with TZ=UTC0, NOT `format:`. `--date=format:` renders the
+# committer's own recorded offset and ignores TZ entirely, so on a commit made at
+# a non-UTC offset it yields a local wall-clock time suffixed with a literal `Z`
+# — wrong by the offset, yet self-consistent. Asserted by scripts/test-build-stamp.sh.
+#
+# $(or ...) rather than a `||` fallback inside $(shell): outside a checkout
+# `git log` exits 128 and a `||` still lets the EMPTY success through, stamping
+# `-X main.date=` with nothing. buildinfo's own default for an unstamped build is
+# "unknown", so that is the word used here too.
+#
+# `built:` therefore under-reports on a dirty tree: a binary built from
+# uncommitted work claims its parent commit's time. That is inherent to making
+# the link a function of the tree, and nothing branches on the value — `sprawl
+# version` prints it and that is its only surface.
+DATE    ?= $(or $(shell TZ=UTC0 git log -1 --format=%cd --date=format-local:%Y-%m-%dT%H:%M:%SZ 2>/dev/null),unknown)
 # QUM-1286: DEFERRED (`=`), not simply-expanded. VERSION/COMMIT/DATE each fork a
 # subprocess, and validate now runs 17 sub-makes; a simply-expanded LDFLAGS made
 # every one of them fork `git describe`, `git rev-parse` and `date` at PARSE
@@ -197,6 +220,17 @@ LDFLAGS = -s -w \
 	-X main.version=$(VERSION) \
 	-X main.commit=$(COMMIT) \
 	-X main.date=$(DATE)
+
+# Introspection seam, in the same spirit as print-validate-steps and
+# lint-cache-dir: it lets scripts/test-build-stamp.sh assert the stamp's
+# stability and provenance WITHOUT paying a compile.
+print-ldflags:
+	@printf '%s\n' '$(LDFLAGS)'
+
+# QUM-1287: the byte-identity gate for the stamp above. In `validate` because a
+# regression here is silent — a needlessly relinked binary still works.
+test-build-stamp:
+	bash scripts/test-build-stamp.sh
 
 build:
 	go build -ldflags "$(LDFLAGS)" -o sprawl .
@@ -278,9 +312,47 @@ export GOLANGCI_LINT_CACHE
 fmt:
 	$(GOLANGCI_LINT) fmt ./...
 
+# FMT_SCOPE exists for the same reason LINT_SCOPE does (see below): the pin
+# assertions in scripts/test-lint-pin.sh ask WHICH BINARY ran, not what it found,
+# so they have no need to walk ./... — and linting or formatting the whole tree
+# three extra times per `make validate` widens the window in which every OTHER
+# agent's validate hits golangci-lint's machine-wide lock. Measured: scoping the
+# suite's fmt-check legs to one package took ~6.5s off `make test-lint-pin`.
+# validate's own fmt-check step still walks ./..., which is the run that matters.
+FMT_SCOPE ?= ./...
+
+# QUM-1287: this recipe was `@test -z "$$($(GOLANGCI_LINT) fmt --diff ./...)"`,
+# which captured stdout and DISCARDED the exit status — so a formatter that
+# failed without printing to stdout made the formatting gate pass. Measured on
+# the parent commit: `make fmt-check GOLANGCI_LINT=false` and a variant exiting 7
+# with output on stderr BOTH returned 0. That is a non-asserting fallback in the
+# gate itself; scripts/test-lint-pin.sh F1/F2 hold it shut.
+#
+# Both conditions are reported separately and neither can be silent: a non-empty
+# diff means the tree needs formatting, and a non-zero status with no diff means
+# the check DID NOT RUN, which must never read as a clean tree. The diff is
+# printed (it was previously swallowed) with the actionable line last.
+#
+# Note this is NOT redundant with `lint`, despite `golangci-lint run` also
+# reporting formatter findings in v2 — measured, "File is not properly formatted
+# (gofumpt)". `run` only loads files satisfying the host's build constraints,
+# while `fmt` walks the source, and this tree has 17 such files in 6 packages
+# (`go list -f '{{.IgnoredGoFiles}}' ./...`). Collapsing the two would silently
+# stop checking all of them. The premise is asserted, not assumed:
+# scripts/test-lint-pin.sh C1 goes red if those files ever disappear, so the
+# collapse gets re-evaluated instead of being forgotten.
 fmt-check:
 	@echo "Checking formatting..."
-	@test -z "$$($(GOLANGCI_LINT) fmt --diff ./...)" || (echo "Files need formatting. Run 'make fmt' to fix." && exit 1)
+	@out=$$($(GOLANGCI_LINT) fmt --diff $(FMT_SCOPE)); rc=$$?; \
+	if [ -n "$$out" ]; then \
+		printf '%s\n' "$$out"; \
+		echo "Files need formatting. Run 'make fmt' to fix."; \
+		exit 1; \
+	fi; \
+	if [ "$$rc" -ne 0 ]; then \
+		echo "the pinned formatter exited $$rc without printing a diff: the formatting check DID NOT RUN. This is a tool or config failure, not a clean tree."; \
+		exit $$rc; \
+	fi
 
 # LINT_SCOPE exists so scripts/test-lint-pin.sh can exercise WHICH BINARY runs
 # without linting ./... three extra times per validate — golangci-lint's lock is
