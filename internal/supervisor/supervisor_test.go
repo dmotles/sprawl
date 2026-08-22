@@ -26,6 +26,16 @@ func newTestSupervisor(t *testing.T) (*Real, string) {
 		t.Fatalf("NewReal: %v", err)
 	}
 
+	// Fixtures register Shutdown in t.Cleanup, and a test holding a wedged
+	// in-turn fake handle would otherwise pay the full production
+	// defaultShutdownPauseBudget (5s) on teardown — ~40s across this package,
+	// the largest single cost in the unit suite (QUM-1288).
+	//
+	// This shortens the budget; it does not disable it. The escalation the
+	// budget gates is still asserted, at this shorter value, by
+	// TestRealShutdown_InFlightTurnsEscalateToKillAfterTimeout.
+	sup.shutdownPauseBudget.set(50 * time.Millisecond)
+
 	return sup, tmpDir
 }
 

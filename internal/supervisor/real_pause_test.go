@@ -561,3 +561,48 @@ func TestRealPause_DiskOnlyDoesNotClobberTerminalStatus(t *testing.T) {
 		})
 	}
 }
+
+// TestRealShutdown_PauseBudgetIsOverridable — the shutdown pause budget is a
+// per-Real atomicDuration seam, not a hardcoded const, so a test with a
+// deliberately wedged in-turn handle pays milliseconds instead of the full
+// production budget.
+//
+// This exists because the budget was a `const pauseBudget = 5 * time.Second`
+// inside Real.Shutdown. Fixtures register Shutdown in t.Cleanup, so every test
+// holding an in-turn fake handle burned the whole 5s in teardown — measured at
+// ~40s across the package, the single largest cost in the unit suite (QUM-1288).
+//
+// The assertion is two-sided on purpose. The elapsed bound proves the override
+// is actually read by production, and the killed-status check proves lowering it
+// did not disable the escalation the budget gates: a Shutdown that returned
+// instantly without escalating would satisfy the timing half alone.
+func TestRealShutdown_PauseBudgetIsOverridable(t *testing.T) {
+	r, tmpDir := newFakeReal(t)
+	saveTestAgent(t, tmpDir, &state.AgentState{Name: "stuck", Parent: "weave", Status: state.StatusActive})
+
+	r.shutdownPauseBudget.set(50 * time.Millisecond)
+
+	h := &pauseRecordingHandle{inTurn: true}
+	rt := r.runtimeRegistry.Ensure(AgentRuntimeConfig{
+		SprawlRoot: tmpDir,
+		Agent:      &state.AgentState{Name: "stuck", Status: state.StatusActive},
+	})
+	rt.AttachHandle(h)
+
+	start := time.Now()
+	if err := r.Shutdown(context.Background()); err != nil {
+		t.Fatalf("Shutdown: %v", err)
+	}
+	elapsed := time.Since(start)
+
+	if elapsed > 2*time.Second {
+		t.Errorf("Shutdown elapsed = %v with a 50ms budget: the override is not being read", elapsed)
+	}
+	cur, err := state.LoadAgent(tmpDir, "stuck")
+	if err != nil {
+		t.Fatalf("LoadAgent: %v", err)
+	}
+	if cur == nil || cur.Status != state.StatusKilled {
+		t.Errorf("stuck did not escalate to killed under the shortened budget; lowering the knob must not disable escalation")
+	}
+}

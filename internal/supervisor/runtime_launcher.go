@@ -555,7 +555,13 @@ func (h *unifiedHandle) drainPendingToStdin() error {
 // that drain and never reached its `retire.preflight` checkpoint, producing
 // a multi-minute hang. Bounding the wait keeps retire snappy; the OS reaps
 // the SIGKILL'd process eventually.
-const unifiedHandleStopWaitTimeout = 5 * time.Second
+//
+// atomicDuration per the repo-wide CLAUDE.md convention rather than a plain
+// var: production reads it from stopOnceWith, which runs on whichever
+// goroutine drove the teardown, and tests override it — so a plain var would be
+// a live race under -race. The two tests that deliberately wedge session.Wait
+// paid the full 5s each before this became a seam (QUM-1288).
+var unifiedHandleStopWaitTimeout = newAtomicDuration(5 * time.Second)
 
 func (h *unifiedHandle) Stop(ctx context.Context) error {
 	return h.stopOnceWith(ctx, func(ctx context.Context) error { return h.rt.Stop(ctx) })
@@ -612,7 +618,7 @@ func (h *unifiedHandle) stopOnceWith(ctx context.Context, stopRuntime func(conte
 		// QUM-546: capture the bounded-Wait timeout signal so Real.Retire/Kill
 		// can surface it via the retire.runtime-stop-done / kill.runtime-stop-done
 		// MCP-call checkpoints.
-		if teardownSession(h.session, unifiedHandleStopWaitTimeout, "handle", "unifiedHandle", "session_id", h.sessionID) {
+		if teardownSession(h.session, unifiedHandleStopWaitTimeout.get(), "handle", "unifiedHandle", "session_id", h.sessionID) {
 			h.stopWaitTimedOut.Store(true)
 		}
 		if h.activityFile != nil || h.activityClose != nil {

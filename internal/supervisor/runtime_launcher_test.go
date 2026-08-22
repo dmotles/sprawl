@@ -800,6 +800,7 @@ func TestUnifiedHandle_StopUnsubscribesEventBus(t *testing.T) {
 // pipe-drain cannot wedge retire. SIGKILL still fires (QUM-543), the OS reaps
 // the zombie eventually, and Stop returns within seconds.
 func TestUnifiedHandle_Stop_BoundedWhenSessionWaitWedges(t *testing.T) {
+	shortenStopWaitTimeout(t)
 	uh, fakeSession, _ := buildStartedUnifiedHandleForTest(t, backend.Capabilities{})
 
 	// Arm Wait() to block forever. Ensure cleanup unblocks it so the goroutine
@@ -872,6 +873,7 @@ func TestUnifiedHandle_StopWaitTimedOut_FalseOnCleanStop(t *testing.T) {
 // Mirrors TestUnifiedHandle_Stop_BoundedWhenSessionWaitWedges (QUM-542) for
 // the timeout-detection seam.
 func TestUnifiedHandle_StopWaitTimedOut_TrueOnTimeout(t *testing.T) {
+	shortenStopWaitTimeout(t)
 	uh, fakeSession, _ := buildStartedUnifiedHandleForTest(t, backend.Capabilities{})
 
 	block := make(chan struct{})
@@ -1906,4 +1908,57 @@ func TestBuildAgentSystemPrompt_NoAppendWhenEmpty(t *testing.T) {
 	if strings.Contains(got, "## Operator Instructions") {
 		t.Errorf("empty SystemPromptAppend must not add an Operator Instructions header:\n%s", got)
 	}
+}
+
+// TestUnifiedHandleStopWaitTimeout_IsOverridableSeam — the post-Kill
+// session.Wait bound is an atomicDuration seam, not a hardcoded const, so the
+// two tests that deliberately wedge session.Wait pay milliseconds instead of
+// the full production 5s each (QUM-1288).
+//
+// Two-sided: the elapsed bound proves the override reaches production, and
+// StopWaitTimedOut() proves shortening it did not disable the detection the
+// bound exists to feed — a Stop that returned instantly without recording the
+// timeout would satisfy the timing half alone.
+func TestUnifiedHandleStopWaitTimeout_IsOverridableSeam(t *testing.T) {
+	uh, fakeSession, _ := buildStartedUnifiedHandleForTest(t, backend.Capabilities{})
+
+	prev := unifiedHandleStopWaitTimeout.get()
+	t.Cleanup(func() { unifiedHandleStopWaitTimeout.set(prev) })
+	unifiedHandleStopWaitTimeout.set(50 * time.Millisecond)
+
+	block := make(chan struct{})
+	fakeSession.mu.Lock()
+	fakeSession.waitBlock = block
+	fakeSession.mu.Unlock()
+	t.Cleanup(func() {
+		select {
+		case <-block:
+		default:
+			close(block)
+		}
+	})
+
+	start := time.Now()
+	if err := uh.Stop(context.Background()); err != nil {
+		t.Fatalf("Stop returned error: %v", err)
+	}
+	elapsed := time.Since(start)
+
+	if elapsed > 2*time.Second {
+		t.Errorf("Stop took %v with a 50ms wait bound: the override is not being read", elapsed)
+	}
+	if !uh.StopWaitTimedOut() {
+		t.Error("StopWaitTimedOut() = false: shortening the bound must not disable timeout detection")
+	}
+}
+
+// shortenStopWaitTimeout lowers the post-Kill session.Wait bound for a test
+// that deliberately wedges Wait, so the test pays milliseconds instead of the
+// full production 5s. It shortens the bound; it does not disable it — each
+// caller still asserts the bounded wait fired.
+func shortenStopWaitTimeout(t *testing.T) {
+	t.Helper()
+	prev := unifiedHandleStopWaitTimeout.get()
+	t.Cleanup(func() { unifiedHandleStopWaitTimeout.set(prev) })
+	unifiedHandleStopWaitTimeout.set(50 * time.Millisecond)
 }

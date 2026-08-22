@@ -55,6 +55,11 @@ type Config struct {
 // shared logic used by the spawn/merge/retire/kill MCP tools (and the
 // `sprawl merge` CLI command, which is still surfaced standalone).
 //
+// defaultShutdownPauseBudget is the production value of Real.shutdownPauseBudget:
+// how long an in-turn agent gets to drain its turn during Shutdown before the
+// escalation to StopAbandon.
+const defaultShutdownPauseBudget = 5 * time.Second
+
 // The *Fn fields are test seams: tests can swap them to exercise Real's
 // wiring without touching the underlying agentops machinery (which is
 // already covered by cmd/*_test.go and internal/agentops tests).
@@ -188,6 +193,17 @@ type Real struct {
 	// plain time.Duration would be a live race under -race.
 	idleReclaimAfter *atomicDuration
 	idleReclaimSweep *atomicDuration
+
+	// shutdownPauseBudget bounds how long Shutdown waits for an in-turn agent
+	// to drain before escalating to StopAbandon. atomicDuration per the
+	// repo-wide convention: production reads it from the per-runtime goroutines
+	// Shutdown fans out, and tests override it, so a plain time.Duration would
+	// be a live race under -race.
+	//
+	// It is a seam rather than a const because fixtures register Shutdown in
+	// t.Cleanup; a test holding a wedged in-turn fake handle used to pay the
+	// full production budget in teardown, ~40s across this package (QUM-1288).
+	shutdownPauseBudget *atomicDuration
 
 	// reclaimMu guards the reclaimGates MAP only; each entry carries its own
 	// locks (see reclaimEntry in idlereap.go). The entry's gate is the PER-AGENT
@@ -417,6 +433,7 @@ func NewReal(cfg Config) (*Real, error) {
 	// the goroutine is never started at all rather than started and made inert.
 	r.idleReclaimAfter = newAtomicDuration(config.DefaultIdleReclaimAfter)
 	r.idleReclaimSweep = newAtomicDuration(config.DefaultIdleReclaimSweep)
+	r.shutdownPauseBudget = newAtomicDuration(defaultShutdownPauseBudget)
 	if c, err := config.Load(cfg.SprawlRoot); err != nil {
 		slog.Default().Warn("idle reclaim: config could not be read; using built-in defaults",
 			slog.Any("err", err))
@@ -1533,7 +1550,7 @@ func (r *Real) Shutdown(ctx context.Context) error {
 	// bounded budget that escalates to StopAbandon → killed if the turn
 	// doesn't drain in time. Iteration is parallel so the wall-clock floor
 	// is one budget, not N.
-	const pauseBudget = 5 * time.Second
+	pauseBudget := r.shutdownPauseBudget.get()
 	var wg sync.WaitGroup
 	var errMu sync.Mutex
 	var firstErr error
