@@ -25,34 +25,36 @@
 # costs of stepwise timing, which are one duplicate warm 'build' (validate
 # runs it as a step and again as hooks-armed's prerequisite) and one make
 # parse per step.
-recorded=2026-08-22
+recorded=2026-08-23
 cores=8
 go=go1.26.6
 os_arch=linux/arm64
 go_cache=cold
 lint_cache=warm
-total_wall_s=285.17
-driver_overhead_s=0.07
-step	build	0.40	0
-step	test-build-stamp	5.16	0
-step	hooks-armed	0.44	0
-step	proto-check	0.75	0
-step	fmt-check	7.31	0
-step	lint	1.77	0
-step	test-lint-pin	8.04	0
-step	test-race-gate	1.69	0
-step	test-race	124.68	0
+total_wall_s=243.17
+driver_overhead_s=0.05
+step	build	0.36	0
+step	test-build-stamp	5.08	0
+step	hooks-armed	0.40	0
+step	proto-check	0.74	0
+step	fmt-check	7.13	0
+step	lint	1.58	0
+step	test-lint-pin	9.25	0
+step	test-race-gate	1.66	0
+step	test-race	76.45	0
+step	test-doclint	3.45	0
+step	test-doclint-split-unit	6.26	0
 step	test-wirelog-helpers-unit	0.36	0
-step	test-e2e-lockwait-unit	13.96	0
-step	test-e2e-matrix-unit	96.45	0
-step	test-always-loaded-budget-unit	17.35	0
-step	always-loaded-budget	0.48	0
-step	test-gitignore-classes	2.73	0
-step	test-validate-timing-unit	2.32	0
-step	check-validate-baseline	0.08	0
-step	leak-scan	1.13	0
-pkg	github.com/dmotles/sprawl/internal/supervisor	102.086
-pkg	github.com/dmotles/sprawl/cmd	44.201
-pkg	github.com/dmotles/sprawl/internal/hub	33.838
-pkg	github.com/dmotles/sprawl/internal/runtime	24.011
-pkg	github.com/dmotles/sprawl/internal/githooks	16.003
+step	test-e2e-lockwait-unit	14.69	0
+step	test-e2e-matrix-unit	95.67	0
+step	test-always-loaded-budget-unit	13.71	0
+step	always-loaded-budget	0.47	0
+step	test-gitignore-classes	2.54	0
+step	test-validate-timing-unit	2.15	0
+step	check-validate-baseline	0.06	0
+step	leak-scan	1.11	0
+pkg	github.com/dmotles/sprawl/internal/supervisor	54.763
+pkg	github.com/dmotles/sprawl/internal/hub	33.543
+pkg	github.com/dmotles/sprawl/internal/claude	30.012
+pkg	github.com/dmotles/sprawl/internal/runtime	24.003
+pkg	github.com/dmotles/sprawl/internal/githooks	14.767

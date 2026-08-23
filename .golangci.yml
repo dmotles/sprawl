@@ -1,4 +1,15 @@
 version: "2"
+# QUM-1289: build tags golangci-lint must resolve, or it silently skips the files
+# behind them. cmd/skills_doclint_test.go sits behind `doclint` (its two
+# documentation-linter tests cost 37.5s of ./cmd's 43.5s under -race, so they
+# were moved out of the default test binary). Without this, `make lint` reported
+# "0 issues" on a file containing a genuine `declared and not used` compile
+# error — verified by planting one: `go vet -tags doclint` caught it, default
+# lint did not, `--build-tags doclint` did. A tag that hides code from the
+# linter is the same defect class as a tag that hides a test from the runner.
+run:
+  build-tags:
+    - doclint
 linters:
   default: standard
   enable:

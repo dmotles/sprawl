@@ -51,7 +51,7 @@ esac
 # Bump when assertions are added or removed. A hardcoded literal, NOT derived
 # from anything in this script: a floor computed from the corpus it measures is
 # satisfied by an empty corpus, which is the exact false-green it exists to stop.
-MIN_ASSERTIONS=15
+MIN_ASSERTIONS=17
 
 PASSES=0
 FAILURES=0
@@ -116,11 +116,55 @@ fi
 # EVERY go test line, not merely one of them. "At least one carries -race" would
 # let someone re-add a bare `test` prerequisite alongside `test-race`, so half
 # the run is uninstrumented while the summary reads as full coverage.
-BARE=$(printf '%s\n' "$GO_TEST_LINES" | grep -vE '(^|[[:space:]])-race([[:space:]]|$)')
+BARE_ALL=$(printf '%s\n' "$GO_TEST_LINES" | grep -vE '(^|[[:space:]])-race([[:space:]]|$)')
+
+# QUM-1289: ONE narrow, justified exemption — the `-tags doclint` step.
+#
+# Read this before adding a second. The two tests behind that tag are
+# DOCUMENTATION linters: they read every tracked .go file and regex-scan every
+# SKILL.md. Under -race that cost 32.57s and 4.91s against 1.63s and 0.42s
+# without (~20x and ~12x), which was 37.5s of ./cmd's 43.5s — and ./cmd is
+# reverse-reachable from ~46 of 51 packages, so it dominated the dependency
+# closure of nearly every change.
+#
+# The exemption is NOT "these tests are slow". It is that
+# cmd/skills_doclint_test.go contains no goroutines, channels, sync, atomic,
+# errgroup or t.Parallel, so the detector has nothing to observe there — and
+# scripts/test-doclint-split-unit.sh ASSERTS that absence on every validate run,
+# with one positive-control fixture per primitive. So the exemption is tied to a
+# checked property, not to a claim in a comment: add concurrency to that file and
+# that gate fails and demands -race back.
+#
+# Two things keep this from becoming a hole:
+#   * the pattern is anchored on `-tags doclint`, not on "any line I decided is fine";
+#   * the count is pinned at exactly 1 below, so a SECOND uninstrumented line
+#     fails even if someone tags it doclint.
+DOCLINT_EXEMPT_RE='(^|[[:space:]])-tags[[:space:]]+doclint([[:space:]]|$)'
+BARE=$(printf '%s\n' "$BARE_ALL" | grep -vE "$DOCLINT_EXEMPT_RE")
+EXEMPTED=$(printf '%s\n' "$BARE_ALL" | grep -cE "$DOCLINT_EXEMPT_RE")
+
 if [ -n "$GO_TEST_LINES" ] && [ -z "$BARE" ]; then
-  ok "every 'go test' line in make -n validate carries -race"
+  ok "every 'go test' line in make -n validate carries -race (except the pinned -tags doclint step)"
 else
   fail "make -n validate has 'go test' line(s) WITHOUT -race: $(printf '%s' "$BARE" | tr '\n' '|')"
+fi
+
+# Pin the exemption's size. An allowlist that can grow silently is not an
+# allowlist. Exactly one line may be exempt; zero means the doclint step
+# vanished (so its coverage did too), more than one means the hole widened.
+if [ "$EXEMPTED" -eq 1 ]; then
+  ok "exactly 1 'go test' line is -race-exempt (the pinned -tags doclint step)"
+else
+  fail "expected exactly 1 -race-exempt 'go test' line (-tags doclint), found $EXEMPTED — zero means the doclint step disappeared and took its coverage with it; more than one means the exemption widened into a hole"
+fi
+
+# The exemption is only defensible while the gate that checks the no-concurrency
+# property actually runs. Assert that guard is wired into validate, or the
+# justification above is unenforced.
+if printf "%s\n" "$VALIDATE_DRY" | grep -q 'test-doclint-split-unit\|scripts/test-doclint-split-unit.sh'; then
+  ok "test-doclint-split-unit runs in validate, so the doclint exemption's no-concurrency premise is enforced"
+else
+  fail "the -race exemption for -tags doclint is unenforced: scripts/test-doclint-split-unit.sh does not run in validate, so nothing checks that cmd/skills_doclint_test.go is still concurrency-free"
 fi
 
 # Pin the scope. Narrowing to a hand-picked package subset must be a deliberate,

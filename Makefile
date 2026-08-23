@@ -1,4 +1,4 @@
-.PHONY: lint-cache-dir test-lint-pin validate build hooks-armed proto-check proto-gen proto-gen-web hub-web fmt-check lint test clean install fmt hooks leak-scan test-handoff-e2e test-exit-code-preservation test-parallel-agent-viewport-e2e test-tui-e2e test-leak-resistance-e2e test-e2e-matrix test-e2e-matrix-unit test-hooks-e2e test-hub-bootstrap test-hub-e2e test-store-pg test-wirelog-helpers-unit test-e2e-lockwait-unit test-gitignore-classes test-race test-race-gate always-loaded-budget test-always-loaded-budget-unit print-validate-steps test-validate-timing-unit check-validate-baseline validate-baseline print-ldflags test-build-stamp
+.PHONY: lint-cache-dir test-lint-pin validate build hooks-armed proto-check proto-gen proto-gen-web hub-web fmt-check lint test clean install fmt hooks leak-scan test-handoff-e2e test-exit-code-preservation test-parallel-agent-viewport-e2e test-tui-e2e test-leak-resistance-e2e test-e2e-matrix test-e2e-matrix-unit test-hooks-e2e test-hub-bootstrap test-hub-e2e test-store-pg test-wirelog-helpers-unit test-e2e-lockwait-unit test-gitignore-classes test-race test-race-gate always-loaded-budget test-always-loaded-budget-unit print-validate-steps test-validate-timing-unit check-validate-baseline validate-baseline print-ldflags test-build-stamp test-doclint test-doclint-split-unit
 
 # THIS_MAKEFILE must be resolved HERE, above any include, where MAKEFILE_LIST's
 # last entry is still this file. Files named in the MAKEFILES environment
@@ -16,7 +16,8 @@ THIS_MAKEFILE := $(abspath $(lastword $(MAKEFILE_LIST)))
 # hand-maintained list to rot.
 VALIDATE_STEPS := build test-build-stamp hooks-armed proto-check fmt-check \
 	lint test-lint-pin \
-	test-race-gate test-race test-wirelog-helpers-unit test-e2e-lockwait-unit \
+	test-race-gate test-race test-doclint test-doclint-split-unit \
+	test-wirelog-helpers-unit test-e2e-lockwait-unit \
 	test-e2e-matrix-unit test-always-loaded-budget-unit always-loaded-budget \
 	test-gitignore-classes test-validate-timing-unit check-validate-baseline \
 	leak-scan
@@ -537,6 +538,32 @@ leak-scan:
 # nothing fails until an infra artifact is staged into this PUBLIC repo.
 test-gitignore-classes:
 	bash scripts/test-gitignore-classes.sh
+
+# QUM-1289: the doc-lint tests, which are deliberately NOT in the default ./cmd
+# test binary. They read every tracked .go file and regex-scan every SKILL.md,
+# which the race detector instruments for nothing: 32.57s vs 1.63s for
+# TestSkillsGoSymbolBanListIsDead alone. ./cmd is reverse-reachable from ~46 of
+# 51 packages, so that cost landed in nearly every change closure and dominated
+# the commit gate.
+#
+# Deliberately WITHOUT -race, and that is a structural claim rather than a
+# preference: cmd/skills_doclint_test.go has no goroutines, channels, sync or
+# t.Parallel, so there is nothing for the detector to observe.
+# test-doclint-split-unit asserts BOTH that this step really executes both tests
+# AND that the file still has no concurrency primitives — so if concurrency
+# appears here, -race is demanded again instead of the justification rotting.
+#
+# -count=1 because a cached PASS would make this step a no-op that still looks
+# green, and this is the ONLY place these two tests run.
+test-doclint:
+	go test -tags doclint -count=1 -run '^(TestSkillsGoSymbolBanListIsDead|TestSkillsDoNotNameDeadGoSymbols)$$' ./cmd/
+
+# Guards the split above: that the moved tests are absent from the default
+# binary, present in the tagged one, reachable from VALIDATE_STEPS, and actually
+# EXECUTED. Moving a test behind a build tag nothing runs deletes coverage while
+# looking like an optimisation.
+test-doclint-split-unit:
+	bash scripts/test-doclint-split-unit.sh
 
 # QUM-951: assert the guard stack is actually ARMED for this working tree before
 # anything else in validate has a chance to look green. `git -c

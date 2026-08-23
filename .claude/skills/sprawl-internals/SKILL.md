@@ -74,7 +74,8 @@ make              # runs full validation. Its steps are declared in the Makefile
                   # ever disagree the test is what tells you, not this text:
                   #   build test-build-stamp hooks-armed proto-check fmt-check
                   #   lint test-lint-pin
-                  #   test-race-gate test-race test-wirelog-helpers-unit
+                  #   test-race-gate test-race test-doclint test-doclint-split-unit
+                  #   test-wirelog-helpers-unit
                   #   test-e2e-lockwait-unit test-e2e-matrix-unit
                   #   test-always-loaded-budget-unit always-loaded-budget
                   #   test-gitignore-classes test-validate-timing-unit
@@ -113,6 +114,18 @@ make test-e2e-lockwait-unit      # bash unit tests for the e2e harness' weave.lo
 make test-always-loaded-budget-unit  # fixture-only unit suite for the always-loaded budget resolver
 make always-loaded-budget        # the LIVE always-loaded instruction-budget gate
 make test-gitignore-classes      # gitignore classification tests
+make test-doclint                # the two doc-lint tests (skills naming deleted Go symbols),
+                                 # which are NOT in the default ./cmd binary — they sit behind the
+                                 # `doclint` build tag and run ONLY here. Deliberately without
+                                 # -race: they read every tracked .go file and regex-scan every
+                                 # SKILL.md, which the detector instruments for nothing (32.57s vs
+                                 # 1.63s for one of them), and the file has no concurrency at all.
+                                 # ./cmd is reverse-reachable from ~46 of 51 packages, so that cost
+                                 # landed in nearly every change closure (QUM-1289)
+make test-doclint-split-unit     # guards that split: the moved tests are absent from the default
+                                 # binary, present in the tagged one, in VALIDATE_STEPS, and really
+                                 # EXECUTED. A test behind a tag nothing runs is deleted coverage
+                                 # wearing an optimisation's clothes
 make test-validate-timing-unit   # bash unit suite for validate's own per-step timing driver
 make check-validate-baseline     # asserts the recorded validate baseline still matches VALIDATE_STEPS,
                                  # is dated, is in-window, and leaked no checkout path
