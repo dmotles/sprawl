@@ -1,4 +1,4 @@
-.PHONY: lint-cache-dir test-lint-pin validate build hooks-armed proto-check proto-gen proto-gen-web hub-web fmt-check lint test clean install fmt hooks leak-scan test-handoff-e2e test-exit-code-preservation test-parallel-agent-viewport-e2e test-tui-e2e test-leak-resistance-e2e test-e2e-matrix test-e2e-matrix-unit test-hooks-e2e test-hub-bootstrap test-hub-e2e test-store-pg test-wirelog-helpers-unit test-e2e-lockwait-unit test-gitignore-classes test-race test-race-gate always-loaded-budget test-always-loaded-budget-unit print-validate-steps test-validate-timing-unit check-validate-baseline validate-baseline print-ldflags test-build-stamp test-doclint test-doclint-split-unit test-check-scope-unit
+.PHONY: lint-cache-dir test-lint-pin validate build hooks-armed proto-check proto-gen proto-gen-web hub-web fmt-check lint test clean install fmt hooks leak-scan test-handoff-e2e test-exit-code-preservation test-parallel-agent-viewport-e2e test-tui-e2e test-leak-resistance-e2e test-e2e-matrix test-e2e-matrix-unit test-hooks-e2e test-hub-bootstrap test-hub-e2e test-store-pg test-wirelog-helpers-unit test-e2e-lockwait-unit test-gitignore-classes test-race test-race-gate always-loaded-budget test-always-loaded-budget-unit print-validate-steps test-validate-timing-unit check-validate-baseline validate-baseline print-ldflags test-build-stamp test-doclint test-doclint-split-unit test-check-scope-unit check print-check-steps check-budget-structural check-fmt check-lint check-test-race test-check-budget-unit
 
 # THIS_MAKEFILE must be resolved HERE, above any include, where MAKEFILE_LIST's
 # last entry is still this file. Files named in the MAKEFILES environment
@@ -17,11 +17,142 @@ THIS_MAKEFILE := $(abspath $(lastword $(MAKEFILE_LIST)))
 VALIDATE_STEPS := build test-build-stamp hooks-armed proto-check fmt-check \
 	lint test-lint-pin \
 	test-race-gate test-race test-doclint test-doclint-split-unit \
-	test-check-scope-unit \
+	test-check-scope-unit test-check-budget-unit \
 	test-wirelog-helpers-unit test-e2e-lockwait-unit \
 	test-e2e-matrix-unit test-always-loaded-budget-unit always-loaded-budget \
 	test-gitignore-classes test-validate-timing-unit check-validate-baseline \
 	leak-scan
+
+# ============================================================================
+# THE COMMIT GATE (QUM-1289)
+#
+# WHICH GATE DOES A NEW CHECK BELONG IN? This rule is the deliverable, not the
+# list below — a list rots, a rule is decidable by whoever reads it next.
+#
+# A check goes in `check` (the COMMIT gate) only if ALL FIVE hold:
+#
+#   1. LOCAL AND HERMETIC. No network, no claude, no tmux, no Docker, no
+#      sandbox, no toolchain a fresh agent worktree is not guaranteed to have.
+#   2. ITS VERDICT IS A FUNCTION OF THE STAGED DIFF. If the same tree can flip
+#      the verdict because of the calendar, the host, another agent's worktree,
+#      or an untracked file, it is not a commit gate.
+#   3. IT DECLARES A BUDGET in scripts/testdata/check-budget.conf, and the sum
+#      of all declared budgets stays within the ceiling. A step with no
+#      declaration FAILS `check` — that is a mechanism (check-budget.sh), not a
+#      convention, and it is what stops this gate growing back into the merge
+#      gate one addition at a time. That is exactly how the current state arose.
+#   4. ITS FAILURE NAMES A FILE THE AUTHOR CAN FIX NOW, in this commit.
+#   5. IT IS NOT A MECHANISM GUARD. A suite whose subject is another gate's
+#      plumbing (test-lint-pin, test-e2e-matrix-unit, test-doclint-split-unit,
+#      test-check-scope-unit, test-build-stamp, ...) can only regress when
+#      someone edits that plumbing, and editing it is itself a merge-gated
+#      event. Merge-only.
+#
+# Otherwise it stays in `validate` (the MERGE gate). `validate` has no budget and
+# is NEVER weakened to make room in `check`.
+#
+# TWO NAMED EXCEPTIONS to rules 2 and 5, and they are exhaustive. A gate must not
+# be able to silently disarm ITSELF, so the guards of the commit path run in the
+# commit path:
+#   * hooks-armed    — the guard chain must be armed at the moment of committing;
+#                      this cannot live inside a hook.
+#   * test-race-gate — proves check's own go-test invocation still carries -race.
+# Adding a third exception requires the same written argument these two carry.
+#
+# WHEN IN DOUBT, `validate`. A check in the wrong direction costs a merge slot;
+# in the other direction it ships the defect and comes back green.
+#
+# NOTE ON SCOPE: check-test-race runs -race over the DEPENDENCY CLOSURE of the
+# change (scripts/check-scope.sh), not over ./... . -race is included on
+# dmotles's decision — races are the defect class this codebase actually
+# produces, and deferring all race detection to merge means finding them after
+# other work is layered on top.
+# ============================================================================
+
+CHECK_STEPS := check-budget-structural build hooks-armed check-fmt check-lint \
+	always-loaded-budget test-race-gate check-test-race
+
+CHECK_BUDGET_S ?= 60
+CHECK_CEILING_S ?= 45
+CHECK_TIMINGS := .check-timings
+
+# The fast commit gate. Runs the steps through the SAME timed driver validate
+# uses (so test-validate-timing-unit guards this too), then reports the budget.
+#
+# SPRAWL_VALIDATE_TIMING_OUT is not optional: without it this would overwrite
+# validate's own recorded observation on every commit and corrupt
+# `make validate-baseline`.
+#
+# The per-package capture is requested only when there IS a Go scope. The driver
+# rightly fails when a captured step yields no package lines — an empty top-5
+# table reads exactly like a fast run — but for a change with no Go bearing
+# there is legitimately nothing to measure per-package, and asking it to measure
+# that would turn its anti-vacuity guard into a false red. Naming a step that
+# never runs leaves CAPTURED_ANY=0, so the guard stays armed for the case it is
+# actually for.
+check:
+	@start=$$(date +%s); \
+	if bash scripts/check-scope.sh >/dev/null 2>&1; then cap=check-test-race; else cap=__no_capture__; fi; \
+	SPRAWL_VALIDATE_TIMING_OUT=$(CHECK_TIMINGS) \
+	SPRAWL_VALIDATE_CAPTURE_STEPS=$$cap \
+	bash scripts/validate-timed.sh $(CHECK_STEPS); rc=$$?; \
+	elapsed=$$(( $$(date +%s) - start )); \
+	bash scripts/check-budget.sh --elapsed $$elapsed --budget $(CHECK_BUDGET_S) \
+		--timings $(CHECK_TIMINGS) || true; \
+	exit $$rc
+
+# Introspection seam, mirroring print-validate-steps. Deliberately a bare printf
+# with no $(MAKE) in it, so `make -n print-check-steps` executes nothing — that
+# is what lets scripts/pre-commit probe cheaply for this target's existence.
+print-check-steps:
+	@printf '%s\n' $(CHECK_STEPS)
+
+check-budget-structural:
+	@bash scripts/check-budget.sh --structural --steps "$(CHECK_STEPS)" \
+		--conf scripts/testdata/check-budget.conf --ceiling $(CHECK_CEILING_S)
+
+# Scoped fmt/lint. These do NOT recurse into fmt-check/lint with an override:
+# a command-line variable assignment propagates through MAKEFLAGS into any
+# nested make, which would silently narrow the MERGE gate too. Separate recipes
+# with their own variables is what keeps the two gates' scopes independent
+# (scripts/test-lint-pin.sh asserts this).
+check-fmt:
+	@files=$$(git diff --cached --name-only -M -- '*.go'; git diff --name-only -M -- '*.go'; \
+	          git ls-files --others --exclude-standard -- '*.go'); \
+	files=$$(printf '%s\n' $$files | sort -u | grep -v '^$$'); \
+	if [ -z "$$files" ]; then echo "check-fmt: no Go files changed — nothing to format-check"; exit 0; fi; \
+	out=$$($(GOLANGCI_LINT) fmt --diff $$files 2>&1); rc=$$?; \
+	if [ -n "$$out" ]; then printf '%s\n' "$$out"; \
+	  echo "check-fmt: files need formatting. Run 'make fmt'."; exit 1; fi; \
+	if [ "$$rc" -ne 0 ]; then \
+	  echo "check-fmt: the pinned formatter exited $$rc without printing a diff: the check DID NOT RUN. That is a tool failure, not a clean tree."; \
+	  exit $$rc; fi; \
+	echo "check-fmt: OK ($$(printf '%s\n' $$files | grep -c .) file(s))"
+
+check-lint:
+	@scope=$$(bash scripts/check-scope.sh 2>/dev/null | sed 's|^github.com/dmotles/sprawl|.|'); \
+	rc=$$?; \
+	if [ "$$rc" = "77" ] || [ -z "$$scope" ]; then \
+	  echo "check-lint: no Go packages in scope — skipping (gated at merge by 'make lint')"; exit 0; fi; \
+	$(GOLANGCI_LINT) run $$scope
+
+# The scoped -race run. A scope of "no Go packages" is a SKIP with a reason, not
+# a silent pass: check-scope.sh exits 77 for that, and 1 for a scope it could
+# not compute, which must never read as "nothing to test".
+check-test-race:
+	@bash scripts/check-scope.sh --report >/dev/null; \
+	scope=$$(bash scripts/check-scope.sh 2>/dev/null); rc=$$?; \
+	if [ "$$rc" = "77" ]; then \
+	  echo "check-test-race: SKIPPED — this change has no Go bearing. Gated at merge by 'make test-race' over ./... ."; \
+	  exit 0; \
+	fi; \
+	if [ "$$rc" != "0" ] || [ -z "$$scope" ]; then \
+	  echo "check-test-race: could not compute a scope (rc=$$rc) — refusing to report that as a pass." >&2; \
+	  exit 1; \
+	fi; \
+	pkgs=$$(printf '%s\n' $$scope | sed 's|^github.com/dmotles/sprawl|.|' | tr '\n' ' '); \
+	echo "check-test-race: $$(printf '%s\n' $$scope | grep -c .) package(s) in the dependency closure"; \
+	go test -race -count=1 $$pkgs
 
 # Default target — full quality gauntlet.
 #
@@ -573,6 +704,12 @@ test-doclint-split-unit:
 # narrows its own scope reports green over a package it never built.
 test-check-scope-unit:
 	bash scripts/test-check-scope-unit.sh
+
+# QUM-1289: guards scripts/check-budget.sh — the STRUCTURAL half is what stops
+# `check` growing back into the merge gate one addition at a time, and the
+# wall-clock half must warn loudly without ever blocking (dmotles's call).
+test-check-budget-unit:
+	bash scripts/test-check-budget-unit.sh
 
 # QUM-951: assert the guard stack is actually ARMED for this working tree before
 # anything else in validate has a chance to look green. `git -c

@@ -139,6 +139,15 @@ scratch/
 # and the artifacts only ever land at the worktree root.
 /.validate-timings/
 
+# `make check`'s timing artifacts (QUM-1289). Same anchoring rationale as above.
+#
+# NOT ignoring this is a self-interference bug, not just untidiness: check-scope.sh
+# reads `git ls-files --others` to find new files, so an unignored .check-timings/
+# is an unrecognised path, which WIDENS the scope to the whole module — the gate's
+# own output silently defeating its own scoping. Observed doing exactly that: a
+# Makefile-only change ran all 45 packages in 78s instead of skipping.
+/.check-timings/
+
 # Tool/build/apply logs (QUM-989). Deliberately BROAD. `terraform apply` and
 # `az acr build` emit ad-hoc logs (apply4.log, acrbuild2.log) whose names nobody
 # can enumerate in advance, and this repo is PUBLIC — such logs routinely carry

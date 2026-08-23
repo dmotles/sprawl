@@ -75,7 +75,7 @@ make              # runs full validation. Its steps are declared in the Makefile
                   #   build test-build-stamp hooks-armed proto-check fmt-check
                   #   lint test-lint-pin
                   #   test-race-gate test-race test-doclint test-doclint-split-unit
-                  #   test-check-scope-unit
+                  #   test-check-scope-unit test-check-budget-unit
                   #   test-wirelog-helpers-unit
                   #   test-e2e-lockwait-unit test-e2e-matrix-unit
                   #   test-always-loaded-budget-unit always-loaded-budget
@@ -127,6 +127,27 @@ make test-doclint-split-unit     # guards that split: the moved tests are absent
                                  # binary, present in the tagged one, in VALIDATE_STEPS, and really
                                  # EXECUTED. A test behind a tag nothing runs is deleted coverage
                                  # wearing an optimisation's clothes
+make check                       # THE COMMIT GATE (QUM-1289). Fast, change-scoped, what the
+                                 # pre-commit hook runs. Budget 60s: over-budget WARNS LOUDLY and
+                                 # does NOT block (dmotles's call) — a hard fail here would train
+                                 # agents to bypass the hook. `make validate` remains the MERGE
+                                 # gate and is never weakened to make room. The rule for which
+                                 # gate a new check belongs in is written above CHECK_STEPS in the
+                                 # Makefile — read it before adding a step to either
+make print-check-steps           # check's step list, one per line; also the cheap existence probe
+                                 # scripts/pre-commit uses to detect a pre-QUM-1289 Makefile
+make check-budget-structural     # HARD gate: every CHECK_STEPS entry must declare a budget in
+                                 # scripts/testdata/check-budget.conf and the sum must fit the
+                                 # ceiling. This is the real assertion; the wall-clock band only warns
+make check-fmt / check-lint      # scoped fmt and lint. Separate recipes rather than `make lint
+                                 # LINT_SCOPE=...` on purpose: a command-line assignment propagates
+                                 # via MAKEFLAGS and would silently narrow the MERGE gate too
+make check-test-race             # -race over the DEPENDENCY CLOSURE of the change, not ./... .
+                                 # An empty scope SKIPS with a reason; a scope it could not compute
+                                 # EXITS 1 — never a silent pass
+make test-check-budget-unit      # guards check-budget.sh: undeclared step, stale declaration,
+                                 # non-numeric budget and over-ceiling all HARD FAIL; the overage
+                                 # warning must be loud and must not block (QUM-1289)
 make test-check-scope-unit       # guards scripts/check-scope.sh, the dependency-aware change
                                  # scoper for the coming `make check`. Closes over Imports +
                                  # TestImports + XTestImports, NOT .Deps: .Deps is the non-test
