@@ -76,6 +76,13 @@ CHECK_BUDGET_S ?= 60
 CHECK_CEILING_S ?= 45
 CHECK_TIMINGS := .check-timings
 
+# The scoper, as a variable so scripts/test-check-scope-unit.sh can substitute a
+# stub that returns a chosen exit code. That is the only way to assert these
+# recipes HONOUR check-scope's 0/77/1 distinction — and they did not: check-lint
+# read `$?` after a pipeline and so saw sed's status, turning an uncomputable
+# scope into a silent "nothing to lint".
+CHECK_SCOPE ?= bash scripts/check-scope.sh
+
 # The fast commit gate. Runs the steps through the SAME timed driver validate
 # uses (so test-validate-timing-unit guards this too), then reports the budget.
 #
@@ -125,31 +132,50 @@ check-budget-structural:
 # with their own variables is what keeps the two gates' scopes independent
 # (scripts/test-lint-pin.sh asserts this).
 check-fmt:
-	@files=$$(git diff --cached --name-only -M -- '*.go'; git diff --name-only -M -- '*.go'; \
+	@files=$$(git diff --cached --name-only -M --diff-filter=d -- '*.go'; \
+	          git diff --name-only -M --diff-filter=d -- '*.go'; \
 	          git ls-files --others --exclude-standard -- '*.go'); \
 	files=$$(printf '%s\n' $$files | sort -u | grep -v '^$$'); \
-	if [ -z "$$files" ]; then echo "check-fmt: no Go files changed — nothing to format-check"; exit 0; fi; \
+	present=""; for f in $$files; do [ -f "$$f" ] && present="$$present $$f"; done; \
+	files=$$(printf '%s\n' $$present | grep -v '^$$'); \
+	if [ -z "$$files" ]; then echo "check-fmt: no existing Go files changed — nothing to format-check"; exit 0; fi; \
 	out=$$($(GOLANGCI_LINT) fmt --diff $$files 2>&1); rc=$$?; \
+	if [ "$$rc" -gt 1 ]; then \
+	  printf '%s\n' "$$out"; \
+	  echo "check-fmt: the pinned formatter exited $$rc: the check DID NOT RUN. That is a tool failure, not a dirty tree." >&2; \
+	  exit $$rc; fi; \
 	if [ -n "$$out" ]; then printf '%s\n' "$$out"; \
 	  echo "check-fmt: files need formatting. Run 'make fmt'."; exit 1; fi; \
 	if [ "$$rc" -ne 0 ]; then \
-	  echo "check-fmt: the pinned formatter exited $$rc without printing a diff: the check DID NOT RUN. That is a tool failure, not a clean tree."; \
+	  echo "check-fmt: the formatter exited $$rc without printing a diff: the check DID NOT RUN." >&2; \
 	  exit $$rc; fi; \
 	echo "check-fmt: OK ($$(printf '%s\n' $$files | grep -c .) file(s))"
 
+# NOTE the two-step scope capture, and do not collapse it back into one.
+# `rc=$$?` after a PIPELINE is the exit status of the LAST command, so
+#     scope=$$($(CHECK_SCOPE) | sed ...); rc=$$?
+# captured sed's status — always 0 — and check-scope's rc=1 ("I could not work
+# out what to test") became rc=0 with empty output, matched the skip arm, and
+# exited 0. A scope-computation failure silently became "nothing to lint". The
+# transform happens AFTER rc is read. test-check-scope-unit.sh section [8] holds
+# this shut for both consumers.
 check-lint:
-	@scope=$$(bash scripts/check-scope.sh 2>/dev/null | sed 's|^github.com/dmotles/sprawl|.|'); \
-	rc=$$?; \
-	if [ "$$rc" = "77" ] || [ -z "$$scope" ]; then \
+	@scope=$$($(CHECK_SCOPE) 2>/dev/null); rc=$$?; \
+	if [ "$$rc" = "77" ]; then \
 	  echo "check-lint: no Go packages in scope — skipping (gated at merge by 'make lint')"; exit 0; fi; \
-	$(GOLANGCI_LINT) run $$scope
+	if [ "$$rc" != "0" ]; then \
+	  echo "check-lint: could not compute a scope (rc=$$rc) — refusing to report that as a pass." >&2; exit 1; fi; \
+	if [ -z "$$scope" ]; then \
+	  echo "check-lint: check-scope exited 0 but printed nothing — refusing to treat that as 'nothing to lint'." >&2; exit 1; fi; \
+	pkgs=$$(printf '%s\n' $$scope | sed 's|^github.com/dmotles/sprawl|.|' | tr '\n' ' '); \
+	$(GOLANGCI_LINT) run $$pkgs
 
 # The scoped -race run. A scope of "no Go packages" is a SKIP with a reason, not
 # a silent pass: check-scope.sh exits 77 for that, and 1 for a scope it could
 # not compute, which must never read as "nothing to test".
 check-test-race:
-	@bash scripts/check-scope.sh --report >/dev/null; \
-	scope=$$(bash scripts/check-scope.sh 2>/dev/null); rc=$$?; \
+	@$(CHECK_SCOPE) --report >/dev/null; \
+	scope=$$($(CHECK_SCOPE) 2>/dev/null); rc=$$?; \
 	if [ "$$rc" = "77" ]; then \
 	  echo "check-test-race: SKIPPED — this change has no Go bearing. Gated at merge by 'make test-race' over ./... ."; \
 	  exit 0; \

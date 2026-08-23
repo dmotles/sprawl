@@ -41,7 +41,7 @@ UNRELATED_DIR=internal/worktree
 UNRELATED_PKG=github.com/dmotles/sprawl/internal/worktree
 
 # Hardcoded literal. A full run makes exactly this many assertions.
-MIN_ASSERTIONS=15
+MIN_ASSERTIONS=20
 
 TMPBASE=${TMPDIR:-/tmp}
 SCRATCH=$(mktemp -d "$TMPBASE/sprawl-check-scope.XXXXXX") || {
@@ -194,6 +194,71 @@ else
   else
     fail "[7] --report does not say it is only the commit gate, so a green check could be cited as 'validated'"
   fi
+fi
+
+# --- [8] CONSUMERS must honour check-scope's exit codes --------------------
+# check-scope.sh distinguishes 0 (scope printed), 77 (no Go bearing, skip) and
+# 1 (could not compute a scope — "refusing to report that as a pass"). Those
+# codes are worthless if the Makefile recipes that call it drop them.
+#
+# The bug this section exists for, found by forge in review: check-lint did
+#     scope=$(bash scripts/check-scope.sh 2>/dev/null | sed ...); rc=$?
+# and `$?` after a PIPELINE is the exit status of the LAST command — sed — which
+# is always 0. So check-scope exiting 1 ("I could not work out what to test")
+# was read as rc=0 with empty output, matched the `-z "$scope"` skip arm, and
+# check-lint exited 0. A scope-computation failure silently became "nothing to
+# lint": the exact false green this whole gate exists to prevent.
+stub() { printf '#!/usr/bin/env bash\n%s\n' "$1" > "$SCRATCH/scope_stub.sh"; chmod +x "$SCRATCH/scope_stub.sh"; }
+
+# rc=1 (cannot compute) must NOT be treated as "nothing to do".
+stub 'echo "stub: cannot compute" >&2; exit 1'
+for tgt in check-lint check-test-race; do
+  out=$(cd "$REPO_ROOT" && make --no-print-directory "$tgt" CHECK_SCOPE="bash $SCRATCH/scope_stub.sh" 2>&1)
+  rc=$?
+  if [ "$rc" -ne 0 ]; then
+    pass "[8] $tgt propagates check-scope's rc=1 (refuses to pass on an uncomputable scope)"
+  else
+    fail "[8] $tgt exited 0 when check-scope could not compute a scope — a scope failure silently became 'nothing to test'. Output: $(printf '%s' "$out" | tail -1)"
+  fi
+done
+
+# rc=77 (no Go bearing) IS a legitimate skip and must exit 0.
+stub 'echo "stub: no go bearing" >&2; exit 77'
+for tgt in check-lint check-test-race; do
+  (cd "$REPO_ROOT" && make --no-print-directory "$tgt" CHECK_SCOPE="bash $SCRATCH/scope_stub.sh" >/dev/null 2>&1)
+  if [ $? -eq 0 ]; then
+    pass "[8] $tgt treats check-scope's rc=77 as a legitimate skip (exit 0)"
+  else
+    fail "[8] $tgt failed on rc=77 — a change with no Go bearing must skip, not block the commit"
+  fi
+done
+
+# --- [9] check-fmt must not hand DELETED files to the formatter -----------
+# `git diff --cached --name-only` lists DELETIONS too, so a commit that removes a
+# .go file passed a nonexistent path to the formatter. It exited 3, and because
+# `out` was tested before `rc`, that was reported as "files need formatting" —
+# so a legitimate deletion could not be committed, with a misleading diagnosis.
+# Found by forge in review; reproduced at rc=2 before the fix.
+#
+# The subject must be a TRACKED file: an uncommitted probe never appears in the
+# diff at all, so an earlier version of this leg passed vacuously.
+FMT_VICTIM=internal/worktree/worktree.go
+fmt_leg_ran=0
+if [ -f "$REPO_ROOT/$FMT_VICTIM" ] && ( cd "$REPO_ROOT" && git ls-files --error-unmatch "$FMT_VICTIM" >/dev/null 2>&1 ); then
+  fmt_leg_ran=1
+  ( cd "$REPO_ROOT" && git rm -q --cached "$FMT_VICTIM" >/dev/null 2>&1 )
+  mv "$REPO_ROOT/$FMT_VICTIM" "$SCRATCH/fmt_victim.go"
+  out=$(cd "$REPO_ROOT" && make --no-print-directory check-fmt 2>&1); rc=$?
+  # Restore BEFORE asserting, so a failing assertion cannot leave the tree broken.
+  mv "$SCRATCH/fmt_victim.go" "$REPO_ROOT/$FMT_VICTIM"
+  ( cd "$REPO_ROOT" && git add "$FMT_VICTIM" >/dev/null 2>&1 )
+  if [ "$rc" -eq 0 ]; then
+    pass "[9] check-fmt tolerates a staged DELETION of a tracked .go file"
+  else
+    fail "[9] check-fmt failed (rc=$rc) on a staged deletion — deletions reach the formatter as nonexistent paths, and the message misdiagnoses it. Output: $(printf '%s' "$out" | tail -1)"
+  fi
+else
+  fail "[9] fixture missing: $FMT_VICTIM is not a tracked file, so this leg cannot establish anything — re-pin it to a tracked .go file rather than letting it skip"
 fi
 
 echo "=== Results: $PASSES passed, $FAILURES failed ==="
