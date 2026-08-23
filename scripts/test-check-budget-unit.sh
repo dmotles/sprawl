@@ -30,7 +30,7 @@ set -uo pipefail
 REPO_ROOT=$(git rev-parse --show-toplevel)
 BUDGET=$REPO_ROOT/scripts/check-budget.sh
 
-MIN_ASSERTIONS=14
+MIN_ASSERTIONS=19
 
 TMPBASE=${TMPDIR:-/tmp}
 SCRATCH=$(mktemp -d "$TMPBASE/sprawl-check-budget.XXXXXX") || {
@@ -146,9 +146,11 @@ fi
 loud=0
 case "$out" in *OVER*) loud=$((loud+1)) ;; esac
 case "$out" in *'!!!'*) loud=$((loud+1)) ;; esac
-case "$out" in *QUM-1307*) loud=$((loud+1)) ;; esac
+# NOT QUM-1307: that pointer is now conditional on supervisor actually being the
+# dominant package (see [b4]). "dominant" is what is always present.
+case "$out" in *dominant*) loud=$((loud+1)) ;; esac
 if [ "$loud" -eq 3 ]; then
-  pass "[b2] the overage warning is LOUD: says OVER, uses a !!! banner, and names the tracking issue"
+  pass "[b2] the overage warning is LOUD: says OVER, uses a !!! banner, and names the dominant cost"
 else
   fail "[b2] the overage warning is not loud enough ($loud of 3 markers) — a warn that reads like success is the failure mode dmotles's 'loud' guards against"
 fi
@@ -165,6 +167,40 @@ out=$("$BUDGET" --elapsed 90 --budget 60 --timings "$SCRATCH/t" 2>&1)
 case "$out" in
   *check-test-race*) pass "[b3] the warning names the dominant step from the timings" ;;
   *) fail "[b3] the warning does not name the dominant step, so the reader learns what to fix from nothing" ;;
+esac
+
+# --- [b4] the overage attribution must be DERIVED, not hardcoded ----------
+# It used to state "the known gap is internal/supervisor, tracked by QUM-1307"
+# unconditionally. QA measured that wrong in the COMMON case: on the smallest
+# realistic Go closure the dominant package is internal/hub and supervisor is not
+# in scope at all. A warning that blames the wrong package while calling the
+# overage "expected" and "NOT a defect in your change" misdirects the reader,
+# which is worse than saying nothing.
+mkdir -p "$SCRATCH/t2"
+mkpkg() { printf 'total_wall_s=%s\nstep\tcheck-test-race\t45.00\t0\npkg\t%s\t%s\n' "$1" "$2" "$3" > "$SCRATCH/t2/baseline.observed"; }
+
+mkpkg 61 github.com/dmotles/sprawl/internal/hub 33.590
+out=$("$BUDGET" --elapsed 61 --budget 60 --timings "$SCRATCH/t2" 2>&1)
+case "$out" in
+  *internal/hub*) pass "[b4] names the ACTUAL dominant package read from the timings" ;;
+  *) fail "[b4] does not name internal/hub, the dominant package in the timings it was handed" ;;
+esac
+case "$out" in
+  *QUM-1307*) fail "[b4] cites QUM-1307 when the dominant package is NOT internal/supervisor — the misattribution QA flagged" ;;
+  *) pass "[b4] does NOT cite QUM-1307 when supervisor is not the dominant package" ;;
+esac
+
+mkpkg 70 github.com/dmotles/sprawl/internal/supervisor 50.400
+out=$("$BUDGET" --elapsed 70 --budget 60 --timings "$SCRATCH/t2" 2>&1)
+case "$out" in
+  *QUM-1307*) pass "[b4] negative control: DOES cite QUM-1307 when supervisor is dominant" ;;
+  *) fail "[b4] negative control failed: supervisor is dominant but QUM-1307 is absent, so that branch never runs" ;;
+esac
+
+out=$("$BUDGET" --elapsed 70 --budget 60 --timings "$SCRATCH/definitely-absent" 2>&1)
+case "$out" in
+  *"dominant package: unknown"*) pass "[b4] reports the dominant package as UNKNOWN rather than omitting the line" ;;
+  *) fail "[b4] omits the dominant-package line when timings are absent — a missing line reads as 'nothing notable here'" ;;
 esac
 
 echo "=== Results: $PASSES passed, $FAILURES failed ==="

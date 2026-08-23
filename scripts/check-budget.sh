@@ -126,21 +126,49 @@ if [ "$MODE" = elapsed ]; then
   fi
 
   over=$((ELAPSED - BUDGET))
-  # Name the dominant step, so the reader learns what to fix rather than what to
-  # raise. forge's condition, and the difference between a useful warning and noise.
-  dominant=""
+  # Name the dominant STEP and the dominant PACKAGE, both read from the timings
+  # rather than assumed, so the reader learns what to fix instead of what to raise.
+  #
+  # The attribution used to be a hardcoded "the known gap is internal/supervisor,
+  # tracked by QUM-1307". QA measured that to be WRONG in the common case: on the
+  # smallest realistic Go closure in this tree the dominant package is
+  # internal/hub (~33s) and internal/supervisor is not in scope at all. A warning
+  # that confidently blames the wrong package while telling the author the overage
+  # is "expected" and "NOT a defect in your change" is worse than one that says
+  # nothing — it actively misdirects. So the package is derived, and the QUM-1307
+  # pointer appears only when supervisor really is the dominant package.
+  dominant_step=""
+  dominant_pkg=""
+  dominant_pkg_name=""
   if [ -n "$TIMINGS" ] && [ -f "$TIMINGS/baseline.observed" ]; then
-    dominant=$(grep '^step' "$TIMINGS/baseline.observed" 2>/dev/null \
+    dominant_step=$(grep '^step' "$TIMINGS/baseline.observed" 2>/dev/null \
                  | awk -F'\t' '{print $3"\t"$2}' | sort -rn | head -1 \
                  | awk -F'\t' '{printf "%s %.1fs", $2, $1}')
+    dominant_pkg=$(grep '^pkg' "$TIMINGS/baseline.observed" 2>/dev/null \
+                 | awk -F'\t' '{print $3"\t"$2}' | sort -rn | head -1 \
+                 | awk -F'\t' '{printf "%s %.1fs", $2, $1}')
+    dominant_pkg_name=$(printf '%s' "$dominant_pkg" | awk '{print $1}')
   fi
 
   echo "" >&2
   echo "!!! check: ${ELAPSED}s against a ${BUDGET}s budget — OVER by ${over}s" >&2
-  [ -n "$dominant" ] && echo "!!!   dominant step: $dominant" >&2
-  echo "!!!   the known gap is internal/supervisor's test time, tracked by QUM-1307." >&2
-  echo "!!!   If your commit touches internal/supervisor or its dependents, this" >&2
-  echo "!!!   overage is expected and is NOT a defect in your change." >&2
+  [ -n "$dominant_step" ] && echo "!!!   dominant step:    $dominant_step" >&2
+  if [ -n "$dominant_pkg" ]; then
+    echo "!!!   dominant package: $dominant_pkg" >&2
+  else
+    echo "!!!   dominant package: unknown (no per-package timings for this run)" >&2
+  fi
+  case "$dominant_pkg_name" in
+    *internal/supervisor*)
+      echo "!!!   that package's test time is the known gap tracked by QUM-1307," >&2
+      echo "!!!   so this overage is expected and is NOT a defect in your change." >&2
+      ;;
+    *)
+      echo "!!!   this is a property of what your change pulls into scope, not" >&2
+      echo "!!!   necessarily a defect in your change. Do NOT raise the budget to" >&2
+      echo "!!!   fit: make that package faster, or move work to the merge gate." >&2
+      ;;
+  esac
   echo "!!!   NOT BLOCKING — your commit proceeds. 'sprawl merge' still runs the" >&2
   echo "!!!   full 'make validate', so nothing reaches main on the strength of this." >&2
   echo "" >&2

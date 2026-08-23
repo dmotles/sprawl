@@ -112,8 +112,12 @@ check:
 	SPRAWL_VALIDATE_CAPTURE_STEPS=__check_requests_no_per_package_capture__ \
 	bash scripts/validate-timed.sh $(CHECK_STEPS); rc=$$?; \
 	elapsed=$$(( $$(date +%s) - start )); \
-	bash scripts/check-budget.sh --elapsed $$elapsed --budget $(CHECK_BUDGET_S) \
-		--timings $(CHECK_TIMINGS) || true; \
+	if [ "$$rc" -eq 0 ]; then \
+	  bash scripts/check-budget.sh --elapsed $$elapsed --budget $(CHECK_BUDGET_S) \
+	    --timings $(CHECK_TIMINGS) || true; \
+	else \
+	  echo "check: FAILED in $${elapsed}s — fix the failure above; the time budget is not the issue." >&2; \
+	fi; \
 	exit $$rc
 
 # Introspection seam, mirroring print-validate-steps. Deliberately a bare printf

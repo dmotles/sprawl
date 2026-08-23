@@ -51,7 +51,7 @@ esac
 # Bump when assertions are added or removed. A hardcoded literal, NOT derived
 # from anything in this script: a floor computed from the corpus it measures is
 # satisfied by an empty corpus, which is the exact false-green it exists to stop.
-MIN_ASSERTIONS=17
+MIN_ASSERTIONS=20
 
 PASSES=0
 FAILURES=0
@@ -378,6 +378,63 @@ if [ "$CLEAN_RC" -eq 0 ]; then
   ok "these flags leave a race-free control green"
 else
   fail "these flags failed the race-free control (rc=$CLEAN_RC) — the racy result above is not attributable: $(printf '%s' "$CLEAN_OUT" | tail -5 | tr '\n' '|')"
+fi
+
+# ===========================================================================
+# [3] WIRING — the COMMIT gate (QUM-1289)
+#
+# Group [1] introspects `make -n validate` only. That was complete when validate
+# was the only gate; it is not now. QUM-1289 made scripts/pre-commit run
+# `make check`, and dmotles decided explicitly that `check` INCLUDES -race
+# (change-scoped) rather than deferring all race detection to merge — on the
+# stated grounds that races are the defect class this codebase actually produces.
+#
+# That decision was enforced by NOTHING. QA (`audit`) stripped -race from
+# check-test-race and every gate in the tree stayed green, including this one at
+# 17 passed / 0 failed. The Makefile's own CHECK_STEPS rationale named
+# test-race-gate as the thing proving check's -race is wired — a claim about a
+# gate that nothing watched, which is the same false-green class this file exists
+# for, one gate over.
+#
+# WHY THE STEPS ARE INTROSPECTED INDIVIDUALLY, not via `make -n check`: the check
+# recipe hands CHECK_STEPS to scripts/validate-timed.sh, so under -n that line is
+# printed rather than executed and check-test-race never expands. Reading the
+# step list from print-check-steps (a bare printf with no $(MAKE), deliberately)
+# and expanding each step is what actually reaches the go-test line.
+#
+# NO doclint-style exemption here. That exemption exists in group [1] for
+# validate's documentation-linter step; `check` has no such step, so EVERY
+# go-test line reachable from the commit gate must carry -race.
+echo >&2
+echo "=== [3] wiring — the commit gate (make check)" >&2
+
+CHECK_STEPS_OUT=$(cd "$REPO_ROOT" && make --no-print-directory -f "$MAKEFILE" print-check-steps 2>/dev/null)
+if [ -z "$CHECK_STEPS_OUT" ]; then
+  fail "[3] 'make -n print-check-steps' produced no step list — cannot tell whether the commit gate carries -race"
+else
+  ok "[3] recovered the commit gate's step list ($(printf '%s\n' $CHECK_STEPS_OUT | grep -c .) steps)"
+
+  CHECK_GO_TEST_LINES=""
+  for st in $CHECK_STEPS_OUT; do
+    exp=$(cd "$REPO_ROOT" && make -n -f "$MAKEFILE" "$st" 2>/dev/null)
+    lines=$(printf '%s\n' "$exp" | grep -E '(^|[[:space:]]|;|&|\|)go test([[:space:]]|$)')
+    [ -n "$lines" ] && CHECK_GO_TEST_LINES="$CHECK_GO_TEST_LINES$lines\n"
+  done
+  CHECK_GO_TEST_LINES=$(printf '%b' "$CHECK_GO_TEST_LINES" | grep -v '^$')
+
+  # A commit gate that runs NO tests at all would satisfy an "every line carries
+  # -race" check vacuously. Require at least one.
+  if [ -z "$CHECK_GO_TEST_LINES" ]; then
+    fail "[3] no 'go test' line is reachable from any CHECK_STEPS step — the commit gate runs no tests, so its -race property is vacuous"
+  else
+    ok "[3] the commit gate reaches at least one 'go test' ($(printf '%s\n' "$CHECK_GO_TEST_LINES" | grep -c .) line(s))"
+    CHECK_BARE=$(printf '%s\n' "$CHECK_GO_TEST_LINES" | grep -vE '(^|[[:space:]])-race([[:space:]]|$)')
+    if [ -z "$CHECK_BARE" ]; then
+      ok "[3] every 'go test' line reachable from the commit gate carries -race"
+    else
+      fail "[3] the COMMIT gate has 'go test' line(s) WITHOUT -race: $(printf '%s' "$CHECK_BARE" | tr '\n' '|') — dmotles decided check includes -race (change-scoped); removing it must not be silent"
+    fi
+  fi
 fi
 
 TOTAL=$((PASSES + FAILURES))
