@@ -29,9 +29,10 @@
 # QUM-1029: the number of assertions a COMPLETE, PASSING run of this row makes.
 # Hand-counted: TUI rendered, turn completed, spill dir exists, spill file found,
 # >=1 telemetry record, record carries a reason, record is a telemetry type (not
-# a contract type), doctor reports degraded, doctor names the DSN source, doctor
-# does not leak the DSN, and a SECOND turn both completed and spilled.
-MIN_ASSERTIONS=11
+# a contract type), the spill file carries no DSN user or dbname, doctor reports
+# degraded, doctor names the DSN source, doctor does not leak the DSN, and a
+# SECOND turn both completed and spilled.
+MIN_ASSERTIONS=12
 
 test_metadata() {
     echo "needs_claude=1 needs_tmux=1"
@@ -187,6 +188,19 @@ test_run() {
     else
         fail "no spilled record carries a non-empty reason — a replay cannot tell a transient outage from a permanent rejection"
         head -3 "$SPILL_FILE" >&2 || true
+    fi
+
+    # QUM-1302: the reason is a pgx error's text, and the file lives in the
+    # operator's working tree for days. Absence of the DSN's own user and
+    # dbname, read off disk, not presence of a marker. The reason assertion
+    # above is the paired survival leg — without it this one is satisfied by an
+    # empty reason. Red on the parent commit: the reason read
+    # `failed to connect to \`user=nobody database=nosuchdb\`: ...`.
+    if grep -qE 'user=nobody|nosuchdb' "$SPILL_FILE"; then
+        fail "the spill file on disk leaks the DSN's user or dbname"
+        grep -oE 'user=nobody[^"]*|nosuchdb' "$SPILL_FILE" | head -3 >&2 || true
+    else
+        pass "spill file carries no DSN user or dbname"
     fi
 
     # The spill must contain TELEMETRY and must NOT contain a contract type.

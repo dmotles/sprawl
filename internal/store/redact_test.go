@@ -360,7 +360,7 @@ func TestRedactSecrets_IsIdempotent(t *testing.T) {
 // that let QUM-1279 ship a green test over a broken scenario.
 func realPgxConnectError(t *testing.T, hosts string, lookup func(context.Context, string) ([]string, error)) error {
 	t.Helper()
-	dsn := "postgres://leakuser:" + probePassword + "@" + hosts + ":1/leakdb?sslmode=disable&connect_timeout=1"
+	dsn := "postgres://" + probeUser + ":" + probePassword + "@" + hosts + ":1/" + probeDB + "?sslmode=disable&connect_timeout=1"
 	cfg, err := pgxpool.ParseConfig(dsn)
 	if err != nil {
 		t.Fatalf("ParseConfig of a synthetic DSN failed: %v", err)
@@ -382,6 +382,34 @@ func realPgxConnectError(t *testing.T, hosts string, lookup func(context.Context
 // CANNOT fire today. They exist so a future driver that starts including it
 // surfaces here. Counting them as live coverage would overstate this file.
 const probePassword = "sup3rsecretPROBE"
+
+// probeUser, probeDB and probeHost are the synthetic DSN components the helpers
+// above and below mint. Absence assertions elsewhere in the package MUST name
+// these constants rather than repeating the literals: a hard-coded copy that
+// drifts from the fixture turns every absence check into a search for a string
+// that was never in the subject, which passes while the leak is intact.
+const (
+	probeUser = "leakuser"
+	probeDB   = "leakdb"
+	probeHost = "db-probe.internal.example"
+)
+
+// realPgxParseError provokes a real pgx PARSE error, the other of the two
+// renderings a DSN reaches a store error sink in.
+//
+// Parse errors are the ONLY pgx shape that carries a URL-form DSN: pgconn
+// re-renders connect errors in keyword form regardless of the configured form,
+// so without this class the URL pattern in redact.go is never exercised at a
+// call site handed a connect error. sslmode is deliberately invalid so
+// ParseConfig fails and renders the connstring.
+func realPgxParseError(t *testing.T) error {
+	t.Helper()
+	_, err := pgxpool.ParseConfig("postgres://" + probeUser + ":" + probePassword + "@" + probeHost + ":5432/" + probeDB + "?sslmode=bogusvalue")
+	if err == nil {
+		t.Fatal("expected ParseConfig to reject sslmode=bogusvalue; without an error there is no DSN-bearing text to render")
+	}
+	return err
+}
 
 func dnsErrLookup(server string) func(context.Context, string) ([]string, error) {
 	return func(_ context.Context, name string) ([]string, error) {

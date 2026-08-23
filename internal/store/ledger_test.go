@@ -3,9 +3,12 @@ package store
 import (
 	"bytes"
 	"context"
+	"encoding/json"
 	"errors"
+	"io"
 	"log/slog"
 	"os"
+	"path/filepath"
 	"strings"
 	"testing"
 
@@ -459,6 +462,97 @@ func TestOpen_BadDSNHintSurvivesRedaction(t *testing.T) {
 	for _, want := range []string{"user", "password", "host", "port", "dbname"} {
 		if !strings.Contains(rendered, want) {
 			t.Errorf("redaction ate %q out of the bad-DSN hint, leaving the operator without the expected form: %q", want, rendered)
+		}
+	}
+}
+
+// TestOpen_DegradedSpillFileDoesNotLeakTheDSN is the production-wiring pin for
+// the on-disk sink: the real Open → degraded → FileSpiller path, not a
+// hand-assembled Appender.
+//
+// It is the strongest row of the set because it is the exact chain an operator
+// hits during an outage, and because the spill file lands inside the working
+// tree and is retained for days — there is no later print site where a logger
+// wrapper could catch it, so redaction has to happen where the record is built.
+//
+// Hermetic: port 1 on loopback refuses immediately, so pgx produces a real
+// CONNECT error (keyword form, the shape a real outage makes) with no container
+// and no DNS.
+//
+// Distinct literals from TestOpen_DegradedWarningDoesNotLeakTheDSN so a failure
+// names which sink leaked.
+func TestOpen_DegradedSpillFileDoesNotLeakTheDSN(t *testing.T) {
+	const (
+		leakUser = "spillleakuser"
+		leakDB   = "spillleakdb"
+	)
+	root := t.TempDir()
+	l, err := Open(context.Background(), LedgerConfig{
+		Enabled:    true,
+		DSN:        "postgres://" + leakUser + ":" + probePassword + "@127.0.0.1:1/" + leakDB + "?sslmode=disable&connect_timeout=1",
+		DSNSource:  EnvDSN,
+		RemoteURL:  "https://example.invalid/degraded",
+		SprawlRoot: root,
+		Logger:     slog.New(slog.NewTextHandler(io.Discard, nil)),
+	})
+	if err != nil {
+		t.Fatalf("Open must degrade rather than fail on an unreachable database: %v", err)
+	}
+	if l == nil {
+		t.Fatal("Open returned no Ledger")
+	}
+	t.Cleanup(l.Close)
+
+	// Evidence of execution, positive and FIRST: a run that never degraded and
+	// never spilled must FAIL rather than report a clean file it never wrote.
+	if l.DegradedError() == nil {
+		t.Fatal("DegradedError() is nil, so this run never entered degraded mode and never reached the spill path")
+	}
+	if _, err := l.Emit(context.Background(), EmitRequest{
+		TypeName:    "run_started",
+		TypeVersion: 1,
+		Payload:     map[string]any{"agent_name": "finn", "agent_type": "engineer", "session_id": "s-1"},
+	}); err != nil {
+		t.Fatalf("telemetry against a degraded Ledger returned an error to its emitter: %v", err)
+	}
+	entries, err := os.ReadDir(SpillDir(root))
+	if err != nil {
+		t.Fatalf("no spill directory was created, so the event was silently dropped: %v", err)
+	}
+	// Filter to day files: DeadLetterDir is a SUBDIRECTORY of SpillDir, so a
+	// non-empty listing is not by itself evidence that a spill line was
+	// written, and entries[0] could be that directory.
+	var days []string
+	for _, e := range entries {
+		if !e.IsDir() && strings.HasSuffix(e.Name(), ".ndjson") {
+			days = append(days, e.Name())
+		}
+	}
+	if len(days) != 1 {
+		t.Fatalf("spill dir holds %d day file(s), want 1, so the absence assertions below prove nothing", len(days))
+	}
+	raw, err := os.ReadFile(filepath.Join(SpillDir(root), days[0])) //nolint:gosec // G304: test-controlled temp path
+	if err != nil {
+		t.Fatalf("read spill file: %v", err)
+	}
+	var rec SpillRecord
+	if err := json.Unmarshal([]byte(strings.TrimSpace(string(raw))), &rec); err != nil {
+		t.Fatalf("spill line does not parse: %v", err)
+	}
+
+	// Survival: the record must still say why the event spilled.
+	for _, want := range []string{"failed to connect to `user=", "connection refused"} {
+		if !strings.Contains(rec.Reason, want) {
+			t.Fatalf("the spilled reason lost %q, so the absence assertions below would pass vacuously; got %q", want, rec.Reason)
+		}
+	}
+
+	// Absence of the specific secret, read off disk. leakUser and leakDB are
+	// LIVE; probePassword is a CANARY (pgx omits the password from connect
+	// errors — see its declaration in redact_test.go).
+	for _, secret := range []string{leakUser, leakDB, probePassword} {
+		if strings.Contains(string(raw), secret) {
+			t.Errorf("the spill file on disk leaked %q; content:\n%s", secret, raw)
 		}
 	}
 }

@@ -286,3 +286,83 @@ func TestSpillDir_IsUnderTheGitignoredSprawlTree(t *testing.T) {
 		t.Errorf("DeadLetterDir %q is not under the spill dir %q", DeadLetterDir("/repo"), got)
 	}
 }
+
+// TestFileSpiller_DeadLetterReasonIsRedacted covers the second on-disk
+// rendering of the same string: DeadLetter substitutes the caller's reason into
+// a record it then marshals into the dead-letter file.
+//
+// The reason is built here from a REAL pgx error's text because that is the
+// shape a replayer will hand it — a record it could not replay because the
+// database was unreachable. DeadLetter has no production caller until replay
+// lands, so this drives the real FileSpiller against a real file rather than
+// claiming end-to-end coverage of replay.
+func TestFileSpiller_DeadLetterReasonIsRedacted(t *testing.T) {
+	day := time.Date(2026, 8, 19, 6, 0, 0, 0, time.UTC)
+	s, root := newTestSpiller(t, day)
+	reason := realPgxConnectError(t, probeHost, dnsErrLookup("127.0.0.53:53")).Error()
+
+	// Evidence of execution first: without a written, parseable line the
+	// absence assertions below are vacuous.
+	if err := s.DeadLetter(sampleRecord(), reason); err != nil {
+		t.Fatalf("DeadLetter: %v", err)
+	}
+	lines := readLines(t, filepath.Join(DeadLetterDir(root), "2026-08-19.ndjson"))
+	if len(lines) != 1 {
+		t.Fatalf("dead-letter file holds %d line(s), want 1", len(lines))
+	}
+	var rec SpillRecord
+	if err := json.Unmarshal([]byte(lines[0]), &rec); err != nil {
+		t.Fatalf("dead-letter line does not parse: %v", err)
+	}
+
+	// Survival: a dead letter without a triageable reason is one somebody
+	// deletes the redaction to fix.
+	for _, want := range []string{"failed to connect to `user=", "no such host"} {
+		if !strings.Contains(rec.Reason, want) {
+			t.Fatalf("the dead-letter reason lost %q, so the absence assertions below would pass vacuously; got %q", want, rec.Reason)
+		}
+	}
+
+	// Absence, read off disk. probePassword is a CANARY, not live coverage:
+	// pgx omits the password from connect errors (see its declaration in
+	// redact_test.go), so that one check cannot fire today.
+	for _, secret := range []string{probeUser, probeDB, probeHost, probePassword} {
+		if strings.Contains(lines[0], secret) {
+			t.Errorf("the dead-letter file on disk leaked %q; line:\n%s", secret, lines[0])
+		}
+	}
+}
+
+// TestFileSpiller_DeadLetterPassesBenignReasonsThroughByteIdentically is the
+// NEGATIVE control for the dead-letter path: subjects known clean, where the
+// probe must stay QUIET.
+//
+// Both strings are the real triage messages a replayer will emit, and both
+// carry `=`-adjacent and version-shaped text of the kind an over-broad
+// redaction eats. Mangling either is the failure mode this control exists to
+// catch.
+func TestFileSpiller_DeadLetterPassesBenignReasonsThroughByteIdentically(t *testing.T) {
+	for _, reason := range []string{
+		"schema_id 00000000-0000-0000-0000-0000000000ff is unknown to this build",
+		"record version 7 is newer than this build (max 1)",
+	} {
+		t.Run(reason, func(t *testing.T) {
+			day := time.Date(2026, 8, 19, 6, 0, 0, 0, time.UTC)
+			s, root := newTestSpiller(t, day)
+			if err := s.DeadLetter(sampleRecord(), reason); err != nil {
+				t.Fatalf("DeadLetter: %v", err)
+			}
+			lines := readLines(t, filepath.Join(DeadLetterDir(root), "2026-08-19.ndjson"))
+			if len(lines) != 1 {
+				t.Fatalf("dead-letter file holds %d line(s), want 1", len(lines))
+			}
+			var rec SpillRecord
+			if err := json.Unmarshal([]byte(lines[0]), &rec); err != nil {
+				t.Fatalf("dead-letter line does not parse: %v", err)
+			}
+			if rec.Reason != reason {
+				t.Errorf("a benign dead-letter reason was altered on its way to disk:\n want: %q\n got:  %q", reason, rec.Reason)
+			}
+		})
+	}
+}

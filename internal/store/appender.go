@@ -298,7 +298,12 @@ func (a *Appender) spillEvent(ctx context.Context, schema *EventTypeSchema, ev E
 		Payload:            ev.Payload,
 		RemoteURL:          a.remoteURL,
 		At:                 a.now().UTC(),
-		Reason:             cause.Error(),
+		// Redacted at construction, not at a print site: this record is
+		// marshalled straight to an NDJSON file inside the operator's working
+		// tree and kept for days, so there is no later sink where a wrapper
+		// could catch a DSN. The sibling WARN below goes through the
+		// RedactingLogger; this line is the only branch that does not.
+		Reason: RedactError(cause),
 	}
 	if a.spill == nil {
 		// No spill configured and the database is down: say so. Returning nil

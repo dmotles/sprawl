@@ -39,9 +39,15 @@ import (
 // left the hostname — the item CLAUDE.md most clearly forbids in a public repo
 // — fully intact. Hence the two anchored tail patterns.
 //
-// Redaction is a BACKSTOP, not the primary control. The primary control is that
-// nothing in this package ever formats a DSN into a message on purpose; this
-// catches DSNs that arrive inside somebody else's error string.
+// Redaction is a BACKSTOP for text bound for a terminal or a log: nothing in
+// this package formats a DSN into such a message on purpose, so there it only
+// catches DSNs arriving inside somebody else's error string.
+//
+// It is the PRIMARY control on one surface, which is why that surface applies it
+// at the write site rather than relying on a print-site wrapper: the spill and
+// dead-letter records (`spillEvent` in appender.go, `FileSpiller.DeadLetter` in
+// spill.go) deliberately persist a driver error's text into an NDJSON file, and
+// a file has no later print site where anything could catch it.
 //
 // THE RULE, so the next widening does not have to reverse-engineer it from the
 // tests: a value the OPERATOR SUPPLIED (a keyword value, a DSN component) is

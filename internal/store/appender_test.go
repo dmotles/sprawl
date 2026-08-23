@@ -4,9 +4,11 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"path/filepath"
 	"strings"
 	"sync"
 	"testing"
+	"time"
 
 	"github.com/google/uuid"
 	"github.com/jackc/pgx/v5"
@@ -780,5 +782,126 @@ func TestAppend_ClosesEventIDOnANonClosingSchemaIsRejected(t *testing.T) {
 	}
 	if calls := pool.log(); len(calls) != 0 {
 		t.Errorf("the rejected append touched the database: %v", calls)
+	}
+}
+
+// TestAppend_SpilledReasonIsRedacted pins the on-disk half of spillEvent.
+//
+// The sibling WARN below the record construction goes through the
+// RedactingLogger built in Open; the disk write did not. The spill file is a
+// PERSISTED artifact inside the operator's working tree, retained for days,
+// with no later print site where a wrapper could catch it — so redaction has to
+// happen at construction.
+//
+// Shape of every subtest: (a) evidence the spill path actually ran, (b) the
+// reason still explains the failure, (c) only then the absence of the secret.
+// Absence of the specific synthetic substring, never presence of a marker: a
+// marker check is satisfied by text that also still carries the DSN.
+func TestAppend_SpilledReasonIsRedacted(t *testing.T) {
+	tests := []struct {
+		name string
+		// cause is the degraded cause handed to the Appender, i.e. what
+		// spillEvent renders into SpillRecord.Reason.
+		cause func(t *testing.T) error
+		// survives are anti-vacuity anchors: without them an implementation
+		// that wrote an empty reason would pass the absence checks below.
+		survives []string
+		// secrets: leakUser/leakDB/the hostname are LIVE assertions, measured
+		// red before the fix. probePassword is a CANARY — pgx omits the
+		// password from connect errors and masks it in parse errors (see
+		// probePassword's declaration in redact_test.go), so it cannot fire
+		// today; it exists so a future driver that starts including it surfaces
+		// here. Counting it as coverage would overstate this test.
+		secrets []string
+	}{
+		{
+			name: "pgx connect class",
+			cause: func(t *testing.T) error {
+				return realPgxConnectError(t, probeHost, dnsErrLookup("127.0.0.53:53"))
+			},
+			survives: []string{"failed to connect to `user=", "no such host"},
+			secrets:  []string{probeUser, probeDB, probeHost, probePassword},
+		},
+		{
+			name:  "pgx parse class",
+			cause: realPgxParseError,
+			// NOT "sslmode" — dsnURLRe is deliberately greedy to the next
+			// backtick, so the query string is inside the redaction. The
+			// diagnosis that must survive is pgx's own explanation.
+			survives: []string{"failed to configure TLS", "sslmode is invalid"},
+			secrets:  []string{probeUser, probeDB, probeHost, probePassword},
+		},
+	}
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			reg := testRegistry(t)
+			day := time.Date(2026, 8, 19, 12, 0, 0, 0, time.UTC)
+			root := t.TempDir()
+			spill := &FileSpiller{Root: root, Now: func() time.Time { return day }}
+			a := NewAppender(AppenderDeps{Pool: newRecordingPool(), Registry: reg, Spill: spill, Degraded: tc.cause(t)})
+
+			// (a) Evidence of execution, asserted positively and FIRST: a run
+			// that never reached the spill path must FAIL, not report clean.
+			if _, err := a.Append(context.Background(), runStartedEvent(t, reg)); err != nil {
+				t.Fatalf("a spillable telemetry event with the DB down must not error: %v", err)
+			}
+			lines := readLines(t, filepath.Join(SpillDir(root), "2026-08-19.ndjson"))
+			if len(lines) != 1 {
+				t.Fatalf("spill file holds %d line(s), want 1 — nothing was written, so the checks below prove nothing", len(lines))
+			}
+			var rec SpillRecord
+			if err := json.Unmarshal([]byte(lines[0]), &rec); err != nil {
+				t.Fatalf("spill line does not parse: %v", err)
+			}
+
+			// (b) Survival: a spill record whose reason is useless is one
+			// somebody deletes the redaction to fix.
+			if rec.Reason == "" {
+				t.Fatal("Reason is empty; the absence assertions below would pass vacuously")
+			}
+			for _, want := range tc.survives {
+				if !strings.Contains(rec.Reason, want) {
+					t.Fatalf("the spilled reason lost %q, so the absence assertions below would pass vacuously; got %q", want, rec.Reason)
+				}
+			}
+
+			// (c) Absence, read off disk.
+			for _, secret := range tc.secrets {
+				if strings.Contains(lines[0], secret) {
+					t.Errorf("the spill file on disk leaked %q; line:\n%s", secret, lines[0])
+				}
+			}
+		})
+	}
+}
+
+// TestAppend_SpilledReasonPassesBenignTextThroughByteIdentically is the NEGATIVE
+// control: a subject known clean, where the probe must stay QUIET.
+//
+// It detects an unconditional-redaction or empty-reason implementation: this
+// text carries no `=`, no `lookup <token>` and no `<ip>:<port> (<token>)`, so
+// nothing in redact.go may fire on it. It does NOT probe over-redaction of
+// near-miss grammars — the dead-letter control in spill_test.go and
+// TestRedactSecrets_LeavesOrdinaryTextAlone cover that direction.
+func TestAppend_SpilledReasonPassesBenignTextThroughByteIdentically(t *testing.T) {
+	reg := testRegistry(t)
+	day := time.Date(2026, 8, 19, 12, 0, 0, 0, time.UTC)
+	root := t.TempDir()
+	spill := &FileSpiller{Root: root, Now: func() time.Time { return day }}
+	a := NewAppender(AppenderDeps{Pool: newRecordingPool(), Registry: reg, Spill: spill, Degraded: errConnRefused})
+
+	if _, err := a.Append(context.Background(), runStartedEvent(t, reg)); err != nil {
+		t.Fatalf("Append: %v", err)
+	}
+	lines := readLines(t, filepath.Join(SpillDir(root), "2026-08-19.ndjson"))
+	if len(lines) != 1 {
+		t.Fatalf("spill file holds %d line(s), want 1", len(lines))
+	}
+	var rec SpillRecord
+	if err := json.Unmarshal([]byte(lines[0]), &rec); err != nil {
+		t.Fatalf("spill line does not parse: %v", err)
+	}
+	if rec.Reason != errConnRefused.Error() {
+		t.Errorf("a benign transport error was altered on its way to disk:\n want: %q\n got:  %q", errConnRefused.Error(), rec.Reason)
 	}
 }

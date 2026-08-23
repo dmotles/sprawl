@@ -130,7 +130,10 @@ func (s *FileSpiller) Write(_ context.Context, rec SpillRecord) error {
 // rather than skipping it, because a skipped line is indistinguishable from a
 // line that was never written.
 func (s *FileSpiller) DeadLetter(rec SpillRecord, reason string) error {
-	rec.Reason = reason
+	// Same reasoning as spillEvent: the reason a replayer hands us is a driver
+	// error's text, and this record is a persisted artifact with no print site
+	// downstream.
+	rec.Reason = RedactSecrets(reason)
 	line, err := json.Marshal(rec)
 	if err != nil {
 		return fmt.Errorf("store: marshalling dead-letter record: %w", err)
