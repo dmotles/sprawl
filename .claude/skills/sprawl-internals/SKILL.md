@@ -75,6 +75,7 @@ make              # runs full validation. Its steps are declared in the Makefile
                   #   build test-build-stamp hooks-armed proto-check fmt-check
                   #   lint test-lint-pin
                   #   test-race-gate test-race test-doclint test-doclint-split-unit
+                  #   test-check-scope-unit
                   #   test-wirelog-helpers-unit
                   #   test-e2e-lockwait-unit test-e2e-matrix-unit
                   #   test-always-loaded-budget-unit always-loaded-budget
@@ -126,6 +127,13 @@ make test-doclint-split-unit     # guards that split: the moved tests are absent
                                  # binary, present in the tagged one, in VALIDATE_STEPS, and really
                                  # EXECUTED. A test behind a tag nothing runs is deleted coverage
                                  # wearing an optimisation's clothes
+make test-check-scope-unit       # guards scripts/check-scope.sh, the dependency-aware change
+                                 # scoper for the coming `make check`. Closes over Imports +
+                                 # TestImports + XTestImports, NOT .Deps: .Deps is the non-test
+                                 # closure, so a package importing a helper only from its _test.go
+                                 # is absent from it (internal/rootinit -> internal/testutil is the
+                                 # pinned live example). The gate's positive control watches both
+                                 # wrong scopers miss that dependent (QUM-1289)
 make test-validate-timing-unit   # bash unit suite for validate's own per-step timing driver
 make check-validate-baseline     # asserts the recorded validate baseline still matches VALIDATE_STEPS,
                                  # is dated, is in-window, and leaked no checkout path

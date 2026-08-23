@@ -1,4 +1,4 @@
-.PHONY: lint-cache-dir test-lint-pin validate build hooks-armed proto-check proto-gen proto-gen-web hub-web fmt-check lint test clean install fmt hooks leak-scan test-handoff-e2e test-exit-code-preservation test-parallel-agent-viewport-e2e test-tui-e2e test-leak-resistance-e2e test-e2e-matrix test-e2e-matrix-unit test-hooks-e2e test-hub-bootstrap test-hub-e2e test-store-pg test-wirelog-helpers-unit test-e2e-lockwait-unit test-gitignore-classes test-race test-race-gate always-loaded-budget test-always-loaded-budget-unit print-validate-steps test-validate-timing-unit check-validate-baseline validate-baseline print-ldflags test-build-stamp test-doclint test-doclint-split-unit
+.PHONY: lint-cache-dir test-lint-pin validate build hooks-armed proto-check proto-gen proto-gen-web hub-web fmt-check lint test clean install fmt hooks leak-scan test-handoff-e2e test-exit-code-preservation test-parallel-agent-viewport-e2e test-tui-e2e test-leak-resistance-e2e test-e2e-matrix test-e2e-matrix-unit test-hooks-e2e test-hub-bootstrap test-hub-e2e test-store-pg test-wirelog-helpers-unit test-e2e-lockwait-unit test-gitignore-classes test-race test-race-gate always-loaded-budget test-always-loaded-budget-unit print-validate-steps test-validate-timing-unit check-validate-baseline validate-baseline print-ldflags test-build-stamp test-doclint test-doclint-split-unit test-check-scope-unit
 
 # THIS_MAKEFILE must be resolved HERE, above any include, where MAKEFILE_LIST's
 # last entry is still this file. Files named in the MAKEFILES environment
@@ -17,6 +17,7 @@ THIS_MAKEFILE := $(abspath $(lastword $(MAKEFILE_LIST)))
 VALIDATE_STEPS := build test-build-stamp hooks-armed proto-check fmt-check \
 	lint test-lint-pin \
 	test-race-gate test-race test-doclint test-doclint-split-unit \
+	test-check-scope-unit \
 	test-wirelog-helpers-unit test-e2e-lockwait-unit \
 	test-e2e-matrix-unit test-always-loaded-budget-unit always-loaded-budget \
 	test-gitignore-classes test-validate-timing-unit check-validate-baseline \
@@ -564,6 +565,14 @@ test-doclint:
 # looking like an optimisation.
 test-doclint-split-unit:
 	bash scripts/test-doclint-split-unit.sh
+
+# QUM-1289: guards scripts/check-scope.sh, the dependency-aware change-scoper
+# that will drive `make check`'s test step. Its live positive control watches
+# BOTH plausible wrong scopers (dirs-of-edited-files, and reverse closure over
+# .Deps) miss a pinned test-only dependent — because a gate that silently
+# narrows its own scope reports green over a package it never built.
+test-check-scope-unit:
+	bash scripts/test-check-scope-unit.sh
 
 # QUM-951: assert the guard stack is actually ARMED for this working tree before
 # anything else in validate has a chance to look green. `git -c
