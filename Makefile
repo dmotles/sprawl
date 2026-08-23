@@ -1,4 +1,4 @@
-.PHONY: lint-cache-dir test-lint-pin validate build hooks-armed proto-check proto-gen proto-gen-web hub-web fmt-check lint test clean install fmt hooks leak-scan test-handoff-e2e test-exit-code-preservation test-parallel-agent-viewport-e2e test-tui-e2e test-leak-resistance-e2e test-e2e-matrix test-e2e-matrix-unit test-hooks-e2e test-hub-bootstrap test-hub-e2e test-store-pg test-wirelog-helpers-unit test-e2e-lockwait-unit test-gitignore-classes test-race test-race-gate always-loaded-budget test-always-loaded-budget-unit print-validate-steps test-validate-timing-unit check-validate-baseline validate-baseline print-ldflags test-build-stamp test-doclint test-doclint-split-unit test-check-scope-unit check print-check-steps check-budget-structural check-fmt check-lint check-test-race test-check-budget-unit
+.PHONY: lint-cache-dir test-lint-pin validate build hooks-armed proto-check proto-gen proto-gen-web hub-web fmt-check lint test clean install fmt hooks leak-scan test-handoff-e2e test-exit-code-preservation test-parallel-agent-viewport-e2e test-tui-e2e test-leak-resistance-e2e test-e2e-matrix test-e2e-matrix-unit test-hooks-e2e test-hub-bootstrap test-hub-e2e test-store-pg test-wirelog-helpers-unit test-e2e-lockwait-unit test-gitignore-classes test-race test-race-gate always-loaded-budget test-always-loaded-budget-unit print-validate-steps test-validate-timing-unit check-validate-baseline validate-baseline print-ldflags test-build-stamp test-doclint test-doclint-split-unit test-check-scope-unit check print-check-steps check-budget-structural check-fmt check-lint check-test-race test-check-budget-unit test-precommit-gate-unit
 
 # THIS_MAKEFILE must be resolved HERE, above any include, where MAKEFILE_LIST's
 # last entry is still this file. Files named in the MAKEFILES environment
@@ -17,7 +17,7 @@ THIS_MAKEFILE := $(abspath $(lastword $(MAKEFILE_LIST)))
 VALIDATE_STEPS := build test-build-stamp hooks-armed proto-check fmt-check \
 	lint test-lint-pin \
 	test-race-gate test-race test-doclint test-doclint-split-unit \
-	test-check-scope-unit test-check-budget-unit \
+	test-check-scope-unit test-check-budget-unit test-precommit-gate-unit \
 	test-wirelog-helpers-unit test-e2e-lockwait-unit \
 	test-e2e-matrix-unit test-always-loaded-budget-unit always-loaded-budget \
 	test-gitignore-classes test-validate-timing-unit check-validate-baseline \
@@ -83,18 +83,26 @@ CHECK_TIMINGS := .check-timings
 # validate's own recorded observation on every commit and corrupt
 # `make validate-baseline`.
 #
-# The per-package capture is requested only when there IS a Go scope. The driver
-# rightly fails when a captured step yields no package lines — an empty top-5
-# table reads exactly like a fast run — but for a change with no Go bearing
-# there is legitimately nothing to measure per-package, and asking it to measure
-# that would turn its anti-vacuity guard into a false red. Naming a step that
-# never runs leaves CAPTURED_ANY=0, so the guard stays armed for the case it is
-# actually for.
+# NO per-package capture is requested, deliberately, by naming a step that does
+# not exist. The driver rightly FAILS when a captured step yields no package
+# result lines — an empty top-5 table reads exactly like a fast run — but that
+# guard is calibrated for `validate`, where `./...` always contains tests. For a
+# CHANGE-SCOPED gate, "no package in scope has test files" is a legitimate
+# outcome, and so is "no Go packages at all".
+#
+# I first tried to gate the capture on the scope being non-empty. That was a
+# partial fix and it still produced a false red: a fresh worktree committing a
+# single .txt file scoped to exactly 1 package, that package had NO test files,
+# zero package lines came back, and the commit was refused with
+# "captured step check-test-race.txt produced NO package result lines". Gating on
+# emptiness cannot fix that, because the scope was not empty. Dropping the
+# request is the correct fix, and it costs only check's top-5 table — the budget
+# warning reads `step` lines, not `pkg` lines, so it still names the dominant
+# step. The guard stays fully armed where it belongs, in validate.
 check:
 	@start=$$(date +%s); \
-	if bash scripts/check-scope.sh >/dev/null 2>&1; then cap=check-test-race; else cap=__no_capture__; fi; \
 	SPRAWL_VALIDATE_TIMING_OUT=$(CHECK_TIMINGS) \
-	SPRAWL_VALIDATE_CAPTURE_STEPS=$$cap \
+	SPRAWL_VALIDATE_CAPTURE_STEPS=__check_requests_no_per_package_capture__ \
 	bash scripts/validate-timed.sh $(CHECK_STEPS); rc=$$?; \
 	elapsed=$$(( $$(date +%s) - start )); \
 	bash scripts/check-budget.sh --elapsed $$elapsed --budget $(CHECK_BUDGET_S) \
@@ -710,6 +718,14 @@ test-check-scope-unit:
 # wall-clock half must warn loudly without ever blocking (dmotles's call).
 test-check-budget-unit:
 	bash scripts/test-check-budget-unit.sh
+
+# QUM-1289: guards WHICH GATE scripts/pre-commit runs, and its fallback. The hook
+# every agent runs is MAIN's copy, so a missing `check` target on a pre-1289
+# branch would block every commit for every agent. Asserts both arms, that the
+# fallback is loud, that no-gate-available REFUSES, and that the scope paths are
+# captured before the GIT_* unset (a partial commit otherwise reads the wrong index).
+test-precommit-gate-unit:
+	bash scripts/test-precommit-gate-unit.sh
 
 # QUM-951: assert the guard stack is actually ARMED for this working tree before
 # anything else in validate has a chance to look green. `git -c

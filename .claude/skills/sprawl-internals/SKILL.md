@@ -76,6 +76,7 @@ make              # runs full validation. Its steps are declared in the Makefile
                   #   lint test-lint-pin
                   #   test-race-gate test-race test-doclint test-doclint-split-unit
                   #   test-check-scope-unit test-check-budget-unit
+                  #   test-precommit-gate-unit
                   #   test-wirelog-helpers-unit
                   #   test-e2e-lockwait-unit test-e2e-matrix-unit
                   #   test-always-loaded-budget-unit always-loaded-budget
@@ -145,6 +146,12 @@ make check-fmt / check-lint      # scoped fmt and lint. Separate recipes rather 
 make check-test-race             # -race over the DEPENDENCY CLOSURE of the change, not ./... .
                                  # An empty scope SKIPS with a reason; a scope it could not compute
                                  # EXITS 1 — never a silent pass
+make test-precommit-gate-unit    # guards WHICH gate scripts/pre-commit runs. The hook every
+                                 # agent runs is MAIN's copy (both install paths symlink one file),
+                                 # so a pre-QUM-1289 branch must fall back to `make validate`
+                                 # LOUDLY rather than dying on a missing `check` target. Also
+                                 # asserts the scope paths are captured BEFORE the GIT_* unset —
+                                 # a partial commit otherwise reads the wrong index
 make test-check-budget-unit      # guards check-budget.sh: undeclared step, stale declaration,
                                  # non-numeric budget and over-ceiling all HARD FAIL; the overage
                                  # warning must be loud and must not block (QUM-1289)

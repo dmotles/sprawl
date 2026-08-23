@@ -22,7 +22,65 @@ here="$(cd "$(dirname "$(readlink -f "${BASH_SOURCE[0]}")")" && pwd)"
 # they resolve to the outer repo instead of their temp repo and fail. Unset them
 # so validation runs with a clean git env. (Done AFTER the guard, which
 # intentionally relies on the committing worktree's git context.)
+# QUM-1289: capture the changed paths for the change-scoped commit gate BEFORE
+# the unset below, and export them.
+#
+# This ordering is load-bearing, not tidiness. Under a PARTIAL commit (`git commit
+# -p`, or a path-limited commit) git points GIT_INDEX_FILE at a TEMPORARY index
+# holding just the selected changes. Once that variable is unset, `git diff
+# --cached` reads the repository's real index instead — a different set of files.
+# So a scope computed after the unset is computed from the wrong tree, and would
+# silently test the wrong packages. Note the failure mode: it works perfectly on
+# a plain `git commit`, which is exactly how it would survive review.
+#
+# `|| true` because a scope we could not compute must not block the commit here —
+# check-scope.sh itself decides what an uncomputable scope means, and it errs
+# toward testing everything.
+SPRAWL_CHECK_SCOPE_PATHS="$( { git diff --cached --name-only -M
+                              git diff --name-only -M
+                              git ls-files --others --exclude-standard; } 2>/dev/null \
+                            | sort -u | tr '\n' ' ' )" || true
+export SPRAWL_CHECK_SCOPE_PATHS
+
 unset GIT_DIR GIT_INDEX_FILE GIT_WORK_TREE GIT_OBJECT_DIRECTORY GIT_COMMON_DIR GIT_NAMESPACE GIT_PREFIX
 
-echo "Running pre-commit validation..."
-make validate
+# QUM-1289: run the FAST commit gate, falling back to the full merge gate when
+# this worktree's Makefile predates it.
+#
+# WHY THE PROBE EXISTS. Both install paths symlink ONE file: `make hooks` and
+# .sprawl/config.yaml's worktree.setup both point .git/hooks/pre-commit at the
+# MAIN CHECKOUT's scripts/pre-commit. So the hook an agent runs is main's copy,
+# not its own branch's. Without this probe, the moment this change reached main
+# every worktree still on a pre-QUM-1289 branch would run `make check` against a
+# Makefile with no such target — `No rule to make target 'check'`, exit 2, every
+# commit blocked for every agent until they rebased. There were live worktrees in
+# exactly that state when this landed.
+#
+# print-check-steps is the probe because it is a bare printf with no $(MAKE) in
+# it: `make -n` on it executes nothing and costs one Makefile parse. (`make -n
+# validate` would be the obvious probe and is the wrong one: GNU make still
+# EXECUTES recipe lines containing $(MAKE) under -n, so probing validate would
+# run it.)
+#
+# There is deliberately no second probe for `validate`. If that target is missing
+# too, `make validate` below fails on its own with "No rule to make target", the
+# hook exits non-zero, and the commit is blocked — which is the outcome a probe
+# would have produced, without a probe that can be wrong. An earlier version
+# probed `print-validate-steps` and refused when it was absent, which broke
+# internal/githooks' TestPreCommitScrubsGitDir: that test stubs a Makefile
+# containing ONLY a `validate:` target, which is a perfectly valid thing for the
+# hook to run.
+#
+# The fallback direction is deliberate: it fails toward MORE checking, never
+# less. And it is LOUD, because a fallback that quietly runs a different gate
+# than the one it announced is the same false-green class this repo keeps
+# finding. scripts/test-precommit-gate-unit.sh asserts both arms.
+gate=check
+if ! make --no-print-directory -n print-check-steps >/dev/null 2>&1; then
+  echo "pre-commit: this worktree's Makefile has no 'check' target (a pre-QUM-1289 branch)." >&2
+  echo "pre-commit: falling back to the FULL 'make validate' gate. Slower, not weaker." >&2
+  gate=validate
+fi
+
+echo "Running pre-commit gate: make $gate"
+make "$gate"
