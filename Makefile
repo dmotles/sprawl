@@ -857,11 +857,17 @@ test-e2e-matrix: build
 	bash scripts/e2e-matrix.sh all; rc=$$?; ./sprawl sandbox-gc --max-age=10m || true; exit $$rc
 
 # QUM-947: unit tests for the driver itself — arg parsing, fail-fast row-name
-# validation, and the summary's passed/requested arithmetic. Pure shell, ~0.4s,
-# no claude and no tmux, so it runs inside `make validate`: a regression test
+# validation, and the summary's passed/requested arithmetic. Pure shell, no
+# claude and no tmux, so it runs inside `make validate`: a regression test
 # guarding a false-green is worthless if it only runs when someone remembers.
 # This explicit rule takes precedence over the test-e2e-matrix-% pattern rule
 # below, so `unit` is never mistaken for a row name.
+#
+# QUM-1303: this comment said "~0.4s" while the step measured ~97s in validate —
+# the THIRD place that one figure had rotted (with SKILL.md's runtime paragraph
+# and its matrix-table row). No duration is quoted here on purpose: the recorded
+# per-step figure lives in scripts/testdata/validate-baseline.observed, which a
+# check reads. Do not paste a number back in.
 test-e2e-matrix-unit:
 	bash scripts/test-e2e-matrix-unit.sh
 
