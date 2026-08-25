@@ -34,8 +34,9 @@
 # Hand-counted: container ready, migrate ok, TUI rendered, spawn turn, child
 # state file, retire turn, project row, run_started present, run_finished
 # present, run_finished carries provenance, open_contracts empty, no spill (the
-# DB was reachable throughout).
-MIN_ASSERTIONS=12
+# DB was reachable throughout), spawn_context artifact reachable from
+# run_started, its body non-empty, and it carries the rendered prompt.
+MIN_ASSERTIONS=15
 
 test_metadata() {
     echo "needs_claude=1 needs_tmux=1"
@@ -304,6 +305,44 @@ test_run() {
         pass "run_finished carries git provenance"
     else
         fail "no run_finished row carries a non-empty git_sha (got '$WITH_SHA')"
+    fi
+
+    # QUM-1251 AC6: the spawn_context artifact, retrieved BY ITS ID through the
+    # event that references it. The JOIN is the assertion and count(artifacts)
+    # is not: `artifacts` has no read path but by id, so a row no event
+    # references is unreachable, and a count cannot tell the two apart.
+    local SPAWN_CTX
+    SPAWN_CTX=$(psql_q "SELECT count(*) FROM events e JOIN event_type_schemas s ON s.id = e.schema_id JOIN artifacts a ON a.id = e.artifact_id WHERE s.name = 'run_started' AND a.kind = 'spawn_context';")
+    echo "    run_started rows with a spawn_context artifact: $SPAWN_CTX"
+    if [ -n "$SPAWN_CTX" ] && [ "$SPAWN_CTX" -ge 1 ] 2>/dev/null; then
+        pass "a spawn_context artifact is reachable by id from run_started ($SPAWN_CTX)"
+    else
+        fail "no run_started row references a spawn_context artifact (got '$SPAWN_CTX')"
+        psql_q "SELECT kind, count(*) FROM artifacts GROUP BY kind;" >&2 || true
+    fi
+
+    # An EMPTY artifact is the plausible value here: the row exists, the JOIN
+    # above passes, and the replay it exists for has nothing to replay.
+    local SPAWN_CTX_BYTES
+    SPAWN_CTX_BYTES=$(psql_q "SELECT coalesce(min(size_bytes), 0) FROM artifacts WHERE kind = 'spawn_context';")
+    echo "    smallest spawn_context body: $SPAWN_CTX_BYTES bytes"
+    if [ -n "$SPAWN_CTX_BYTES" ] && [ "$SPAWN_CTX_BYTES" -gt 0 ] 2>/dev/null; then
+        pass "every spawn_context artifact has a non-empty body (smallest $SPAWN_CTX_BYTES bytes)"
+    else
+        fail "a spawn_context artifact is empty (smallest size_bytes '$SPAWN_CTX_BYTES')"
+    fi
+
+    # And the body is the RENDERED PROMPT, not merely well-formed JSON. Keyed on
+    # a string every rendered agent prompt contains, so a body carrying only the
+    # metadata — which satisfies both assertions above — fails here.
+    local SPAWN_CTX_PROMPT
+    SPAWN_CTX_PROMPT=$(psql_q "SELECT count(*) FROM artifacts WHERE kind = 'spawn_context' AND content::jsonb->>'rendered_prompt' LIKE '%Executing actions with care%';")
+    echo "    spawn_context artifacts carrying a rendered prompt: $SPAWN_CTX_PROMPT"
+    if [ -n "$SPAWN_CTX_PROMPT" ] && [ "$SPAWN_CTX_PROMPT" -ge 1 ] 2>/dev/null; then
+        pass "a spawn_context artifact carries the fully rendered agent prompt ($SPAWN_CTX_PROMPT)"
+    else
+        fail "no spawn_context artifact carries a rendered agent prompt (got '$SPAWN_CTX_PROMPT') — the artifact records metadata a replay cannot use on its own"
+        psql_q "SELECT left(content, 400) FROM artifacts WHERE kind = 'spawn_context' LIMIT 1;" >&2 || true
     fi
 
     # M1a's lifecycle path opens no contracts, so a non-empty projection here

@@ -212,7 +212,7 @@ func NewWeaveRuntimeHandle(rt *runtimepkg.UnifiedRuntime, session backendpkg.Ses
 	ledgerEmitter := newLifecycleEmitter(context.Background(), RuntimeStartSpec{
 		SprawlRoot: sprawlRoot,
 		Name:       name,
-	}, session.SessionID())
+	}, nil, session.SessionID())
 	if ledgerEmitter != nil {
 		ledgerEmitter.RunStarted(context.Background())
 	}

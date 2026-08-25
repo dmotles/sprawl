@@ -135,6 +135,14 @@ type preparedLaunch struct {
 	activityFile *os.File
 	observer     *agentloop.ObserverWriter
 	ring         *agentloop.ActivityRing
+	// systemPrompt, card and cardSource are carried for the spawn_context
+	// artifact (QUM-1251 AC6), which is written downstream at the lifecycle
+	// emitter seam. Carried rather than re-derived there: re-resolving the card
+	// would reintroduce the split resolveCard exists to prevent, and the
+	// artifact would be free to name a card the agent never ran.
+	systemPrompt string
+	card         *card.Card
+	cardSource   cardresolve.Source
 }
 
 // Start orchestrates the in-process runtime launch as a sequence of discrete
@@ -234,7 +242,7 @@ func (s *inProcessUnifiedStarter) Start(spec RuntimeStartSpec) (RuntimeHandle, e
 	// RunStarted fires here rather than on the first observed event: a run that
 	// starts and produces no traffic at all is exactly the case an operator most
 	// wants to find in the log, and a lazy emit would omit it.
-	ledgerEmitter := newLifecycleEmitter(context.Background(), spec, session.SessionID())
+	ledgerEmitter := newLifecycleEmitter(context.Background(), spec, prep, session.SessionID())
 	if ledgerEmitter != nil {
 		ledgerEmitter.RunStarted(context.Background())
 	}
@@ -293,7 +301,7 @@ func (s *inProcessUnifiedStarter) prepareLaunch(spec RuntimeStartSpec) (*prepare
 	}
 
 	// Resolved before either consumer, and the same pointer is handed to both.
-	c, _ := s.resolveCard(context.Background(), spec.SprawlRoot, agentState.Type)
+	c, cardSource := s.resolveCard(context.Background(), spec.SprawlRoot, agentState.Type)
 	systemPrompt := buildAgentSystemPrompt(agentState, c)
 	promptPath, err := state.WriteSystemPrompt(spec.SprawlRoot, spec.Name, systemPrompt)
 	if err != nil {
@@ -340,6 +348,9 @@ func (s *inProcessUnifiedStarter) prepareLaunch(spec RuntimeStartSpec) (*prepare
 		activityFile: activityFile,
 		observer:     observer,
 		ring:         ring,
+		systemPrompt: systemPrompt,
+		card:         c,
+		cardSource:   cardSource,
 	}, nil
 }
 

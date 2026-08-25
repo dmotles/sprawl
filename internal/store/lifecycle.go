@@ -9,6 +9,7 @@ import (
 	"github.com/dmotles/sprawl/internal/protocol"
 	sprawlrt "github.com/dmotles/sprawl/internal/runtime"
 	"github.com/dmotles/sprawl/internal/usage"
+	"github.com/google/uuid"
 )
 
 // LifecycleEmitter turns an agent's runtime EventBus traffic into log events.
@@ -69,8 +70,12 @@ type LifecycleDeps struct {
 	// GitSHA and DirtyDigest are the run's provenance, resolved once at launch.
 	GitSHA      string
 	DirtyDigest string
-	Now         func() time.Time
-	Logger      *slog.Logger
+	// SpawnContext, when set, is recorded as an artifact by RunStarted and
+	// referenced by that event. Nil means no context was assembled, which is
+	// the normal case on a host that never enabled the event log.
+	SpawnContext *SpawnContext
+	Now          func() time.Time
+	Logger       *slog.Logger
 }
 
 // Outcome values recorded on run_finished.
@@ -105,7 +110,14 @@ func (e *LifecycleEmitter) RunStarted(ctx context.Context) {
 	if e.deps.Resumed {
 		payload["resumed"] = true
 	}
-	e.emit(ctx, "run_started", payload)
+	// The artifact FIRST, so the event can reference it (RecordHandoff does the
+	// same, for the same reason): an artifact nothing references is unreachable,
+	// because `artifacts` has no read path but by id.
+	var artifactID *uuid.UUID
+	if e.deps.SpawnContext != nil {
+		artifactID = PutSpawnContext(ctx, e.ledger, *e.deps.SpawnContext)
+	}
+	e.emitWithArtifact(ctx, "run_started", payload, artifactID)
 }
 
 // Handle processes one RuntimeEvent. It never returns an error and never
@@ -256,12 +268,21 @@ func (e *LifecycleEmitter) sessionID(ev sprawlrt.RuntimeEvent) string {
 // defect — an invalid payload, an unknown schema — which must be visible to an
 // operator but must not fail an agent's turn.
 func (e *LifecycleEmitter) emit(ctx context.Context, typeName string, payload map[string]any) {
+	e.emitWithArtifact(ctx, typeName, payload, nil)
+}
+
+// emitWithArtifact is emit plus an artifact reference. Separate so the nil case
+// stays the obvious one: artifactID must be nil, never uuid.Nil, when there is
+// no artifact — a reference to a row that does not exist reads exactly like a
+// lost one.
+func (e *LifecycleEmitter) emitWithArtifact(ctx context.Context, typeName string, payload map[string]any, artifactID *uuid.UUID) {
 	if !e.ledger.Enabled() {
 		return
 	}
 	if _, err := e.ledger.Emit(ctx, EmitRequest{
 		TypeName:    typeName,
 		TypeVersion: 1,
+		ArtifactID:  artifactID,
 		Payload:     payload,
 	}); err != nil {
 		e.log.Warn("could not record lifecycle event",

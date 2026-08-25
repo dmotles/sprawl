@@ -349,3 +349,76 @@ func TestLifecycle_FailedTurnAlsoRecordsATurnBoundary(t *testing.T) {
 		t.Errorf("a clean turn was labelled %v, want \"success\"", got)
 	}
 }
+
+// artifactArg is artifact_id's position in the events INSERT ($9), and
+// insertEventArgc is that statement's full arity. Both are asserted rather than
+// assumed: artifact_id is last today, so a column inserted before it would move
+// the index and the assertion would read a neighbouring field instead of failing.
+const (
+	artifactArg     = 8
+	insertEventArgc = 9
+)
+
+// TestLifecycle_RunStartedReferencesTheSpawnContextArtifact (QUM-1251, AC6).
+//
+// The reference is what makes the artifact retrievable: `artifacts` has no
+// read path in Go and no index on anything but its id, so an artifact nothing
+// references is unreachable — an orphan row, not a record. Asserted on the
+// insert_event ARGUMENTS because every value of artifact_id, including nil,
+// produces byte-identical SQL.
+func TestLifecycle_RunStartedReferencesTheSpawnContextArtifact(t *testing.T) {
+	l, pool, _ := newCapturingLedger(t)
+	sc := SpawnContext{AgentName: "finn", AgentType: "engineer", SessionID: "sess-1", RenderedPrompt: "RENDERED"}
+	e := NewLifecycleEmitter(LifecycleDeps{
+		Ledger:       l,
+		AgentName:    "finn",
+		AgentType:    "engineer",
+		SessionID:    "sess-1",
+		SpawnContext: &sc,
+	})
+	e.RunStarted(context.Background())
+
+	// The artifact write and the reference are asserted together, in the order
+	// they must happen: an event referencing an id no INSERT produced is a
+	// dangling reference, and an artifact nothing references is unreachable —
+	// `artifacts` has no read path but by id.
+	if _, wrote := artifactInsertArgs(pool); !wrote {
+		t.Fatalf("RunStarted with a spawn context wrote no artifact; calls were %v", pool.log())
+	}
+
+	args, ran := pool.argsFor("insert_event")
+	if !ran {
+		t.Fatalf("RunStarted appended no event at all; calls were %v", pool.log())
+	}
+	if len(args) != insertEventArgc {
+		t.Fatalf("insert_event ran with %d argument(s), want %d — a column added before artifact_id would silently move the index this assertion reads", len(args), insertEventArgc)
+	}
+	got, ok := args[artifactArg].(*uuid.UUID)
+	if !ok || got == nil {
+		t.Fatalf("run_started's artifact_id is %#v, so the spawn context is an orphan row nothing can reach", args[artifactArg])
+	}
+	if *got != pool.artifactID {
+		t.Errorf("run_started references artifact %s, want the id the artifacts INSERT returned (%s)", *got, pool.artifactID)
+	}
+}
+
+// TestLifecycle_RunStartedCarriesNoArtifactWhenThereIsNone is the other
+// direction, and it is not symmetry for its own sake: the store is disabled by
+// default and degraded on any outage, so "no spawn context" is the COMMON case.
+// A threading that substituted uuid.Nil for absent would write a reference to a
+// row that does not exist, which reads exactly like a lost artifact.
+func TestLifecycle_RunStartedCarriesNoArtifactWhenThereIsNone(t *testing.T) {
+	e, pool := newLifecycleFixture(t)
+	e.RunStarted(context.Background())
+
+	args, ran := pool.argsFor("insert_event")
+	if !ran {
+		t.Fatalf("RunStarted appended no event at all; calls were %v", pool.log())
+	}
+	if len(args) != insertEventArgc {
+		t.Fatalf("insert_event ran with %d argument(s), want %d", len(args), insertEventArgc)
+	}
+	if got := args[artifactArg]; got != (*uuid.UUID)(nil) {
+		t.Errorf("run_started carries artifact_id %#v with no spawn context recorded", got)
+	}
+}

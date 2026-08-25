@@ -2174,3 +2174,90 @@ func TestPrepareLaunch_StoreUnreachableStillLaunches(t *testing.T) {
 		t.Errorf("rendered prompt still carries an unsubstituted token:\n%s", promptBytes)
 	}
 }
+
+// TestPrepareLaunch_CarriesTheRenderedPromptAndCardForTheSpawnContext
+// (QUM-1251, AC6).
+//
+// The spawn_context artifact is written at the emitter seam in Start, which is
+// downstream of prepareLaunch and has no card of its own. Re-resolving the card
+// there would reintroduce exactly the split resolveCard's comment forbids: two
+// resolutions across a version bump landing mid-launch, with the artifact
+// claiming a card the agent never ran. So the prompt and the card have to travel
+// on preparedLaunch, and this pins that they are the SAME ones that reached disk.
+func TestPrepareLaunch_CarriesTheRenderedPromptAndCardForTheSpawnContext(t *testing.T) {
+	root := t.TempDir()
+	if err := state.SaveAgent(root, &state.AgentState{
+		Name: "eng", Type: "engineer", Parent: "mgr", Branch: "feat/x", Worktree: root,
+	}); err != nil {
+		t.Fatalf("SaveAgent: %v", err)
+	}
+	published := publishedTestCard("engineer")
+	installCardFetcher(t, &stubCardFetcher{card: published})
+
+	s := newInProcessUnifiedStarter(backend.InitSpec{}, nil)
+	prep, err := s.prepareLaunch(RuntimeStartSpec{Name: "eng", SprawlRoot: root})
+	if err != nil {
+		t.Fatalf("prepareLaunch: %v", err)
+	}
+	t.Cleanup(func() { _ = prep.activityFile.Close() })
+
+	onDisk, err := os.ReadFile(prep.sessionSpec.PromptFile) //nolint:gosec // G304: path produced by the code under test
+	if err != nil {
+		t.Fatalf("reading the written system prompt: %v", err)
+	}
+	// Byte equality with the file, not a substring: the artifact exists so a
+	// replay can reproduce the run, and a prompt that merely CONTAINS the card
+	// body is not the prompt the agent was given.
+	if prep.systemPrompt != string(onDisk) {
+		t.Errorf("preparedLaunch.systemPrompt is not what was written to %s (%d vs %d bytes)",
+			prep.sessionSpec.PromptFile, len(prep.systemPrompt), len(onDisk))
+	}
+	if prep.card == nil {
+		t.Fatalf("preparedLaunch carries no card, so the spawn context cannot say which definition launched this agent")
+	}
+	// Version, not just name: the seeds and the published card share names in
+	// production, and version 7 is publishedTestCard's discriminator.
+	if prep.card.Name != published.Name || prep.card.Version != published.Version {
+		t.Errorf("preparedLaunch.card = %s@%d, want the resolved %s@%d",
+			prep.card.Name, prep.card.Version, published.Name, published.Version)
+	}
+	// Source is carried because cardresolve's package comment records that a
+	// published card and its seed are byte-identical in production: without it
+	// the artifact cannot say whether the database answered, which is the
+	// contamination disclosure Appendix B item 9 asks for.
+	if prep.cardSource != cardresolve.SourceDB {
+		t.Errorf("preparedLaunch.cardSource = %q, want %q", prep.cardSource, cardresolve.SourceDB)
+	}
+}
+
+// TestPrepareLaunch_NoCardCarriesNoCardSource is the negative control for the
+// test above, and the common case on a host that never enabled the store.
+//
+// A zero-valued *card.Card here would be worse than nil: the spawn context would
+// record a card named "" at version 0 as though that were a real definition.
+func TestPrepareLaunch_NoCardCarriesNoCardSource(t *testing.T) {
+	root := t.TempDir()
+	if err := state.SaveAgent(root, &state.AgentState{
+		Name: "eng", Type: "engineer", Parent: "mgr", Branch: "feat/x", Worktree: root,
+	}); err != nil {
+		t.Fatalf("SaveAgent: %v", err)
+	}
+	installCardFetcher(t, nil)
+
+	s := newInProcessUnifiedStarter(backend.InitSpec{}, nil)
+	prep, err := s.prepareLaunch(RuntimeStartSpec{Name: "eng", SprawlRoot: root})
+	if err != nil {
+		t.Fatalf("prepareLaunch: %v", err)
+	}
+	t.Cleanup(func() { _ = prep.activityFile.Close() })
+
+	// With no published card the chain still lands on a seed, so the prompt is
+	// non-empty and the source says which leg produced it.
+	if prep.systemPrompt == "" {
+		t.Errorf("preparedLaunch.systemPrompt is empty, so the spawn context would record a run that had no prompt")
+	}
+	if prep.cardSource != cardresolve.SourceSeed {
+		t.Errorf("preparedLaunch.cardSource = %q, want %q — the artifact must say the database did not answer",
+			prep.cardSource, cardresolve.SourceSeed)
+	}
+}

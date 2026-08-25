@@ -48,10 +48,39 @@ type recordingPool struct {
 	execErr map[string]error
 	// rowsAffected overrides the CommandTag row count for a matching fragment.
 	rowsAffected map[string]int64
+	// args holds the LAST argument list seen per statement label. Recorded
+	// because some properties live only in the arguments and not in the
+	// statement text — artifact_id on an insert_event is the case that forced
+	// this: every wrong value produces the identical SQL.
+	args map[string][]any
+	// queryRowErr, when set, fails every POOL-level QueryRow. Explicit rather
+	// than relying on the unstubbed default below: a test whose failure comes
+	// from the double being unimplemented stops being a failure-path test the
+	// moment someone implements it, silently.
+	queryRowErr error
+	// artifactID is what a pool-level `INSERT INTO artifacts ... RETURNING id`
+	// yields.
+	artifactID uuid.UUID
+}
+
+// argsFor returns the last argument list recorded for a statement label, and
+// whether the statement ran at all. The two are distinct: a statement that never
+// ran and one that ran with no arguments are different failures.
+func (p *recordingPool) argsFor(label string) ([]any, bool) {
+	p.mu.Lock()
+	defer p.mu.Unlock()
+	a, ok := p.args[label]
+	return a, ok
+}
+
+func (p *recordingPool) recordArgs(label string, args []any) {
+	p.mu.Lock()
+	defer p.mu.Unlock()
+	p.args[label] = args
 }
 
 func newRecordingPool() *recordingPool {
-	return &recordingPool{seq: 42, execErr: map[string]error{}, rowsAffected: map[string]int64{}}
+	return &recordingPool{seq: 42, execErr: map[string]error{}, rowsAffected: map[string]int64{}, args: map[string][]any{}, artifactID: uuid.New()}
 }
 
 func (p *recordingPool) record(s string) {
@@ -85,9 +114,32 @@ func (p *recordingPool) Exec(_ context.Context, sql string, _ ...any) (pgconn.Co
 	return pgconn.NewCommandTag(""), nil
 }
 
-func (p *recordingPool) QueryRow(_ context.Context, sql string, _ ...any) pgx.Row {
-	p.record("pool:" + stmtLabel(sql))
+func (p *recordingPool) QueryRow(_ context.Context, sql string, args ...any) pgx.Row {
+	label := "pool:" + stmtLabel(sql)
+	p.record(label)
+	p.recordArgs(label, args)
+	if p.queryRowErr != nil {
+		return errRow{err: p.queryRowErr}
+	}
+	if strings.Contains(strings.ToLower(sql), "insert into artifacts") {
+		return uuidRow{id: p.artifactID}
+	}
 	return errRow{err: errors.New("recordingPool: QueryRow is not stubbed for this statement")}
+}
+
+// uuidRow answers the artifacts INSERT's RETURNING id.
+type uuidRow struct{ id uuid.UUID }
+
+func (r uuidRow) Scan(dest ...any) error {
+	if len(dest) != 1 {
+		return errors.New("uuidRow: want exactly one destination")
+	}
+	p, ok := dest[0].(*uuid.UUID)
+	if !ok {
+		return errors.New("uuidRow: destination is not *uuid.UUID")
+	}
+	*p = r.id
+	return nil
 }
 
 func (p *recordingPool) Ping(context.Context) error { return p.beginErr }
@@ -112,9 +164,10 @@ func (t *recordingTx) Exec(_ context.Context, sql string, _ ...any) (pgconn.Comm
 	return pgconn.NewCommandTag(commandTagFor(label, 1)), nil
 }
 
-func (t *recordingTx) QueryRow(_ context.Context, sql string, _ ...any) pgx.Row {
+func (t *recordingTx) QueryRow(_ context.Context, sql string, args ...any) pgx.Row {
 	label := stmtLabel(sql)
 	t.pool.record(label)
+	t.pool.recordArgs(label, args)
 	if err, ok := t.pool.execErr[label]; ok {
 		return errRow{err: err}
 	}

@@ -62,7 +62,7 @@ func runLedgerSubscriber(bus *runtimepkg.EventBus, em *store.LifecycleEmitter, n
 // "agents never brick on the store" requirement at the worst possible moment.
 // A misconfiguration is surfaced by `sprawl store doctor` and by the warning
 // Process/Open already log, not by refusing to start an agent.
-func newLifecycleEmitter(ctx context.Context, spec RuntimeStartSpec, sessionID string) *store.LifecycleEmitter {
+func newLifecycleEmitter(ctx context.Context, spec RuntimeStartSpec, prep *preparedLaunch, sessionID string) *store.LifecycleEmitter {
 	ledger, err := store.Process(ctx, spec.SprawlRoot)
 	if err != nil || ledger == nil {
 		return nil
@@ -86,16 +86,61 @@ func newLifecycleEmitter(ctx context.Context, spec RuntimeStartSpec, sessionID s
 	gitSHA, _ := store.HeadSHA(ctx, store.RealGit, worktree)
 	dirty, _ := store.DirtyDigest(ctx, store.RealGit, worktree)
 
+	// prep is nil on the weave path, which has its own handle and no
+	// preparedLaunch: weave's rendered prompt is not available at this seam, so
+	// its run is recorded without a spawn context rather than with an empty one.
+	var sc *store.SpawnContext
+	if prep != nil {
+		v := spawnContextFor(spec, prep, sessionID)
+		sc = &v
+	}
 	return store.NewLifecycleEmitter(store.LifecycleDeps{
-		Ledger:      ledger,
-		AgentName:   spec.Name,
-		AgentType:   agentType,
-		AgentFamily: agentFamily,
-		Parent:      parent,
-		Branch:      branch,
-		SessionID:   sessionID,
-		Resumed:     spec.Resume,
-		GitSHA:      gitSHA,
-		DirtyDigest: dirty,
+		Ledger:       ledger,
+		SpawnContext: sc,
+		AgentName:    spec.Name,
+		AgentType:    agentType,
+		AgentFamily:  agentFamily,
+		Parent:       parent,
+		Branch:       branch,
+		SessionID:    sessionID,
+		Resumed:      spec.Resume,
+		GitSHA:       gitSHA,
+		DirtyDigest:  dirty,
 	})
+}
+
+// spawnContextFor maps one launch onto the spawn_context artifact's fields
+// (QUM-1251 AC6).
+//
+// Which source is authoritative matters and is not obvious, because several
+// fields have more than one candidate. The agent NAME comes from the spec — it
+// is what the launcher was asked to start, and what every other lifecycle field
+// is keyed on. The agent TYPE comes from the on-disk state, never from the
+// card's own agent_type: the card is chosen FROM the type, so recording the
+// card's would make a fallback-seed launch claim it ran the type it fell back
+// to. Every field here is a string, so a transposition produces a perfectly
+// well-formed artifact describing a different launch.
+func spawnContextFor(spec RuntimeStartSpec, prep *preparedLaunch, sessionID string) store.SpawnContext {
+	sc := store.SpawnContext{
+		AgentName:      spec.Name,
+		SessionID:      sessionID,
+		Model:          prep.sessionSpec.Model,
+		Effort:         prep.sessionSpec.Effort,
+		RenderedPrompt: prep.systemPrompt,
+	}
+	if prep.agentState != nil {
+		sc.AgentType = prep.agentState.Type
+		sc.Branch = prep.agentState.Branch
+	}
+	// A nil card leaves every card field absent rather than recording a
+	// definition named "" at version 0, which a reader could not tell from a
+	// real one. The prompt is still recorded: the run happened, and the prompt is
+	// the one input a replay cannot reconstruct.
+	if prep.card != nil {
+		sc.CardName = prep.card.Name
+		sc.CardVersion = prep.card.Version
+		sc.CardContentSHA256 = prep.card.ContentSHA256
+		sc.CardSource = string(prep.cardSource)
+	}
+	return sc
 }
