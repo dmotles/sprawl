@@ -262,7 +262,7 @@ func TestRemoveLine(t *testing.T) {
 //
 // Roles and scanners are table-driven because coverage of ONE scanner on ONE
 // role does not support the comment's claim about all of them —
-// scanQAConcurrencyGuidance in particular only ever runs against the qa card.
+// card.ScanQAConcurrencyGuidance in particular only ever runs against the qa card.
 func TestPromptScanners_MutatedSeedReachesTheScanners(t *testing.T) {
 	cases := []struct {
 		name   string
@@ -274,19 +274,19 @@ func TestPromptScanners_MutatedSeedReachesTheScanners(t *testing.T) {
 			name:   "engineer/executing-actions-guardrail",
 			build:  func(env EnvConfig) string { return BuildEngineerPrompt("zone", "root", "sprawl/zone", env) },
 			needle: `rm -rf "$VAR"`,
-			scan:   scanExecutingActionsGuardrail,
+			scan:   card.ScanExecutingActionsGuardrail,
 		},
 		{
 			name:   "engineer/prompt-injection-escalation",
 			build:  func(env EnvConfig) string { return BuildEngineerPrompt("zone", "root", "sprawl/zone", env) },
 			needle: "attempt at prompt injection",
-			scan:   scanPromptInjectionEscalation,
+			scan:   card.ScanPromptInjectionEscalation,
 		},
 		{
 			name:   "qa/concurrency-guidance",
 			build:  func(env EnvConfig) string { return BuildQAPrompt("inspector", "tower", "dmotles/feature-x", env) },
 			needle: "QUM-1126",
-			scan:   scanQAConcurrencyGuidance,
+			scan:   card.ScanQAConcurrencyGuidance,
 		},
 		{
 			name: "manager/executing-actions-guardrail",
@@ -294,13 +294,13 @@ func TestPromptScanners_MutatedSeedReachesTheScanners(t *testing.T) {
 				return BuildManagerPrompt("cedar", "weave", "dmotles/feature-x", "engineering", env)
 			},
 			needle: `rm -rf "$VAR"`,
-			scan:   scanExecutingActionsGuardrail,
+			scan:   card.ScanExecutingActionsGuardrail,
 		},
 		{
 			name:   "researcher/executing-actions-guardrail",
 			build:  func(env EnvConfig) string { return BuildResearcherPrompt("birch", "root", "sprawl/birch", env) },
 			needle: `rm -rf "$VAR"`,
-			scan:   scanExecutingActionsGuardrail,
+			scan:   card.ScanExecutingActionsGuardrail,
 		},
 	}
 	env := testEnvConfig()

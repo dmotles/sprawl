@@ -387,8 +387,27 @@ func TestForType_AppliesTheFetchTimeout(t *testing.T) {
 			if !ok {
 				t.Fatalf("the fetch ran with no deadline at all — an unresponsive pool would block the launch forever")
 			}
-			if gotDL > tt.bound || gotDL < tt.bound/2 {
-				t.Errorf("the fetch context's deadline was %s, want ~%s — the configured bound is not what is applied", gotDL, tt.bound)
+			//
+			// Only the UPPER half of this is checked at millisecond bounds.
+			// observedDeadline is measured at fetcher ENTRY, so it is the bound
+			// MINUS however long the scheduler took to get there -- and on a box
+			// running a fleet of agents that delay is routinely milliseconds.
+			// A `gotDL < bound/2` leg therefore reported "the configured bound is
+			// not what is applied" for a resolver that applied it exactly: an
+			// observed 1.15ms against a 5ms bound, which is 3.85ms of scheduling,
+			// not a defect. (Watched: it failed check-test-race under load.)
+			//
+			// The lower bound is not lost, it is asserted where scheduling noise
+			// cannot reach it -- the 10s row, where bound/2 is 5 SECONDS. That
+			// row is also the one the lower bound exists for: it is what refuses
+			// a resolver with a hardcoded SMALL timeout. The 5ms row keeps the
+			// upper check, which is what refuses a hardcoded LARGE one. Between
+			// them both directions are still pinned.
+			if gotDL > tt.bound {
+				t.Errorf("the fetch context's deadline was %s, MORE than the configured %s — a larger bound than the seam says is being applied", gotDL, tt.bound)
+			}
+			if tt.bound >= time.Second && gotDL < tt.bound/2 {
+				t.Errorf("the fetch context's deadline was %s, far below the configured %s — a smaller bound than the seam says is being applied", gotDL, tt.bound)
 			}
 			// Liveness guard only, deliberately loose: it fires when there is no
 			// bound at all, and nothing finer should be read into it.
