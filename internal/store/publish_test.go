@@ -375,3 +375,21 @@ func TestListCards_ReportsAQueryError(t *testing.T) {
 		t.Errorf("ListCards returned nil error when the query itself failed")
 	}
 }
+
+// TestLedgerListCards_RefusesRatherThanReportingAnEmptyListing. `def list` is
+// AC1's evidence, and an empty listing is a plausible zero: "no cards
+// published" and "nobody asked the database" are indistinguishable in the
+// output. A nil Ledger is the store-disabled default, so this is the common
+// path, not an edge case.
+func TestLedgerListCards_RefusesRatherThanReportingAnEmptyListing(t *testing.T) {
+	got, err := (*Ledger)(nil).ListCards(context.Background())
+	if err == nil {
+		t.Fatalf("a nil Ledger listed cards without error, returning %d rows — an operator cannot tell that from an empty table", len(got))
+	}
+	if got != nil {
+		t.Errorf("ListCards returned %d rows alongside an error", len(got))
+	}
+	if !strings.Contains(err.Error(), "next:") {
+		t.Errorf("the refusal %q carries no next-action hint, so a caller has nowhere to go", err)
+	}
+}

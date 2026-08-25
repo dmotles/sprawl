@@ -9,6 +9,7 @@ import (
 	"github.com/dmotles/sprawl/internal/card"
 	"github.com/jackc/pgx/v5"
 	"github.com/jackc/pgx/v5/pgconn"
+	"github.com/jackc/pgx/v5/pgxpool"
 )
 
 // `sprawl def publish` and `sprawl def list`: the operator-facing half of cards
@@ -141,4 +142,39 @@ func ListCards(ctx context.Context, q CardQuerier) ([]PublishedCard, error) {
 		return nil, fmt.Errorf("store: iterating agent_cards: %w", err)
 	}
 	return out, nil
+}
+
+// ListCards on the Ledger is what `sprawl def list` calls.
+//
+// Nil-safe and pool-checked for the same reason CardForType is: a nil Ledger is
+// the store-disabled default, and a DEGRADED Ledger is Enabled with no pool, so
+// a guard keyed on Enabled() alone waves it through and then dereferences nil.
+// Both cases are reported as errors carrying the remedy rather than as an empty
+// listing, because an empty listing is a plausible zero — an operator reading
+// "no cards" cannot tell "none published" from "never asked".
+func (l *Ledger) ListCards(ctx context.Context) ([]PublishedCard, error) {
+	if l == nil || !l.Enabled() {
+		return nil, fmt.Errorf("store: the event log is disabled, so no published cards can be listed\nnext: sprawl config set event_log.enabled true")
+	}
+	if l.Pool() == nil {
+		return nil, fmt.Errorf("store: the event log is enabled but unreachable, so the published cards cannot be read\nnext: sprawl store doctor")
+	}
+	return ListCards(ctx, l.Pool())
+}
+
+// PublishCardDSN publishes one card over a short-lived PRIVILEGED connection.
+//
+// A dedicated connection rather than the agent-facing pool, because that pool
+// holds sprawl_app, which has SELECT only on agent_cards (migration 00002) —
+// deliberately, so a running agent cannot rewrite the definitions its siblings
+// launch from. `sprawl def publish` resolves the admin DSN the same way
+// `sprawl store migrate` does, and this is the one place that DSN is used to
+// write a card.
+func PublishCardDSN(ctx context.Context, dsn string, c *card.Card) error {
+	pool, err := pgxpool.New(ctx, dsn)
+	if err != nil {
+		return fmt.Errorf("store: connecting to publish %s@%d: %w", c.Name, c.Version, err)
+	}
+	defer pool.Close()
+	return PublishCard(ctx, pool, c)
 }
