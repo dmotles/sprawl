@@ -90,3 +90,41 @@ func TestBuildCardPrompt_SharesTheSeamWithBuildPrompt(t *testing.T) {
 		})
 	}
 }
+
+// TestBuildPrompt_RendersTheSlimCardNotTheLegacyOne makes the builder-level claim
+// directly instead of transitively.
+//
+// Without it, "production launches the slim card" rests on
+// card.TestSlimCards_WinTheResolutionForEveryAgentType plus the fact that
+// mustRenderCard happens to call SeedForType — a chain no assertion in this
+// package observes. A change to that resolution inside internal/agent would leave
+// the card package green and every prompt here silently legacy.
+//
+// Both directions per role: the slim-only clause must be present AND the
+// legacy-only phrase the slimming removed must be absent. Presence alone would be
+// satisfied by a prompt that concatenated both cards.
+func TestBuildPrompt_RendersTheSlimCardNotTheLegacyOne(t *testing.T) {
+	env := testEnvConfig()
+	const slimOnly = "outrank it and the repo wins where they conflict"
+	cases := []struct {
+		role       string
+		build      func() string
+		legacyOnly string
+	}{
+		{"engineer", func() string { return BuildEngineerPrompt("a", "p", "b", env) }, "This is not optional"},
+		{"manager", func() string { return BuildManagerPrompt("a", "p", "b", "fam", env) }, "3-10 well-defined subtasks"},
+		{"qa", func() string { return BuildQAPrompt("a", "p", "b", env) }, "(MANDATORY)"},
+		{"researcher", func() string { return BuildResearcherPrompt("a", "p", "b", env) }, "Do not skim"},
+	}
+	for _, tc := range cases {
+		t.Run(tc.role, func(t *testing.T) {
+			prompt := tc.build()
+			if !strings.Contains(prompt, slimOnly) {
+				t.Errorf("%s prompt lacks the slim card's deference clause — the launch path is still rendering legacy-%s@1", tc.role, tc.role)
+			}
+			if strings.Contains(prompt, tc.legacyOnly) {
+				t.Errorf("%s prompt still carries the legacy-only phrase %q", tc.role, tc.legacyOnly)
+			}
+		})
+	}
+}

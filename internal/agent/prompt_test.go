@@ -134,10 +134,23 @@ func TestBuildEngineerPrompt_DoesNotInvokeRemovedSidechains(t *testing.T) {
 func TestBuildEngineerPrompt_PreservesWorkflowOrder(t *testing.T) {
 	prompt := BuildEngineerPrompt("zone", "root", "sprawl/zone", testEnvConfig())
 
-	// Verify the workflow steps appear in order. The "Code review sub-agent"
-	// step replaced the code-reviewer sidechain (QUM-714); the qa-validator
-	// step was removed entirely (QUM-715: now a sprawl QA agent).
-	steps := []string{"oracle", "test-critic", "Code review sub-agent"}
+	// Verify the workflow steps appear in order. The code-reviewer sidechain was
+	// replaced by a shared-worktree sprawl sub-agent (QUM-714) and the
+	// qa-validator step was removed entirely (QUM-715: now a sprawl QA agent).
+	//
+	// Keyed on the reviewer SPAWN CALL rather than on the legacy card's numbered
+	// step label "Code review sub-agent", because the slim v2 card (QUM-1251)
+	// deliberately dropped the numbered step list while keeping the step. The
+	// spawn call is the part that has to survive slimming — an engineer that
+	// cannot name the tool cannot perform the review — so it is the stronger
+	// anchor of the two, not merely the one that still matches.
+	//
+	// Honest about what the first two anchors measure: in the slim card "oracle"
+	// and "test-critic" occur in the same sentence, so the ordering check between
+	// THOSE two is satisfied by prose word order, not by workflow position. The
+	// claim this test still carries is that both sidechains are named and that the
+	// review spawn comes after them — a single ordering, not three.
+	steps := []string{"oracle", "test-critic", `spawn({subagent: true`}
 	lastIdx := -1
 	for _, step := range steps {
 		idx := strings.Index(prompt, step)
@@ -154,26 +167,38 @@ func TestBuildEngineerPrompt_PreservesWorkflowOrder(t *testing.T) {
 func TestBuildEngineerPrompt_ReflectionBeforeDone(t *testing.T) {
 	prompt := BuildEngineerPrompt("zone", "root", "sprawl/zone", testEnvConfig())
 
-	// QUM-714 renamed the code-reviewer step to "Code review sub-agent".
-	reviewerIdx := strings.Index(prompt, "Code review sub-agent")
-	reflectIdx := strings.Index(prompt, "Reflect")
-	doneIdx := strings.Index(prompt, "Hand off —")
+	// Anchors, not labels. The legacy card spelled these as numbered steps
+	// ("Code review sub-agent", "Reflect", "Hand off —"); the slim v2 card
+	// (QUM-1251) keeps all three instructions and drops the numbering. What the
+	// invariant is actually about is that the engineer is told to reflect while
+	// it still can — after the review has surfaced problems, before the message
+	// that ends its involvement — so the anchors below are the review CALL, the
+	// reflection instruction, and the handoff CALL.
+	reviewerIdx := strings.Index(prompt, `spawn({subagent: true`)
+	reflectIdx := strings.Index(prompt, "worth fixing that was")
+	// Keyed on the handoff step's own wording, NOT on `send_message({to: "root"`:
+	// that call also appears in the card's messaging-reference section further
+	// down, so deleting the handoff step entirely would leave reflectIdx < doneIdx
+	// satisfied by the reference bullet and this test green. Same collision as the
+	// QA test's marker below, found by review after the QA one was found by
+	// mutation — the class, not the instance.
+	doneIdx := strings.Index(prompt, "what landed, branch state")
 
 	if reviewerIdx == -1 {
-		t.Fatal("engineer prompt missing 'Code review sub-agent'")
+		t.Fatal("engineer prompt never tells the agent how to spawn the code reviewer")
 	}
 	if reflectIdx == -1 {
-		t.Fatal("engineer prompt missing 'Reflect'")
+		t.Fatal("engineer prompt has no reflection instruction")
 	}
 	if doneIdx == -1 {
-		t.Fatal("engineer prompt missing the 'Hand off' step")
+		t.Fatal("engineer prompt has no handoff send_message call")
 	}
 
 	if reflectIdx <= reviewerIdx {
-		t.Errorf("'Reflect' (idx %d) should appear after 'Code review sub-agent' (idx %d)", reflectIdx, reviewerIdx)
+		t.Errorf("reflection (idx %d) should appear after the code-review spawn (idx %d)", reflectIdx, reviewerIdx)
 	}
 	if reflectIdx >= doneIdx {
-		t.Errorf("'Reflect' (idx %d) should appear before 'Hand off' (idx %d)", reflectIdx, doneIdx)
+		t.Errorf("reflection (idx %d) should appear before the handoff (idx %d)", reflectIdx, doneIdx)
 	}
 }
 
@@ -1235,9 +1260,11 @@ func TestBuildManagerPrompt_SharedContent(t *testing.T) {
 }
 
 // --- Golden snapshot regression tests ---
-// These capture the exact output of each child prompt builder and assert
-// character-for-character identity. If you change prompt content intentionally,
-// regenerate golden files: GENERATE_GOLDEN=1 go test ./internal/agent/ -run TestGenerateGoldenFiles
+// The per-role child goldens are asserted in prompt_card_fidelity_test.go,
+// which pins them to legacy-<role>@1 by name. They are deliberately NOT
+// asserted through Build*Prompt, which resolves the highest version for a type
+// and therefore stops pointing at the card the golden was generated from the
+// moment a v2 lands.
 
 func readGolden(t *testing.T, name string) string {
 	t.Helper()
@@ -1252,7 +1279,6 @@ func TestGenerateGoldenFiles(t *testing.T) {
 	if os.Getenv("GENERATE_GOLDEN") != "1" {
 		t.Skip("set GENERATE_GOLDEN=1 to regenerate golden files")
 	}
-	env := testEnvConfig()
 	write := func(name, content string) {
 		t.Helper()
 		if err := os.WriteFile("testdata/"+name, []byte(content), 0o644); err != nil {
@@ -1260,55 +1286,15 @@ func TestGenerateGoldenFiles(t *testing.T) {
 		}
 		t.Logf("wrote testdata/%s (%d bytes)", name, len(content))
 	}
-	write("engineer_tui.golden", BuildEngineerPrompt("zone", "root", "sprawl/zone", env))
-	write("researcher_tui.golden", BuildResearcherPrompt("birch", "root", "sprawl/birch", env))
-	write("manager_tui.golden", BuildManagerPrompt("cedar", "weave", "dmotles/feature-x", "engineering", env))
-	write("qa_tui.golden", BuildQAPrompt("inspector", "tower", "dmotles/feature-x", env))
-	// Root-prompt goldens.
+	// The four child goldens are NOT regenerated here. They were produced by the
+	// Go constant graph and are the only surviving evidence that the legacy cards
+	// were extracted faithfully; Build*Prompt now resolves the highest-version
+	// card for a type, so writing them from here would silently replace that
+	// evidence with the output of the slim v2 cards (QUM-1251) and leave nothing
+	// able to disagree. TestLegacyCards_RenderByteIdenticalToGoldens reads them
+	// against legacy-<role>@1, pinned by name.
+	// Root-prompt goldens. Root is still assembled from Go constants.
 	write("golden_tui_claude_code.txt", BuildRootPrompt(PromptConfig{RootName: "weave", AgentCLI: "claude-code"}))
-}
-
-func TestBuildEngineerPrompt_TuiGolden(t *testing.T) {
-	got := BuildEngineerPrompt("zone", "root", "sprawl/zone", testEnvConfig())
-	want := readGolden(t, "engineer_tui.golden")
-	if got != want {
-		t.Fatalf("engineer tui prompt does not match golden snapshot.\nGot length: %d, Want length: %d\nFirst diff at byte %d",
-			len(got), len(want), firstDiffIndex(got, want))
-	}
-}
-
-func TestBuildResearcherPrompt_TuiGolden(t *testing.T) {
-	got := BuildResearcherPrompt("birch", "root", "sprawl/birch", testEnvConfig())
-	want := readGolden(t, "researcher_tui.golden")
-	if got != want {
-		t.Fatalf("researcher tui prompt does not match golden snapshot.\nGot length: %d, Want length: %d\nFirst diff at byte %d",
-			len(got), len(want), firstDiffIndex(got, want))
-	}
-}
-
-func TestBuildManagerPrompt_TuiGolden(t *testing.T) {
-	got := BuildManagerPrompt("cedar", "weave", "dmotles/feature-x", "engineering", testEnvConfig())
-	want := readGolden(t, "manager_tui.golden")
-	if got != want {
-		t.Fatalf("manager tui prompt does not match golden snapshot.\nGot length: %d, Want length: %d\nFirst diff at byte %d",
-			len(got), len(want), firstDiffIndex(got, want))
-	}
-}
-
-func firstDiffIndex(a, b string) int {
-	n := len(a)
-	if len(b) < n {
-		n = len(b)
-	}
-	for i := 0; i < n; i++ {
-		if a[i] != b[i] {
-			return i
-		}
-	}
-	if len(a) != len(b) {
-		return n
-	}
-	return -1
 }
 
 // --- BuildQAPrompt tests (QUM-707, TDD red phase — function does not exist yet) ---
@@ -1379,9 +1365,21 @@ func TestBuildQAPrompt_VerificationProtocolOrder(t *testing.T) {
 func TestBuildQAPrompt_ReflectionBeforeDone(t *testing.T) {
 	prompt := BuildQAPrompt("inspector", "tower", "dmotles/feature-x", testEnvConfig())
 
-	reflectIdx := strings.Index(prompt, "REFLECTION")
-	if reflectIdx == -1 {
-		reflectIdx = strings.Index(prompt, "Reflect")
+	// Two spellings, because there are two generations of the card and the
+	// invariant belongs to both: the legacy card carries a REFLECTION block, and
+	// the slim v2 card (QUM-1251) folds the same instruction into the
+	// findings-posting step. This is an alternatives list, not a fallback that
+	// can go quiet — if NEITHER spelling is present the test fatals below.
+	reflectIdx := -1
+	// "any risk the work leaves open" and not "ambiguous or unverifiable": the
+	// latter also appears in the slim card's subordinate-to-the-repo preamble,
+	// which sits near the top, so it satisfied the ordering assertion below while
+	// the reflection step itself was deleted. Caught by mutation, not by review.
+	for _, marker := range []string{"REFLECTION", "Reflect", "any risk the work leaves open"} {
+		if i := strings.Index(prompt, marker); i != -1 {
+			reflectIdx = i
+			break
+		}
 	}
 	doneIdx := strings.Index(prompt, "When your work is ready, message")
 
@@ -1474,15 +1472,6 @@ func TestBuildQAPrompt_EnvironmentOmitsEmptyFields(t *testing.T) {
 	}
 	if !strings.Contains(prompt, "Git branch: dmotles/feature-x") {
 		t.Error("should always include git branch")
-	}
-}
-
-func TestBuildQAPrompt_TuiGolden(t *testing.T) {
-	got := BuildQAPrompt("inspector", "tower", "dmotles/feature-x", testEnvConfig())
-	want := readGolden(t, "qa_tui.golden")
-	if got != want {
-		t.Fatalf("qa tui prompt does not match golden snapshot.\nGot length: %d, Want length: %d\nFirst diff at byte %d",
-			len(got), len(want), firstDiffIndex(got, want))
 	}
 }
 

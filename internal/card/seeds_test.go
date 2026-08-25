@@ -6,14 +6,34 @@ import (
 	"io/fs"
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
 )
 
-// wantSeeds pins, PER TYPE, the metadata each legacy card must carry.
+// wantSeedFiles is every card expected to exist in seeds/, BY NAME.
 //
-// Per-type rather than an aggregate count: a tree that dropped legacy-qa and
-// gained a junk seed still has four cards, and a `len(cards) >= 4` floor is
-// satisfied by exactly the corruption it is supposed to catch.
+// A list rather than a count, because a count is satisfied by exactly the
+// corruption it should catch: delete legacy-qa.md, add junk.md, and any
+// `len(files) == 8` check still holds while the card that carries QA's whole
+// prompt is gone. It is also separate from wantSeeds below because the two axes
+// diverged when the slim v2 cards landed — eight files, four agent types — and
+// reusing one table for both would have made the file census silently stop
+// covering the legacy half.
+var wantSeedFiles = []string{
+	"legacy-engineer", "legacy-manager", "legacy-qa", "legacy-researcher",
+	"slim-engineer", "slim-manager", "slim-qa", "slim-researcher",
+}
+
+// wantSeeds pins, PER TYPE, the metadata the card a spawn RESOLVES TO must
+// carry. This tracks the current definition of each role, so it names the slim
+// v2 cards; the legacy cards are pinned by name, separately, wherever a test
+// makes a claim specifically about them (see legacyCards in this package and
+// legacySeed in internal/agent). Note the consequence: this table no longer pins
+// the legacy cards' effort or agent_type. That is deliberate — legacy is frozen
+// evidence on its way out, pinned byte-for-byte by the goldens — not an oversight
+// to be "fixed" by widening the table back over both generations.
+//
+// Per-type rather than an aggregate count, for the same reason as above.
 //
 // The model each card must carry is NOT here: asserting it needs
 // rootinit.ModelForAgentType, and internal/rootinit imports internal/agent,
@@ -24,10 +44,10 @@ var wantSeeds = map[string]struct {
 	version  int
 	effort   string
 }{
-	"engineer":   {"legacy-engineer", 1, "low"},
-	"manager":    {"legacy-manager", 1, "low"},
-	"researcher": {"legacy-researcher", 1, "low"},
-	"qa":         {"legacy-qa", 1, "low"},
+	"engineer":   {"slim-engineer", 2, "low"},
+	"manager":    {"slim-manager", 2, "low"},
+	"researcher": {"slim-researcher", 2, "low"},
+	"qa":         {"slim-qa", 2, "low"},
 }
 
 func TestSeeds_EveryEmbeddedCardParses(t *testing.T) {
@@ -60,9 +80,7 @@ func TestSeeds_EmbeddedCardsAreTheFilesOnDisk(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if len(files) != len(wantSeeds) {
-		t.Fatalf("found %d seed files on disk, want %d — %v", len(files), len(wantSeeds), files)
-	}
+	assertCardNames(t, "seeds/ on disk", files)
 	byHash := make(map[string]string, len(files))
 	for _, f := range files {
 		src, err := os.ReadFile(f)
@@ -98,9 +116,7 @@ func TestSeeds_EveryEmbeddedFileIsGlobbed(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if len(embedded) != len(wantSeeds) {
-		t.Errorf("//go:embed matched %d files, want %d: %v", len(embedded), len(wantSeeds), embedded)
-	}
+	assertCardNames(t, "//go:embed", embedded)
 }
 
 func TestSeedForType_RejectsAnUnknownType(t *testing.T) {
@@ -109,10 +125,10 @@ func TestSeedForType_RejectsAnUnknownType(t *testing.T) {
 	}
 }
 
-// TestSeedForType_PrefersTheHighestVersion is the control for the version pick.
-// With only v1 cards embedded today the production path cannot exercise it, so
-// a resolver that returned the FIRST match would look correct until the slim
-// v2 cards land and silently keep serving legacy.
+// TestSeedForType_PrefersTheHighestVersion is the control for the version pick,
+// driven through fixtures so it does not depend on how many generations of card
+// happen to be embedded. A resolver that returned the FIRST match would serve
+// legacy forever — legacy sorts before slim — while looking correct.
 func TestSeedForType_PrefersTheHighestVersion(t *testing.T) {
 	cards := []*Card{
 		{Name: "a", Version: 1, AgentType: "engineer"},
@@ -137,9 +153,10 @@ func TestSeedForType_PrefersTheHighestVersion(t *testing.T) {
 // follow a legacy@2 and turn those goldens back into the moving target the
 // name-keyed accessor exists to stop.
 //
-// Driven through fixtures rather than the embedded seeds because the tree
-// currently has exactly one version of each name, so nothing in production can
-// tell an exact lookup from a highest-of-name one.
+// Driven through fixtures rather than the embedded seeds because the tree still
+// has exactly one version of each NAME (legacy-x@1 and slim-x@2 are different
+// names), so nothing in production can tell an exact lookup from a
+// highest-of-name one.
 func TestPickNamed_IsExactOnBothNameAndVersion(t *testing.T) {
 	cards := []*Card{
 		{Name: "a", Version: 1, AgentType: "engineer"},
@@ -243,6 +260,46 @@ func TestSeeds_MetadataMatchesTheTable(t *testing.T) {
 		}
 		if c.Effort != want.effort {
 			t.Errorf("%s: card effort %q, want %q", agentType, c.Effort, want.effort)
+		}
+	}
+}
+
+// assertCardNames compares a set of seeds/*.md paths against wantSeedFiles by
+// NAME, in both directions: a missing card and an unexpected extra card are
+// distinct failures with distinct messages. Set comparison rather than a length
+// check, so "eight files" cannot stand in for "these eight files".
+func assertCardNames(t *testing.T, where string, paths []string) {
+	t.Helper()
+	got := make(map[string]bool, len(paths))
+	for _, p := range paths {
+		got[strings.TrimSuffix(filepath.Base(p), ".md")] = true
+	}
+	for _, want := range wantSeedFiles {
+		if !got[want] {
+			t.Errorf("%s: %s.md is missing", where, want)
+		}
+		delete(got, want)
+	}
+	for extra := range got {
+		t.Errorf("%s: unexpected card %s.md — add it to wantSeedFiles if it is intended", where, extra)
+	}
+}
+
+// TestSeedTables_CannotDrift ties the two tables in this file together.
+//
+// They are separate on purpose (eight files, four agent types), which means a
+// third generation of cards can be added to one and forgotten in the other, and
+// nothing else in the package would notice: the file census would pass over the
+// new file as "unexpected" only if wantSeedFiles were the one left behind, and
+// the type table would pass unchanged if it were the other.
+func TestSeedTables_CannotDrift(t *testing.T) {
+	files := make(map[string]bool, len(wantSeedFiles))
+	for _, n := range wantSeedFiles {
+		files[n] = true
+	}
+	for agentType, want := range wantSeeds {
+		if !files[want.cardName] {
+			t.Errorf("wantSeeds says %s resolves to %s, but %s.md is not in wantSeedFiles", agentType, want.cardName, want.cardName)
 		}
 	}
 }
