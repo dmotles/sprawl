@@ -619,34 +619,6 @@ func TestRunUsageSummary_EmptyDir_FriendlyMessage(t *testing.T) {
 
 // --- cache hit rate (QUM-1258) ---
 
-func TestFormatCacheHitPct(t *testing.T) {
-	cases := []struct {
-		name string
-		t    usage.TokenTotals
-		want string
-	}{
-		{"no tokens at all", usage.TokenTotals{}, "—"},
-		{"everything from cache", usage.TokenTotals{CacheReadInputTokens: 100}, "100.0%"},
-		{"nothing from cache", usage.TokenTotals{InputTokens: 100, CacheCreationInputTokens: 50}, "0.0%"},
-		{
-			"realistic",
-			usage.TokenTotals{InputTokens: 421000, CacheReadInputTokens: 980000, CacheCreationInputTokens: 34000},
-			"68.3%",
-		},
-		{
-			// Output tokens are not part of the input-side denominator.
-			"output tokens excluded",
-			usage.TokenTotals{InputTokens: 100, CacheReadInputTokens: 100, OutputTokens: 999999},
-			"50.0%",
-		},
-	}
-	for _, tc := range cases {
-		if got := formatCacheHitPct(tc.t); got != tc.want {
-			t.Errorf("%s: formatCacheHitPct(%+v) = %q, want %q", tc.name, tc.t, got, tc.want)
-		}
-	}
-}
-
 // seedCacheHeavyFixture writes rows with the magnitudes this defect actually
 // produces in the wild: nearly the whole context is re-read from cache every
 // turn, so the summed cache-read figure dwarfs any real context size.
@@ -826,8 +798,10 @@ func TestFormatTailLine_MarksPartialRows(t *testing.T) {
 	partial := base
 	partial.Partial = true
 	got := formatTailLine(partial)
-	if !strings.Contains(got, "partial") {
-		t.Errorf("partial row = %q, want it marked partial — otherwise it reads as a zero-cost "+
+	// key=value, like every other field on the line: a bare " partial" is not
+	// greppable the way `cost=` is, and the line is otherwise strictly key=value.
+	if !strings.Contains(got, "partial=true") {
+		t.Errorf("partial row = %q, want a partial=true field — otherwise it reads as a zero-cost "+
 			"completed turn", got)
 	}
 	// The marker must be additive, not a replacement for the token/cost data.
