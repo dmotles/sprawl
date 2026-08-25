@@ -35,6 +35,61 @@ func TestRender_SubstitutesEveryKnownToken(t *testing.T) {
 	}
 }
 
+// TestRender_ASubstitutedValueIsNeverRescanned. The surviving-"{{" check exists
+// to catch a token the card BODY carries and Render does not know. It must not
+// fire on a "{{" that arrived as a substituted VALUE, and a value must never be
+// re-substituted as if it were a token.
+//
+// Both halves were live defects. Family and branch are LLM-supplied at spawn and
+// unvalidated (only agent NAMES are, via internal/agent/validate.go), so a family
+// of "eng{{ineering" reached the output check and errored — and internal/agent/
+// prompt_cards.go turns that error into a panic on the supervisor's launch
+// goroutine. Worse, Render substituted by ranging a MAP LITERAL, so with a family
+// of "{{AGENT_NAME}}" the outcome depended on map iteration order: sometimes the
+// literal text, sometimes the agent name, sometimes a panic. A nondeterministic
+// spawn failure is the hardest possible shape to diagnose.
+//
+// The loop is not decoration: one pass cannot distinguish a stable result from a
+// lucky one, and the map-order defect reproduced roughly half the time.
+func TestRender_ASubstitutedValueIsNeverRescanned(t *testing.T) {
+	cases := []struct {
+		what string
+		in   Input
+		want string
+	}{
+		{
+			"a bare {{ in the family",
+			Input{AgentName: "zone", ParentName: "root", BranchName: "b", Family: "eng{{ineering"},
+			"agent=zone parent=root branch=b family=eng{{ineering",
+		},
+		{
+			// The value is spelled exactly like another token, which is what makes
+			// the map-order bug observable rather than merely present.
+			"a value spelled like a token",
+			Input{AgentName: "zone", ParentName: "root", BranchName: "b", Family: "{{AGENT_NAME}}"},
+			"agent=zone parent=root branch=b family={{AGENT_NAME}}",
+		},
+		{
+			"a token-shaped branch name, which git permits",
+			Input{AgentName: "zone", ParentName: "root", BranchName: "dmotles/{{FAMILY}}", Family: "eng"},
+			"agent=zone parent=root branch=dmotles/{{FAMILY}} family=eng",
+		},
+	}
+	for _, tc := range cases {
+		t.Run(tc.what, func(t *testing.T) {
+			for i := 0; i < 200; i++ {
+				got, err := testCard(t, tokenCard).Render(tc.in)
+				if err != nil {
+					t.Fatalf("iteration %d: Render: %v", i, err)
+				}
+				if got != tc.want {
+					t.Fatalf("iteration %d: Render = %q, want %q", i, got, tc.want)
+				}
+			}
+		})
+	}
+}
+
 // TestRender_RefusesAnUnsubstitutedToken pins the direction that matters: a
 // prompt carrying a literal "{{...}}" reaches a model and reads as an
 // instruction about a placeholder. Failing the spawn is the safe outcome.

@@ -265,38 +265,43 @@ func TestCardForType_ReadsAHandWrittenSnakeCaseRow(t *testing.T) {
 //
 // First-match — whatever Postgres happens to return without an ORDER BY — would
 // keep serving legacy@1 forever once the slim v2 cards land, and would look
-// entirely correct while doing it, because today every type has exactly one
-// version. That is why this plants a v2 rather than trusting the seeds.
+// entirely correct while doing it. That is why this plants a card one version
+// above whatever the seeds provide rather than naming a literal version.
+//
+// The literal-version form of this test (control asserts v1, plant v2) was
+// written when every type had exactly one seeded card, and it broke the moment
+// slim-engineer@2 was embedded — failing on its own premise line rather than on
+// the ORDER BY it exists to pin. Reading the baseline instead keeps the pin
+// alive across every future seed bump; the baseline < planted assertion is what
+// stops the plant from being a no-op if a seed ever reaches that version.
 func TestCardForType_ReturnsTheHighestVersion(t *testing.T) {
 	_, pool := newTestSchema(t)
 	ctx := context.Background()
 	l := ledgerOn(pool)
 
-	// Control: with only v1 present, the probe reports v1. This is what
+	// Control: before the plant, the probe reports the seeded card. This is what
 	// distinguishes "reads the newest row" from "hardcodes the highest number it
 	// was ever shown".
-	v1, err := l.CardForType(ctx, "engineer")
+	base, err := l.CardForType(ctx, "engineer")
 	if err != nil {
-		t.Fatalf("CardForType with only v1 present: %v", err)
+		t.Fatalf("CardForType with only the seeded cards present: %v", err)
 	}
-	if v1.Version != 1 {
-		t.Fatalf("expected the seeded engineer card to be v1, got v%d — this test's premise no longer holds", v1.Version)
-	}
+	planted := base.Version + 1
 
 	if _, err := pool.Exec(ctx,
 		`INSERT INTO agent_cards (id, name, version, agent_type, description, prompt, model, effort, content_sha256, render)
-		 VALUES ($1, 'slim-engineer', 2, 'engineer', 'slim', 'v2 body', 'fable', 'high', repeat('b', 64), $2::jsonb)`,
-		uuid.New(), fullRenderJSON); err != nil {
-		t.Fatalf("insert a v2 card: %v", err)
+		 VALUES ($1, 'planted-engineer', $3, 'engineer', 'planted', 'planted body', 'fable', 'high', repeat('b', 64), $2::jsonb)`,
+		uuid.New(), fullRenderJSON, planted); err != nil {
+		t.Fatalf("insert a v%d card: %v", planted, err)
 	}
 
 	got, err := l.CardForType(ctx, "engineer")
 	if err != nil {
-		t.Fatalf("CardForType with v2 present: %v", err)
+		t.Fatalf("CardForType with v%d present: %v", planted, err)
 	}
-	if got.Version != 2 || got.Name != "slim-engineer" {
-		t.Errorf("CardForType returned %s@%d, want slim-engineer@2 — a lower version winning means the query has no ORDER BY version DESC",
-			got.Name, got.Version)
+	if got.Version != planted || got.Name != "planted-engineer" {
+		t.Errorf("CardForType returned %s@%d, want planted-engineer@%d (baseline was %s@%d) — a lower version winning means the query has no ORDER BY version DESC",
+			got.Name, got.Version, planted, base.Name, base.Version)
 	}
 }
 

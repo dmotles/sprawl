@@ -184,8 +184,25 @@ test_run() {
     # for the cascade-retire test in Phase 5. Spawning both back-to-back
     # while tower is responsive avoids a fragile second tower-spawn under
     # later rate-limit conditions.
-    local SUB_SPAWN_PROMPT="Call mcp__sprawl__send_message with to='${TOWER_NAME}', body='IMPORTANT: as your next two actions, call mcp__sprawl__spawn TWICE to spawn two sub-engineers. (1) First call: subagent=true, type=\"engineer\", family=\"engineering\", prompt=\"You are QUM-756 sub-engineer ALPHA. Call mcp__sprawl__send_message with to=weave, body=SUB-ALPHA-READY-${BRANCH_SUFFIX}. Then stop and wait.\". (2) Second call: subagent=true, type=\"engineer\", family=\"engineering\", prompt=\"You are QUM-756 sub-engineer BRAVO. Call mcp__sprawl__send_message with to=weave, body=SUB-BRAVO-READY-${BRANCH_SUFFIX}. Then stop and wait.\". Do NOT set branch on either call. After both calls return, call mcp__sprawl__send_message with to=\"weave\", body=\"TWO-SUBS-SPAWNED-${BRANCH_SUFFIX}\".', now=false."
-    e2e_send_user_prompt "$SESSION" "$SUB_SPAWN_PROMPT"
+    #
+    # ONE MESSAGE PER SUB-AGENT, and each body must stay under 300 characters:
+    # QUM-1186 made that cap a HARD ERROR on send_message rather than a
+    # truncation. The single ~800-char body this used to ask weave to relay could
+    # not be sent at all, so weave stopped to ask the operator how to shorten it,
+    # no sub-agent was ever spawned, and the row failed 300s later on the poll
+    # below with an error ("two sub-agents did not appear") that says nothing
+    # about the actual cause. Keep both bodies short if you edit them.
+    local sub
+    for sub in ALPHA BRAVO; do
+        local BODY="Spawn a subagent now: subagent=true, type=engineer, family=engineering, no branch, prompt=\"You are QUM-756 sub-engineer ${sub}. send_message to=weave body=SUB-${sub}-READY-${BRANCH_SUFFIX}, then stop and wait.\""
+        if [ "${#BODY}" -ge 300 ]; then
+            fail "the ${sub} spawn body is ${#BODY} chars, over send_message's 300-char hard cap — weave cannot relay it"
+            e2e_print_results
+            return 1
+        fi
+        e2e_send_user_prompt "$SESSION" "Call mcp__sprawl__send_message with to='${TOWER_NAME}', body='${BODY}', now=false."
+        sleep 5
+    done
 
     # Poll for two subs under tower.
     local SUB_STATE="" SUB_NAME="" SUB2_STATE="" SUB2_NAME=""

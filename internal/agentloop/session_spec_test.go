@@ -260,9 +260,20 @@ func TestBuildAgentSessionSpec_EffortLowRoundTripsToLaunchArgs(t *testing.T) {
 			// measuring a configuration production never sends. "weave" has no
 			// card of its own, and nil is the honest input for it — the resolver
 			// hands that case the engineer card, which this function cannot see.
-			c, err := card.SeedForType(agentType)
-			if err != nil {
-				c = nil
+			//
+			// The "weave" miss is expected and is the ONLY expected miss, so it
+			// is named rather than absorbed by a bare `err != nil { c = nil }`.
+			// That swallow would have degraded this pin into exactly the nil-card
+			// configuration the comment above says production never sends, and
+			// silently: typo the //go:embed glob and every type would fall to nil
+			// while the test stayed green claiming it exercised the real-seed path.
+			var c *card.Card
+			seed, err := card.SeedForType(agentType)
+			switch {
+			case err == nil:
+				c = seed
+			case agentType != "weave":
+				t.Fatalf("SeedForType(%q): %v", agentType, err)
 			}
 			spec := BuildAgentSessionSpec(agentState, "/tmp/prompt.md", "/tmp/root", io.Discard, c)
 

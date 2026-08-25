@@ -332,16 +332,28 @@ test_run() {
         fail "a spawn_context artifact is empty (smallest size_bytes '$SPAWN_CTX_BYTES')"
     fi
 
-    # And the body is the RENDERED PROMPT, not merely well-formed JSON. Keyed on
-    # a string every rendered agent prompt contains, so a body carrying only the
-    # metadata — which satisfies both assertions above — fails here.
-    local SPAWN_CTX_PROMPT
-    SPAWN_CTX_PROMPT=$(psql_q "SELECT count(*) FROM artifacts WHERE kind = 'spawn_context' AND content::jsonb->>'rendered_prompt' LIKE '%Executing actions with care%';")
-    echo "    spawn_context artifacts carrying a rendered prompt: $SPAWN_CTX_PROMPT"
-    if [ -n "$SPAWN_CTX_PROMPT" ] && [ "$SPAWN_CTX_PROMPT" -ge 1 ] 2>/dev/null; then
-        pass "a spawn_context artifact carries the fully rendered agent prompt ($SPAWN_CTX_PROMPT)"
+    # And the body is the RENDERED PROMPT, not merely well-formed JSON.
+    #
+    # Keyed on a SLIM-ONLY marker, and counted PER-UNIT. Both matter:
+    #
+    #   - "Executing actions with care" was the original marker and occurs exactly
+    #     once in all EIGHT seeds, legacy and slim, all four roles. So it could not
+    #     distinguish which card rendered: publishing a slim card at version 1
+    #     (which loses the tie to legacy@1 in pickHighest) makes every launch
+    #     render legacy, and this assertion stayed green. The phrase below is
+    #     absent from all four legacy cards, so a green here means the SLIM card
+    #     reached the agent — the same marker internal/agent/prompt_cards_test.go
+    #     uses for exactly this purpose.
+    #   - The predicate is "zero artifacts LACK a prompt", not ">= 1 has one". An
+    #     aggregate floor passes on one good row while every other spawn_context
+    #     carries nothing.
+    local SPAWN_CTX_NOPROMPT
+    SPAWN_CTX_NOPROMPT=$(psql_q "SELECT count(*) FROM artifacts WHERE kind = 'spawn_context' AND coalesce(content::jsonb->>'rendered_prompt', '') NOT LIKE '%outrank it and the repo wins where they conflict%';")
+    echo "    spawn_context artifacts NOT carrying a rendered slim prompt: $SPAWN_CTX_NOPROMPT"
+    if [ -n "$SPAWN_CTX_NOPROMPT" ] && [ "$SPAWN_CTX_NOPROMPT" -eq 0 ] 2>/dev/null; then
+        pass "every spawn_context artifact carries the fully rendered slim agent prompt"
     else
-        fail "no spawn_context artifact carries a rendered agent prompt (got '$SPAWN_CTX_PROMPT') — the artifact records metadata a replay cannot use on its own"
+        fail "$SPAWN_CTX_NOPROMPT spawn_context artifact(s) carry no rendered SLIM prompt — either the artifact records metadata a replay cannot use on its own, or the legacy card won resolution"
         psql_q "SELECT left(content, 400) FROM artifacts WHERE kind = 'spawn_context' LIMIT 1;" >&2 || true
     fi
 

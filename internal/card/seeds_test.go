@@ -55,6 +55,9 @@ func TestSeeds_EveryEmbeddedCardParses(t *testing.T) {
 	if err != nil {
 		t.Fatalf("Seeds: %v", err)
 	}
+	if len(cards) == 0 {
+		t.Fatal("Seeds returned nothing — every assertion below would pass over zero iterations")
+	}
 	for _, c := range cards {
 		if c.Description == "" {
 			t.Errorf("%s@%d: no description — `sprawl def list` would show a blank row", c.Name, c.Version)

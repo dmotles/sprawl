@@ -78,8 +78,17 @@ func PutSpawnContext(ctx context.Context, l *Ledger, sc SpawnContext) *uuid.UUID
 	if !l.Enabled() {
 		return nil
 	}
+	// appender.pgPool(), not the public l.Pool(): pgPool returns the PgPool
+	// INTERFACE, which is what a unit test can substitute, while l.Pool() returns
+	// the concrete *pgxpool.Pool. The siblings in cards.go use l.Pool() because
+	// they have no fake-pool tests; this one does. The nil check is on the
+	// appender because a hand-built &Ledger{enabled: true} — a shape tests do
+	// produce — would otherwise dereference a nil receiver here.
+	if l.DegradedError() != nil || l.appender == nil {
+		return nil
+	}
 	pool := l.appender.pgPool()
-	if l.DegradedError() != nil || pool == nil {
+	if pool == nil {
 		return nil
 	}
 	body, err := sc.Marshal()

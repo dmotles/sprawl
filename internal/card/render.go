@@ -42,6 +42,17 @@ You are operating in a testing sandbox for sprawl. Take care to:
 - Do not interact with production systems, push to remote repositories, or modify files outside the test directory
 - This environment will be torn down after testing`
 
+// tokenBlanker erases every known token from a body, so what remains of a "{{"
+// is a token Render cannot substitute. Built from knownTokens rather than from
+// its own list, so the two cannot drift.
+var tokenBlanker = func() *strings.Replacer {
+	pairs := make([]string, 0, len(knownTokens)*2)
+	for _, tok := range knownTokens {
+		pairs = append(pairs, tok, "")
+	}
+	return strings.NewReplacer(pairs...)
+}()
+
 // Render substitutes in's values into the card body and splices the blocks the
 // card's render options ask for.
 //
@@ -49,16 +60,30 @@ You are operating in a testing sandbox for sprawl. Take care to:
 // token nobody substitutes must not reach a model. Parse already refuses
 // unknown tokens, so this arm fires when a KNOWN token was left unreplaced —
 // which today can only mean Render and knownTokens have drifted apart.
+//
+// Two properties are load-bearing and both were once absent:
+//
+//   - The surviving-"{{" scan runs against the BODY, not the output. Family and
+//     branch are LLM-supplied at spawn and unvalidated, so a family of
+//     "eng{{ineering" used to fail this check — and internal/agent/prompt_cards.go
+//     turns a render error into a panic on the supervisor's launch goroutine. A
+//     poisoned identity string is not a malformed card.
+//   - Substitution is ONE ordered left-to-right pass (strings.Replacer), so a
+//     substituted value is never rescanned as a token. This used to range a map
+//     literal, which made the result depend on map iteration order.
 func (c *Card) Render(in Input) (string, error) {
-	out := c.Body
-	for tok, val := range map[string]string{
-		"{{AGENT_NAME}}":  in.AgentName,
-		"{{PARENT_NAME}}": in.ParentName,
-		"{{BRANCH_NAME}}": in.BranchName,
-		"{{FAMILY}}":      in.Family,
-	} {
-		out = strings.ReplaceAll(out, tok, val)
+	if scan := tokenBlanker.Replace(c.Body); strings.Contains(scan, "{{") {
+		i := strings.Index(scan, "{{")
+		return "", fmt.Errorf("card %q@%d: body contains an unsubstituted token near %q",
+			c.Name, c.Version, scan[i:min(i+40, len(scan))])
 	}
+
+	out := strings.NewReplacer(
+		"{{AGENT_NAME}}", in.AgentName,
+		"{{PARENT_NAME}}", in.ParentName,
+		"{{BRANCH_NAME}}", in.BranchName,
+		"{{FAMILY}}", in.Family,
+	).Replace(c.Body)
 
 	if c.Opts.SubagentBanner && in.Env.Subagent {
 		out = fmt.Sprintf(subagentBanner, in.Env.ParentName) + "\n\n" + out
@@ -68,11 +93,6 @@ func (c *Card) Render(in Input) (string, error) {
 	}
 	if c.Opts.SandboxWarning && in.Env.TestMode {
 		out += testSandboxWarning
-	}
-
-	if i := strings.Index(out, "{{"); i >= 0 {
-		return "", fmt.Errorf("card %q@%d: rendered prompt still contains an unsubstituted token near %q",
-			c.Name, c.Version, out[i:min(i+40, len(out))])
 	}
 	return out, nil
 }
