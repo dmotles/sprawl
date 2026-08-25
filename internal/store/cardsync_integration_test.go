@@ -4,6 +4,7 @@ package store
 
 import (
 	"context"
+	"encoding/json"
 	"strings"
 	"testing"
 
@@ -64,11 +65,18 @@ func TestMigrate_SeedsEveryEmbeddedCard(t *testing.T) {
 		var (
 			name, agentType, model, effort, description, hash, prompt string
 			version                                                   int
+			renderRaw                                                 []byte
 		)
+		// render is scanned as RAW BYTES rather than straight into a
+		// card.RenderOpts, so that "this row was never seeded" and "this row's
+		// render column is unreadable" stay two distinguishable failures. Decoded
+		// into the struct here, a NULL or malformed render would fail this Scan
+		// and be reported below as a MISSING ROW — the wrong defect named, and
+		// every per-column assertion for that card skipped by the continue.
 		err := pool.QueryRow(ctx,
-			`SELECT name, version, agent_type, model, effort, description, content_sha256, prompt
+			`SELECT name, version, agent_type, model, effort, description, content_sha256, prompt, render
 			   FROM agent_cards WHERE id = $1`, c.ID()).
-			Scan(&name, &version, &agentType, &model, &effort, &description, &hash, &prompt)
+			Scan(&name, &version, &agentType, &model, &effort, &description, &hash, &prompt, &renderRaw)
 		if err != nil {
 			t.Errorf("%s@%d (id %s) was not seeded — a card_id pinned on an agent_sessions row would FK-fail against this database: %v",
 				c.Name, c.Version, c.ID(), err)
@@ -97,6 +105,28 @@ func TestMigrate_SeedsEveryEmbeddedCard(t *testing.T) {
 		if prompt != c.Body {
 			t.Errorf("%s@%d: the seeded prompt is not the card body (%d bytes seeded, %d in the card)",
 				c.Name, c.Version, len(prompt), len(c.Body))
+		}
+		// The render opts are asserted for the same reason the prompt is: they
+		// are not derivable from anything else in the row, and a sync that
+		// omitted the column would leave every card in the database rendering
+		// without the sub-agent banner, the "# Environment" block or the sandbox
+		// warning — a change to what agents are TOLD, with a byte-identical body.
+		//
+		// NULL is checked before the decode: encoding/json unmarshals a literal
+		// `null` into a struct as a NO-OP, leaving the zero value, so a nulled
+		// column would otherwise be reported as "all three opts are false"
+		// rather than as an absent value.
+		if renderRaw == nil {
+			t.Errorf("%s@%d was seeded with a NULL render column — the sync did not write it, and a card read back from here renders without the sub-agent banner or the sandbox warning", c.Name, c.Version)
+			continue
+		}
+		var opts card.RenderOpts
+		if err := json.Unmarshal(renderRaw, &opts); err != nil {
+			t.Errorf("%s@%d: the seeded render column is not decodable into RenderOpts (%q): %v", c.Name, c.Version, renderRaw, err)
+			continue
+		}
+		if opts != c.Opts {
+			t.Errorf("%s@%d seeded with render %+v, embedded card says %+v", c.Name, c.Version, opts, c.Opts)
 		}
 	}
 }
@@ -166,6 +196,18 @@ func TestMigrate_RefusesAnInPlaceEditOfAPublishedCard(t *testing.T) {
 		"agent_type":     `UPDATE agent_cards SET agent_type = 'tampered-type' WHERE id = $1`,
 		"effort":         `UPDATE agent_cards SET effort = 'tampered-effort' WHERE id = $1`,
 		"description":    `UPDATE agent_cards SET description = 'tampered' WHERE id = $1`,
+		// render is the leg with no visible effect on the prompt BODY and a
+		// direct effect on what the rendered prompt contains: flipping
+		// subagent_banner off strips a sub-agent's warning that it shares its
+		// parent's branch, and the body is byte-identical either way.
+		//
+		// This literal spells the keys in snake_case, which is the wire contract
+		// — but it does not PIN it: under a wrong json tag the unknown keys would
+		// be dropped and the row would decode to all-false, still diverging and
+		// still firing this leg, for a reason its description does not name. The
+		// names are pinned separately, by raw SQL, in
+		// TestAgentCards_RenderColumnUsesSnakeCaseKeys.
+		"render": `UPDATE agent_cards SET render = '{"subagent_banner":false,"append_env_context":true,"sandbox_warning":true}'::jsonb WHERE id = $1`,
 	}
 	for column, stmt := range tampers {
 		t.Run(column, func(t *testing.T) {

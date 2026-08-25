@@ -11,7 +11,9 @@ import (
 	"bytes"
 	"crypto/sha256"
 	"encoding/hex"
+	"encoding/json"
 	"fmt"
+	"reflect"
 	"strings"
 
 	"github.com/google/uuid"
@@ -38,10 +40,80 @@ func CardID(name string, version int) uuid.UUID {
 // the author is free to word: they are derived from the spawn environment, and
 // a card that got to spell its own "# Environment" block could disagree with
 // the worktree the agent is actually in.
+// The json tags carry the same names as the yaml ones because the seed FILE and
+// the `agent_cards.render` COLUMN are two encodings of one thing, and an operator
+// reading a card in either place should not have to learn two vocabularies.
 type RenderOpts struct {
-	AppendEnvContext bool `yaml:"append_env_context"`
-	SubagentBanner   bool `yaml:"subagent_banner"`
-	SandboxWarning   bool `yaml:"sandbox_warning"`
+	AppendEnvContext bool `yaml:"append_env_context" json:"append_env_context"`
+	SubagentBanner   bool `yaml:"subagent_banner"    json:"subagent_banner"`
+	SandboxWarning   bool `yaml:"sandbox_warning"    json:"sandbox_warning"`
+}
+
+// renderOptKeys are the wire names of RenderOpts' fields, derived from the struct
+// tags by reflection rather than repeated as literals.
+//
+// Derived, not written down, because the alternative is two lists that nothing
+// forces to agree: a renamed field with an un-renamed literal would make
+// ParseRenderOpts demand a key that no writer produces, and every round-trip
+// test would stay green because it encodes and decodes through the same struct.
+var renderOptKeys = func() []string {
+	t := reflect.TypeOf(RenderOpts{})
+	out := make([]string, 0, t.NumField())
+	for i := range t.NumField() {
+		f := t.Field(i)
+		// Mirror encoding/json: an absent tag means the field is keyed by its Go
+		// NAME. Without this fallback a dropped tag yields "", so the error below
+		// reads `do not specify ""` — it still fails, which is what matters, but
+		// it names nothing an operator can go and look at.
+		if name := f.Tag.Get("json"); name != "" {
+			out = append(out, name)
+		} else {
+			out = append(out, f.Name)
+		}
+	}
+	return out
+}()
+
+// ParseRenderOpts decodes a card's render options from their stored JSON form,
+// requiring every option to be PRESENT.
+//
+// Presence is checked separately from value because a struct decode cannot tell
+// them apart: an absent key and an explicit `false` both leave the field false.
+// That distinction matters here in a way it usually does not — these flags gate
+// the sub-agent banner and the TEST SANDBOX MODE warning, so reading "nobody
+// said" as "no splices" silently removes safety text from a prompt that still
+// renders and still looks plausible. A caller that cannot read the options is
+// expected to fall back to the compiled-in seed; one that reads them as all-false
+// has no way to know it should.
+//
+// A `null` document is rejected for the same reason: encoding/json unmarshals it
+// into a struct as a no-op, so it would otherwise arrive as all-false.
+//
+// Unknown keys are deliberately IGNORED. A card published by a newer build may
+// carry an option this one does not model, and refusing it would make a forward
+// version of the same card unspawnable; the immutability check compares source
+// hashes and catches an edit, which is the thing that actually needs catching.
+func ParseRenderOpts(raw []byte) (RenderOpts, error) {
+	var opts RenderOpts
+	if len(raw) == 0 {
+		return opts, fmt.Errorf("card: render options are absent")
+	}
+	var present map[string]json.RawMessage
+	if err := json.Unmarshal(raw, &present); err != nil {
+		return opts, fmt.Errorf("card: render options are not a JSON object: %w", err)
+	}
+	if present == nil {
+		return opts, fmt.Errorf("card: render options are null")
+	}
+	for _, k := range renderOptKeys {
+		if _, ok := present[k]; !ok {
+			return opts, fmt.Errorf("card: render options do not specify %q", k)
+		}
+	}
+	if err := json.Unmarshal(raw, &opts); err != nil {
+		return opts, fmt.Errorf("card: decoding render options: %w", err)
+	}
+	return opts, nil
 }
 
 // Card is one immutable, versioned agent definition.

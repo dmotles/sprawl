@@ -78,20 +78,54 @@ func syncSeedCards(ctx context.Context, db *sql.DB) error {
 		return fmt.Errorf("store: loading embedded seed cards: %w", err)
 	}
 	for _, c := range cards {
+		renderJSON, err := json.Marshal(c.Opts)
+		if err != nil {
+			return fmt.Errorf("store: encoding render options for %s@%d: %w", c.Name, c.Version, err)
+		}
 		if _, err := db.ExecContext(ctx,
-			`INSERT INTO agent_cards (id, name, version, agent_type, description, prompt, model, effort, content_sha256)
-			 VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9)
+			`INSERT INTO agent_cards (id, name, version, agent_type, description, prompt, model, effort, content_sha256, render)
+			 VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10)
 			 ON CONFLICT (id) DO NOTHING`,
-			c.ID(), c.Name, c.Version, c.AgentType, c.Description, c.Body, c.Model, c.Effort, c.ContentSHA256); err != nil {
+			c.ID(), c.Name, c.Version, c.AgentType, c.Description, c.Body, c.Model, c.Effort, c.ContentSHA256, renderJSON); err != nil {
 			return fmt.Errorf("store: seeding card %s@%d: %w", c.Name, c.Version, err)
 		}
 
+		// Backfill for a row that predates migration 00004.
+		//
+		// Without this, an UPGRADED database bricks the store rather than
+		// degrading: the row already exists, so the INSERT above does nothing,
+		// `render` stays NULL, the read-back below cannot decode it, and Migrate
+		// returns an error in EVERY process that opens a Ledger, permanently.
+		// No test against a fresh schema can see that, which is why it is called
+		// out here and covered by TestMigrate_BackfillsRenderOnAPreM2Row.
+		//
+		// `render IS NULL` is load-bearing, not an optimisation. An
+		// unconditional UPDATE would silently repair a TAMPERED render on every
+		// migrate, healing precisely the divergence the read-back exists to
+		// report. Writing only where nothing was ever published completes a row
+		// instead of changing one, which is what keeps this compatible with
+		// immutability.
+		if _, err := db.ExecContext(ctx,
+			`UPDATE agent_cards SET render = $2 WHERE id = $1 AND render IS NULL`,
+			c.ID(), renderJSON); err != nil {
+			return fmt.Errorf("store: backfilling render options for %s@%d: %w", c.Name, c.Version, err)
+		}
+
 		var got card.Card
+		var gotRender []byte
 		if err := db.QueryRowContext(ctx,
-			`SELECT name, version, agent_type, description, prompt, model, effort, content_sha256
+			`SELECT name, version, agent_type, description, prompt, model, effort, content_sha256, render
 			   FROM agent_cards WHERE id = $1`, c.ID()).
-			Scan(&got.Name, &got.Version, &got.AgentType, &got.Description, &got.Body, &got.Model, &got.Effort, &got.ContentSHA256); err != nil {
+			Scan(&got.Name, &got.Version, &got.AgentType, &got.Description, &got.Body, &got.Model, &got.Effort, &got.ContentSHA256, &gotRender); err != nil {
 			return fmt.Errorf("store: reading back seed card %s@%d: %w", c.Name, c.Version, err)
+		}
+		// A render this build cannot parse is reported as DRIFT rather than as a
+		// read failure: the row exists and disagrees with the embedded card,
+		// which is exactly what the operator needs to be told.
+		if got.Opts, err = card.ParseRenderOpts(gotRender); err != nil {
+			return fmt.Errorf(
+				"store: published agent card %s@%d has unreadable render options (%w): cards are immutable, so bump the version instead of editing in place",
+				c.Name, c.Version, err)
 		}
 		if diff := describeCardDrift(&got, c); diff != "" {
 			return fmt.Errorf(
@@ -130,6 +164,20 @@ func describeCardDrift(got, want *card.Card) string {
 	}
 	if got.Version != want.Version {
 		return fmt.Sprintf("database version=%d, this build says %d", got.Version, want.Version)
+	}
+	// render last, and compared as a struct rather than as raw bytes: jsonb
+	// reorders keys and drops whitespace, so a byte comparison would report a
+	// difference on every round trip and turn this check into a permanent false
+	// alarm that someone would then delete — the same reasoning sameJSONDoc
+	// records for event-type schemas.
+	//
+	// A card published by a NEWER build may carry a render option this one does
+	// not model; ParseRenderOpts ignores unknown keys, so such an option is not
+	// compared here and does not read as drift. That is deliberate — refusing it
+	// would make a forward version of the same card unspawnable — and the source
+	// hash is what catches an actual edit.
+	if got.Opts != want.Opts {
+		return fmt.Sprintf("database render=%+v, this build says %+v", got.Opts, want.Opts)
 	}
 	return ""
 }

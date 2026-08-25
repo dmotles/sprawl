@@ -75,6 +75,7 @@ func TestMigrationsFS_CarriesEveryMigration(t *testing.T) {
 		"00001_m1a_event_log.sql",
 		"00002_m1a_app_role.sql",
 		"00003_m2_agent_cards_meta.sql",
+		"00004_m2_agent_card_render_opts.sql",
 	}
 	for _, n := range want {
 		if _, ok := got[n]; !ok {
@@ -185,33 +186,48 @@ func TestDescribeCardDrift_NamesEveryColumnItCompares(t *testing.T) {
 			Name: "legacy-engineer", Version: 1, AgentType: "engineer",
 			Description: "d", Model: "opus", Effort: "low",
 			Body: "prompt body", ContentSHA256: strings.Repeat("a", 64),
+			Opts: card.RenderOpts{AppendEnvContext: true, SubagentBanner: true, SandboxWarning: true},
 		}
 	}
 	if diff := describeCardDrift(ptr(base()), ptr(base())); diff != "" {
 		t.Errorf("two identical cards were reported as diverged: %s", diff)
 	}
 
-	cases := map[string]func(*card.Card){
-		"content_sha256": func(c *card.Card) { c.ContentSHA256 = strings.Repeat("b", 64) },
-		"name":           func(c *card.Card) { c.Name = "legacy-other" },
-		"agent_type":     func(c *card.Card) { c.AgentType = "manager" },
-		"model":          func(c *card.Card) { c.Model = "haiku" },
-		"effort":         func(c *card.Card) { c.Effort = "high" },
-		"description":    func(c *card.Card) { c.Description = "other" },
-		"prompt":         func(c *card.Card) { c.Body = "other body" },
-		"version":        func(c *card.Card) { c.Version = 2 },
+	// case name is distinct from the COLUMN the diff must name, because the
+	// three render opts all live in one column and each needs its own mutation:
+	// a comparison that serialised only one of the three bools would agree with
+	// every case it did cover.
+	cases := []struct {
+		name, column string
+		mutate       func(*card.Card)
+	}{
+		{"content_sha256", "content_sha256", func(c *card.Card) { c.ContentSHA256 = strings.Repeat("b", 64) }},
+		{"name", "name", func(c *card.Card) { c.Name = "legacy-other" }},
+		{"agent_type", "agent_type", func(c *card.Card) { c.AgentType = "manager" }},
+		{"model", "model", func(c *card.Card) { c.Model = "haiku" }},
+		{"effort", "effort", func(c *card.Card) { c.Effort = "high" }},
+		{"description", "description", func(c *card.Card) { c.Description = "other" }},
+		{"prompt", "prompt", func(c *card.Card) { c.Body = "other body" }},
+		{"version", "version", func(c *card.Card) { c.Version = 2 }},
+		// Each render opt separately. Dropping any one of these from the
+		// comparison silently changes what a rendered prompt CONTAINS —
+		// respectively the "# Environment" block, the sub-agent banner and the
+		// TEST SANDBOX MODE warning — while leaving the prompt body identical.
+		{"render/append_env_context", "render", func(c *card.Card) { c.Opts.AppendEnvContext = false }},
+		{"render/subagent_banner", "render", func(c *card.Card) { c.Opts.SubagentBanner = false }},
+		{"render/sandbox_warning", "render", func(c *card.Card) { c.Opts.SandboxWarning = false }},
 	}
-	for column, mutate := range cases {
+	for _, tc := range cases {
 		got := base()
-		mutate(&got)
+		tc.mutate(&got)
 		want := base()
 		diff := describeCardDrift(&got, &want)
 		if diff == "" {
-			t.Errorf("%s: a card differing only in %s was reported as identical — the sync would accept it", column, column)
+			t.Errorf("%s: a card differing only in %s was reported as identical — the sync would accept it", tc.name, tc.name)
 			continue
 		}
-		if !strings.Contains(diff, column) {
-			t.Errorf("%s: the drift report does not name the column an operator has to go and look at: %q", column, diff)
+		if !strings.Contains(diff, tc.column) {
+			t.Errorf("%s: the drift report does not name the column an operator has to go and look at: %q", tc.name, diff)
 		}
 	}
 }
