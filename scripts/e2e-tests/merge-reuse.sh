@@ -33,7 +33,15 @@ test_run() {
     git -C "$SPRAWL_ROOT" config user.name "Test"
     git -C "$SPRAWL_ROOT" config user.email "test@test"
     echo "base" > "$SPRAWL_ROOT/base.txt"
-    echo ".sprawl/" > "$SPRAWL_ROOT/.gitignore"
+    # `.env` as well as `.sprawl/`: e2e_make_sandbox_root copies the repo's .env
+    # into the sandbox root for the QUM-1181 auth shim, BEFORE this git init. An
+    # untracked .env makes the root dirty, and `sprawl merge`'s Precondition 7
+    # (agentops/merge.go:212) refuses to merge from a dirty caller worktree — so
+    # on any host that HAS a .env this row failed at step 3 with "your worktree
+    # has uncommitted changes", for a reason that has nothing to do with merge.
+    # e2e_init_sandbox_repo already ignores .env for the rows that use it; this
+    # row hand-rolls its own git init and has to say so itself.
+    printf '.sprawl/\n.env\n' > "$SPRAWL_ROOT/.gitignore"
     git -C "$SPRAWL_ROOT" add base.txt .gitignore
     git -C "$SPRAWL_ROOT" commit -q -m "initial"
 
