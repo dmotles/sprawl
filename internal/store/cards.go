@@ -9,6 +9,17 @@ import (
 	"github.com/jackc/pgx/v5"
 )
 
+// cardForTypeSQL is built from the shared cardColumns (see publish.go) so the
+// spawn path's read list cannot drift from what publish writes. It was an inline
+// literal before QUM-1251's publish path existed, and a drift between the two
+// would have been silent: publish succeeds, this refuses the row, every spawn
+// falls back to the embedded seed.
+const cardForTypeSQL = `SELECT ` + cardColumns + `
+	  FROM agent_cards
+	 WHERE agent_type = $1
+	 ORDER BY version DESC
+	 LIMIT 1`
+
 // CardForType reads the current published agent card for an agent type.
 //
 // This is on the SPAWN path: every launch resolves the card for the agent it is
@@ -40,12 +51,7 @@ func (l *Ledger) CardForType(ctx context.Context, agentType string) (*card.Card,
 		c         card.Card
 		renderRaw []byte
 	)
-	err := l.Pool().QueryRow(ctx,
-		`SELECT name, version, agent_type, description, prompt, model, effort, content_sha256, render
-		   FROM agent_cards
-		  WHERE agent_type = $1
-		  ORDER BY version DESC
-		  LIMIT 1`, agentType).
+	err := l.Pool().QueryRow(ctx, cardForTypeSQL, agentType).
 		Scan(&c.Name, &c.Version, &c.AgentType, &c.Description, &c.Body, &c.Model, &c.Effort, &c.ContentSHA256, &renderRaw)
 	if errors.Is(err, pgx.ErrNoRows) {
 		return nil, fmt.Errorf("store: no published agent card for type %q", agentType)
