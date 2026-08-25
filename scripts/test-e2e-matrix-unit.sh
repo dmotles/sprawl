@@ -2348,7 +2348,7 @@ else
 	if [ -z "$_seams" ]; then
 		# No hits means the probe broke, not that the driver has no seams: the
 		# loop below would then be vacuous and report all-green.
-		fail "16a: no SPRAWL_E2E_MATRIX_DEBUG_* seams found in the driver or lib — the probe broke, and every 16b assertion below silently disappears with it"
+		fail "16a: no SPRAWL_E2E_MATRIX_DEBUG_* seams found in the driver or lib — the probe broke, and every 16b assertion below becomes vacuous"
 	fi
 	for _s in $_seams; do
 		_found=0
@@ -2456,11 +2456,21 @@ else
 		fail "16b: cannot locate this suite at '$UNIT_SELF' — nested check not run"
 	else
 		# shellcheck disable=SC2086
-		_seam_list=$(printf '%s ' $_seams)
-		_seam_list=${_seam_list% }
+		_seam_list=$(echo $_seams)
+		# Code review (byte, FINDING B): an empty $_seams would otherwise run the
+		# combined child with NOTHING exported and then record two passes claiming
+		# "exporting every driver seam cannot change the verdict" — a green line for
+		# work not done. 16a already fails the run in that case, so there was never a
+		# false green, but a pass that observed nothing is the exact shape this suite
+		# exists to forbid, and the old per-seam loop degraded to zero iterations
+		# rather than to a vacuous claim. The gate is here rather than around the whole
+		# `else` so that 16c below still runs and is still enforced.
+		_cout=""
 		# shellcheck disable=SC2086
-		_cout=$(_unit_16b_child "$_nonce" $_seams)
-		if [ -z "$_cout" ]; then
+		[ -n "$_seam_list" ] && _cout=$(_unit_16b_child "$_nonce" $_seams)
+		if [ -z "$_seam_list" ]; then
+			fail "16b: no driver seams to export (16a's probe found none) — the behavioural check would be vacuous, so it is not claimed"
+		elif [ -z "$_cout" ]; then
 			fail "16b: cannot stage the combined-seam child — neither claim was checked for any of: $_seam_list"
 		else
 			_crc=${_cout%%|*}
@@ -7811,9 +7821,13 @@ echo
 echo "=== unit results: $PASS passed / $FAIL failed ==="
 _total=$((PASS + FAIL))
 # A nested [16b] child skips section [16], so it is held to its own lower floor.
-# Keyed on the guard being SET at all, not on the nonce validating: the unbacked-value
-# branch runs exactly the same assertions plus one deliberate `fail`, and 16c needs
-# that run to fail on the FAIL count with its own message rather than on the floor.
+# Keyed on the guard being SET at all rather than on the nonce validating, but only
+# one of the two SET cases can now reach this line: since QUM-1303 the unbacked-value
+# branch aborts inside [16] with its own message and never gets here (16c reads that
+# exit status, not this floor). So the test is effectively "am I a valid-nonce child",
+# and it is still written as the broader condition because that is the safe direction
+# — a future arm that sets the guard and DOES fall through here would want the lower
+# floor, and getting it wrong the other way turns an honest child run red.
 _floor=$MIN_ASSERTIONS
 if [ -n "${UNIT_NESTED_SEAM_CHECK:-}" ]; then
 	_floor=$MIN_ASSERTIONS_NESTED
