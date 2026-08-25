@@ -8,6 +8,8 @@ import (
 	"fmt"
 	"io/fs"
 
+	"github.com/dmotles/sprawl/internal/card"
+
 	_ "github.com/jackc/pgx/v5/stdlib" // database/sql driver "pgx" for goose
 	"github.com/pressly/goose/v3"
 )
@@ -43,7 +45,103 @@ func Migrate(ctx context.Context, dsn string) error {
 	if _, err := p.Up(ctx); err != nil {
 		return fmt.Errorf("store: apply migrations: %w", err)
 	}
-	return syncSeedSchemas(ctx, db)
+	if err := syncSeedSchemas(ctx, db); err != nil {
+		return err
+	}
+	return syncSeedCards(ctx, db)
+}
+
+// syncSeedCards publishes the embedded seed agent cards into agent_cards.
+//
+// Same contract, same reasoning and the same shape as syncSeedSchemas above: the
+// embedded seeds are the single source of truth, a static SQL migration
+// repeating each derived uuid as a literal would duplicate every id across two
+// files that nothing forces to agree, and INSERT ... ON CONFLICT DO NOTHING
+// followed by a READ-BACK-AND-COMPARE is what turns "immutable versioned
+// definitions" into something the database enforces rather than something the
+// commit log asserts.
+//
+// The stakes are higher here than for event types, which is why the comparison
+// covers every column this sync writes rather than just the hash. A card IS a
+// system prompt: a database row that has drifted from the embedded card means
+// one card_id denotes two different sets of safety instructions, and every
+// prompt-safety scanner in internal/agent would still pass, because those read
+// the embedded seeds and never look at Postgres.
+//
+// Rows this build does not ship are left untouched — `sprawl def publish` writes
+// cards through its own path, and a sync that deleted what it did not recognise
+// would wipe them on the next migrate, which is every process that opens a
+// Ledger.
+func syncSeedCards(ctx context.Context, db *sql.DB) error {
+	cards, err := card.Seeds()
+	if err != nil {
+		return fmt.Errorf("store: loading embedded seed cards: %w", err)
+	}
+	for _, c := range cards {
+		if _, err := db.ExecContext(ctx,
+			`INSERT INTO agent_cards (id, name, version, agent_type, description, prompt, model, effort, content_sha256)
+			 VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9)
+			 ON CONFLICT (id) DO NOTHING`,
+			c.ID(), c.Name, c.Version, c.AgentType, c.Description, c.Body, c.Model, c.Effort, c.ContentSHA256); err != nil {
+			return fmt.Errorf("store: seeding card %s@%d: %w", c.Name, c.Version, err)
+		}
+
+		var got card.Card
+		if err := db.QueryRowContext(ctx,
+			`SELECT name, version, agent_type, description, prompt, model, effort, content_sha256
+			   FROM agent_cards WHERE id = $1`, c.ID()).
+			Scan(&got.Name, &got.Version, &got.AgentType, &got.Description, &got.Body, &got.Model, &got.Effort, &got.ContentSHA256); err != nil {
+			return fmt.Errorf("store: reading back seed card %s@%d: %w", c.Name, c.Version, err)
+		}
+		if diff := describeCardDrift(&got, c); diff != "" {
+			return fmt.Errorf(
+				"store: published agent card %s@%d has diverged from this build's definition (%s): cards are immutable, so bump the version instead of editing in place",
+				c.Name, c.Version, diff)
+		}
+	}
+	return nil
+}
+
+// describeCardDrift returns a human-readable account of how a published card
+// differs from the embedded one, or "" if they agree.
+//
+// It names the FIRST differing column rather than returning a bool, because the
+// only useful thing an operator can do with this error is go and look at that
+// column, and "a card diverged" sends them to diff a whole row by hand.
+//
+// content_sha256 is checked first and the body is checked separately. The hash
+// alone is not enough: it covers the source bytes, so it catches an edited seed
+// FILE, but a row whose `prompt` column was rewritten in the database has a
+// perfectly valid hash for a body it no longer holds — and that is the single
+// most dangerous edit possible on this table.
+func describeCardDrift(got, want *card.Card) string {
+	for _, f := range []struct{ name, got, want string }{
+		{"content_sha256", got.ContentSHA256, want.ContentSHA256},
+		{"name", got.Name, want.Name},
+		{"agent_type", got.AgentType, want.AgentType},
+		{"model", got.Model, want.Model},
+		{"effort", got.Effort, want.Effort},
+		{"description", got.Description, want.Description},
+		{"prompt", got.Body, want.Body},
+	} {
+		if f.got != f.want {
+			return fmt.Sprintf("database %s=%q, this build says %q", f.name, truncateForError(f.got), truncateForError(f.want))
+		}
+	}
+	if got.Version != want.Version {
+		return fmt.Sprintf("database version=%d, this build says %d", got.Version, want.Version)
+	}
+	return ""
+}
+
+// truncateForError bounds a value quoted into an error message. A card body is
+// tens of kilobytes and an unbounded one would bury the rest of the message.
+func truncateForError(s string) string {
+	const limit = 80
+	if len(s) <= limit {
+		return s
+	}
+	return s[:limit] + "…"
 }
 
 // syncSeedSchemas publishes the embedded seed event-type schemas into

@@ -4,6 +4,8 @@ import (
 	"io/fs"
 	"strings"
 	"testing"
+
+	"github.com/dmotles/sprawl/internal/card"
 )
 
 // These tests are hermetic — no Docker, no Postgres — so they run in
@@ -56,18 +58,23 @@ func readMigrations(t *testing.T) map[string]string {
 	return out
 }
 
-// TestMigrationsFS_CarriesBothM1AMigrations pins that the embed directive picks
-// up the migrations at all.
+// TestMigrationsFS_CarriesEveryMigration pins that the embed directive picks up
+// the migrations at all.
 //
 // This is not ceremony: `//go:embed migrations/*.sql` is resolved at compile
 // time against the source tree, so a migration that is written but lands in the
 // wrong directory compiles, embeds nothing extra, and silently ships a schema
 // missing whatever that file contained.
-func TestMigrationsFS_CarriesBothM1AMigrations(t *testing.T) {
+//
+// The exact-length check is what makes this a manifest rather than a subset
+// check, and it does its job: adding 00003 failed it, which is the intended way
+// to learn that a new migration needs listing here.
+func TestMigrationsFS_CarriesEveryMigration(t *testing.T) {
 	got := readMigrations(t)
 	want := []string{
 		"00001_m1a_event_log.sql",
 		"00002_m1a_app_role.sql",
+		"00003_m2_agent_cards_meta.sql",
 	}
 	for _, n := range want {
 		if _, ok := got[n]; !ok {
@@ -161,3 +168,75 @@ func TestMigrations_AppendOnlyMigrationGrantsNoMutatingPrivilegeOnEvents(t *test
 		t.Fatal("found no GRANT statement naming events in 00002 — this assertion inspected nothing, so its silence is not evidence")
 	}
 }
+
+// TestDescribeCardDrift_NamesEveryColumnItCompares is the hermetic half of the
+// card immutability check. The store_pg suite proves Migrate REFUSES a tampered
+// row; this proves the predicate distinguishes each column, and it runs in
+// `make validate` where the store_pg suite does not.
+//
+// It is table-driven over one mutation per compared field for the same reason
+// the tamper legs are: a predicate that compared only a subset would agree with
+// every case it did cover. The unchanged case is the negative control — without
+// it, a describeCardDrift that returned a non-empty string unconditionally would
+// satisfy every other row here.
+func TestDescribeCardDrift_NamesEveryColumnItCompares(t *testing.T) {
+	base := func() card.Card {
+		return card.Card{
+			Name: "legacy-engineer", Version: 1, AgentType: "engineer",
+			Description: "d", Model: "opus", Effort: "low",
+			Body: "prompt body", ContentSHA256: strings.Repeat("a", 64),
+		}
+	}
+	if diff := describeCardDrift(ptr(base()), ptr(base())); diff != "" {
+		t.Errorf("two identical cards were reported as diverged: %s", diff)
+	}
+
+	cases := map[string]func(*card.Card){
+		"content_sha256": func(c *card.Card) { c.ContentSHA256 = strings.Repeat("b", 64) },
+		"name":           func(c *card.Card) { c.Name = "legacy-other" },
+		"agent_type":     func(c *card.Card) { c.AgentType = "manager" },
+		"model":          func(c *card.Card) { c.Model = "haiku" },
+		"effort":         func(c *card.Card) { c.Effort = "high" },
+		"description":    func(c *card.Card) { c.Description = "other" },
+		"prompt":         func(c *card.Card) { c.Body = "other body" },
+		"version":        func(c *card.Card) { c.Version = 2 },
+	}
+	for column, mutate := range cases {
+		got := base()
+		mutate(&got)
+		want := base()
+		diff := describeCardDrift(&got, &want)
+		if diff == "" {
+			t.Errorf("%s: a card differing only in %s was reported as identical — the sync would accept it", column, column)
+			continue
+		}
+		if !strings.Contains(diff, column) {
+			t.Errorf("%s: the drift report does not name the column an operator has to go and look at: %q", column, diff)
+		}
+	}
+}
+
+// TestTruncateForError_BoundsALongValue covers the branch the drift report needs
+// and no other caller reaches: a card body is tens of kilobytes, and quoting one
+// unbounded into an error buries the rest of the message.
+func TestTruncateForError_BoundsALongValue(t *testing.T) {
+	short := "opus[1m]"
+	if got := truncateForError(short); got != short {
+		t.Errorf("truncateForError(%q) = %q, want it returned unchanged", short, got)
+	}
+	long := strings.Repeat("x", 5000)
+	got := truncateForError(long)
+	if len(got) >= len(long) {
+		t.Errorf("a %d-byte value came back %d bytes — it was not bounded", len(long), len(got))
+	}
+	if !strings.HasSuffix(got, "…") {
+		t.Errorf("a truncated value must say so; got %q", got[max(0, len(got)-10):])
+	}
+	if !strings.HasPrefix(got, "xxxx") {
+		t.Errorf("truncation dropped the beginning rather than the end: %q", got)
+	}
+}
+
+// ptr is a local helper: describeCardDrift takes pointers, and the table above
+// needs two independent copies per case rather than two aliases of one value.
+func ptr(c card.Card) *card.Card { return &c }
