@@ -25,39 +25,39 @@
 # costs of stepwise timing, which are one duplicate warm 'build' (validate
 # runs it as a step and again as hooks-armed's prerequisite) and one make
 # parse per step.
-recorded=2026-08-23
+recorded=2026-08-25
 cores=8
 go=go1.26.6
 os_arch=linux/arm64
 go_cache=cold
 lint_cache=warm
-total_wall_s=250.55
-driver_overhead_s=0.05
-step	build	0.36	0
-step	test-build-stamp	5.07	0
+total_wall_s=195.94
+driver_overhead_s=0.06
+step	build	0.37	0
+step	test-build-stamp	5.15	0
 step	hooks-armed	0.40	0
-step	proto-check	0.74	0
-step	fmt-check	7.16	0
-step	lint	1.64	0
-step	test-lint-pin	9.14	0
-step	test-race-gate	1.66	0
-step	test-race	74.18	0
-step	test-doclint	3.51	0
-step	test-doclint-split-unit	6.44	0
-step	test-check-scope-unit	7.49	0
-step	test-check-budget-unit	0.04	0
-step	test-precommit-gate-unit	0.11	0
-step	test-wirelog-helpers-unit	0.38	0
-step	test-e2e-lockwait-unit	15.18	0
-step	test-e2e-matrix-unit	96.78	0
-step	test-always-loaded-budget-unit	13.75	0
-step	always-loaded-budget	0.48	0
-step	test-gitignore-classes	2.57	0
-step	test-validate-timing-unit	2.22	0
+step	proto-check	0.81	0
+step	fmt-check	7.41	0
+step	lint	1.89	0
+step	test-lint-pin	10.34	0
+step	test-race-gate	1.97	0
+step	test-race	79.19	0
+step	test-doclint	3.56	0
+step	test-doclint-split-unit	6.56	0
+step	test-check-scope-unit	7.81	0
+step	test-check-budget-unit	0.07	0
+step	test-precommit-gate-unit	0.18	0
+step	test-wirelog-helpers-unit	0.48	0
+step	test-e2e-lockwait-unit	15.56	0
+step	test-e2e-matrix-unit	32.25	0
+step	test-always-loaded-budget-unit	15.14	0
+step	always-loaded-budget	0.49	0
+step	test-gitignore-classes	2.83	0
+step	test-validate-timing-unit	2.18	0
 step	check-validate-baseline	0.06	0
-step	leak-scan	1.14	0
-pkg	github.com/dmotles/sprawl/internal/supervisor	54.810
-pkg	github.com/dmotles/sprawl/internal/hub	33.514
-pkg	github.com/dmotles/sprawl/internal/runtime	24.011
-pkg	github.com/dmotles/sprawl/internal/merge	15.769
-pkg	github.com/dmotles/sprawl/internal/githooks	14.768
+step	leak-scan	1.18	0
+pkg	github.com/dmotles/sprawl/internal/supervisor	57.108
+pkg	github.com/dmotles/sprawl/internal/hub	33.693
+pkg	github.com/dmotles/sprawl/internal/runtime	24.010
+pkg	github.com/dmotles/sprawl/internal/githooks	16.986
+pkg	github.com/dmotles/sprawl/internal/hub/store	15.447

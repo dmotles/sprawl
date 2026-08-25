@@ -224,7 +224,21 @@ FAIL=0
 # with the helper's `local IFS` line deleted, "FAIL: 24i: a caller IFS changed the
 # answer for a subject that was alive throughout: [IFS=<newline> rc=1 out=''] …";
 # restored, it passes. Re-measured on a FULL GREEN run: 676 passed / 0 failed.
-MIN_ASSERTIONS=676
+#
+# QUM-1303 (zone): 676 -> 666. [16b] no longer re-runs this whole suite once per
+# driver seam; it runs ONE child with all six exported, and buys per-seam
+# attribution lazily only when that child goes red (see [16b]). So [16b] emits 2
+# assertions instead of 2-per-seam (12), and the ten that went are REDUNDANCY, not
+# coverage: each was a second, third, ... independent observation of the same
+# property — "an exported driver seam does not change this suite's verdict or its
+# coverage" — which the combined child observes in one shot, and which no seam has
+# ever been seen to break individually. Detection is unchanged (a seam that breaks
+# the verdict breaks it in the combined child too); only per-seam ATTRIBUTION moved
+# to the failure path, where the old cost is still paid in full. [16a] still pins
+# every seam individually and statically, so a newly added, unregistered seam still
+# fails by name for free. Nothing else in the file changed its assertion count.
+# Re-measured on a FULL GREEN run: 666 passed / 0 failed.
+MIN_ASSERTIONS=666
 # A [16b] nested child deliberately does NOT re-run section [16] (recursing would
 # fork-bomb, and counting there would corrupt the parity comparison), so it asserts
 # strictly fewer things and needs its own floor. Measured at de22410: 237; 238 after
@@ -2287,10 +2301,12 @@ fi
 #
 #     16a is static and derived from the driver, so a seam added later and left
 #     unregistered fails here rather than quietly joining the inherited-env
-#     surface. 16b is the behavioural proof: it re-runs this whole suite once
-#     per seam, with that seam exported, and demands the same verdict. Only 16b
-#     would have caught the measured failure, because the [10] call sites are
-#     invisible to any list of scrubbed names.
+#     surface. 16b is the behavioural proof: it re-runs this whole suite ONCE
+#     with every driver seam exported and demands the same verdict and the same
+#     coverage, and re-runs it per seam only when that goes red, to attribute
+#     it (QUM-1303 — the old shape ran a child per seam unconditionally and cost
+#     `seams x suite`). Only 16b would have caught the measured failure, because
+#     the [10] call sites are invisible to any list of scrubbed names.
 # ----------------------------------------------------------------------------
 echo "[16] suite environment hygiene"
 
@@ -2309,7 +2325,19 @@ if [ -n "${UNIT_NESTED_SEAM_CHECK:-}" ]; then
 		note "16: nested child — [16] intentionally not re-run"
 		echo "NESTED-FLOOR: $PASS"
 	else
+		# QUM-1303: abort here rather than falling through to run sections
+		# [17]-[24] whose results nobody will read. This branch means the run is
+		# already doomed — the caller handed us a guard value that would have
+		# silently disabled [16] — and 16c below only needs a non-zero status and
+		# this message. Continuing cost a full ~14s child run per parent run.
+		#
+		# No results line and no floor check is reached on this path, and that is
+		# deliberate: publishing "N passed" for a run that stopped at section [16]
+		# would advertise a total that measured less than the floor claims. The
+		# exit status is non-zero either way, so nothing here can succeed silently.
 		fail "16: UNIT_NESTED_SEAM_CHECK is set in the invoking environment without a live nonce — [16] would have been disabled by the caller"
+		echo "  FATAL: aborting after [16] — the remaining sections cannot make this run trustworthy" >&2
+		exit 1
 	fi
 else
 	_nested_floor=$PASS
@@ -2344,11 +2372,26 @@ else
 	fi
 
 	# --- 16b: an exported seam cannot change this suite's verdict ------------
-	# One child per seam, never both at once: each seam aborts the driver with
-	# rc 4 by a different route, so a combined child could not say which caused
-	# it. The value is passed on the child's command line rather than inherited,
-	# so the section stages its own hostile input instead of waiting for an
-	# operator to supply one.
+	# ONE child with ALL the driver's seams exported at once, not one child per
+	# seam (QUM-1303). The old shape re-ran this entire ~14s suite once per seam,
+	# so its cost was `seams x suite` and grew quadratically as both factors did:
+	# 6 seams x 14s = 84s of the 114s standalone total, to prove a property that
+	# has never once been observed to differ between seams.
+	#
+	# The DETECTION power is unchanged and the burden is on the failure path, not
+	# the green one: if any seam changes the verdict or the coverage, the combined
+	# child changes them too, unless two seams cancel to the exact same pass count
+	# AND the exact same exit status. The one thing the combined child genuinely
+	# cannot do is say WHICH seam did it — the old comment's reason for one child
+	# per seam ("each seam aborts the driver with rc 4 by a different route") is an
+	# attribution argument, not a detection one. So attribution is now bought
+	# lazily: `_unit_16b_attribute` below re-runs the per-seam children, exactly as
+	# before, and only when the combined child has already gone red. A red run pays
+	# the old price; a green run does not pay it to learn nothing.
+	#
+	# The values are passed on the child's command line rather than inherited, so
+	# the section stages its own hostile input instead of waiting for an operator
+	# to supply one.
 	#
 	# The list is the DRIVER's seams, not the whole registry: the other two
 	# registry entries cannot reach a driver child (e2e-matrix.sh assigns
@@ -2356,6 +2399,55 @@ else
 	# SPRAWL_E2E_SKIP_NO_CLAUDE sets it on the child's own command line), so a
 	# child for either would cost 1.1s to assert a property nothing can break.
 	# 16a covers them statically for free.
+
+	# Run this suite as a nested child with the named seams exported, and echo
+	# "<rc>|<results line>|<nested floor>". Shared by the combined run and the
+	# per-seam attribution runs so the two cannot drift.
+	_unit_16b_child() {
+		local _nonce_path=$1 _log _rc
+		shift
+		local _envs=()
+		local _s
+		for _s in "$@"; do
+			_envs+=("$_s=1")
+		done
+		_log=$(mktemp "$UNIT_TMP_ROOT/e2e-matrix-unit-child.XXXXXX") || return 1
+		# timeout is insurance: a regression in the recursion guard above would
+		# otherwise hang `make validate` inside the pre-commit hook.
+		#
+		# The budget is 90s, raised from 30s in QUM-1186 lane 5. Measured child at
+		# QUM-1303: 14.6s, i.e. a ~6x margin. An earlier note claimed "a 25x margin
+		# on a ~1.2s child"; that figure was measured before section [19] existed
+		# and had decayed silently, which is why the margin is re-stated as a
+		# MEASUREMENT rather than a boast. Re-measure it when you add a section:
+		# rc 124 lands in the failure branch below, whose text names a verdict
+		# change, so a merely-slow child reads as "the debug seam changed this
+		# suite's verdict" — a false diagnosis. Check the rc before believing it.
+		# shellcheck disable=SC2086
+		env "UNIT_NESTED_SEAM_CHECK=$_nonce_path" "${_envs[@]}" \
+			${_timeout:+"$_timeout" -k 5 90} bash "$UNIT_SELF" >"$_log" 2>&1
+		_rc=$?
+		printf '%s|%s|%s|%s\n' "$_rc" \
+			"$(grep -E '^=== unit results: [0-9]+ passed / [0-9]+ failed ===$' "$_log" | tail -1)" \
+			"$(sed -n 's/^NESTED-FLOOR: \([0-9]*\)$/\1/p' "$_log" | tail -1)" \
+			"$(grep '^  FAIL' "$_log" | tr '\n' '|')"
+		rm -f "$_log"
+	}
+
+	# Only called once the combined child has gone red: re-run the old per-seam
+	# children so the failure names a seam instead of a set. Emits diagnostics
+	# only — it records no pass, because the assertions it would satisfy were
+	# already recorded as fails by the caller.
+	_unit_16b_attribute() {
+		local _nonce_path=$1 _s _r
+		shift
+		echo "  NOTE: 16b: combined child went red — re-running one child per seam to attribute it" >&2
+		for _s in "$@"; do
+			_r=$(_unit_16b_child "$_nonce_path" "$_s") ||
+				{ echo "  NOTE: 16b: cannot stage attribution child for $_s" >&2; continue; }
+			echo "  NOTE: 16b attribution: $_s -> rc/results/floor/fails: $_r" >&2
+		done
+	}
 	_nonce=$(mktemp "$UNIT_TMP_ROOT/e2e-matrix-unit-nonce.XXXXXX" 2>/dev/null)
 	_timeout=$(command -v timeout)
 	if [ -z "$_nonce" ] || ! printf 'nested-seam-check\n' >"$_nonce" 2>/dev/null; then
@@ -2363,55 +2455,49 @@ else
 	elif [ ! -r "$UNIT_SELF" ]; then
 		fail "16b: cannot locate this suite at '$UNIT_SELF' — nested check not run"
 	else
-		for _s in $_seams; do
-			_clog=$(mktemp "$UNIT_TMP_ROOT/e2e-matrix-unit-child.XXXXXX") || {
-				fail "16b: cannot mktemp child log for $_s — neither claim was checked for it"
-				continue
-			}
-			# timeout is insurance: a regression in the recursion guard above
-			# would otherwise hang `make validate` inside the pre-commit hook.
-			#
-			# The budget is 90s, raised from 30s in QUM-1186 lane 5. Measured child
-			# at that commit: 5.2s, i.e. a ~17x margin. The old
-			# comment claimed "a 25x margin on a ~1.2s child" — that figure was
-			# measured before section [19] existed and had silently decayed to
-			# ~2.2x, because [19]'s probe controls are dominated by deliberate
-			# not-found waits that every child inherits. The probe's off-by-one
-			# sleep was fixed in the same lane (it slept a full poll interval
-			# PAST the deadline), which brought the child back down, but the
-			# margin is re-stated as a MEASUREMENT rather than a boast: re-measure
-			# it when you add to [19], because rc 124 lands in the failure branch
-			# below, whose text names a verdict change. A slow child there reads
-			# as "the debug seam changed this suite's verdict" — a false
-			# diagnosis on an arm that owns none of the cause. Check the rc in
-			# the message before believing that attribution.
-			# shellcheck disable=SC2086
-			env "UNIT_NESTED_SEAM_CHECK=$_nonce" "$_s=1" \
-				${_timeout:+"$_timeout" -k 5 90} bash "$UNIT_SELF" >"$_clog" 2>&1
-			_crc=$?
-			_cres=$(grep -E '^=== unit results: [0-9]+ passed / [0-9]+ failed ===$' "$_clog" | tail -1)
-			_cfloor=$(sed -n 's/^NESTED-FLOOR: \([0-9]*\)$/\1/p' "$_clog" | tail -1)
+		# shellcheck disable=SC2086
+		_seam_list=$(printf '%s ' $_seams)
+		_seam_list=${_seam_list% }
+		# shellcheck disable=SC2086
+		_cout=$(_unit_16b_child "$_nonce" $_seams)
+		if [ -z "$_cout" ]; then
+			fail "16b: cannot stage the combined-seam child — neither claim was checked for any of: $_seam_list"
+		else
+			_crc=${_cout%%|*}
+			_rest=${_cout#*|}
+			_cres=${_rest%%|*}
+			_rest=${_rest#*|}
+			_cfloor=${_rest%%|*}
+			_cfails=${_rest#*|}
 			# When the parent is already failing, the child inherits those
 			# failures and the label below would misattribute them.
 			_caveat=""
 			if [ "$_parent_fail_on_entry" -gt 0 ]; then
 				_caveat=" (NOTE: the parent already had $_parent_fail_on_entry failures — this may be pre-existing rather than an env-hygiene regression)"
 			fi
+			_16b_red=0
 			if [ "$_crc" -eq 0 ] && [ -n "$_cres" ]; then
-				pass "16b: an exported $_s cannot change this suite's verdict or coverage from any call site"
+				pass "16b: exporting every driver seam ($_seam_list) cannot change this suite's verdict from any call site"
 			else
-				fail "16b: exporting $_s changed this suite's verdict$_caveat (child rc=$_crc, '$_cres'); child failures: $(grep '^  FAIL' "$_clog" | tr '\n' '|')"
+				fail "16b: exporting the driver seams changed this suite's verdict$_caveat (child rc=$_crc, '$_cres'); child failures: $_cfails"
+				_16b_red=1
 			fi
 			# A child that exited 0 having skipped whole sections satisfies the
 			# check above, so its coverage must match the parent's exactly —
 			# `-ge` would tolerate coverage shrinking.
 			if [ -n "$_cfloor" ] && [ "$_cfloor" -eq "$_nested_floor" ]; then
-				pass "16b: the child run with $_s exported asserted the same $_nested_floor things"
+				pass "16b: the child run with every driver seam exported asserted the same $_nested_floor things"
 			else
-				fail "16b: child with $_s exported asserted ${_cfloor:-<no floor reported>}, want exactly $_nested_floor"
+				fail "16b: child with every driver seam exported asserted ${_cfloor:-<no floor reported>}, want exactly $_nested_floor"
+				_16b_red=1
 			fi
-			rm -f "$_clog"
-		done
+			# The combined child names a SET, not a seam. Pay for attribution only
+			# now that there is something to attribute.
+			if [ "$_16b_red" -eq 1 ]; then
+				# shellcheck disable=SC2086
+				_unit_16b_attribute "$_nonce" $_seams
+			fi
+		fi
 
 		# --- 16c: a naive guard value fails loudly instead of skipping [16] ---
 		# 16b's recursion guard is itself an inherited variable, so a caller who
@@ -2868,8 +2954,11 @@ CAPLIB="$REPO_ROOT/scripts/lib/capture-pane.sh"
 #
 # Real tmux is deliberately not used here. Makefile's test-e2e-matrix-unit is in
 # `validate` precisely because it needs neither claude nor tmux, and section
-# [16] re-runs this whole suite once per debug seam, so anything touching a real
-# server would run 3x and drag timing into the merge gate. The arms that
+# [16] re-runs this whole suite in a nested child (twice per parent run: the
+# [16b]'s combined-seam child, plus once more per seam if that child goes red;
+# 16c's bad-nonce child aborts at [16] and never reaches here), so anything
+# touching a real server would run several times over and drag timing into the
+# merge gate. The arms that
 # genuinely require a real live pane live in
 # scripts/e2e-tests/capture-pane-liveness.sh, which declares needs_tmux=1.
 #
