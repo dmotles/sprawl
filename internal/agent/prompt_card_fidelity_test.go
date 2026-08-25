@@ -2,7 +2,6 @@ package agent
 
 import (
 	"fmt"
-	"os"
 	"strings"
 	"testing"
 
@@ -107,11 +106,9 @@ func variantEnvs() map[string]EnvConfig {
 }
 
 // variantRoles is the role set the variant goldens cover, derived from the
-// embedded seeds rather than written out. The surviving golden comparison
-// iterates THIS, not variantBuilders — variantBuilders is deleted with the
-// constants, and a slice that had to edit the surviving test to drop that
-// dependency is a slice that could quietly narrow the role set while staying
-// green.
+// embedded seeds rather than written out, so a seed whose card exists but whose
+// variant goldens were never generated fails loudly on a missing file instead of
+// being quietly skipped.
 func variantRoles(t *testing.T) []string {
 	t.Helper()
 	seeds, err := card.Seeds()
@@ -128,20 +125,6 @@ func variantRoles(t *testing.T) []string {
 	return roles
 }
 
-// variantBuilders is the pre-card constant assembly for each role, called with
-// the fixed identity values the variant goldens are named for. It is what
-// generates those goldens and what pins them until it is deleted.
-func variantBuilders() map[string]func(EnvConfig) string {
-	return map[string]func(EnvConfig) string{
-		"engineer":   func(env EnvConfig) string { return legacyBuildEngineerPrompt("zone", "root", "sprawl/zone", env) },
-		"researcher": func(env EnvConfig) string { return legacyBuildResearcherPrompt("zone", "root", "sprawl/zone", env) },
-		"qa":         func(env EnvConfig) string { return legacyBuildQAPrompt("zone", "root", "sprawl/zone", env) },
-		"manager": func(env EnvConfig) string {
-			return legacyBuildManagerPrompt("zone", "root", "sprawl/zone", "engineering", env)
-		},
-	}
-}
-
 func variantInput(env EnvConfig) card.Input {
 	return card.Input{
 		AgentName: "zone", ParentName: "root", BranchName: "sprawl/zone", Family: "engineering",
@@ -156,39 +139,15 @@ func variantGolden(role, envName string) string {
 	return "variant_" + role + "_" + envName + ".golden"
 }
 
-// TestGenerateVariantGoldens writes the variant goldens from the CONSTANT
-// assembly:
-//
-//	GENERATE_GOLDEN=1 go test ./internal/agent/ -run TestGenerateVariantGoldens
-//
-// It must never be re-run after the constants are deleted — at that point the
-// only thing that could regenerate these files is the card pipeline they exist
-// to constrain, which would turn every assertion below into a tautology.
-func TestGenerateVariantGoldens(t *testing.T) {
-	if os.Getenv("GENERATE_GOLDEN") != "1" {
-		t.Skip("set GENERATE_GOLDEN=1 to regenerate the variant goldens")
-	}
-	for role, build := range variantBuilders() {
-		for envName, env := range variantEnvs() {
-			name := variantGolden(role, envName)
-			content := build(env)
-			if err := os.WriteFile("testdata/"+name, []byte(content), 0o644); err != nil {
-				t.Fatalf("writing %s: %v", name, err)
-			}
-			t.Logf("wrote testdata/%s (%d bytes)", name, len(content))
-		}
-	}
-}
-
 // TestLegacyCards_VariantArmsMatchTheGoldens covers the conditional splicing no
 // tui golden exercises: the sub-agent banner and the test-sandbox warning, in
 // all four combinations, for all four roles.
 //
-// Against GOLDENS rather than against legacyBuild*, because the builders are
-// deleted in the next slice and a comparison against them would take this
-// coverage with it — 16 combinations of splicing would go dark with nothing left
-// pinning Build*Prompt byte-for-byte on any non-golden env. The goldens outlive
-// the constants; the test below is what certifies they came from the constants.
+// The goldens were generated from the Go constant assembly in slice 2 and
+// certified byte-identical to it by TestLegacyVariantGoldens_CameFromTheConstantAssembly,
+// which was deleted with those constants in slice 3 having discharged that job.
+// They must never be regenerated: the only thing left that could produce them is
+// the card pipeline they constrain, which would make this test a tautology.
 func TestLegacyCards_VariantArmsMatchTheGoldens(t *testing.T) {
 	for _, role := range variantRoles(t) {
 		c, err := card.SeedForType(role)
@@ -206,22 +165,6 @@ func TestLegacyCards_VariantArmsMatchTheGoldens(t *testing.T) {
 				t.Errorf("%s/%s: card render diverges from %s at byte %d\n got: %q\nwant: %q",
 					role, envName, variantGolden(role, envName), i,
 					got[i:min(i+120, len(got))], want[i:min(i+120, len(want))])
-			}
-		}
-	}
-}
-
-// TestLegacyVariantGoldens_CameFromTheConstantAssembly is why the test above is
-// allowed to trust those goldens: it certifies each one is byte-identical to
-// what the Go constants produce. It is deleted with the constants, having done
-// its job — after that the goldens stand on this recorded certification.
-func TestLegacyVariantGoldens_CameFromTheConstantAssembly(t *testing.T) {
-	for role, build := range variantBuilders() {
-		for envName, env := range variantEnvs() {
-			want := readGolden(t, variantGolden(role, envName))
-			if got := build(env); got != want {
-				t.Errorf("%s/%s: the constant assembly no longer matches %s at byte %d — do NOT regenerate, the golden is the record",
-					role, envName, variantGolden(role, envName), firstDiff(got, want))
 			}
 		}
 	}

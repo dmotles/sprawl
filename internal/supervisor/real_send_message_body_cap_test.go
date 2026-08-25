@@ -386,6 +386,20 @@ func agentVisibleCapSources(t *testing.T) []string {
 	if len(out) == 0 {
 		t.Fatalf("no prompt sources matched ../agent/prompt*.go — this scan is not looking at what it claims to")
 	}
+	// The child-role prompts are card seeds since QUM-1251, not Go constants,
+	// so the seed markdown is now the agent-visible surface that states the cap.
+	// Its own emptiness guard is separate: folding it into the one above would
+	// let a vanished seeds directory hide behind the surviving prompt*.go files
+	// (which state no cap at all today) and drop this scan to the tool entry
+	// alone.
+	seeds, err := filepath.Glob("../card/seeds/*.md")
+	if err != nil {
+		t.Fatalf("glob card seeds: %v", err)
+	}
+	if len(seeds) == 0 {
+		t.Fatalf("no card seeds matched ../card/seeds/*.md — the child-role prompts live there and this scan is not looking at them")
+	}
+	out = append(out, seeds...)
 	return append(out, "../../DESCRIPTION.md", "../../.claude/skills/linear-issues/SKILL.md")
 }
 
