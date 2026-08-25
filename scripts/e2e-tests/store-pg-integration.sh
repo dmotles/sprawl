@@ -1,13 +1,22 @@
 #!/usr/bin/env bash
-# scripts/e2e-tests/store-pg-integration.sh — QUM-1249 (M1a) event-log store
-# Postgres integration row.
+# scripts/e2e-tests/store-pg-integration.sh — Postgres integration row for every
+# suite behind the `store_pg` build tag.
 #
-# Thin wrapper (KEEP IT DUMB, per e2e-matrix.sh) around the Go suite behind the
-# `store_pg` build tag. That suite stands up a REAL Postgres 16 container via
-# testcontainers, migrates the Appendix A M1a schema into a per-test isolated
-# schema, and asserts the schema shape, the append-only GRANTs (AC3), the
-# pinned-schema payload rejection (AC2), and the open_contracts
-# drop/rebuild/anti-join equality (AC4).
+# Two packages, listed in STORE_PG_PACKAGES below:
+#   internal/store  — QUM-1249 (M1a) event log
+#   internal/engine — QUM-1252 (M3a) workflow engine step runner
+# Add a package to that array (and bump MIN_ASSERTIONS) when a new store_pg
+# suite lands; there is deliberately one row for the tag, not one per package,
+# because they share a single Postgres container configuration.
+#
+# Thin wrapper (KEEP IT DUMB, per e2e-matrix.sh) around those suites. They stand
+# up a REAL Postgres 16 container via testcontainers, migrate the Appendix A M1a
+# schema into a per-test isolated schema, and assert: the schema shape, the
+# append-only GRANTs (AC3), the pinned-schema payload rejection (AC2), the
+# open_contracts drop/rebuild/anti-join equality (AC4), and — M3a — that a step's
+# side effect and its checkpoint event share ONE commit, via
+# pg_xact_commit_timestamp() (which is why the container runs with
+# track_commit_timestamp=on).
 #
 # WHY THIS WRAPPER EXISTS AT ALL — the 77 obligation.
 # A Go test that cannot reach Docker calls t.Skip, and a skipped Go test exits
@@ -46,7 +55,7 @@ test_metadata() {
 }
 
 test_run() {
-    echo "== store-pg-integration: event-log schema, append-only grants, appender =="
+    echo "== store-pg-integration: event-log schema, append-only grants, appender, engine step atomicity =="
 
     if ! command -v docker >/dev/null 2>&1; then
         e2e_skip_row "docker not found on PATH — the event-log integration suite needs a Postgres container"

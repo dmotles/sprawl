@@ -319,6 +319,76 @@ func TestRunAttempt_SavepointFailureIsNotRecordedAsAStepFailure(t *testing.T) {
 	}
 }
 
+// TestRunAttempt_CommitFailureIsReportedAndNothingIsClaimedDurable is the
+// crash-window branch this whole type exists for, reached deliberately rather
+// than left to chance.
+//
+// A commit that fails means the side effect AND the checkpoint both evaporated,
+// which is the correct outcome — but only if the caller is told. A swallowed
+// commit error would return an Outcome carrying a real Seq for an event that is
+// not in the log, and the engine would then advance past a step that never ran.
+func TestRunAttempt_CommitFailureIsReportedAndNothingIsClaimedDurable(t *testing.T) {
+	deps, rec, top := newTestStepDeps(t)
+	top.commitErr = errors.New("connection reset during commit")
+
+	out, err := RunAttempt(context.Background(), deps, Attempt{
+		Body: writingBody(rec, nil),
+		Done: doneEvent(),
+	})
+	if err == nil {
+		t.Fatal("expected an error when the commit fails")
+	}
+	if !strings.Contains(err.Error(), "commit") {
+		t.Errorf("error should name the commit, got: %v", err)
+	}
+	// The zero Outcome is the load-bearing half: a non-zero Seq here would name
+	// a log position that does not exist.
+	if out != (Outcome{}) {
+		t.Errorf("Outcome after a failed commit = %+v, want the zero value — a Seq or OK here claims a durability the database refused", out)
+	}
+	if got := rec.joined(); !strings.Contains(got, "commit:FAILED") {
+		t.Fatalf("the commit was never attempted, so this test asserted nothing about the commit path: %s", got)
+	}
+}
+
+// TestRunAttempt_RollbackToSavepointFailureWrapsBothErrors pins the double-%w in
+// runBody.
+//
+// Both errors have to survive: the rollback error is what went wrong, and the
+// body error is WHY we were rolling back at all. An operator handed only the
+// former has a savepoint fault with no idea what provoked it. errors.Is against
+// each is the assertion, rather than substring matching on the message, because
+// the wrapping is the property and a message can print anything.
+func TestRunAttempt_RollbackToSavepointFailureWrapsBothErrors(t *testing.T) {
+	deps, rec, _ := newTestStepDeps(t)
+	bodyErr := errors.New("the step itself failed")
+	rollbackErr := errors.New("rollback to savepoint failed")
+	rec.savepointRollbackErr = rollbackErr
+
+	_, err := RunAttempt(context.Background(), deps, Attempt{
+		Body:   writingBody(rec, bodyErr),
+		Done:   doneEvent(),
+		Failed: failedEvent(),
+	})
+	if err == nil {
+		t.Fatal("expected an error when ROLLBACK TO SAVEPOINT fails")
+	}
+	if !errors.Is(err, rollbackErr) {
+		t.Errorf("error does not wrap the rollback error: %v", err)
+	}
+	if !errors.Is(err, bodyErr) {
+		t.Errorf("error does not wrap the body error, so the reason for the rollback is lost: %v", err)
+	}
+	// A rollback fault is infrastructure, not a verdict — same rule as a failed
+	// savepoint. Nothing may be recorded.
+	if got := rec.joined(); strings.Contains(got, "append") {
+		t.Errorf("a rollback fault was recorded in the log as a step outcome: %s", got)
+	}
+	if got := rec.joined(); !strings.Contains(got, "rollback_to_savepoint:FAILED") {
+		t.Fatalf("the rollback was never attempted, so this test asserted nothing about the rollback path: %s", got)
+	}
+}
+
 // ---------------------------------------------------------------------------
 // Refusals
 // ---------------------------------------------------------------------------

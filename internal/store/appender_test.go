@@ -417,6 +417,132 @@ func TestAppend_LockIsTakenInsideTheTransactionBeforeTheInsert(t *testing.T) {
 	}
 }
 
+// ---------------------------------------------------------------------------
+// AppendTx — the caller-owned-transaction seam (QUM-1252)
+//
+// These exist because the Append assertions above CANNOT reach this path: they
+// call a.Append, so none of them enters AppendTx, and every property AppendTx's
+// doc comment promises would be unguarded without them. The engine's own suite
+// does not close the gap either — it only ever passes valid payloads, so a
+// missing validation call is invisible there.
+// ---------------------------------------------------------------------------
+
+// beginForTest opens a transaction on the recording pool and returns it along
+// with the number of calls logged so far, so an assertion can talk about what
+// AppendTx did WITHOUT the test's own "begin" polluting the sequence.
+func beginForTest(t *testing.T, pool *recordingPool) (pgx.Tx, int) {
+	t.Helper()
+	tx, err := pool.Begin(context.Background())
+	if err != nil {
+		t.Fatalf("begin: %v", err)
+	}
+	return tx, len(pool.log())
+}
+
+// TestAppendTx_ValidationHappensBeforeTheAdvisoryLock is Appendix B item 7 for
+// the AppendTx path.
+//
+// On this path there is no "outside the transaction" — the caller owns it — so
+// the half of the invariant that survives is the ORDERING: validation must still
+// run before the lock, because the lock must not be taken for work that is going
+// to be rejected. Both orders produce identical rows, so the call sequence is the
+// only observable.
+func TestAppendTx_ValidationHappensBeforeTheAdvisoryLock(t *testing.T) {
+	reg := testRegistry(t)
+	pool := newRecordingPool()
+	a := newTestAppender(t, pool, &capturingSpiller{})
+
+	tx, base := beginForTest(t, pool)
+	ev := runStartedEvent(t, reg)
+	ev.Payload = json.RawMessage(`{"agent_name":"finn"}`) // missing agent_type, session_id
+
+	if _, err := a.AppendTx(context.Background(), tx, ev); !errors.Is(err, ErrSchemaViolation) {
+		t.Fatalf("got err=%v, want ErrSchemaViolation", err)
+	}
+	if after := pool.log()[base:]; len(after) != 0 {
+		t.Errorf("a payload rejected by validation issued statements on the caller's transaction: %v — validation must precede the advisory lock", after)
+	}
+
+	// POSITIVE CONTROL: the same appender, a valid payload, does reach the lock.
+	// Without this leg an AppendTx that issued no statements at all — one that
+	// dropped its body entirely — would satisfy the assertion above.
+	pool2 := newRecordingPool()
+	a2 := newTestAppender(t, pool2, &capturingSpiller{})
+	tx2, base2 := beginForTest(t, pool2)
+	if _, err := a2.AppendTx(context.Background(), tx2, runStartedEvent(t, reg)); err != nil {
+		t.Fatalf("control: a valid AppendTx must succeed: %v", err)
+	}
+	if got := pool2.log()[base2:]; len(got) == 0 || got[0] != "advisory_lock" {
+		t.Errorf("control: a valid AppendTx must take the advisory lock first; call log after begin: %v", got)
+	}
+}
+
+// TestAppendTx_UsesTheCallersTransactionAndNeverCommits pins the two promises
+// that make AppendTx safe to compose into a larger transaction.
+//
+// It asserts the WHOLE sequence rather than membership, because the defects here
+// are extra calls, not missing ones: a stray `begin` means AppendTx opened its
+// own transaction and the caller's other statements are in a different commit,
+// and a stray `commit` means a nil return no longer implies "the rows are
+// staged" — it implies they are durable, which would silently defeat the
+// engine's savepoint-per-step checkpoint.
+func TestAppendTx_UsesTheCallersTransactionAndNeverCommits(t *testing.T) {
+	reg := testRegistry(t)
+	pool := newRecordingPool()
+	a := newTestAppender(t, pool, &capturingSpiller{})
+
+	tx, base := beginForTest(t, pool)
+	if _, err := a.AppendTx(context.Background(), tx, goalOpenedEvent(t, reg)); err != nil {
+		t.Fatalf("AppendTx: %v", err)
+	}
+
+	got := strings.Join(pool.log()[base:], ",")
+	want := "advisory_lock,insert_event,insert_open_contract,notify"
+	if got != want {
+		t.Errorf("AppendTx call sequence on the caller's transaction:\n got: %s\nwant: %s\n"+
+			"a `begin` here means AppendTx opened its own transaction; a `commit` means it committed the caller's, so a nil return would wrongly mean the event is durable",
+			got, want)
+	}
+}
+
+// TestAppendTx_DegradedModeStillWritesRatherThanSpilling pins the deliberate
+// asymmetry with Append: AppendTx has NO degraded/spill routing.
+//
+// Two reasons, both in the doc comment: a caller holding a live transaction has
+// by construction a reachable database, and spilling one event out of a
+// multi-statement transaction would record a fragment of something that never
+// happened. So a Degraded appender — the exact configuration that makes Append
+// spill — must still write here.
+func TestAppendTx_DegradedModeStillWritesRatherThanSpilling(t *testing.T) {
+	reg := testRegistry(t)
+	pool := newRecordingPool()
+	spill := &capturingSpiller{}
+	a := NewAppender(AppenderDeps{
+		Pool: pool, Registry: reg, Spill: spill,
+		Degraded: errors.New("the database is unreachable"),
+	})
+
+	// Control FIRST, so the assertion below cannot pass on an appender that is
+	// not actually in degraded mode: Append with this same appender MUST spill.
+	if _, err := a.Append(context.Background(), runStartedEvent(t, reg)); err != nil {
+		t.Fatalf("control: a spillable event with Degraded set must not error: %v", err)
+	}
+	if n := len(spill.records); n != 1 {
+		t.Fatalf("control: Append with Degraded set spilled %d event(s), want 1 — this appender is not in degraded mode, so the assertion below would be vacuous", n)
+	}
+
+	tx, base := beginForTest(t, pool)
+	if _, err := a.AppendTx(context.Background(), tx, runStartedEvent(t, reg)); err != nil {
+		t.Fatalf("AppendTx with Degraded set: %v", err)
+	}
+	if n := len(spill.records); n != 1 {
+		t.Errorf("AppendTx spilled the event (spill record count went to %d) instead of writing it to the caller's transaction", n)
+	}
+	if got := pool.log()[base:]; indexOf(got, "insert_event") < 0 {
+		t.Errorf("AppendTx with Degraded set issued no insert: %v — it must write, because the caller demonstrably has a live transaction", got)
+	}
+}
+
 // TestAppend_DoorbellIsIssuedOnTheTransactionNotThePool pins that pg_notify is
 // part of the append transaction.
 //

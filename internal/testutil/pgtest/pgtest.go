@@ -5,9 +5,7 @@ package pgtest
 import (
 	"context"
 	"fmt"
-	"os"
 	"sync"
-	"sync/atomic"
 	"testing"
 	"time"
 
@@ -17,25 +15,20 @@ import (
 	"github.com/testcontainers/testcontainers-go/wait"
 )
 
-// One Postgres container is shared across the whole test binary; each caller of
-// NewSchema gets an isolated, freshly-migrated schema (far cheaper than a
-// container per test).
+// One Postgres container is shared per test binary — so one for internal/store
+// and one for internal/engine, since each package compiles its own binary — and
+// each caller of NewSchema gets an isolated, freshly-migrated schema (far
+// cheaper than a container per test).
 //
-// The image is plain postgres:16-alpine, NOT a pgvector build: the M1a schema
-// has no vector columns (event_embeddings is M4), so requiring the extension
-// would add an image pull and a failure mode for nothing.
+// The image is plain postgres:16-alpine, NOT a pgvector build: no migrated
+// schema this harness serves has vector columns (event_embeddings is M4), so
+// requiring the extension would add an image pull and a failure mode for
+// nothing.
 var (
-	pgOnce     sync.Once
-	pgBaseDSN  string
-	pgSkip     string
-	pgSchemaNo atomic.Int64
+	pgOnce    sync.Once
+	pgBaseDSN string
+	pgSkip    string
 )
-
-// NextID returns a suffix unique within this test binary. Callers that create
-// their own cluster-scoped objects (roles, for instance, which are NOT
-// schema-scoped and so are shared by every schema on the container) use it to
-// avoid colliding with each other.
-func NextID() int64 { return pgSchemaNo.Add(1) }
 
 func startPG() {
 	ctx, cancel := context.WithTimeout(context.Background(), 90*time.Second)
@@ -72,18 +65,6 @@ func startPG() {
 	// Container is intentionally left running; process exit (and Ryuk) reaps it.
 }
 
-// SkipOrFatal implements the SPRAWL_STORE_PG_REQUIRED contract: when the caller
-// has declared that Postgres MUST be available, an unavailable container is a
-// setup failure reported in the failure class, not a skip. A skip that can
-// happen for any reason is indistinguishable from a skip that means "no Docker".
-func SkipOrFatal(t *testing.T, reason string) {
-	t.Helper()
-	if os.Getenv("SPRAWL_STORE_PG_REQUIRED") == "1" {
-		t.Fatalf("SPRAWL_STORE_PG_REQUIRED=1 but Postgres is unavailable — this is a SETUP FAILURE, not a skip: %s", reason)
-	}
-	t.Skip(reason)
-}
-
 // NewSchema provisions an isolated schema on the shared container, runs migrate
 // against it, and returns its DSN plus a pool bound to it.
 //
@@ -97,7 +78,7 @@ func NewSchema(t *testing.T, migrate func(ctx context.Context, dsn string) error
 		SkipOrFatal(t, pgSkip)
 	}
 
-	schema := fmt.Sprintf("t_%d", pgSchemaNo.Add(1))
+	schema := fmt.Sprintf("t_%d", NextID())
 	ctx := context.Background()
 
 	admin, err := pgxpool.New(ctx, pgBaseDSN)

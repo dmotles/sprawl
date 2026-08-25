@@ -142,7 +142,7 @@ func writeNote(note string) func(context.Context, pgx.Tx) error {
 }
 
 // commitTS reads the commit timestamp of the transaction that last wrote the
-// single row matched by where.
+// single row matched by fromWhere (a table expression INCLUDING its WHERE clause).
 //
 // It reads pg_xact_commit_timestamp(xmin) and NOT xmin itself. xmin equality is
 // a documented trap for this exact assertion (QUM-1252): the side-effect row
@@ -153,15 +153,15 @@ func writeNote(note string) func(context.Context, pgx.Tx) error {
 // subtransactions — and it fails in the safe direction too: xmin can match
 // falsely for two rows rewritten by one later transaction, whereas two separate
 // commits cannot share a commit timestamp.
-func commitTS(t *testing.T, pool *pgxpool.Pool, where string, args ...any) string {
+func commitTS(t *testing.T, pool *pgxpool.Pool, fromWhere string, args ...any) string {
 	t.Helper()
 	var ts *string
-	q := fmt.Sprintf(`SELECT pg_xact_commit_timestamp(xmin)::text FROM %s`, where)
+	q := fmt.Sprintf(`SELECT pg_xact_commit_timestamp(xmin)::text FROM %s`, fromWhere)
 	if err := pool.QueryRow(context.Background(), q, args...).Scan(&ts); err != nil {
-		t.Fatalf("commit timestamp for %s: %v", where, err)
+		t.Fatalf("commit timestamp for %s: %v", fromWhere, err)
 	}
 	if ts == nil {
-		t.Fatalf("commit timestamp for %s is NULL — the probe measured nothing, so any comparison against it is vacuous", where)
+		t.Fatalf("commit timestamp for %s is NULL — the probe measured nothing, so any comparison against it is vacuous", fromWhere)
 	}
 	return *ts
 }
@@ -313,12 +313,26 @@ func TestRunAttempt_FailedBodyRollsBackTheSideEffectAndStillRecordsFailure(t *te
 	}
 }
 
-// TestRunAttempt_FailedBodyCheckpointIsOneCommitToo pins that the failure path
-// keeps the atomicity property. The success path having it is not evidence: the
-// failure path takes a different branch (ROLLBACK TO SAVEPOINT rather than
-// RELEASE) before the append, and it is the path a crash is most likely to
-// interrupt.
-func TestRunAttempt_FailedBodyCheckpointIsOneCommitToo(t *testing.T) {
+// TestRunAttempt_ProbeControl_FailureCheckpointDiffersFromAnEarlierCommit is a
+// NEGATIVE CONTROL ON THE PROBE along the failure path. It is NOT an atomicity
+// assertion, and it is named that way because the earlier framing was wrong in
+// the direction that matters: a reader counted it as failure-path atomicity
+// coverage it does not provide.
+//
+// Failure-path atomicity is not assertable by comparing commit timestamps at
+// all. The body's write is rolled back, so no side-effect row survives for the
+// checkpoint to be compared against — and an implementation that committed the
+// side effect and the failure event in two separate transactions would leave
+// exactly the same rows behind. What this test does establish is that the probe
+// still discriminates on this path: a checkpoint from THIS transaction does not
+// share a timestamp with a row committed by an EARLIER one.
+//
+// The failure path's actual atomicity coverage is
+// TestRunAttempt_FailedBodyRollsBackTheSideEffectAndStillRecordsFailure (the
+// rollback and the durable failure event are observed together, which is only
+// possible inside one transaction) plus step_test.go's call-order assertion
+// pinning that no commit happens between the rollback and the append.
+func TestRunAttempt_ProbeControl_FailureCheckpointDiffersFromAnEarlierCommit(t *testing.T) {
 	f := newPGFixture(t)
 	ctx := context.Background()
 
