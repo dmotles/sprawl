@@ -128,6 +128,99 @@ func TestSeedForType_PrefersTheHighestVersion(t *testing.T) {
 	}
 }
 
+// TestPickNamed_IsExactOnBothNameAndVersion.
+//
+// Exactness is the whole point of this accessor, and it is why it cannot just
+// call pickHighest with a name filter. Its callers are the legacy-fidelity
+// goldens, which must stay pinned to legacy@1 no matter how many later versions
+// of the same card get embedded — a "highest version of this name" lookup would
+// follow a legacy@2 and turn those goldens back into the moving target the
+// name-keyed accessor exists to stop.
+//
+// Driven through fixtures rather than the embedded seeds because the tree
+// currently has exactly one version of each name, so nothing in production can
+// tell an exact lookup from a highest-of-name one.
+func TestPickNamed_IsExactOnBothNameAndVersion(t *testing.T) {
+	cards := []*Card{
+		{Name: "a", Version: 1, AgentType: "engineer"},
+		{Name: "a", Version: 7, AgentType: "engineer"},
+		{Name: "b", Version: 1, AgentType: "manager"},
+	}
+	got := pickNamed(cards, "a", 1)
+	if got == nil {
+		t.Fatalf("pickNamed found no a@1")
+	}
+	if got.Version != 1 {
+		t.Errorf("pickNamed(a, 1) returned a@%d — a highest-of-name pick would return a@7", got.Version)
+	}
+	// The version argument in the OTHER direction too. Without this leg an
+	// implementation that always returns the LOWEST version of a name whenever
+	// any match exists satisfies every other assertion here.
+	if got := pickNamed(cards, "a", 7); got == nil || got.Version != 7 {
+		t.Errorf("pickNamed(a, 7) returned %v, want a@7", got)
+	}
+	// Both halves of "exact", because a lookup that ignored the version and one
+	// that ignored the name each satisfy the assertion above.
+	if got := pickNamed(cards, "a", 2); got != nil {
+		t.Errorf("pickNamed(a, 2) invented %s@%d for a version that is not embedded", got.Name, got.Version)
+	}
+	if got := pickNamed(cards, "c", 1); got != nil {
+		t.Errorf("pickNamed(c, 1) returned %s@%d for a name that is not embedded", got.Name, got.Version)
+	}
+}
+
+// legacyCards is the table this file's legacy pinning asserts against.
+//
+// Deliberately NOT wantSeeds, which is keyed by agent type and pins whatever
+// SeedForType RESOLVES to — so when the slim v2 cards land, wantSeeds becomes
+// {"slim-engineer", 2, …} by design. A legacy pin that read wantSeeds would
+// follow that edit, silently start asserting SeedByName("slim-engineer", 2), and
+// go green while measuring the exact opposite of its name. A local table is the
+// only version a slim landing cannot reach.
+var legacyCards = map[string]string{
+	"engineer":   "legacy-engineer",
+	"manager":    "legacy-manager",
+	"researcher": "legacy-researcher",
+	"qa":         "legacy-qa",
+}
+
+// TestSeedByName_ServesEveryLegacyCardUnderItsOwnName is the accessor the
+// legacy-fidelity tests re-point onto, asserted against the real embedded set.
+//
+// The AgentType leg is what makes this more than a name echo: an accessor that
+// fabricated &Card{Name: name, Version: version} would satisfy a name comparison
+// against its own argument.
+func TestSeedByName_ServesEveryLegacyCardUnderItsOwnName(t *testing.T) {
+	for agentType, name := range legacyCards {
+		c, err := SeedByName(name, 1)
+		if err != nil {
+			t.Errorf("SeedByName(%q, 1): %v", name, err)
+			continue
+		}
+		if c.Name != name || c.Version != 1 {
+			t.Errorf("SeedByName(%q, 1) returned %s@%d", name, c.Name, c.Version)
+		}
+		if c.AgentType != agentType {
+			t.Errorf("%s: SeedByName(%q) returned a card whose agent_type is %q", agentType, name, c.AgentType)
+		}
+		if c.Body == "" {
+			t.Errorf("%s: SeedByName(%q) returned a card with an empty body — the goldens would compare against the render template alone", agentType, name)
+		}
+	}
+}
+
+// TestSeedByName_RefusesWhatIsNotEmbedded. An accessor that fell back to
+// "something close" would let a golden silently re-point at a different card,
+// which is precisely the failure the name pinning prevents.
+func TestSeedByName_RefusesWhatIsNotEmbedded(t *testing.T) {
+	if c, err := SeedByName("legacy-engineer", 99); err == nil {
+		t.Errorf("SeedByName returned %s@%d for a version that is not embedded", c.Name, c.Version)
+	}
+	if c, err := SeedByName("no-such-card", 1); err == nil {
+		t.Errorf("SeedByName returned %s@%d for a name that is not embedded", c.Name, c.Version)
+	}
+}
+
 // TestSeeds_MetadataMatchesTheTable pins the card name, version and effort each
 // agent type resolves to. It is the routing half of the metadata claim: a
 // misrouted SeedForType still returns a real, well-formed card, so every

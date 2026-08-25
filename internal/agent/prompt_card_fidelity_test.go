@@ -21,6 +21,34 @@ import (
 // Comparing a card to the builder it was extracted from would go green on a
 // tree where both had drifted together.
 
+// legacySeed resolves the legacy card for a role BY NAME AND EXACT VERSION.
+//
+// Deliberately not card.SeedForType, which returns the highest version for the
+// type and therefore starts returning the slim v2 card the moment one is
+// embedded. Every test in this file compares against a golden produced by the
+// Go constant graph, so a resolver that follows the current definition would
+// quietly re-point these goldens at a card they were never generated from: the
+// fidelity tests would fail for a reason that has nothing to do with extraction
+// fidelity, and the mutation control below would go green while measuring
+// nothing (a mutated SLIM card trivially differs from a LEGACY golden).
+//
+// The name assertion is not redundant with SeedByName's own exactness. It is
+// what stops this helper being re-pointed back at SeedForType by someone fixing
+// a red in a later slice — the failure that edit causes would otherwise look
+// like a golden problem rather than a resolver problem.
+func legacySeed(t *testing.T, agentType string) *card.Card {
+	t.Helper()
+	name := "legacy-" + agentType
+	c, err := card.SeedByName(name, 1)
+	if err != nil {
+		t.Fatalf("no embedded card %s@1: %v", name, err)
+	}
+	if c.Name != name || c.Version != 1 {
+		t.Fatalf("the goldens must be compared against %s@1, but got %s@%d", name, c.Name, c.Version)
+	}
+	return c
+}
+
 func cardFidelityInput(agentName, parentName, branchName, family string) card.Input {
 	env := testEnvConfig()
 	return card.Input{
@@ -74,10 +102,7 @@ func firstDiff(a, b string) int {
 func TestLegacyCards_RenderByteIdenticalToGoldens(t *testing.T) {
 	for _, tc := range legacyCardFidelityCases() {
 		t.Run(tc.agentType, func(t *testing.T) {
-			c, err := card.SeedForType(tc.agentType)
-			if err != nil {
-				t.Fatalf("no embedded card for %q: %v", tc.agentType, err)
-			}
+			c := legacySeed(t, tc.agentType)
 			got, err := c.Render(tc.in)
 			if err != nil {
 				t.Fatalf("rendering %s@%d: %v", c.Name, c.Version, err)
@@ -118,9 +143,20 @@ func variantRoles(t *testing.T) []string {
 	if len(seeds) == 0 {
 		t.Fatal("no embedded seeds — this test would assert nothing")
 	}
+	// Filtered to the legacy cards, because this list feeds goldens that only
+	// legacy cards have. Deriving it from every seed would, once the slim v2
+	// cards are embedded, yield each agent type twice and then demand
+	// variant_<role>_<env>.golden files for the slim cards — which do not exist
+	// and must not be generated, since the only thing left that could generate
+	// them is the pipeline they would constrain.
 	roles := make([]string, 0, len(seeds))
 	for _, c := range seeds {
-		roles = append(roles, c.AgentType)
+		if strings.HasPrefix(c.Name, "legacy-") {
+			roles = append(roles, c.AgentType)
+		}
+	}
+	if len(roles) == 0 {
+		t.Fatal("no legacy seeds — this test would assert nothing")
 	}
 	return roles
 }
@@ -150,10 +186,7 @@ func variantGolden(role, envName string) string {
 // the card pipeline they constrain, which would make this test a tautology.
 func TestLegacyCards_VariantArmsMatchTheGoldens(t *testing.T) {
 	for _, role := range variantRoles(t) {
-		c, err := card.SeedForType(role)
-		if err != nil {
-			t.Fatalf("no embedded card for %q: %v", role, err)
-		}
+		c := legacySeed(t, role)
 		for envName, env := range variantEnvs() {
 			got, err := c.Render(variantInput(env))
 			if err != nil {
@@ -193,10 +226,7 @@ func TestLegacyCards_MutatedSeedBreaksFidelity(t *testing.T) {
 	)
 	for _, tc := range legacyCardFidelityCases() {
 		t.Run(tc.agentType, func(t *testing.T) {
-			c, err := card.SeedForType(tc.agentType)
-			if err != nil {
-				t.Fatalf("no embedded card for %q: %v", tc.agentType, err)
-			}
+			c := legacySeed(t, tc.agentType)
 			if !strings.Contains(c.Body, before) {
 				t.Fatalf("the mutation target %q is not in the %s card body — this control mutates nothing and proves nothing", before, tc.agentType)
 			}

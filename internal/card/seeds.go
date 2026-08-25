@@ -75,6 +75,40 @@ func SeedForType(agentType string) (*Card, error) {
 	return best, nil
 }
 
+// SeedByName returns one exact embedded card, by name and version.
+//
+// This is the accessor the legacy-fidelity goldens resolve through, and it is
+// exact on BOTH axes deliberately: those goldens must stay pinned to
+// legacy-<role>@1 however many later versions of the same card get embedded, so
+// a "highest version of this name" lookup would let a legacy@2 move the target
+// the pin exists to hold still. Use SeedForType for anything that should track
+// the current definition of a role; use this only to name a specific card.
+func SeedByName(name string, version int) (*Card, error) {
+	cards, err := Seeds()
+	if err != nil {
+		return nil, err
+	}
+	c := pickNamed(cards, name, version)
+	if c == nil {
+		return nil, fmt.Errorf("card: no embedded card %s@%d", name, version)
+	}
+	return c, nil
+}
+
+// pickNamed returns the card with exactly this name and version, or nil.
+//
+// No fallback to a nearby version: returning "something close" would let a
+// golden silently re-point at a different card, which is the whole failure
+// SeedByName's exactness prevents.
+func pickNamed(cards []*Card, name string, version int) *Card {
+	for _, c := range cards {
+		if c.Name == name && c.Version == version {
+			return c
+		}
+	}
+	return nil
+}
+
 // pickHighest returns the highest-version card for an agent type, or nil.
 //
 // Highest rather than first: when the slim v2 cards land alongside the legacy
