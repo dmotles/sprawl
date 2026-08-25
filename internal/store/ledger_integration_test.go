@@ -11,6 +11,8 @@ import (
 	"testing"
 
 	"github.com/google/uuid"
+
+	"github.com/dmotles/sprawl/internal/testutil/pgtest"
 )
 
 // Ledger.Open against a real database: project registration and the
@@ -161,7 +163,7 @@ func TestOpen_WorksAsTheLeastPrivilegeAppRole(t *testing.T) {
 
 	// A login role that inherits the app role, which is the documented shape.
 	// Cluster-scoped like the app role itself, so the name is unique per test.
-	loginUser := fmt.Sprintf("appuser_%d", pgSchemaNo.Add(1))
+	loginUser := fmt.Sprintf("appuser_%d", pgtest.NextID())
 	if _, err := pool.Exec(ctx,
 		fmt.Sprintf(`CREATE ROLE %s LOGIN PASSWORD 'apppw'`, loginUser)); err != nil {
 		t.Fatalf("create login role: %v", err)

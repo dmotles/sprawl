@@ -28,10 +28,18 @@
 # Needs only the Go toolchain and Docker — no claude, tmux, or jq.
 
 # QUM-1029: the number of assertions a COMPLETE, PASSING run of this row makes.
-# One symmetric gate on the go test exit status. The Go suite's own assertions
-# are not counted here: this row cannot see them, and a floor must never be
-# derived from a number the harness did not observe.
-MIN_ASSERTIONS=1
+# One symmetric gate per store_pg package. The Go suites' own assertions are not
+# counted here: this row cannot see them, and a floor must never be derived from
+# a number the harness did not observe.
+#
+# The gate is per-package rather than one `go test` over both, so a package that
+# vanishes from the loop drops the count below the floor instead of being
+# absorbed by the other one's pass. Bump this when adding a package below.
+MIN_ASSERTIONS=2
+
+# Packages carrying store_pg-tagged suites. Each runs as its own test binary and
+# therefore stands up its own container.
+STORE_PG_PACKAGES=(internal/store internal/engine)
 
 test_metadata() {
     echo ""
@@ -51,10 +59,12 @@ test_run() {
 
     # SPRAWL_STORE_PG_REQUIRED=1: any in-Go skip is now a failure, so this row
     # can never report a pass over a suite that skipped itself.
-    if SPRAWL_STORE_PG_REQUIRED=1 go test -tags store_pg -count=1 -v "$REPO_ROOT/internal/store/"; then
-        pass "store_pg integration suite (Appendix A schema, append-only grants, appender txn)"
-    else
-        fail "store_pg integration suite failed"
-    fi
+    for pkg in "${STORE_PG_PACKAGES[@]}"; do
+        if SPRAWL_STORE_PG_REQUIRED=1 go test -tags store_pg -count=1 -v "$REPO_ROOT/$pkg/"; then
+            pass "store_pg integration suite: $pkg"
+        else
+            fail "store_pg integration suite failed: $pkg"
+        fi
+    done
     e2e_print_results
 }

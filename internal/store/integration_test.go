@@ -24,109 +24,25 @@ import (
 	"context"
 	"errors"
 	"fmt"
-	"os"
 	"sort"
 	"strings"
-	"sync"
-	"sync/atomic"
 	"testing"
-	"time"
 
 	"github.com/jackc/pgx/v5/pgconn"
 	"github.com/jackc/pgx/v5/pgxpool"
-	"github.com/testcontainers/testcontainers-go"
-	tcpostgres "github.com/testcontainers/testcontainers-go/modules/postgres"
-	"github.com/testcontainers/testcontainers-go/wait"
+
+	"github.com/dmotles/sprawl/internal/testutil/pgtest"
 )
-
-// One Postgres container is shared across the whole suite; each subtest gets an
-// isolated, freshly-migrated schema (far cheaper than a container per test).
-// Pattern lifted from internal/hub/store/pg_test.go.
-//
-// The image is plain postgres:16-alpine, NOT a pgvector build: the M1a schema
-// has no vector columns (event_embeddings is M4), so requiring the extension
-// would add an image pull and a failure mode for nothing.
-var (
-	pgOnce     sync.Once
-	pgBaseDSN  string
-	pgSkip     string
-	pgSchemaNo atomic.Int64
-)
-
-func startPG() {
-	ctx, cancel := context.WithTimeout(context.Background(), 90*time.Second)
-	defer cancel()
-
-	ctr, err := tcpostgres.Run(ctx, "postgres:16-alpine",
-		tcpostgres.WithDatabase("sprawl"),
-		tcpostgres.WithUsername("sprawl"),
-		tcpostgres.WithPassword("sprawl"),
-		testcontainers.WithWaitStrategy(
-			wait.ForLog("database system is ready to accept connections").
-				WithOccurrence(2).
-				WithStartupTimeout(60*time.Second)),
-	)
-	if err != nil {
-		pgSkip = "postgres testcontainer did not start: " + err.Error()
-		return
-	}
-	dsn, err := ctr.ConnectionString(ctx, "sslmode=disable")
-	if err != nil {
-		pgSkip = "postgres connection string: " + err.Error()
-		return
-	}
-	pgBaseDSN = dsn
-	// Container is intentionally left running; process exit (and Ryuk) reaps it.
-}
-
-// skipOrFatal implements the SPRAWL_STORE_PG_REQUIRED contract: when the caller
-// has declared that Postgres MUST be available, an unavailable container is a
-// setup failure reported in the failure class, not a skip. A skip that can
-// happen for any reason is indistinguishable from a skip that means "no Docker".
-func skipOrFatal(t *testing.T, reason string) {
-	t.Helper()
-	if os.Getenv("SPRAWL_STORE_PG_REQUIRED") == "1" {
-		t.Fatalf("SPRAWL_STORE_PG_REQUIRED=1 but Postgres is unavailable — this is a SETUP FAILURE, not a skip: %s", reason)
-	}
-	t.Skip(reason)
-}
 
 // newTestSchema provisions an isolated, migrated schema on the shared container
 // and returns its DSN plus a pool bound to it.
+//
+// The container and schema plumbing lives in internal/testutil/pgtest so that
+// internal/engine can share one container-management implementation with this
+// suite rather than growing a second, drifting copy.
 func newTestSchema(t *testing.T) (string, *pgxpool.Pool) {
 	t.Helper()
-	pgOnce.Do(startPG)
-	if pgSkip != "" {
-		skipOrFatal(t, pgSkip)
-	}
-
-	schema := fmt.Sprintf("t_%d", pgSchemaNo.Add(1))
-	ctx := context.Background()
-
-	admin, err := pgxpool.New(ctx, pgBaseDSN)
-	if err != nil {
-		t.Fatalf("admin pool: %v", err)
-	}
-	if _, err := admin.Exec(ctx, "CREATE SCHEMA "+schema); err != nil {
-		admin.Close()
-		t.Fatalf("create schema %s: %v", schema, err)
-	}
-	admin.Close()
-
-	// pgx treats unknown DSN keywords as server runtime parameters, so
-	// appending search_path pins every connection (pool + goose's stdlib
-	// handle) to the isolated schema.
-	dsn := pgBaseDSN + "&search_path=" + schema
-
-	if err := Migrate(ctx, dsn); err != nil {
-		t.Fatalf("Migrate: %v", err)
-	}
-	pool, err := pgxpool.New(ctx, dsn)
-	if err != nil {
-		t.Fatalf("pool: %v", err)
-	}
-	t.Cleanup(pool.Close)
-	return dsn, pool
+	return pgtest.NewSchema(t, Migrate)
 }
 
 // pgCode extracts the SQLSTATE from a pgx error, or "" if there is none.

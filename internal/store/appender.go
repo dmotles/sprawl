@@ -29,7 +29,10 @@ import (
 //
 //   - Validation is OUTSIDE the transaction because a payload that is going to
 //     be rejected must not hold a lock while being rejected. Both orders write
-//     identical rows, so only a call-order assertion can tell them apart.
+//     identical rows, so only a call-order assertion can tell them apart. On the
+//     AppendTx path there is no outside — the caller owns the transaction — so
+//     the invariant that survives is the load-bearing half: validation still runs
+//     BEFORE the advisory lock.
 //   - The lock is pg_advisory_xact_lock and never pg_advisory_lock. A session
 //     lock outlives an abandoned transaction and wedges every future append for
 //     that workflow instance until the connection dies — no timeout, no local
@@ -152,39 +155,13 @@ func NewAppender(d AppenderDeps) *Appender {
 // operation — "agents never brick on the store" is implemented here, not
 // documented elsewhere.
 func (a *Appender) Append(ctx context.Context, ev Event) (int64, error) {
-	// 1. Resolve the PINNED schema. Never by name, never "latest".
-	schema, ok := a.registry.ByID(ev.SchemaID)
-	if !ok {
-		// Deliberately not spilled: with no schema there is no way to know
-		// whether this type is spillable, and guessing either way is worse than
-		// telling the caller.
-		return 0, fmt.Errorf("store: unknown pinned schema_id %s: the emitter is pinned to a schema this build does not carry", ev.SchemaID)
-	}
-
-	// 2. Validate BEFORE the transaction and before the lock (Appendix B item 7).
-	if err := Validate(schema.JSONSchema, ev.Payload); err != nil {
-		// A violation is an emitter bug, not an outage: it will be exactly as
-		// invalid on replay, so spilling it would trade a visible bug for a
-		// dead letter nobody reads.
-		return 0, fmt.Errorf("store: %s@%d: %w", schema.Name, schema.Version, err)
-	}
-
-	// 3. Shape checks that depend on the schema's contract role.
-	if schema.Closes != "" && ev.ClosesEventID == nil {
-		return 0, fmt.Errorf("store: %s@%d closes %q but the append carries no closes_event_id, so the contract would stay open forever",
-			schema.Name, schema.Version, schema.Closes)
-	}
-	if schema.Closes == "" && ev.ClosesEventID != nil {
-		return 0, fmt.Errorf("store: %s@%d does not close anything but the append carries a closes_event_id",
-			schema.Name, schema.Version)
-	}
-
-	if ev.ID == uuid.Nil {
-		ev.ID = a.newUUID()
+	schema, ev, err := a.prepare(ev)
+	if err != nil {
+		return 0, err
 	}
 
 	// Known-degraded: skip the transaction entirely (see AppenderDeps.Degraded).
-	// Validation above has already run, so degraded mode is not a hole in it.
+	// prepare has already validated, so degraded mode is not a hole in it.
 	if a.degraded != nil {
 		return 0, a.degradedResult(ctx, schema, ev, a.degraded)
 	}
@@ -217,7 +194,84 @@ func (a *Appender) degradedResult(ctx context.Context, schema *EventTypeSchema, 
 	return a.spillEvent(ctx, schema, ev, cause)
 }
 
-// appendTx is the single transaction.
+// prepare resolves the pinned schema, validates the payload against it, applies
+// the contract-role shape checks and mints an event id if the caller left one
+// unset.
+//
+// It is factored out of Append rather than inlined because AppendTx must run
+// exactly the same checks in exactly the same order, and BEFORE the advisory
+// lock. Both callers therefore share one implementation: a second copy would be
+// the kind of drift nothing observable catches, since a validation gap only
+// shows up as an invalid row that was accepted.
+func (a *Appender) prepare(ev Event) (*EventTypeSchema, Event, error) {
+	// 1. Resolve the PINNED schema. Never by name, never "latest".
+	schema, ok := a.registry.ByID(ev.SchemaID)
+	if !ok {
+		// Deliberately not spilled: with no schema there is no way to know
+		// whether this type is spillable, and guessing either way is worse than
+		// telling the caller.
+		return nil, ev, fmt.Errorf("store: unknown pinned schema_id %s: the emitter is pinned to a schema this build does not carry", ev.SchemaID)
+	}
+
+	// 2. Validate BEFORE the transaction and before the lock (Appendix B item 7).
+	if err := Validate(schema.JSONSchema, ev.Payload); err != nil {
+		// A violation is an emitter bug, not an outage: it will be exactly as
+		// invalid on replay, so spilling it would trade a visible bug for a
+		// dead letter nobody reads.
+		return nil, ev, fmt.Errorf("store: %s@%d: %w", schema.Name, schema.Version, err)
+	}
+
+	// 3. Shape checks that depend on the schema's contract role.
+	if schema.Closes != "" && ev.ClosesEventID == nil {
+		return nil, ev, fmt.Errorf("store: %s@%d closes %q but the append carries no closes_event_id, so the contract would stay open forever",
+			schema.Name, schema.Version, schema.Closes)
+	}
+	if schema.Closes == "" && ev.ClosesEventID != nil {
+		return nil, ev, fmt.Errorf("store: %s@%d does not close anything but the append carries a closes_event_id",
+			schema.Name, schema.Version)
+	}
+
+	if ev.ID == uuid.Nil {
+		ev.ID = a.newUUID()
+	}
+	return schema, ev, nil
+}
+
+// AppendTx appends ev inside a transaction the CALLER owns, and does not commit.
+//
+// This is the seam the workflow engine's savepoint-per-step checkpoint is built
+// on: it is the only way to make a step's side effect and the event recording
+// that step's outcome ONE commit in our Postgres. Without it an engine has to
+// append after committing its side effect, and a crash in that window leaves a
+// performed step with no record of it — which is exactly the property the DBOS
+// spike's criterion (a) was gating on (QUM-1252).
+//
+// Three differences from Append, each of them deliberate:
+//
+//   - The caller owns BEGIN, COMMIT and ROLLBACK. AppendTx never commits, so a
+//     returned nil means "the rows are staged", not "the event is durable". The
+//     seq it returns is only real if the caller's transaction commits.
+//   - There is NO degraded/spill routing. A caller holding a live transaction
+//     has, by construction, a reachable database; and spilling one event of a
+//     multi-statement transaction would record a fragment of something that
+//     never happened.
+//   - Validation happens INSIDE the caller's transaction, because there is no
+//     longer an outside. The property Appendix B item 7 actually protects is
+//     preserved: validation still runs BEFORE the advisory lock, so a payload
+//     that is going to be rejected never holds the lock while being rejected.
+//
+// A failed AppendTx leaves the caller's transaction in an aborted state, as any
+// failed statement does. Callers that need to continue must run it inside a
+// savepoint — which is what engine.RunAttempt does.
+func (a *Appender) AppendTx(ctx context.Context, tx pgx.Tx, ev Event) (int64, error) {
+	schema, ev, err := a.prepare(ev)
+	if err != nil {
+		return 0, err
+	}
+	return a.writeWithin(ctx, tx, schema, ev)
+}
+
+// appendTx is the single transaction Append owns.
 func (a *Appender) appendTx(ctx context.Context, schema *EventTypeSchema, ev Event) (int64, error) {
 	tx, err := a.pool.Begin(ctx)
 	if err != nil {
@@ -226,6 +280,21 @@ func (a *Appender) appendTx(ctx context.Context, schema *EventTypeSchema, ev Eve
 	// Rollback is a no-op after a successful commit.
 	defer func() { _ = tx.Rollback(ctx) }()
 
+	seq, err := a.writeWithin(ctx, tx, schema, ev)
+	if err != nil {
+		return 0, err
+	}
+
+	if err := tx.Commit(ctx); err != nil {
+		return 0, fmt.Errorf("store: commit: %w", err)
+	}
+	return seq, nil
+}
+
+// writeWithin is every statement of an append, in the binding order, against a
+// transaction it does not own. Shared by Append and AppendTx so the two can
+// never diverge on order.
+func (a *Appender) writeWithin(ctx context.Context, tx pgx.Tx, schema *EventTypeSchema, ev Event) (int64, error) {
 	// Serialise appends per workflow instance. hashtextextended gives a stable
 	// 64-bit key from the uuid; xact-scoped so it is released by COMMIT or
 	// ROLLBACK and cannot be abandoned.
@@ -278,9 +347,6 @@ func (a *Appender) appendTx(ctx context.Context, schema *EventTypeSchema, ev Eve
 		return 0, fmt.Errorf("store: notify: %w", err)
 	}
 
-	if err := tx.Commit(ctx); err != nil {
-		return 0, fmt.Errorf("store: commit: %w", err)
-	}
 	return seq, nil
 }
 
