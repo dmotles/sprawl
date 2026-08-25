@@ -405,9 +405,7 @@ func NewReal(cfg Config) (*Real, error) {
 		mergeSem: make(chan struct{}, 1),
 	}
 	starter := newInProcessUnifiedStarter(cfg.ChildInitSpec, cfg.ChildAllowedTools)
-	if s, ok := starter.(*inProcessUnifiedStarter); ok {
-		s.faultEmitter = r.dispatchFault
-	}
+	starter.faultEmitter = r.dispatchFault
 	r.runtimeStarter = starter
 
 	// QUM-899: blurb generator seams. NewCLIInvoker constructs lazily (no
@@ -548,9 +546,7 @@ func (r *Real) SetChildMCPConfig(initSpec backendpkg.InitSpec, allowedTools []st
 		initSpec.ToolBridge = r.mcpBridge
 	}
 	starter := newInProcessUnifiedStarter(initSpec, allowedTools)
-	if s, ok := starter.(*inProcessUnifiedStarter); ok {
-		s.faultEmitter = r.dispatchFault
-	}
+	starter.faultEmitter = r.dispatchFault
 	r.runtimeStarter = starter
 }
 

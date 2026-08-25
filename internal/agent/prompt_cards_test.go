@@ -39,3 +39,54 @@ func TestMustRenderSeedPrompt_RendersAKnownAgentType(t *testing.T) {
 		t.Errorf("the rendered prompt still carries a template token: %q", got[strings.Index(got, "{{"):min(strings.Index(got, "{{")+40, len(got))])
 	}
 }
+
+// TestBuildCardPrompt_SharesTheSeamWithBuildPrompt is the continuity check that
+// keeps this package's whole prose/golden/scanner corpus load-bearing.
+//
+// The launch path (internal/supervisor.buildRoleSystemPrompt) calls
+// BuildCardPrompt, not Build*Prompt. If BuildCardPrompt rendered through its own
+// helper, every scanner and golden here — including
+// TestPromptScanners_MutatedSeedReachesTheScanners — would measure a function
+// nothing launches, and would stay green while doing it. This asserts the two
+// entry points agree byte for byte on the no-card path AND that both go through
+// the substitutable renderCard seam.
+func TestBuildCardPrompt_SharesTheSeamWithBuildPrompt(t *testing.T) {
+	prev := renderCard
+	var calls int
+	renderCard = func(c *card.Card, in card.Input) (string, error) {
+		calls++
+		return prev(c, in)
+	}
+	t.Cleanup(func() { renderCard = prev })
+
+	env := DefaultEnvConfig()
+	env.WorkDir = "/tmp/wt"
+
+	for _, tc := range []struct {
+		agentType string
+		family    string
+		direct    func() string
+	}{
+		{"engineer", "", func() string { return BuildEngineerPrompt("a", "p", "b", env) }},
+		{"researcher", "", func() string { return BuildResearcherPrompt("a", "p", "b", env) }},
+		{"qa", "", func() string { return BuildQAPrompt("a", "p", "b", env) }},
+		{"manager", "fam", func() string { return BuildManagerPrompt("a", "p", "b", "fam", env) }},
+	} {
+		t.Run(tc.agentType, func(t *testing.T) {
+			before := calls
+			want := tc.direct()
+			got := BuildCardPrompt(nil, tc.agentType, "a", "p", "b", tc.family, env)
+			if got != want {
+				t.Errorf("BuildCardPrompt disagrees with Build*Prompt for %q", tc.agentType)
+			}
+			// Two renders through the ONE seam. A bypass shows up here even when
+			// the strings happen to match.
+			if calls-before != 2 {
+				t.Errorf("renderCard invoked %d times, want 2 — an entry point bypasses the seam", calls-before)
+			}
+			if want == "" {
+				t.Errorf("rendered an EMPTY prompt for %q", tc.agentType)
+			}
+		})
+	}
+}

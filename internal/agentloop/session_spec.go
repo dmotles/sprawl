@@ -8,13 +8,20 @@ import (
 	"time"
 
 	backend "github.com/dmotles/sprawl/internal/backend"
+	"github.com/dmotles/sprawl/internal/card"
 	"github.com/dmotles/sprawl/internal/protocol"
 	"github.com/dmotles/sprawl/internal/rootinit"
 	"github.com/dmotles/sprawl/internal/state"
 )
 
 // BuildAgentSessionSpec builds the shared backend session spec for a child agent.
-func BuildAgentSessionSpec(agentState *state.AgentState, promptPath, sprawlRoot string, stderr io.Writer) backend.SessionSpec {
+//
+// c is the agent card the launch resolved (QUM-1251, M2) and may be nil, which
+// means "no card — use the per-type defaults". The card is passed IN rather than
+// resolved here so the same pointer governs both the model and the system
+// prompt: resolving twice would let a spawn render one card's prompt while
+// launching another card's model, and nothing about the result would say so.
+func BuildAgentSessionSpec(agentState *state.AgentState, promptPath, sprawlRoot string, stderr io.Writer, c *card.Card) backend.SessionSpec {
 	additionalEnv := map[string]string{}
 	if agentState.TreePath != "" {
 		additionalEnv["SPRAWL_TREE_PATH"] = agentState.TreePath
@@ -28,9 +35,31 @@ func BuildAgentSessionSpec(agentState *state.AgentState, promptPath, sprawlRoot 
 	if testMode := os.Getenv("SPRAWL_TEST_MODE"); testMode != "" {
 		additionalEnv["SPRAWL_TEST_MODE"] = testMode
 	}
-	// QUM-851: an explicit per-agent Model (validated at spawn time) overrides
-	// the per-type default. Empty means "use the type default".
+	// Model precedence, widest default first:
+	//
+	//  1. rootinit.ModelForAgentType — the compiled-in per-type default, and
+	//     still the floor when there is no card (the `sprawl def` path can be
+	//     off, and a resolver failure must not change which model launches).
+	//  2. the CARD (QUM-1251) — the published definition of the agent type.
+	//     This is what AC2 is about: change a card's model, and the model the
+	//     child launches with changes, with no binary rebuild.
+	//  3. AgentState.Model — an explicit per-agent override, validated at spawn
+	//     time. QUM-851, and it stays the strongest: an operator who named a
+	//     model for one agent is not overruled by a card edit.
+	//
+	// Effort follows the card the same way, defaulting to "low" (QUM-1276: every
+	// child launches at low). After this change that invariant is a property of
+	// the SEEDS rather than of Go — see TestSeeds_AgreeWithTheCompiledInDefaults.
 	model := rootinit.ModelForAgentType(agentState.Type)
+	effort := "low"
+	if c != nil {
+		if c.Model != "" {
+			model = c.Model
+		}
+		if c.Effort != "" {
+			effort = c.Effort
+		}
+	}
 	if agentState.Model != "" {
 		model = agentState.Model
 	}
@@ -41,7 +70,7 @@ func BuildAgentSessionSpec(agentState *state.AgentState, promptPath, sprawlRoot 
 		SessionID:       agentState.SessionID,
 		PromptFile:      promptPath,
 		Model:           model,
-		Effort:          "low",
+		Effort:          effort,
 		PermissionMode:  "bypassPermissions",
 		AdditionalEnv:   additionalEnv,
 		Stderr:          stderr,

@@ -57,9 +57,33 @@ var renderCard = func(c *card.Card, in card.Input) (string, error) {
 // parsed and pinned to the goldens by tests in this package — so a panic here
 // means the binary was built from seeds that never passed those tests.
 func mustRenderSeedPrompt(agentType string, in card.Input) string {
-	c, err := card.SeedForType(agentType)
-	if err != nil {
-		panic(fmt.Sprintf("agent: no embedded card for agent type %q: %v", agentType, err))
+	return mustRenderCard(nil, agentType, in)
+}
+
+// BuildCardPrompt renders a RESOLVED card into a system prompt, falling back to
+// the embedded seed for agentType when c is nil.
+//
+// This is the launch path's entry point (QUM-1251). It shares mustRenderCard —
+// and therefore the renderCard choke point — with Build*Prompt on purpose: if
+// the launch path rendered cards through its own helper, this package's prose
+// tests, goldens and safety scanners would all measure a function nothing
+// launches, and TestPromptScanners_MutatedSeedReachesTheScanners would stop
+// bounding production while staying green.
+//
+// The scanners bound the EMBEDDED SEEDS. A card published to the database is not
+// covered by them; that is what `sprawl def publish`'s card-lint is for.
+func BuildCardPrompt(c *card.Card, agentType, agentName, parentName, branchName, family string, env EnvConfig) string {
+	return mustRenderCard(c, agentType, cardInput(agentName, parentName, branchName, family, env))
+}
+
+// mustRenderCard renders c, or the seed for agentType when c is nil.
+func mustRenderCard(c *card.Card, agentType string, in card.Input) string {
+	if c == nil {
+		seed, err := card.SeedForType(agentType)
+		if err != nil {
+			panic(fmt.Sprintf("agent: no embedded card for agent type %q: %v", agentType, err))
+		}
+		c = seed
 	}
 	prompt, err := renderCard(c, in)
 	if err != nil {

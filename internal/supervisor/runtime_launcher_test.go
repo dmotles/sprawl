@@ -16,8 +16,11 @@ import (
 
 	"github.com/dmotles/sprawl/internal/agentloop"
 	backend "github.com/dmotles/sprawl/internal/backend"
+	"github.com/dmotles/sprawl/internal/card"
+	"github.com/dmotles/sprawl/internal/cardresolve"
 	"github.com/dmotles/sprawl/internal/inboxprompt"
 	"github.com/dmotles/sprawl/internal/protocol"
+	"github.com/dmotles/sprawl/internal/rootinit"
 	runtimepkg "github.com/dmotles/sprawl/internal/runtime"
 	"github.com/dmotles/sprawl/internal/state"
 )
@@ -1869,14 +1872,14 @@ func TestBuildAgentSystemPrompt_AppendsOperatorInstructions(t *testing.T) {
 		Type:   "engineer",
 		Parent: "mgr",
 		Branch: "feat/x",
-	})
+	}, nil)
 	appended := buildAgentSystemPrompt(&state.AgentState{
 		Name:               "eng",
 		Type:               "engineer",
 		Parent:             "mgr",
 		Branch:             "feat/x",
 		SystemPromptAppend: "You are Cerberus. Guard the merge queue.",
-	})
+	}, nil)
 
 	if !strings.Contains(appended, base) {
 		t.Errorf("appended prompt must contain the full base role prompt")
@@ -1904,7 +1907,7 @@ func TestBuildAgentSystemPrompt_NoAppendWhenEmpty(t *testing.T) {
 		Type:   "engineer",
 		Parent: "mgr",
 		Branch: "feat/x",
-	})
+	}, nil)
 	if strings.Contains(got, "## Operator Instructions") {
 		t.Errorf("empty SystemPromptAppend must not add an Operator Instructions header:\n%s", got)
 	}
@@ -1959,4 +1962,215 @@ func TestUnifiedHandleStopWaitTimeout_IsOverridableSeam(t *testing.T) {
 func shortenStopWaitTimeout(t *testing.T, uh *unifiedHandle) {
 	t.Helper()
 	uh.stopWaitTimeout.set(50 * time.Millisecond)
+}
+
+// --- QUM-1251 (M2): the launch path resolves an agent card ------------------
+
+// publishedTestCard is a card that differs from every embedded seed in every
+// field a launch consumes, so an assertion cannot pass by accidentally
+// measuring the seed.
+func publishedTestCard(agentType string) *card.Card {
+	return &card.Card{
+		Name:      "slim-" + agentType,
+		Version:   7,
+		AgentType: agentType,
+		Model:     "haiku",
+		Effort:    "high",
+		Body:      "PUBLISHED-CARD-BODY for {{AGENT_NAME}} of {{PARENT_NAME}}",
+		Opts:      card.RenderOpts{AppendEnvContext: true, SubagentBanner: true, SandboxWarning: true},
+	}
+}
+
+// stubCardFetcher records whether the launch path actually asked it.
+//
+// The recording is the anti-vacuity half: without it, every test below is
+// satisfied by a launcher that ignores cardFetcherFn entirely and renders the
+// seed, because in production a seed and its published card are identical.
+type stubCardFetcher struct {
+	mu    sync.Mutex
+	asked []string
+	card  *card.Card
+	err   error
+}
+
+func (f *stubCardFetcher) CardForType(_ context.Context, agentType string) (*card.Card, error) {
+	f.mu.Lock()
+	f.asked = append(f.asked, agentType)
+	f.mu.Unlock()
+	return f.card, f.err
+}
+
+func (f *stubCardFetcher) askedFor() []string {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	return append([]string(nil), f.asked...)
+}
+
+// installCardFetcher substitutes the launch path's published-card source.
+//
+// Never store.Process: that is a process-wide sync.Once singleton, so touching
+// it from one test would bind every later test in this binary to whichever tree
+// opened it first.
+func installCardFetcher(t *testing.T, f cardresolve.Fetcher) {
+	t.Helper()
+	prev := cardFetcherFn
+	cardFetcherFn = func(context.Context, string) cardresolve.Fetcher { return f }
+	t.Cleanup(func() { cardFetcherFn = prev })
+}
+
+// TestBuildRoleSystemPrompt_RendersTheResolvedCard is the prompt half of AC2:
+// the card the launch resolved is what gets rendered, not the compiled-in seed.
+//
+// The nil leg is the negative control — same call, no card — and it must NOT
+// contain the published body. Without it, an assertion that the published body
+// appears would also pass if the function concatenated both.
+func TestBuildRoleSystemPrompt_RendersTheResolvedCard(t *testing.T) {
+	a := &state.AgentState{Name: "eng", Type: "engineer", Parent: "mgr", Branch: "feat/x"}
+
+	withCard := buildRoleSystemPrompt(a, publishedTestCard("engineer"))
+	if !strings.Contains(withCard, "PUBLISHED-CARD-BODY for eng of mgr") {
+		t.Errorf("resolved card body missing (and its tokens unsubstituted?):\n%s", withCard)
+	}
+
+	seedOnly := buildRoleSystemPrompt(a, nil)
+	if strings.Contains(seedOnly, "PUBLISHED-CARD-BODY") {
+		t.Errorf("nil card must render the seed, not the published body:\n%s", seedOnly)
+	}
+	if seedOnly == withCard {
+		t.Errorf("card and nil-card prompts are identical — the card is being ignored")
+	}
+}
+
+// TestBuildRoleSystemPrompt_UnknownTypeUsesTheEngineerCard pins the behaviour
+// the deleted four-arm type switch's `default:` arm carried: an unrecognised
+// AgentState.Type ("weave" is a real one, with no card of its own) must still
+// get the engineer prompt rather than an empty one.
+func TestBuildRoleSystemPrompt_UnknownTypeUsesTheEngineerCard(t *testing.T) {
+	got := buildRoleSystemPrompt(&state.AgentState{Name: "w", Type: "weave", Parent: "", Branch: "main"}, nil)
+	want := buildRoleSystemPrompt(&state.AgentState{Name: "w", Type: "engineer", Parent: "", Branch: "main"}, nil)
+	if got == "" {
+		t.Fatalf("unknown agent type rendered an EMPTY system prompt")
+	}
+	if got != want {
+		t.Errorf("unknown type did not render the engineer card:\ngot  %d bytes\nwant %d bytes", len(got), len(want))
+	}
+}
+
+// TestBuildRoleSystemPrompt_ManagerFamilyOnlyForManagers pins that {{FAMILY}}
+// is still fed only on the manager path, which the type switch encoded by
+// calling BuildManagerPrompt with a.Family and the others with "".
+func TestBuildRoleSystemPrompt_ManagerFamilyOnlyForManagers(t *testing.T) {
+	got := buildRoleSystemPrompt(
+		&state.AgentState{Name: "m", Type: "manager", Parent: "weave", Branch: "b", Family: "engineering"},
+		&card.Card{Name: "t", Version: 1, AgentType: "manager", Body: "family=[{{FAMILY}}]"},
+	)
+	if !strings.Contains(got, "family=[engineering]") {
+		t.Errorf("manager prompt did not receive the family: %q", got)
+	}
+	notMgr := buildRoleSystemPrompt(
+		&state.AgentState{Name: "e", Type: "engineer", Parent: "weave", Branch: "b", Family: "engineering"},
+		&card.Card{Name: "t", Version: 1, AgentType: "engineer", Body: "family=[{{FAMILY}}]"},
+	)
+	if !strings.Contains(notMgr, "family=[]") {
+		t.Errorf("non-manager prompt must not receive a family: %q", notMgr)
+	}
+}
+
+// TestResolveCard_FallsBackToTheSeedWhenTheStoreIsUnreachable is AC3 at the
+// launch seam: a fetcher that errors must not stop a launch, and the card that
+// comes back must be usable.
+func TestResolveCard_FallsBackToTheSeedWhenTheStoreIsUnreachable(t *testing.T) {
+	f := &stubCardFetcher{err: errors.New("dial tcp: connection refused")}
+	installCardFetcher(t, f)
+
+	s := newInProcessUnifiedStarter(backend.InitSpec{}, nil)
+	c, src := s.resolveCard(context.Background(), t.TempDir(), "engineer")
+	if c == nil {
+		t.Fatalf("store unreachable yielded NO card — the agent would launch with no prompt")
+	}
+	if src != cardresolve.SourceSeed {
+		t.Errorf("source = %q, want %q", src, cardresolve.SourceSeed)
+	}
+	// Anti-vacuity: without this the test passes against a resolveCard that
+	// never consults the fetcher at all.
+	if len(f.askedFor()) != 1 {
+		t.Errorf("fetcher asked %d times, want 1 — the DB leg is not being attempted", len(f.askedFor()))
+	}
+}
+
+// TestPrepareLaunch_OneCardGovernsBothThePromptAndTheModel is AC2 end to end,
+// and it is the reason the card is resolved once and passed to both consumers:
+// the SAME card has to show up in the system prompt on disk AND in the session
+// spec's model. Two resolutions could disagree and nothing would say so.
+func TestPrepareLaunch_OneCardGovernsBothThePromptAndTheModel(t *testing.T) {
+	root := t.TempDir()
+	if err := state.SaveAgent(root, &state.AgentState{
+		Name: "eng", Type: "engineer", Parent: "mgr", Branch: "feat/x", Worktree: root,
+	}); err != nil {
+		t.Fatalf("SaveAgent: %v", err)
+	}
+	published := publishedTestCard("engineer")
+	f := &stubCardFetcher{card: published}
+	installCardFetcher(t, f)
+
+	s := newInProcessUnifiedStarter(backend.InitSpec{}, nil)
+	prep, err := s.prepareLaunch(RuntimeStartSpec{Name: "eng", SprawlRoot: root})
+	if err != nil {
+		t.Fatalf("prepareLaunch: %v", err)
+	}
+	t.Cleanup(func() { _ = prep.activityFile.Close() })
+
+	if prep.sessionSpec.Model != published.Model {
+		t.Errorf("sessionSpec.Model = %q, want the card's %q", prep.sessionSpec.Model, published.Model)
+	}
+	if prep.sessionSpec.Effort != published.Effort {
+		t.Errorf("sessionSpec.Effort = %q, want the card's %q", prep.sessionSpec.Effort, published.Effort)
+	}
+	promptBytes, err := os.ReadFile(prep.sessionSpec.PromptFile) //nolint:gosec // G304: path produced by the code under test
+	if err != nil {
+		t.Fatalf("reading the written system prompt: %v", err)
+	}
+	if !strings.Contains(string(promptBytes), "PUBLISHED-CARD-BODY for eng of mgr") {
+		t.Errorf("system prompt on disk is not the published card's:\n%s", promptBytes)
+	}
+	if got := f.askedFor(); len(got) != 1 || got[0] != "engineer" {
+		t.Errorf("fetcher asked %v, want exactly one lookup for \"engineer\"", got)
+	}
+}
+
+// TestPrepareLaunch_StoreUnreachableStillLaunches is AC3's launch-path half:
+// with no fetcher at all the spec falls back to the compiled-in per-type
+// default, and prepareLaunch does not fail.
+func TestPrepareLaunch_StoreUnreachableStillLaunches(t *testing.T) {
+	root := t.TempDir()
+	if err := state.SaveAgent(root, &state.AgentState{
+		Name: "eng", Type: "engineer", Parent: "mgr", Branch: "feat/x", Worktree: root,
+	}); err != nil {
+		t.Fatalf("SaveAgent: %v", err)
+	}
+	installCardFetcher(t, nil)
+
+	s := newInProcessUnifiedStarter(backend.InitSpec{}, nil)
+	prep, err := s.prepareLaunch(RuntimeStartSpec{Name: "eng", SprawlRoot: root})
+	if err != nil {
+		t.Fatalf("prepareLaunch with no store: %v", err)
+	}
+	t.Cleanup(func() { _ = prep.activityFile.Close() })
+
+	if want := rootinit.ModelForAgentType("engineer"); prep.sessionSpec.Model != want {
+		t.Errorf("sessionSpec.Model = %q, want the compiled-in default %q", prep.sessionSpec.Model, want)
+	}
+	if prep.sessionSpec.Effort != "low" {
+		t.Errorf("sessionSpec.Effort = %q, want \"low\" (QUM-1276)", prep.sessionSpec.Effort)
+	}
+	promptBytes, err := os.ReadFile(prep.sessionSpec.PromptFile) //nolint:gosec // G304: path produced by the code under test
+	if err != nil {
+		t.Fatalf("reading the written system prompt: %v", err)
+	}
+	if len(promptBytes) == 0 {
+		t.Errorf("no store yielded an EMPTY system prompt")
+	}
+	if strings.Contains(string(promptBytes), "{{") {
+		t.Errorf("rendered prompt still carries an unsubstituted token:\n%s", promptBytes)
+	}
 }

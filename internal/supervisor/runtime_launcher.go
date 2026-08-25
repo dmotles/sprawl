@@ -15,9 +15,12 @@ import (
 	"github.com/dmotles/sprawl/internal/agentloop"
 	backendpkg "github.com/dmotles/sprawl/internal/backend"
 	backendclaude "github.com/dmotles/sprawl/internal/backend/claude"
+	"github.com/dmotles/sprawl/internal/card"
+	"github.com/dmotles/sprawl/internal/cardresolve"
 	"github.com/dmotles/sprawl/internal/protocol"
 	runtimepkg "github.com/dmotles/sprawl/internal/runtime"
 	"github.com/dmotles/sprawl/internal/state"
+	"github.com/dmotles/sprawl/internal/store"
 	"github.com/dmotles/sprawl/internal/usage"
 )
 
@@ -74,7 +77,53 @@ type inProcessUnifiedStarter struct {
 	faultEmitter func(agent, class, reason, nextAction string)
 }
 
-func newInProcessUnifiedStarter(initSpec backendpkg.InitSpec, allowedTools []string) RuntimeStarter {
+// cardFetcherFn is the published-card source the launch resolves against
+// (QUM-1251), as a var so tests can substitute one.
+//
+// A seam is mandatory rather than stylistic: store.Process is a process-wide
+// sync.Once singleton, so a test that reached it would bind the whole test
+// binary to whichever tree opened it first. Same shape as
+// unifiedAdapterStartFn above.
+//
+// Returns nil on every failure, and nil is a fully supported value — the
+// resolver serves seeds when there is no Fetcher, which is also the default
+// configuration because the event log is off by default. Rationale in full on
+// newLifecycleEmitter: the store must never be the reason an agent fails to
+// launch.
+var cardFetcherFn = func(ctx context.Context, sprawlRoot string) cardresolve.Fetcher {
+	ledger, err := store.Process(ctx, sprawlRoot)
+	if err != nil || ledger == nil {
+		// Returned as an untyped nil deliberately. `return ledger` would hand
+		// back a non-nil interface holding a nil *store.Ledger, and the
+		// resolver's `r.Fetcher == nil` check would not see it.
+		return nil
+	}
+	return ledger
+}
+
+// resolveCard picks the card this launch should use for both the system prompt
+// and the session spec.
+//
+// Resolved ONCE, deliberately. Resolving separately for the prompt and the model
+// would let a spawn render one card's prompt while launching another card's
+// model — most obviously across a version bump landing mid-launch — and nothing
+// about the resulting agent would say so.
+func (s *inProcessUnifiedStarter) resolveCard(ctx context.Context, sprawlRoot, agentType string) (*card.Card, cardresolve.Source) {
+	c, src, err := (&cardresolve.Resolver{Fetcher: cardFetcherFn(ctx, sprawlRoot)}).ForType(ctx, agentType)
+	if err != nil {
+		// Only reachable if the embedded engineer seed is missing, i.e. a binary
+		// built from seeds that never passed internal/card's tests. Nil is
+		// honest here and the launch continues on the compiled-in defaults
+		// rather than refusing to start the agent.
+		return nil, ""
+	}
+	return c, src
+}
+
+// newInProcessUnifiedStarter returns the concrete type rather than the
+// RuntimeStarter interface so callers can set the optional seams (faultEmitter,
+// cardFetcher) without a type assertion.
+func newInProcessUnifiedStarter(initSpec backendpkg.InitSpec, allowedTools []string) *inProcessUnifiedStarter {
 	return &inProcessUnifiedStarter{initSpec: initSpec, allowedTools: allowedTools}
 }
 
@@ -243,13 +292,15 @@ func (s *inProcessUnifiedStarter) prepareLaunch(spec RuntimeStartSpec) (*prepare
 		return nil, err
 	}
 
-	systemPrompt := buildAgentSystemPrompt(agentState)
+	// Resolved before either consumer, and the same pointer is handed to both.
+	c, _ := s.resolveCard(context.Background(), spec.SprawlRoot, agentState.Type)
+	systemPrompt := buildAgentSystemPrompt(agentState, c)
 	promptPath, err := state.WriteSystemPrompt(spec.SprawlRoot, spec.Name, systemPrompt)
 	if err != nil {
 		return nil, err
 	}
 
-	sessionSpec := agentloop.BuildAgentSessionSpec(agentState, promptPath, spec.SprawlRoot, io.Discard)
+	sessionSpec := agentloop.BuildAgentSessionSpec(agentState, promptPath, spec.SprawlRoot, io.Discard, c)
 	if len(s.allowedTools) > 0 {
 		sessionSpec.AllowedTools = s.allowedTools
 	}
@@ -332,8 +383,8 @@ func (s *inProcessUnifiedStarter) startBackendSession(ctx context.Context, prep 
 // its type. When the agent carries a SystemPromptAppend (QUM-851), that custom
 // text is appended onto the built-in role prompt under a clearly delimited
 // "## Operator Instructions" header — it never replaces the base prompt.
-func buildAgentSystemPrompt(a *state.AgentState) string {
-	base := buildRoleSystemPrompt(a)
+func buildAgentSystemPrompt(a *state.AgentState, c *card.Card) string {
+	base := buildRoleSystemPrompt(a, c)
 	if a.SystemPromptAppend != "" {
 		base += "\n\n## Operator Instructions\n\n" + a.SystemPromptAppend
 	}
@@ -342,37 +393,40 @@ func buildAgentSystemPrompt(a *state.AgentState) string {
 
 // buildRoleSystemPrompt renders the built-in role system prompt for a child
 // agent based on its type, without any operator append.
-func buildRoleSystemPrompt(a *state.AgentState) string {
-	testMode := os.Getenv("SPRAWL_TEST_MODE") == "1"
-	switch a.Type {
-	case "researcher":
-		env := agent.DefaultEnvConfig()
-		env.TestMode = testMode
-		env.Subagent = a.Subagent
-		env.ParentName = a.Parent
-		return agent.BuildResearcherPrompt(a.Name, a.Parent, a.Branch, env)
-	case "manager":
-		env := agent.DefaultEnvConfig()
+// c is the resolved card and may be nil, in which case the embedded seed for the
+// agent's type is rendered. The four-arm type switch this replaced (QUM-1251) is
+// now one call: the per-type differences it encoded live in the CARDS.
+//
+// One behavioural carry-over is deliberate: the researcher arm did NOT set
+// env.WorkDir, so a researcher's rendered "# Environment" block omitted the
+// working directory. Preserved rather than tidied — the goldens in internal/agent
+// pin it, and changing what a researcher is told is not this issue's business.
+//
+// The `default:` arm's role — an unrecognised type still gets the engineer prompt
+// rather than an empty one — moved UP into cardresolve, which returns the
+// engineer seed as SourceFallbackSeed. It is not lost, it is earlier.
+func buildRoleSystemPrompt(a *state.AgentState, c *card.Card) string {
+	env := agent.DefaultEnvConfig()
+	if a.Type != "researcher" {
 		env.WorkDir = a.Worktree
-		env.TestMode = testMode
-		env.Subagent = a.Subagent
-		env.ParentName = a.Parent
-		return agent.BuildManagerPrompt(a.Name, a.Parent, a.Branch, a.Family, env)
-	case "qa":
-		env := agent.DefaultEnvConfig()
-		env.WorkDir = a.Worktree
-		env.TestMode = testMode
-		env.Subagent = a.Subagent
-		env.ParentName = a.Parent
-		return agent.BuildQAPrompt(a.Name, a.Parent, a.Branch, env)
-	default:
-		env := agent.DefaultEnvConfig()
-		env.WorkDir = a.Worktree
-		env.TestMode = testMode
-		env.Subagent = a.Subagent
-		env.ParentName = a.Parent
-		return agent.BuildEngineerPrompt(a.Name, a.Parent, a.Branch, env)
 	}
+	env.TestMode = os.Getenv("SPRAWL_TEST_MODE") == "1"
+	env.Subagent = a.Subagent
+	env.ParentName = a.Parent
+
+	// agentType is only consulted when c is nil. The resolver already picked the
+	// seed for an unknown type, so this is the no-resolver path only.
+	agentType := a.Type
+	switch agentType {
+	case "researcher", "manager", "qa":
+	default:
+		agentType = "engineer"
+	}
+	family := ""
+	if a.Type == "manager" {
+		family = a.Family
+	}
+	return agent.BuildCardPrompt(c, agentType, a.Name, a.Parent, a.Branch, family, env)
 }
 
 // runActivitySubscriber subscribes to bus and forwards EventProtocolMessage
