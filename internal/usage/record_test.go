@@ -36,6 +36,7 @@ func TestRecord_AllKeysPresentOnZeroValue(t *testing.T) {
 		"schema_version",
 		"session_cost_usd",
 		"total_cost_usd",
+		"partial",
 	}
 	for _, key := range required {
 		if _, ok := got[key]; !ok {

@@ -78,12 +78,78 @@ func (r *Recorder) Handle(ev runtime.RuntimeEvent) {
 	case runtime.EventTurnCompleted:
 		r.handleTurnCompleted(ev)
 	case runtime.EventInterrupted, runtime.EventBackendFaulted:
-		// Only the in-flight tokens are discarded; lastSessionCost is
-		// deliberately left alone. An interrupted turn writes no row, but its
-		// spend stays in Claude's running cumulative, so the next successful
-		// turn's delta absorbs it. Clearing the baseline here would re-charge
-		// everything spent in the session so far.
-		r.accum.Reset()
+		r.flushPartialTurn()
+	}
+}
+
+// flushPartialTurn writes the in-flight accumulator as a partial row when a
+// turn ends in an interrupt or a backend fault (QUM-1257). Before this, the
+// accumulator was simply discarded and the turn's tokens were attributed to
+// nothing.
+//
+// lastSessionCost is deliberately NOT advanced, and the row's own cost is 0:
+// the interrupted turn's spend stays in Claude's running cumulative, so the
+// next successful turn's delta absorbs it. Charging the partial row and
+// advancing the baseline would count that spend twice; clearing the baseline
+// would re-charge everything spent in the session so far.
+func (r *Recorder) flushPartialTurn() {
+	if !r.accum.HasData() {
+		return
+	}
+	defer r.accum.Reset()
+	// Unlike EventTurnCompleted, these events carry no Result frame, so there
+	// is no ev.Result.SessionID to fall back on. With no session id there is no
+	// file to write to — writing anyway would create "<agent>/.ndjson".
+	sessID := r.currentSessID
+	if sessID == "" {
+		return
+	}
+	// Seed from disk before writing: on a Recorder that resumed a session and
+	// has not yet completed a turn, lastSessionCost is still an unseeded 0, and
+	// storing that as this row's session_cost_usd would clobber the file's own
+	// cumulative baseline for every later reader.
+	r.ensureCostBaseline(sessID)
+	rec := r.buildRecord(sessID, 0, r.lastSessionCost)
+	rec.Partial = true
+	if err := r.writeRecord(sessID, rec); err != nil {
+		// Best-effort, as in handleTurnCompleted: a disk hiccup must never
+		// affect the runtime hot path.
+		_ = err
+	}
+}
+
+// ensureCostBaseline lazily seeds the per-turn delta baseline from sessID's
+// existing log the first time this Recorder needs it. Shared by the completed
+// and partial write paths so the two cannot drift.
+func (r *Recorder) ensureCostBaseline(sessID string) {
+	if r.costSeeded {
+		return
+	}
+	r.lastSessionCost = r.seedCostBaseline(sessID)
+	r.costSeeded = true
+}
+
+// buildRecord assembles a row from the cached agent metadata and the current
+// accumulator. Shared by the completed and partial write paths so neither can
+// drift on the metadata fields.
+func (r *Recorder) buildRecord(sessID string, turnCost, sessionCost float64) Record {
+	u := r.accum.Usage()
+	return Record{
+		SchemaVersion:            RecordSchemaVersion,
+		Timestamp:                time.Now().UTC().Format(time.RFC3339Nano),
+		AgentName:                r.agentName,
+		AgentType:                r.agentType,
+		AgentFamily:              r.agentFamily,
+		ParentName:               r.parentName,
+		SessionID:                sessID,
+		Branch:                   r.branch,
+		Model:                    r.accum.Model(),
+		InputTokens:              u.InputTokens,
+		OutputTokens:             u.OutputTokens,
+		CacheReadInputTokens:     u.CacheReadInputTokens,
+		CacheCreationInputTokens: u.CacheCreationInputTokens,
+		TotalCostUsd:             turnCost,
+		SessionCostUsd:           sessionCost,
 	}
 }
 
@@ -123,32 +189,12 @@ func (r *Recorder) handleTurnCompleted(ev runtime.RuntimeEvent) {
 	if sessID == "" {
 		sessID = ev.Result.SessionID
 	}
-	if !r.costSeeded {
-		r.lastSessionCost = r.seedCostBaseline(sessID)
-		r.costSeeded = true
-	}
+	r.ensureCostBaseline(sessID)
 	sessionCost := ev.Result.TotalCostUsd
 	turnCost := deltaFrom(sessionCost, r.lastSessionCost)
 	r.lastSessionCost = sessionCost
 
-	u := r.accum.Usage()
-	rec := Record{
-		SchemaVersion:            RecordSchemaVersion,
-		Timestamp:                time.Now().UTC().Format(time.RFC3339Nano),
-		AgentName:                r.agentName,
-		AgentType:                r.agentType,
-		AgentFamily:              r.agentFamily,
-		ParentName:               r.parentName,
-		SessionID:                sessID,
-		Branch:                   r.branch,
-		Model:                    r.accum.Model(),
-		InputTokens:              u.InputTokens,
-		OutputTokens:             u.OutputTokens,
-		CacheReadInputTokens:     u.CacheReadInputTokens,
-		CacheCreationInputTokens: u.CacheCreationInputTokens,
-		TotalCostUsd:             turnCost,
-		SessionCostUsd:           sessionCost,
-	}
+	rec := r.buildRecord(sessID, turnCost, sessionCost)
 	if err := r.writeRecord(sessID, rec); err != nil {
 		// Best-effort: swallow write errors so the runtime hot path is
 		// never affected by disk hiccups.

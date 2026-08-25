@@ -181,12 +181,16 @@ func TestRecorder_SchemaVersionStampedOnEveryRow(t *testing.T) {
 	}
 }
 
-// TestRecorder_InterruptedTurnSpendIsAbsorbedByNextTurn documents the deferred
-// secondary issue (a) from QUM-1247: an interrupted turn writes no row, so its
-// TOKENS are lost — but its SPEND is not, because the next successful turn's
-// cumulative still includes it and the delta picks it up. This only holds if
-// the interrupt arm leaves the cost baseline alone; resetting it there would
-// double-count the absorbed spend.
+// TestRecorder_InterruptedTurnSpendIsAbsorbedByNextTurn pins the cost half of
+// the interrupt path. An interrupted turn's SPEND is not lost, because the next
+// successful turn's cumulative still includes it and the delta picks it up.
+// This only holds if the interrupt arm leaves the cost baseline alone;
+// resetting it there would double-count the absorbed spend.
+//
+// QUM-1257 changed the TOKEN half: the interrupted turn now flushes a partial,
+// zero-cost row instead of writing nothing, so the row count is 3. Every cost
+// assertion below is unchanged — a zero-cost row cannot perturb the sum, and
+// that invariance is exactly the proof that no double-count was introduced.
 func TestRecorder_InterruptedTurnSpendIsAbsorbedByNextTurn(t *testing.T) {
 	tmp := t.TempDir()
 	if err := state.SaveAgent(tmp, &state.AgentState{Name: "finn", Status: "active"}); err != nil {
@@ -200,7 +204,7 @@ func TestRecorder_InterruptedTurnSpendIsAbsorbedByNextTurn(t *testing.T) {
 	rec.Handle(assistantEvent(t, "sess-int", protocol.Usage{InputTokens: 1, OutputTokens: 1}, "claude-opus-4-7"))
 	rec.Handle(turnCompletedEvent("sess-int", 0.10))
 
-	// Interrupted turn: assistant frames arrive, then an interrupt. No row.
+	// Interrupted turn: assistant frames arrive, then an interrupt. Partial row.
 	rec.Handle(assistantEvent(t, "sess-int", protocol.Usage{InputTokens: 5, OutputTokens: 5}, "claude-opus-4-7"))
 	rec.Handle(runtime.RuntimeEvent{Type: runtime.EventInterrupted})
 
@@ -212,12 +216,16 @@ func TestRecorder_InterruptedTurnSpendIsAbsorbedByNextTurn(t *testing.T) {
 	}
 
 	records := readNDJSONLines(t, usageLogPath(tmp, "finn", "sess-int"))
-	if len(records) != 2 {
-		t.Fatalf("got %d records, want 2 (the interrupted turn writes none)", len(records))
+	if len(records) != 3 {
+		t.Fatalf("got %d records, want 3 (the interrupted turn writes a partial row)", len(records))
 	}
-	if !closeTo(records[1].TotalCostUsd, 0.35) {
-		t.Errorf("record[1].TotalCostUsd = %v, want 0.35 — the interrupted turn's spend must be "+
-			"absorbed here, not dropped or double-counted", records[1].TotalCostUsd)
+	if records[1].TotalCostUsd != 0 {
+		t.Errorf("record[1].TotalCostUsd = %v, want 0 — the partial row must claim no spend of its own, "+
+			"or the absorbed spend is counted twice", records[1].TotalCostUsd)
+	}
+	if !closeTo(records[2].TotalCostUsd, 0.35) {
+		t.Errorf("record[2].TotalCostUsd = %v, want 0.35 — the interrupted turn's spend must be "+
+			"absorbed here, not dropped or double-counted", records[2].TotalCostUsd)
 	}
 	if !closeTo(sumCost(records), 0.45) {
 		t.Errorf("sum = %v, want the session's final cumulative 0.45", sumCost(records))
@@ -227,7 +235,8 @@ func TestRecorder_InterruptedTurnSpendIsAbsorbedByNextTurn(t *testing.T) {
 // TestRecorder_FaultedTurnLeavesCostBaselineIntact mirrors the interrupt case
 // for the other arm of recorder.go's EventInterrupted/EventBackendFaulted
 // switch. Splitting the arms and clearing the baseline on fault would pass
-// every other test here while double-counting the faulted turn's spend.
+// every other test here while double-counting the faulted turn's spend. As
+// above, QUM-1257 changed only the row count; the cost assertions are unchanged.
 func TestRecorder_FaultedTurnLeavesCostBaselineIntact(t *testing.T) {
 	tmp := t.TempDir()
 	if err := state.SaveAgent(tmp, &state.AgentState{Name: "finn", Status: "active"}); err != nil {
@@ -251,12 +260,17 @@ func TestRecorder_FaultedTurnLeavesCostBaselineIntact(t *testing.T) {
 	}
 
 	records := readNDJSONLines(t, usageLogPath(tmp, "finn", "sess-fault"))
-	if len(records) != 2 {
-		t.Fatalf("got %d records, want 2 (the faulted turn writes none)", len(records))
+	if len(records) != 3 {
+		t.Fatalf("got %d records, want 3 (the faulted turn writes a partial row)", len(records))
 	}
-	if !closeTo(records[1].TotalCostUsd, 0.35) {
-		t.Errorf("record[1].TotalCostUsd = %v, want 0.35 — a fault must not clear the cost baseline",
-			records[1].TotalCostUsd)
+	if records[1].TotalCostUsd != 0 || !records[1].Partial {
+		t.Errorf("record[1] = cost %v partial %v, want cost 0 partial true — the faulted turn's row "+
+			"must claim no spend of its own and be marked as partial",
+			records[1].TotalCostUsd, records[1].Partial)
+	}
+	if !closeTo(records[2].TotalCostUsd, 0.35) {
+		t.Errorf("record[2].TotalCostUsd = %v, want 0.35 — a fault must not clear the cost baseline",
+			records[2].TotalCostUsd)
 	}
 	if !closeTo(sumCost(records), 0.45) {
 		t.Errorf("sum = %v, want the session's final cumulative 0.45", sumCost(records))

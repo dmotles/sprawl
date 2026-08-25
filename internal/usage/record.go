@@ -37,6 +37,13 @@ type Record struct {
 	// monotone within a session segment and restarts from a low value after a
 	// context reset, so it must never be summed.
 	SessionCostUsd float64 `json:"session_cost_usd"`
+	// Partial marks a row flushed because the turn ended in an interrupt or a
+	// backend fault rather than completing (QUM-1257). Its tokens are real and
+	// sum normally; its TotalCostUsd is 0 by construction, because the spend
+	// stays in Claude's running cumulative and is absorbed by the next
+	// successful turn's delta. Without this flag such a row is indistinguishable
+	// from a legitimately zero-cost completed turn, which also occurs.
+	Partial bool `json:"partial"`
 }
 
 // TokenTotals is the aggregate result of summing usage records.

@@ -227,10 +227,16 @@ func formatCost(c float64) string {
 // --- tail ---
 
 func formatTailLine(r usage.Record) string {
-	return fmt.Sprintf("%s %s %s in=%d out=%d cache_read=%d cache_creation=%d cost=%s",
+	line := fmt.Sprintf("%s %s %s in=%d out=%d cache_read=%d cache_creation=%d cost=%s",
 		r.Timestamp, r.AgentName, r.Model,
 		r.InputTokens, r.OutputTokens, r.CacheReadInputTokens, r.CacheCreationInputTokens,
 		formatCost(r.TotalCostUsd))
+	if r.Partial {
+		// Without this the row is indistinguishable from a legitimately
+		// zero-cost completed turn (QUM-1257).
+		line += " partial"
+	}
+	return line
 }
 
 func runUsageTail(deps *usageDeps, agent string, follow bool, last int, quiet bool) error {
@@ -448,7 +454,7 @@ func runUsageExport(deps *usageDeps, format, sinceStr, agent string, quiet bool)
 			"timestamp", "agent_name", "agent_type", "agent_family", "parent_name",
 			"session_id", "branch", "model",
 			"input_tokens", "output_tokens", "cache_read_input_tokens", "cache_creation_input_tokens",
-			"total_cost_usd", "session_cost_usd", "schema_version",
+			"total_cost_usd", "session_cost_usd", "schema_version", "partial",
 		}
 		if err := w.Write(header); err != nil {
 			return err
@@ -462,6 +468,7 @@ func runUsageExport(deps *usageDeps, format, sinceStr, agent string, quiet bool)
 				strconv.FormatFloat(r.TotalCostUsd, 'f', -1, 64),
 				strconv.FormatFloat(r.SessionCostUsd, 'f', -1, 64),
 				strconv.Itoa(r.SchemaVersion),
+				strconv.FormatBool(r.Partial),
 			}
 			if err := w.Write(row); err != nil {
 				return err

@@ -615,6 +615,74 @@ func TestRunUsageSummary_EmptyDir_FriendlyMessage(t *testing.T) {
 	}
 }
 
+// --- partial rows (QUM-1257) ---
+
+// TestFormatTailLine_MarksPartialRows: a partial row's cost is 0 by
+// construction, and legitimately zero-cost completed turns also exist, so
+// without an explicit marker the two are indistinguishable in `usage tail`.
+func TestFormatTailLine_MarksPartialRows(t *testing.T) {
+	base := usage.Record{
+		Timestamp: "2026-05-01T10:00:00Z", AgentName: "alice", Model: "sonnet",
+		InputTokens: 1000, OutputTokens: 100,
+	}
+	completed := formatTailLine(base)
+	if strings.Contains(completed, "partial") {
+		t.Errorf("completed row = %q, must not be marked partial", completed)
+	}
+
+	partial := base
+	partial.Partial = true
+	got := formatTailLine(partial)
+	if !strings.Contains(got, "partial") {
+		t.Errorf("partial row = %q, want it marked partial — otherwise it reads as a zero-cost "+
+			"completed turn", got)
+	}
+	// The marker must be additive, not a replacement for the token/cost data.
+	if !strings.Contains(got, "in=1000") || !strings.Contains(got, "cost=$0.0000") {
+		t.Errorf("partial row = %q, want the usual token and cost fields still present", got)
+	}
+}
+
+// TestRunUsageExport_CSV_CarriesPartialColumn: export is the auditability
+// path, so the flag must survive a round-trip through CSV as its own column.
+func TestRunUsageExport_CSV_CarriesPartialColumn(t *testing.T) {
+	deps, out, _, root := newUsageDeps(t)
+	partial := mkRec("2026-05-01T10:00:00Z", "alice", "s1", "sonnet", 1000, 100, 50, 20, 0)
+	partial.Partial = true
+	writeNDJSON(t, root, "alice", "s1", []usage.Record{
+		partial,
+		mkRec("2026-05-01T11:00:00Z", "alice", "s1", "sonnet", 2000, 200, 60, 30, 0.02),
+	})
+
+	if err := runUsageExport(deps, "csv", "", "", true); err != nil {
+		t.Fatalf("runUsageExport: %v", err)
+	}
+	rows, err := csv.NewReader(strings.NewReader(out.String())).ReadAll()
+	if err != nil {
+		t.Fatalf("csv parse: %v", err)
+	}
+	if len(rows) != 3 {
+		t.Fatalf("got %d rows, want header + 2 data rows", len(rows))
+	}
+	idx := -1
+	for i, h := range rows[0] {
+		if h == "partial" {
+			idx = i
+			break
+		}
+	}
+	if idx < 0 {
+		t.Fatalf("no 'partial' column in CSV header %v — a partial row is otherwise "+
+			"indistinguishable from a zero-cost completed turn in an export", rows[0])
+	}
+	if rows[1][idx] != "true" {
+		t.Errorf("partial row's partial column = %q, want \"true\"", rows[1][idx])
+	}
+	if rows[2][idx] != "false" {
+		t.Errorf("completed row's partial column = %q, want \"false\"", rows[2][idx])
+	}
+}
+
 // --- export ---
 
 func TestRunUsageExport_CSV_Golden(t *testing.T) {
@@ -625,7 +693,7 @@ func TestRunUsageExport_CSV_Golden(t *testing.T) {
 		t.Fatalf("runUsageExport: %v", err)
 	}
 	got := out.String()
-	wantHeader := "timestamp,agent_name,agent_type,agent_family,parent_name,session_id,branch,model,input_tokens,output_tokens,cache_read_input_tokens,cache_creation_input_tokens,total_cost_usd,session_cost_usd,schema_version"
+	wantHeader := "timestamp,agent_name,agent_type,agent_family,parent_name,session_id,branch,model,input_tokens,output_tokens,cache_read_input_tokens,cache_creation_input_tokens,total_cost_usd,session_cost_usd,schema_version,partial"
 	firstLine := strings.SplitN(got, "\n", 2)[0]
 	if firstLine != wantHeader {
 		t.Errorf("CSV header mismatch:\n got: %q\nwant: %q", firstLine, wantHeader)
