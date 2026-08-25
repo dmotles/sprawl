@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"sort"
 	"strings"
 	"testing"
 )
@@ -28,24 +29,47 @@ import (
 var updateSlimGoldens = flag.Bool("update-slim-goldens", false,
 	"rewrite internal/card/testdata slim goldens from the current cards, then fail so the diff gets reviewed")
 
+// slimGoldenVariant is one (env, golden-file) axis every slim card is pinned on.
+//
+// Two variants rather than one, because the render OPTIONS are as easy to break
+// by accident as the prose is. Every slim card sets subagent_banner and
+// sandbox_warning, and both arms are inert unless the env asks for them — so with
+// a plain env only, flipping either flag to false in a seed would change every
+// sub-agent's and every sandbox agent's prompt and break no golden here. The
+// legacy variant goldens in internal/agent pin those blocks' TEXT, but only
+// through the LEGACY cards, and say so; whether a SLIM card splices them was
+// pinned by nothing before this.
+type slimGoldenVariant struct {
+	name string
+	env  Env
+}
+
+// slimGoldenVariants is sorted and literal so subtests and filenames are stable.
+func slimGoldenVariants() []slimGoldenVariant {
+	return []slimGoldenVariant{
+		// The shape agents actually spawn in.
+		{name: "plain", env: Env{WorkDir: "/work/sprawl", Platform: "linux", Shell: "/bin/zsh"}},
+		// Both conditional arms at once: one extra file per card covers both,
+		// and neither arm can hide behind the other because the banner is a
+		// PREFIX and the warning a SUFFIX.
+		{name: "subagent-testmode", env: Env{
+			WorkDir: "/work/sprawl", Platform: "linux", Shell: "/bin/zsh",
+			Subagent: true, TestMode: true, ParentName: "tower",
+		}},
+	}
+}
+
 // slimGoldenInput is the fixed Input every slim golden is rendered from.
 //
 // No clock and no ambient environment: every field is a literal, so the bytes
-// depend on the card body and Render alone. The env leaves Subagent and TestMode
-// off — the banner and sandbox arms are Go constants in render.go, already pinned
-// byte-exactly by internal/agent's variant goldens, and this file exists to pin
-// the card PROSE that nothing else pins.
-func slimGoldenInput() Input {
+// depend on the card body, the variant's env, and Render alone.
+func slimGoldenInput(v slimGoldenVariant) Input {
 	return Input{
 		AgentName:  "zone",
 		ParentName: "tower",
 		BranchName: "dmotles/feature-x",
 		Family:     "engineering",
-		Env: Env{
-			WorkDir:  "/work/sprawl",
-			Platform: "linux",
-			Shell:    "/bin/zsh",
-		},
+		Env:        v.env,
 	}
 }
 
@@ -70,50 +94,53 @@ func slimGoldenCards(t *testing.T) []*Card {
 	return out
 }
 
-// slimGoldenPath names the golden after the card AND its version, so a version
-// bump is a deliberate regeneration rather than a silent re-point of the pin.
-func slimGoldenPath(c *Card) string {
-	return filepath.Join("testdata", fmt.Sprintf("%s@%d.golden", c.Name, c.Version))
+// slimGoldenPath names the golden after the card, its VERSION and the variant, so
+// a version bump is a deliberate regeneration rather than a silent re-point of
+// the pin.
+func slimGoldenPath(c *Card, v slimGoldenVariant) string {
+	return filepath.Join("testdata", fmt.Sprintf("%s@%d.%s.golden", c.Name, c.Version, v.name))
 }
 
 func TestSlimCards_RenderByteIdenticalToGoldens(t *testing.T) {
 	for _, c := range slimGoldenCards(t) {
-		t.Run(c.Name, func(t *testing.T) {
-			got, err := c.Render(slimGoldenInput())
-			if err != nil {
-				t.Fatalf("rendering %s@%d: %v", c.Name, c.Version, err)
-			}
-			path := slimGoldenPath(c)
-			want, readErr := os.ReadFile(path)
+		for _, v := range slimGoldenVariants() {
+			t.Run(c.Name+"/"+v.name, func(t *testing.T) {
+				got, err := c.Render(slimGoldenInput(v))
+				if err != nil {
+					t.Fatalf("rendering %s@%d: %v", c.Name, c.Version, err)
+				}
+				path := slimGoldenPath(c, v)
+				want, readErr := os.ReadFile(path)
 
-			if *updateSlimGoldens {
-				if readErr == nil && string(want) == got {
-					return
+				if *updateSlimGoldens {
+					if readErr == nil && string(want) == got {
+						return
+					}
+					if err := os.MkdirAll("testdata", 0o755); err != nil {
+						t.Fatalf("creating testdata: %v", err)
+					}
+					if err := os.WriteFile(path, []byte(got), 0o644); err != nil {
+						t.Fatalf("writing %s: %v", path, err)
+					}
+					// Deliberately a failure: -update rewrote a golden, which
+					// means the prompt some agent spawns with just changed.
+					// Exiting 0 here is what would let a stale golden be
+					// refreshed and reported as a pass in one step.
+					t.Fatalf("%s was rewritten from %s@%d — review the testdata diff, then re-run WITHOUT -update-slim-goldens",
+						path, c.Name, c.Version)
 				}
-				if err := os.MkdirAll("testdata", 0o755); err != nil {
-					t.Fatalf("creating testdata: %v", err)
-				}
-				if err := os.WriteFile(path, []byte(got), 0o644); err != nil {
-					t.Fatalf("writing %s: %v", path, err)
-				}
-				// Deliberately a failure: -update rewrote a golden, which means
-				// the prompt every agent spawns with just changed. Exiting 0
-				// here is what would let a stale golden be refreshed and
-				// reported as a pass in one step.
-				t.Fatalf("%s was rewritten from %s@%d — review the testdata diff, then re-run WITHOUT -update-slim-goldens",
-					path, c.Name, c.Version)
-			}
 
-			if readErr != nil {
-				t.Fatalf("reading %s: %v (regenerate with -update-slim-goldens)", path, readErr)
-			}
-			if got != string(want) {
-				i := firstSlimDiff(got, string(want))
-				t.Errorf("%s@%d no longer renders %s byte-identically.\ngot %d bytes, want %d bytes; first diff at byte %d\n got: %q\nwant: %q\nIf the card edit was intentional, regenerate with -update-slim-goldens and review the diff.",
-					c.Name, c.Version, path, len(got), len(string(want)), i,
-					got[i:min(i+120, len(got))], string(want)[i:min(i+120, len(want))])
-			}
-		})
+				if readErr != nil {
+					t.Fatalf("reading %s: %v (regenerate with -update-slim-goldens)", path, readErr)
+				}
+				if got != string(want) {
+					i := firstSlimDiff(got, string(want))
+					t.Errorf("%s@%d no longer renders %s byte-identically.\ngot %d bytes, want %d bytes; first diff at byte %d\n got: %q\nwant: %q\nIf the card edit was intentional, regenerate with -update-slim-goldens and review the diff.",
+						c.Name, c.Version, path, len(got), len(want), i,
+						got[i:min(i+120, len(got))], string(want)[i:min(i+120, len(want))])
+				}
+			})
+		}
 	}
 }
 
@@ -137,9 +164,7 @@ func firstSlimDiff(a, b string) int {
 // A byte-comparison is the classic shape that goes green while reading nothing:
 // if Render ignored the body, or the golden were compared against itself, the
 // comparison would pass without the card being consulted. So one character of
-// prose changed in a card MUST break exactly that card's golden — and must leave
-// every other card's golden intact, which is the half that proves the goldens are
-// not all the same file.
+// prose changed in a card MUST break that card's golden, in every variant.
 func TestSlimCards_MutatedCardBreaksItsGolden(t *testing.T) {
 	// Present in every slim card's opening lines. Asserted before the mutation:
 	// a Replace that matched nothing would leave the body untouched, and this
@@ -148,49 +173,65 @@ func TestSlimCards_MutatedCardBreaksItsGolden(t *testing.T) {
 		before = "Sprawl"
 		after  = "Sprowl"
 	)
-	cards := slimGoldenCards(t)
-	for _, target := range cards {
-		t.Run(target.Name, func(t *testing.T) {
-			if !strings.Contains(target.Body, before) {
-				t.Fatalf("%s has no %q to mutate — this control mutates nothing and proves nothing", target.Name, before)
-			}
-			mutated := *target
-			mutated.Body = strings.Replace(target.Body, before, after, 1)
+	for _, target := range slimGoldenCards(t) {
+		if !strings.Contains(target.Body, before) {
+			t.Errorf("%s has no %q to mutate — this control mutates nothing and proves nothing", target.Name, before)
+			continue
+		}
+		mutated := *target
+		mutated.Body = strings.Replace(target.Body, before, after, 1)
 
-			got, err := mutated.Render(slimGoldenInput())
-			if err != nil {
-				t.Fatalf("rendering the mutated card: %v", err)
-			}
-			if got == readSlimGolden(t, target) {
-				t.Fatalf("a one-character prose edit to %s still rendered byte-identically to %s — the golden is not reading the card",
-					target.Name, slimGoldenPath(target))
-			}
-			t.Logf("control fired: mutated %s diverges from its golden at byte %d", target.Name, firstSlimDiff(got, readSlimGolden(t, target)))
-
-			// The other direction: the mutation must not be able to break a
-			// different card's golden, or "exactly that card's golden failed"
-			// would be unproven.
-			for _, other := range cards {
-				if other.Name == target.Name {
-					continue
-				}
-				out, err := other.Render(slimGoldenInput())
+		for _, v := range slimGoldenVariants() {
+			t.Run(target.Name+"/"+v.name, func(t *testing.T) {
+				got, err := mutated.Render(slimGoldenInput(v))
 				if err != nil {
-					t.Fatalf("rendering %s: %v", other.Name, err)
+					t.Fatalf("rendering the mutated card: %v", err)
 				}
-				if out != readSlimGolden(t, other) {
-					t.Errorf("mutating %s also broke %s's golden — the goldens are not per-card", target.Name, other.Name)
+				want := readSlimGolden(t, target, v)
+				if got == want {
+					t.Fatalf("a one-character prose edit to %s still rendered byte-identically to %s — the golden is not reading the card",
+						target.Name, slimGoldenPath(target, v))
 				}
-			}
-		})
+				t.Logf("control fired: mutated %s diverges from its golden at byte %d", target.Name, firstSlimDiff(got, want))
+			})
+		}
 	}
 }
 
-func readSlimGolden(t *testing.T, c *Card) string {
+// TestSlimCards_GoldensAreDistinctPerCardAndVariant is the other half of the
+// control above: that a card's golden failed says nothing about "exactly that
+// card's golden" unless the goldens differ from each other in the first place.
+//
+// Compared by CONTENT rather than by path, because paths are distinct by
+// construction (slimGoldenPath interpolates the name and variant) and so a
+// path-level check could not fail. Two identical files would mean a mutation
+// reaching one card is indistinguishable from one reaching another.
+func TestSlimCards_GoldensAreDistinctPerCardAndVariant(t *testing.T) {
+	seen := map[string]string{}
+	var keys []string
+	for _, c := range slimGoldenCards(t) {
+		for _, v := range slimGoldenVariants() {
+			body := readSlimGolden(t, c, v)
+			if prev, dup := seen[body]; dup {
+				t.Errorf("%s and %s are byte-identical — a break in one is indistinguishable from a break in the other",
+					prev, slimGoldenPath(c, v))
+			}
+			seen[body] = slimGoldenPath(c, v)
+			keys = append(keys, slimGoldenPath(c, v))
+		}
+	}
+	sort.Strings(keys)
+	if len(keys) < 2 {
+		t.Fatalf("only %d golden(s) — distinctness is not a claim about anything", len(keys))
+	}
+}
+
+func readSlimGolden(t *testing.T, c *Card, v slimGoldenVariant) string {
 	t.Helper()
-	data, err := os.ReadFile(slimGoldenPath(c))
+	path := slimGoldenPath(c, v)
+	data, err := os.ReadFile(path)
 	if err != nil {
-		t.Fatalf("reading %s: %v (regenerate with -update-slim-goldens)", slimGoldenPath(c), err)
+		t.Fatalf("reading %s: %v (regenerate with -update-slim-goldens)", path, err)
 	}
 	return string(data)
 }
