@@ -341,3 +341,120 @@ func TestUsageModal_OtherKeysReturnNoCmd(t *testing.T) {
 		}
 	}
 }
+
+// --- cache hit rate (QUM-1258) ---
+
+// TestUsageModal_TokensViewShowsCacheHitRate: usageFixture's cache-read totals
+// (980k and 2.1M) are summed re-reads, not context sizes. Rendered raw beside
+// INPUT they read as implausible contexts, which is the defect.
+func TestUsageModal_TokensViewShowsCacheHitRate(t *testing.T) {
+	m := newTestUsageModalModel(t)
+	m = m.Install(usageFixture()).Show()
+	got := m.View()
+
+	if strings.Contains(got, "2,100,000") {
+		t.Errorf("tokens view renders the raw summed cache-read total 2,100,000:\n%s", got)
+	}
+	if strings.Contains(got, "980,000") {
+		t.Errorf("tokens view renders the raw summed cache-read total 980,000:\n%s", got)
+	}
+	if !strings.Contains(got, "CACHE_HIT") {
+		t.Errorf("tokens view is missing a CACHE_HIT column:\n%s", got)
+	}
+	// finn: 2100000 / (298000 + 2100000 + 24000) = 86.7%.
+	if !strings.Contains(got, "86.7%") {
+		t.Errorf("tokens view missing finn's 86.7%% cache hit rate:\n%s", got)
+	}
+	// CACHE_CREATE stays a raw count — it is billed at a premium and does not
+	// grow without bound, so it was never the misleading column.
+	if !strings.Contains(got, "34,000") {
+		t.Errorf("tokens view should still render CACHE_CREATE as a raw token count:\n%s", got)
+	}
+}
+
+func TestUsageModal_AllViewShowsCacheHitRate(t *testing.T) {
+	m := newTestUsageModalModel(t)
+	m = m.Install(usageFixture()).Show()
+	m, _ = m.Update(tea.KeyPressMsg{Code: 'a'})
+	got := m.View()
+
+	if strings.Contains(got, "2,100,000") || strings.Contains(got, "980,000") {
+		t.Errorf("all view renders raw summed cache-read totals:\n%s", got)
+	}
+	if !strings.Contains(got, "CACHE_HIT") || !strings.Contains(got, "86.7%") {
+		t.Errorf("all view missing the CACHE_HIT column or finn's 86.7%% rate:\n%s", got)
+	}
+	// The all view still carries cost, so this is not a tokens-view copy.
+	if !strings.Contains(got, "$0.43") {
+		t.Errorf("all view lost its cost column:\n%s", got)
+	}
+}
+
+// TestUsageModal_CacheHitTotalIsPooled mirrors the CLI pin: the TOTAL row must
+// pool counts rather than average the per-agent rates.
+func TestUsageModal_CacheHitTotalIsPooled(t *testing.T) {
+	m := newTestUsageModalModel(t)
+	m = m.Install(map[string]usage.TokenTotals{
+		// Huge and cache-hot.
+		"weave": {InputTokens: 10_000, CacheReadInputTokens: 990_000},
+		// Tiny and entirely cache-cold.
+		"finn": {InputTokens: 1000},
+	}).Show()
+	got := m.View()
+
+	// Pooled: 990000 / (11000 + 990000) = 98.9%.
+	// Mean of rows: (99.0 + 0.0) / 2 = 49.5% — the wrong answer.
+	if cell := modalTableCell(t, got, "CACHE_HIT", "TOTAL"); cell != "98.9%" {
+		t.Errorf("TOTAL CACHE_HIT = %q, want the pooled 98.9%%:\n%s\n"+
+			"49.5%% would be the arithmetic mean of the per-agent rates", cell, got)
+	}
+}
+
+// TestUsageModal_CacheHitIsBlankWithNoInputTokens: an agent with no
+// input-side tokens has no rate to report, and 0.0% would be a claim about a
+// cache that was never consulted. Scoped to the cell, and paired with the
+// absence of 0.0% — a renderer that em-dashes every cell must not pass.
+func TestUsageModal_CacheHitIsBlankWithNoInputTokens(t *testing.T) {
+	m := newTestUsageModalModel(t)
+	m = m.Install(map[string]usage.TokenTotals{
+		"weave": {OutputTokens: 500, TotalCostUsd: 0.01},
+	}).Show()
+	got := m.View()
+	if cell := modalTableCell(t, got, "CACHE_HIT", "weave"); cell != "—" {
+		t.Errorf("weave CACHE_HIT = %q, want the em-dash placeholder:\n%s", cell, got)
+	}
+	if strings.Contains(got, "0.0%") {
+		t.Errorf("rendered 0.0%%, which claims the cache was consulted and missed:\n%s", got)
+	}
+}
+
+// modalTableCell returns the named column's cell on the row keyed by rowKey,
+// from inside the modal's lipgloss border. Border runes are stripped before
+// splitting; group keys are assumed free of whitespace.
+func modalTableCell(t *testing.T, view, col, rowKey string) string {
+	t.Helper()
+	strip := func(s string) []string {
+		return strings.Fields(strings.Trim(stripANSI(s), "│|─ "))
+	}
+	idx := -1
+	for _, ln := range strings.Split(view, "\n") {
+		fields := strip(ln)
+		if idx < 0 {
+			for i, h := range fields {
+				if h == col {
+					idx = i
+					break
+				}
+			}
+			continue
+		}
+		if len(fields) > idx && fields[0] == rowKey {
+			return fields[idx]
+		}
+	}
+	if idx < 0 {
+		t.Fatalf("column %q not found in view:\n%s", col, view)
+	}
+	t.Fatalf("row %q not found in view:\n%s", rowKey, view)
+	return ""
+}

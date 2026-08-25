@@ -253,7 +253,7 @@ func (m UsageModalModel) renderBody() string {
 	var sum usage.TokenTotals
 	switch m.view {
 	case usageViewTokens:
-		fmt.Fprintln(tw, "AGENT\tINPUT\tOUTPUT\tCACHE_READ\tCACHE_CREATE")
+		fmt.Fprintln(tw, "AGENT\tINPUT\tOUTPUT\tCACHE_HIT\tCACHE_CREATE")
 		for _, k := range keys {
 			t := m.totals[k]
 			sum.InputTokens += t.InputTokens
@@ -262,11 +262,11 @@ func (m UsageModalModel) renderBody() string {
 			sum.CacheCreationInputTokens += t.CacheCreationInputTokens
 			fmt.Fprintf(tw, "%s\t%s\t%s\t%s\t%s\n", k,
 				formatUsageTokens(t.InputTokens), formatUsageTokens(t.OutputTokens),
-				formatUsageTokens(t.CacheReadInputTokens), formatUsageTokens(t.CacheCreationInputTokens))
+				formatUsageCacheHitPct(t), formatUsageTokens(t.CacheCreationInputTokens))
 		}
 		fmt.Fprintf(tw, "TOTAL\t%s\t%s\t%s\t%s\n",
 			formatUsageTokens(sum.InputTokens), formatUsageTokens(sum.OutputTokens),
-			formatUsageTokens(sum.CacheReadInputTokens), formatUsageTokens(sum.CacheCreationInputTokens))
+			formatUsageCacheHitPct(sum), formatUsageTokens(sum.CacheCreationInputTokens))
 	case usageViewCost:
 		fmt.Fprintln(tw, "AGENT\tCOST")
 		for _, k := range keys {
@@ -276,7 +276,7 @@ func (m UsageModalModel) renderBody() string {
 		}
 		fmt.Fprintf(tw, "TOTAL\t%s\n", formatUsageCost(sum.TotalCostUsd))
 	case usageViewAll:
-		fmt.Fprintln(tw, "AGENT\tINPUT\tOUTPUT\tCACHE_READ\tCACHE_CREATE\tCOST")
+		fmt.Fprintln(tw, "AGENT\tINPUT\tOUTPUT\tCACHE_HIT\tCACHE_CREATE\tCOST")
 		for _, k := range keys {
 			t := m.totals[k]
 			sum.InputTokens += t.InputTokens
@@ -286,12 +286,12 @@ func (m UsageModalModel) renderBody() string {
 			sum.TotalCostUsd += t.TotalCostUsd
 			fmt.Fprintf(tw, "%s\t%s\t%s\t%s\t%s\t%s\n", k,
 				formatUsageTokens(t.InputTokens), formatUsageTokens(t.OutputTokens),
-				formatUsageTokens(t.CacheReadInputTokens), formatUsageTokens(t.CacheCreationInputTokens),
+				formatUsageCacheHitPct(t), formatUsageTokens(t.CacheCreationInputTokens),
 				formatUsageCost(t.TotalCostUsd))
 		}
 		fmt.Fprintf(tw, "TOTAL\t%s\t%s\t%s\t%s\t%s\n",
 			formatUsageTokens(sum.InputTokens), formatUsageTokens(sum.OutputTokens),
-			formatUsageTokens(sum.CacheReadInputTokens), formatUsageTokens(sum.CacheCreationInputTokens),
+			formatUsageCacheHitPct(sum), formatUsageTokens(sum.CacheCreationInputTokens),
 			formatUsageCost(sum.TotalCostUsd))
 	}
 	_ = tw.Flush()
@@ -338,6 +338,23 @@ func formatUsageTokens(n int) string {
 		return "-" + b.String()
 	}
 	return b.String()
+}
+
+// formatUsageCacheHitPct renders the share of input-side tokens served from the
+// prompt cache, as "98.7%", or "—" when there are no input-side tokens to take a
+// share of.
+//
+// Summed across turns, cache_read_input_tokens is roughly (context size × turn
+// count) — a proxy for turn count wearing the units of context size, which is
+// why the raw figure read as an implausible context beside INPUT (QUM-1258).
+// The rate is bounded 0-100 by construction, so it cannot be misread that way.
+// Output tokens are excluded: they are not served from the input cache.
+func formatUsageCacheHitPct(t usage.TokenTotals) string {
+	denom := t.InputTokens + t.CacheReadInputTokens + t.CacheCreationInputTokens
+	if denom <= 0 {
+		return "—"
+	}
+	return fmt.Sprintf("%.1f%%", 100*float64(t.CacheReadInputTokens)/float64(denom))
 }
 
 // formatUsageCost renders a USD float as "$0.0000".

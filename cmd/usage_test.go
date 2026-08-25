@@ -10,10 +10,12 @@ import (
 	"encoding/csv"
 	"encoding/json"
 	"flag"
+	"fmt"
 	"io"
 	"os"
 	"path/filepath"
 	"reflect"
+	"strconv"
 	"strings"
 	"sync"
 	"testing"
@@ -612,6 +614,197 @@ func TestRunUsageSummary_EmptyDir_FriendlyMessage(t *testing.T) {
 	}
 	if !strings.Contains(msg, "QUM-368") {
 		t.Errorf("expected QUM-368 reference, got %q", msg)
+	}
+}
+
+// --- cache hit rate (QUM-1258) ---
+
+func TestFormatCacheHitPct(t *testing.T) {
+	cases := []struct {
+		name string
+		t    usage.TokenTotals
+		want string
+	}{
+		{"no tokens at all", usage.TokenTotals{}, "—"},
+		{"everything from cache", usage.TokenTotals{CacheReadInputTokens: 100}, "100.0%"},
+		{"nothing from cache", usage.TokenTotals{InputTokens: 100, CacheCreationInputTokens: 50}, "0.0%"},
+		{
+			"realistic",
+			usage.TokenTotals{InputTokens: 421000, CacheReadInputTokens: 980000, CacheCreationInputTokens: 34000},
+			"68.3%",
+		},
+		{
+			// Output tokens are not part of the input-side denominator.
+			"output tokens excluded",
+			usage.TokenTotals{InputTokens: 100, CacheReadInputTokens: 100, OutputTokens: 999999},
+			"50.0%",
+		},
+	}
+	for _, tc := range cases {
+		if got := formatCacheHitPct(tc.t); got != tc.want {
+			t.Errorf("%s: formatCacheHitPct(%+v) = %q, want %q", tc.name, tc.t, got, tc.want)
+		}
+	}
+}
+
+// seedCacheHeavyFixture writes rows with the magnitudes this defect actually
+// produces in the wild: nearly the whole context is re-read from cache every
+// turn, so the summed cache-read figure dwarfs any real context size.
+func seedCacheHeavyFixture(t *testing.T, root string) {
+	t.Helper()
+	recs := make([]usage.Record, 0, 30)
+	for i := 0; i < 30; i++ {
+		recs = append(recs, mkRec(
+			fmt.Sprintf("2026-05-01T10:%02d:00Z", i), "alice", "s1", "sonnet",
+			2000, 500, 2_000_000, 1000, 0.01))
+	}
+	writeNDJSON(t, root, "alice", "s1", recs)
+}
+
+// TestRunUsageSummary_CacheReadIsNotRenderedAsATokenCount is the defect itself:
+// summed raw, cache_read reaches 60,000,000 for a single agent — a figure that
+// reads as an implausible context size sitting right next to INPUT.
+func TestRunUsageSummary_CacheReadIsNotRenderedAsATokenCount(t *testing.T) {
+	deps, out, _, root := newUsageDeps(t)
+	seedCacheHeavyFixture(t, root)
+
+	if err := runUsageSummary(deps, "tokens", "agent", "", "", true); err != nil {
+		t.Fatalf("runUsageSummary: %v", err)
+	}
+	got := out.String()
+	if strings.Contains(got, "60,000,000") {
+		t.Errorf("summary renders the raw summed cache-read total:\n%s\n"+
+			"60,000,000 is 30 turns × 2M re-reads, not a context size, and printing it beside "+
+			"INPUT invites exactly that misreading", got)
+	}
+	if !strings.Contains(got, "CACHE_HIT") {
+		t.Errorf("summary header = %q, want a CACHE_HIT column", strings.SplitN(got, "\n", 2)[0])
+	}
+	assertBoundedPercentages(t, got, "CACHE_HIT")
+}
+
+// TestRunUsageSummary_CacheHitTotalIsPooledNotMeanOfRows: the TOTAL row must
+// pool the numerators and denominators. Averaging the per-row percentages is
+// silently plausible and gives a different, wrong answer whenever the groups
+// have different volumes — which they always do.
+func TestRunUsageSummary_CacheHitTotalIsPooledNotMeanOfRows(t *testing.T) {
+	deps, out, _, root := newUsageDeps(t)
+	// alice: huge and cache-hot.  bob: tiny and entirely cache-cold.
+	writeNDJSON(t, root, "alice", "s1", []usage.Record{
+		mkRec("2026-05-01T10:00:00Z", "alice", "s1", "sonnet", 10_000, 100, 990_000, 0, 0.01),
+	})
+	writeNDJSON(t, root, "bob", "s1", []usage.Record{
+		mkRec("2026-05-01T11:00:00Z", "bob", "s1", "sonnet", 1000, 100, 0, 0, 0.01),
+	})
+
+	if err := runUsageSummary(deps, "tokens", "agent", "", "", true); err != nil {
+		t.Fatalf("runUsageSummary: %v", err)
+	}
+	got := out.String()
+	// Pooled: 990000 / (11000 + 990000) = 98.9%.
+	// Mean of rows: (99.0 + 0.0) / 2 = 49.5% — the wrong answer.
+	// Read the TOTAL row's own cell: a bare Contains over the whole table would
+	// also be satisfied by a per-row cell holding the pooled figure.
+	if cell := usageTableCell(t, got, "CACHE_HIT", "TOTAL"); cell != "98.9%" {
+		t.Errorf("TOTAL CACHE_HIT = %q, want the pooled 98.9%%:\n%s\n"+
+			"49.5%% would be the arithmetic mean of the per-agent rates; a rate must be "+
+			"pooled over the underlying counts, not averaged over groups", cell, got)
+	}
+}
+
+// TestRunUsageSummary_ByAllRendersCacheHit pins the --by all renderer, which is
+// a second copy of the column layout and would otherwise be unguarded.
+func TestRunUsageSummary_ByAllRendersCacheHit(t *testing.T) {
+	deps, out, _, root := newUsageDeps(t)
+	seedCacheHeavyFixture(t, root)
+
+	if err := runUsageSummary(deps, "all", "agent", "", "", true); err != nil {
+		t.Fatalf("runUsageSummary: %v", err)
+	}
+	got := out.String()
+	if strings.Contains(got, "60,000,000") {
+		t.Errorf("--by all renders the raw summed cache-read total:\n%s", got)
+	}
+	assertBoundedPercentages(t, got, "CACHE_HIT")
+	// The cost column must survive the layout change.
+	if !strings.Contains(got, "$0.3000") {
+		t.Errorf("--by all lost the COST column (want $0.3000 = 30 × $0.01):\n%s", got)
+	}
+}
+
+// usageTableCell returns the named column's cell on the row whose first field is
+// rowKey. Assumes no group key contains whitespace, which holds for the
+// agent/model/session/day keys and for TOTAL.
+func usageTableCell(t *testing.T, table, col, rowKey string) string {
+	t.Helper()
+	lines := strings.Split(strings.TrimRight(table, "\n"), "\n")
+	if len(lines) < 2 {
+		t.Fatalf("table has no data rows: %q", table)
+	}
+	idx := -1
+	for i, h := range strings.Fields(lines[0]) {
+		if h == col {
+			idx = i
+		}
+	}
+	if idx < 0 {
+		t.Fatalf("column %q not found in header %q", col, lines[0])
+	}
+	for _, ln := range lines[1:] {
+		fields := strings.Fields(ln)
+		if len(fields) > idx && fields[0] == rowKey {
+			return fields[idx]
+		}
+	}
+	t.Fatalf("row %q not found in table:\n%s", rowKey, table)
+	return ""
+}
+
+// assertBoundedPercentages checks every value in the named column is a
+// percentage in [0,100] (or the em-dash placeholder). This is what makes the
+// chosen presentation impossible to misread as a context size, rather than
+// merely unlikely to be, for the fixture at hand.
+func assertBoundedPercentages(t *testing.T, table, col string) {
+	t.Helper()
+	lines := strings.Split(strings.TrimRight(table, "\n"), "\n")
+	if len(lines) < 2 {
+		t.Fatalf("table has no data rows: %q", table)
+	}
+	idx := -1
+	for i, h := range strings.Fields(lines[0]) {
+		if h == col {
+			idx = i
+			break
+		}
+	}
+	if idx < 0 {
+		t.Fatalf("column %q not found in header %q", col, lines[0])
+	}
+	// Field-splitting assumes no group key contains whitespace — true of the
+	// agent/model/session/day keys this renders.
+	for _, ln := range lines[1:] {
+		fields := strings.Fields(ln)
+		if len(fields) <= idx {
+			t.Errorf("row %q has no column %d", ln, idx)
+			continue
+		}
+		cell := fields[idx]
+		if cell == "—" {
+			continue
+		}
+		if !strings.HasSuffix(cell, "%") {
+			t.Errorf("row %q: %s cell %q is not a percentage", ln, col, cell)
+			continue
+		}
+		v, err := strconv.ParseFloat(strings.TrimSuffix(cell, "%"), 64)
+		if err != nil {
+			t.Errorf("row %q: %s cell %q does not parse: %v", ln, col, cell, err)
+			continue
+		}
+		if v < 0 || v > 100 {
+			t.Errorf("row %q: %s = %v, outside [0,100] — the whole point of a rate is that it "+
+				"cannot be mistaken for a token count", ln, col, v)
+		}
 	}
 }
 
