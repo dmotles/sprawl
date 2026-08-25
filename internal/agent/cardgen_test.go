@@ -83,7 +83,7 @@ func TestGenerateSeedCards(t *testing.T) {
 			description: "Hands-on builder. Writes code and tests under a mandatory TDD workflow.",
 			model:       "opus",
 			effort:      "low",
-			body:        tokenize(t, BuildEngineerPrompt(sentAgent, sentParent, sentBranch, env), sentAgent, sentParent, sentBranch),
+			body:        tokenize(t, legacyBuildEngineerPrompt(sentAgent, sentParent, sentBranch, env), sentAgent, sentParent, sentBranch),
 		},
 		{
 			file:        "legacy-manager.md",
@@ -92,7 +92,7 @@ func TestGenerateSeedCards(t *testing.T) {
 			description: "Decomposes work, dispatches child agents, and integrates their branches.",
 			model:       "opus[1m]",
 			effort:      "low",
-			body:        tokenize(t, BuildManagerPrompt(sentAgent, sentParent, sentBranch, sentFamily, env), sentAgent, sentParent, sentBranch, sentFamily),
+			body:        tokenize(t, legacyBuildManagerPrompt(sentAgent, sentParent, sentBranch, sentFamily, env), sentAgent, sentParent, sentBranch, sentFamily),
 		},
 		{
 			file:        "legacy-researcher.md",
@@ -101,7 +101,7 @@ func TestGenerateSeedCards(t *testing.T) {
 			description: "Read-only investigator. Produces findings documents, not code changes.",
 			model:       "opus",
 			effort:      "low",
-			body:        tokenize(t, BuildResearcherPrompt(sentAgent, sentParent, sentBranch, env), sentAgent, sentParent, sentBranch),
+			body:        tokenize(t, legacyBuildResearcherPrompt(sentAgent, sentParent, sentBranch, env), sentAgent, sentParent, sentBranch),
 		},
 		{
 			file:        "legacy-qa.md",
@@ -110,7 +110,7 @@ func TestGenerateSeedCards(t *testing.T) {
 			description: "Verifies acceptance criteria against a branch and returns a per-AC verdict.",
 			model:       "opus",
 			effort:      "low",
-			body:        tokenize(t, BuildQAPrompt(sentAgent, sentParent, sentBranch, env), sentAgent, sentParent, sentBranch),
+			body:        tokenize(t, legacyBuildQAPrompt(sentAgent, sentParent, sentBranch, env), sentAgent, sentParent, sentBranch),
 		},
 	}
 

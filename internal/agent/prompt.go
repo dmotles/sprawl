@@ -251,8 +251,17 @@ func BuildRootPrompt(cfg PromptConfig) string {
 	return base
 }
 
-// BuildEngineerPrompt constructs the system prompt for an engineer agent.
-func BuildEngineerPrompt(agentName, parentName, branchName string, env EnvConfig) string {
+// The four legacyBuild*Prompt functions below assemble a role's system prompt
+// from the Go constants in this file. They are no longer the production path —
+// Build*Prompt renders the equivalent card from internal/card/seeds — and they
+// survive only so TestLegacyVariantGoldens_CameFromTheConstantAssembly can
+// certify that the variant goldens under testdata/ came from this assembly and
+// not from the card pipeline they constrain. Once that provenance is recorded,
+// they and the constants they read are deleted; the goldens outlive them and
+// TestLegacyCards_VariantArmsMatchTheGoldens keeps reading them.
+//
+// legacyBuildEngineerPrompt is the pre-card assembly of the engineer prompt.
+func legacyBuildEngineerPrompt(agentName, parentName, branchName string, env EnvConfig) string {
 	sections := []string{
 		engineerIdentitySection(agentName, parentName, branchName),
 		engineerTDDSection(parentName),
@@ -295,8 +304,8 @@ func envContextBlock(branchName string, env EnvConfig) string {
 	return b.String()
 }
 
-// BuildResearcherPrompt constructs the system prompt for a researcher agent.
-func BuildResearcherPrompt(agentName, parentName, branchName string, env EnvConfig) string {
+// legacyBuildResearcherPrompt is the pre-card assembly of the researcher prompt.
+func legacyBuildResearcherPrompt(agentName, parentName, branchName string, env EnvConfig) string {
 	sections := []string{
 		researcherIdentitySection(agentName, parentName, branchName),
 		researcherDocumentingSection(agentName),
@@ -317,8 +326,8 @@ func BuildResearcherPrompt(agentName, parentName, branchName string, env EnvConf
 	return prompt
 }
 
-// BuildQAPrompt constructs the system prompt for a QA agent.
-func BuildQAPrompt(agentName, parentName, branchName string, env EnvConfig) string {
+// legacyBuildQAPrompt is the pre-card assembly of the qa prompt.
+func legacyBuildQAPrompt(agentName, parentName, branchName string, env EnvConfig) string {
 	sections := []string{
 		qaIdentitySection(agentName, parentName, branchName),
 		childSystemSection,
@@ -340,8 +349,8 @@ func BuildQAPrompt(agentName, parentName, branchName string, env EnvConfig) stri
 	return result
 }
 
-// BuildManagerPrompt constructs the system prompt for a manager agent.
-func BuildManagerPrompt(agentName, parentName, branchName, family string, env EnvConfig) string {
+// legacyBuildManagerPrompt is the pre-card assembly of the manager prompt.
+func legacyBuildManagerPrompt(agentName, parentName, branchName, family string, env EnvConfig) string {
 	sections := []string{
 		managerIdentitySection(agentName, parentName, branchName, family),
 		managerDecompositionSection,

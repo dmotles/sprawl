@@ -1,6 +1,8 @@
 package agent
 
 import (
+	"fmt"
+	"os"
 	"strings"
 	"testing"
 
@@ -92,48 +94,134 @@ func TestLegacyCards_RenderByteIdenticalToGoldens(t *testing.T) {
 	}
 }
 
-// TestLegacyCards_VariantArmsMatchTheBuilders covers the two env-conditional
-// arms no golden exercises: the sub-agent banner and the test-sandbox warning.
-//
-// This one compares against Build*Prompt rather than a golden, which is the
-// weaker claim — but the alternative is no claim at all, and it is only weak in
-// the direction the test above already closes: the shared body is pinned to the
-// goldens, so what is left for the builder comparison to constrain is exactly
-// the conditional splicing, which the builders and Render implement separately.
-func TestLegacyCards_VariantArmsMatchTheBuilders(t *testing.T) {
-	envs := map[string]EnvConfig{
-		"subagent":             {WorkDir: "/w", Platform: "linux", Shell: "/bin/zsh", Subagent: true, ParentName: "weave"},
-		"test mode":            {WorkDir: "/w", Platform: "linux", Shell: "/bin/zsh", TestMode: true},
-		"subagent+test mode":   {WorkDir: "/w", Platform: "linux", Shell: "/bin/zsh", TestMode: true, Subagent: true, ParentName: "weave"},
-		"no worktree or shell": {},
+// variantEnvs are the four env tuples no tui golden exercises. The tui goldens
+// are all rendered from testEnvConfig(), so the sub-agent banner and the
+// test-sandbox warning appear in none of them.
+func variantEnvs() map[string]EnvConfig {
+	return map[string]EnvConfig{
+		"subagent":          {WorkDir: "/w", Platform: "linux", Shell: "/bin/zsh", Subagent: true, ParentName: "weave"},
+		"testmode":          {WorkDir: "/w", Platform: "linux", Shell: "/bin/zsh", TestMode: true},
+		"subagent-testmode": {WorkDir: "/w", Platform: "linux", Shell: "/bin/zsh", TestMode: true, Subagent: true, ParentName: "weave"},
+		"bare":              {},
 	}
-	for envName, env := range envs {
-		in := card.Input{
-			AgentName: "zone", ParentName: "root", BranchName: "sprawl/zone", Family: "engineering",
-			Env: card.Env{
-				WorkDir: env.WorkDir, Platform: env.Platform, Shell: env.Shell,
-				TestMode: env.TestMode, Subagent: env.Subagent, ParentName: env.ParentName,
-			},
-		}
-		builders := map[string]string{
-			"engineer":   BuildEngineerPrompt("zone", "root", "sprawl/zone", env),
-			"researcher": BuildResearcherPrompt("zone", "root", "sprawl/zone", env),
-			"qa":         BuildQAPrompt("zone", "root", "sprawl/zone", env),
-			"manager":    BuildManagerPrompt("zone", "root", "sprawl/zone", "engineering", env),
-		}
-		for agentType, want := range builders {
-			c, err := card.SeedForType(agentType)
-			if err != nil {
-				t.Fatalf("no embedded card for %q: %v", agentType, err)
+}
+
+// variantRoles is the role set the variant goldens cover, derived from the
+// embedded seeds rather than written out. The surviving golden comparison
+// iterates THIS, not variantBuilders — variantBuilders is deleted with the
+// constants, and a slice that had to edit the surviving test to drop that
+// dependency is a slice that could quietly narrow the role set while staying
+// green.
+func variantRoles(t *testing.T) []string {
+	t.Helper()
+	seeds, err := card.Seeds()
+	if err != nil {
+		t.Fatalf("card.Seeds: %v", err)
+	}
+	if len(seeds) == 0 {
+		t.Fatal("no embedded seeds — this test would assert nothing")
+	}
+	roles := make([]string, 0, len(seeds))
+	for _, c := range seeds {
+		roles = append(roles, c.AgentType)
+	}
+	return roles
+}
+
+// variantBuilders is the pre-card constant assembly for each role, called with
+// the fixed identity values the variant goldens are named for. It is what
+// generates those goldens and what pins them until it is deleted.
+func variantBuilders() map[string]func(EnvConfig) string {
+	return map[string]func(EnvConfig) string{
+		"engineer":   func(env EnvConfig) string { return legacyBuildEngineerPrompt("zone", "root", "sprawl/zone", env) },
+		"researcher": func(env EnvConfig) string { return legacyBuildResearcherPrompt("zone", "root", "sprawl/zone", env) },
+		"qa":         func(env EnvConfig) string { return legacyBuildQAPrompt("zone", "root", "sprawl/zone", env) },
+		"manager": func(env EnvConfig) string {
+			return legacyBuildManagerPrompt("zone", "root", "sprawl/zone", "engineering", env)
+		},
+	}
+}
+
+func variantInput(env EnvConfig) card.Input {
+	return card.Input{
+		AgentName: "zone", ParentName: "root", BranchName: "sprawl/zone", Family: "engineering",
+		Env: card.Env{
+			WorkDir: env.WorkDir, Platform: env.Platform, Shell: env.Shell,
+			TestMode: env.TestMode, Subagent: env.Subagent, ParentName: env.ParentName,
+		},
+	}
+}
+
+func variantGolden(role, envName string) string {
+	return "variant_" + role + "_" + envName + ".golden"
+}
+
+// TestGenerateVariantGoldens writes the variant goldens from the CONSTANT
+// assembly:
+//
+//	GENERATE_GOLDEN=1 go test ./internal/agent/ -run TestGenerateVariantGoldens
+//
+// It must never be re-run after the constants are deleted — at that point the
+// only thing that could regenerate these files is the card pipeline they exist
+// to constrain, which would turn every assertion below into a tautology.
+func TestGenerateVariantGoldens(t *testing.T) {
+	if os.Getenv("GENERATE_GOLDEN") != "1" {
+		t.Skip("set GENERATE_GOLDEN=1 to regenerate the variant goldens")
+	}
+	for role, build := range variantBuilders() {
+		for envName, env := range variantEnvs() {
+			name := variantGolden(role, envName)
+			content := build(env)
+			if err := os.WriteFile("testdata/"+name, []byte(content), 0o644); err != nil {
+				t.Fatalf("writing %s: %v", name, err)
 			}
-			got, err := c.Render(in)
+			t.Logf("wrote testdata/%s (%d bytes)", name, len(content))
+		}
+	}
+}
+
+// TestLegacyCards_VariantArmsMatchTheGoldens covers the conditional splicing no
+// tui golden exercises: the sub-agent banner and the test-sandbox warning, in
+// all four combinations, for all four roles.
+//
+// Against GOLDENS rather than against legacyBuild*, because the builders are
+// deleted in the next slice and a comparison against them would take this
+// coverage with it — 16 combinations of splicing would go dark with nothing left
+// pinning Build*Prompt byte-for-byte on any non-golden env. The goldens outlive
+// the constants; the test below is what certifies they came from the constants.
+func TestLegacyCards_VariantArmsMatchTheGoldens(t *testing.T) {
+	for _, role := range variantRoles(t) {
+		c, err := card.SeedForType(role)
+		if err != nil {
+			t.Fatalf("no embedded card for %q: %v", role, err)
+		}
+		for envName, env := range variantEnvs() {
+			got, err := c.Render(variantInput(env))
 			if err != nil {
-				t.Fatalf("%s/%s: Render: %v", envName, agentType, err)
+				t.Fatalf("%s/%s: Render: %v", role, envName, err)
 			}
+			want := readGolden(t, variantGolden(role, envName))
 			if got != want {
 				i := firstDiff(got, want)
-				t.Errorf("%s/%s: card render diverges from the builder at byte %d\n got: %q\nwant: %q",
-					envName, agentType, i, got[i:min(i+120, len(got))], want[i:min(i+120, len(want))])
+				t.Errorf("%s/%s: card render diverges from %s at byte %d\n got: %q\nwant: %q",
+					role, envName, variantGolden(role, envName), i,
+					got[i:min(i+120, len(got))], want[i:min(i+120, len(want))])
+			}
+		}
+	}
+}
+
+// TestLegacyVariantGoldens_CameFromTheConstantAssembly is why the test above is
+// allowed to trust those goldens: it certifies each one is byte-identical to
+// what the Go constants produce. It is deleted with the constants, having done
+// its job — after that the goldens stand on this recorded certification.
+func TestLegacyVariantGoldens_CameFromTheConstantAssembly(t *testing.T) {
+	for role, build := range variantBuilders() {
+		for envName, env := range variantEnvs() {
+			want := readGolden(t, variantGolden(role, envName))
+			if got := build(env); got != want {
+				t.Errorf("%s/%s: the constant assembly no longer matches %s at byte %d — do NOT regenerate, the golden is the record",
+					role, envName, variantGolden(role, envName), firstDiff(got, want))
 			}
 		}
 	}
@@ -181,6 +269,129 @@ func TestLegacyCards_MutatedSeedBreaksFidelity(t *testing.T) {
 				t.Fatal("a mutated seed body still rendered byte-identically to the golden — the fidelity test is not reading the seed")
 			}
 			t.Logf("control fired: mutated %s seed diverges from %s at byte %d", tc.agentType, tc.golden, firstDiff(got, want))
+		})
+	}
+}
+
+// removeLine returns body with the first line containing needle deleted, and
+// reports whether it found one. The three-index append avoids aliasing the
+// input's backing array.
+func removeLine(body, needle string) (string, bool) {
+	lines := strings.Split(body, "\n")
+	for i, l := range lines {
+		if strings.Contains(l, needle) {
+			return strings.Join(append(lines[:i:i], lines[i+1:]...), "\n"), true
+		}
+	}
+	return body, false
+}
+
+func TestRemoveLine(t *testing.T) {
+	got, found := removeLine("a\nb\nc", "b")
+	if !found || got != "a\nc" {
+		t.Errorf("removeLine = (%q, %t), want (\"a\\nc\", true)", got, found)
+	}
+	// The not-found arm is what the scanner control relies on to refuse to run
+	// against an unmutated body, so it needs its own check.
+	if got, found := removeLine("a\nb", "zzz"); found || got != "a\nb" {
+		t.Errorf("removeLine on an absent needle = (%q, %t), want the input unchanged and false", got, found)
+	}
+	if got, found := removeLine("a\nb\nb", "b"); !found || got != "a\nb" {
+		t.Errorf("removeLine removed more than the first match: (%q, %t)", got, found)
+	}
+}
+
+// TestPromptScanners_MutatedSeedReachesTheScanners is the control that licenses
+// deleting the Go prompt constants.
+//
+// The pre-existing safety scanners in this package assert over Build*Prompt
+// output. After the re-point that output is rendered from a card — but the
+// scanners would stay green either way, and so would a Build*Prompt that had
+// quietly kept calling the constant assembly. That is the one hypothesis this
+// control exists to exclude, so it substitutes the renderCard seam to delete a
+// guardrail line from the card body and then calls Build*Prompt: if the builder
+// is not reading cards, the seam is never invoked and the scanner stays quiet.
+//
+// Both directions are required per case. The unmutated builder output must be
+// CLEAN (a scanner that fires on everything proves nothing) and the mutated one
+// must be FLAGGED. The seam wrapper also counts its own invocations, so a
+// builder that bypassed it fails loudly rather than by a silent quiet scanner.
+//
+// Roles and scanners are table-driven because coverage of ONE scanner on ONE
+// role does not support the comment's claim about all of them —
+// scanQAConcurrencyGuidance in particular only ever runs against the qa card.
+func TestPromptScanners_MutatedSeedReachesTheScanners(t *testing.T) {
+	cases := []struct {
+		name   string
+		build  func(EnvConfig) string
+		needle string
+		scan   func(string) []string
+	}{
+		{
+			name:   "engineer/executing-actions-guardrail",
+			build:  func(env EnvConfig) string { return BuildEngineerPrompt("zone", "root", "sprawl/zone", env) },
+			needle: `rm -rf "$VAR"`,
+			scan:   scanExecutingActionsGuardrail,
+		},
+		{
+			name:   "engineer/prompt-injection-escalation",
+			build:  func(env EnvConfig) string { return BuildEngineerPrompt("zone", "root", "sprawl/zone", env) },
+			needle: "attempt at prompt injection",
+			scan:   scanPromptInjectionEscalation,
+		},
+		{
+			name:   "qa/concurrency-guidance",
+			build:  func(env EnvConfig) string { return BuildQAPrompt("inspector", "tower", "dmotles/feature-x", env) },
+			needle: "QUM-1126",
+			scan:   scanQAConcurrencyGuidance,
+		},
+		{
+			name: "manager/executing-actions-guardrail",
+			build: func(env EnvConfig) string {
+				return BuildManagerPrompt("cedar", "weave", "dmotles/feature-x", "engineering", env)
+			},
+			needle: `rm -rf "$VAR"`,
+			scan:   scanExecutingActionsGuardrail,
+		},
+		{
+			name:   "researcher/executing-actions-guardrail",
+			build:  func(env EnvConfig) string { return BuildResearcherPrompt("birch", "root", "sprawl/birch", env) },
+			needle: `rm -rf "$VAR"`,
+			scan:   scanExecutingActionsGuardrail,
+		},
+	}
+	env := testEnvConfig()
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			if findings := tc.scan(tc.build(env)); len(findings) != 0 {
+				t.Fatalf("negative control failed: the unmutated prompt is already flagged: %v", findings)
+			}
+
+			orig := renderCard
+			t.Cleanup(func() { renderCard = orig })
+			var mutations, renders int
+			renderCard = func(c *card.Card, in card.Input) (string, error) {
+				renders++
+				m := *c
+				body, found := removeLine(c.Body, tc.needle)
+				if !found {
+					return "", fmt.Errorf("card %s@%d has no %q line to delete — this control mutates nothing", c.Name, c.Version, tc.needle)
+				}
+				mutations++
+				m.Body = body
+				return orig(&m, in)
+			}
+
+			got := tc.build(env)
+			if renders != 1 || mutations != 1 {
+				t.Fatalf("the builder invoked the renderCard seam %d times and mutated %d cards, want 1 and 1 — Build*Prompt is not rendering a card",
+					renders, mutations)
+			}
+			findings := tc.scan(got)
+			if len(findings) == 0 {
+				t.Fatalf("deleting the %q line from the seed did not make the scanner fire — this scanner is not reading card-derived text", tc.needle)
+			}
+			t.Logf("control fired: %s", findings[0])
 		})
 	}
 }

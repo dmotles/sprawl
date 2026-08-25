@@ -7,8 +7,6 @@ import (
 	"os"
 	"path/filepath"
 	"testing"
-
-	"github.com/dmotles/sprawl/internal/rootinit"
 )
 
 // wantSeeds pins, PER TYPE, the metadata each legacy card must carry.
@@ -17,10 +15,10 @@ import (
 // gained a junk seed still has four cards, and a `len(cards) >= 4` floor is
 // satisfied by exactly the corruption it is supposed to catch.
 //
-// The models are asserted against rootinit.ModelForAgentType rather than
-// written out here. That mapping is what spawn uses today, so the extraction is
-// only lossless if the cards agree with it — and hand-copying "opus[1m]" into
-// this table would make the assertion agree with itself.
+// The model each card must carry is NOT here: asserting it needs
+// rootinit.ModelForAgentType, and internal/rootinit imports internal/agent,
+// which imports this package. That claim lives in internal/agent as
+// TestLegacyCards_MetadataMatchesTheBehaviourItReplaces.
 var wantSeeds = map[string]struct {
 	cardName string
 	version  int
@@ -43,31 +41,6 @@ func TestSeeds_EveryEmbeddedCardParses(t *testing.T) {
 		}
 		if c.ContentSHA256 == "" {
 			t.Errorf("%s@%d: no content hash", c.Name, c.Version)
-		}
-	}
-}
-
-// TestSeeds_MetadataMatchesTheBehaviourItReplaces is the metadata half of the
-// extraction-fidelity claim. The prompt BODY is pinned byte-for-byte by
-// internal/agent's golden comparison; nothing there looks at the frontmatter,
-// so a card that quietly demoted the manager off its 1M-context model would
-// pass every other test in this diff.
-func TestSeeds_MetadataMatchesTheBehaviourItReplaces(t *testing.T) {
-	for agentType, want := range wantSeeds {
-		c, err := SeedForType(agentType)
-		if err != nil {
-			t.Errorf("SeedForType(%q): %v", agentType, err)
-			continue
-		}
-		if c.Name != want.cardName || c.Version != want.version {
-			t.Errorf("%s: got card %s@%d, want %s@%d", agentType, c.Name, c.Version, want.cardName, want.version)
-		}
-		if wantModel := rootinit.ModelForAgentType(agentType); c.Model != wantModel {
-			t.Errorf("%s: card model %q does not match the model spawn uses today (%q) — the extraction changed behaviour",
-				agentType, c.Model, wantModel)
-		}
-		if c.Effort != want.effort {
-			t.Errorf("%s: card effort %q, want %q", agentType, c.Effort, want.effort)
 		}
 	}
 }
@@ -152,5 +125,31 @@ func TestSeedForType_PrefersTheHighestVersion(t *testing.T) {
 	}
 	if got := pickHighest(cards, "qa"); got != nil {
 		t.Errorf("pickHighest invented a card for an absent type: %v", got)
+	}
+}
+
+// TestSeeds_MetadataMatchesTheTable pins the card name, version and effort each
+// agent type resolves to. It is the routing half of the metadata claim: a
+// misrouted SeedForType still returns a real, well-formed card, so every
+// body-level test in this package passes. The AgentType assertion covers the
+// second way that can go wrong — a card whose frontmatter agent_type disagrees
+// with the type it was served for, which the card-name check alone would miss
+// if the seed file itself carried the wrong type.
+func TestSeeds_MetadataMatchesTheTable(t *testing.T) {
+	for agentType, want := range wantSeeds {
+		c, err := SeedForType(agentType)
+		if err != nil {
+			t.Errorf("SeedForType(%q): %v", agentType, err)
+			continue
+		}
+		if c.Name != want.cardName || c.Version != want.version {
+			t.Errorf("%s: got card %s@%d, want %s@%d", agentType, c.Name, c.Version, want.cardName, want.version)
+		}
+		if c.AgentType != agentType {
+			t.Errorf("%s: resolved a card whose agent_type is %q", agentType, c.AgentType)
+		}
+		if c.Effort != want.effort {
+			t.Errorf("%s: card effort %q, want %q", agentType, c.Effort, want.effort)
+		}
 	}
 }
