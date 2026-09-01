@@ -134,3 +134,43 @@ func (r *PgGoalReader) EventsByWorkflowInstance(ctx context.Context, projectID, 
 	}
 	return scanDispatchedEvents(rows, r.Registry)
 }
+
+// goalReader builds a reader bound to this Ledger's pool and registry.
+//
+// A disabled or degraded Ledger is REFUSED here rather than answered with an
+// empty set. "You own no open goals" is a legitimate answer that an agent will
+// act on — it means the work is done — so a store that cannot reach Postgres
+// must not be able to produce it. nil *Ledger IS the disabled state, since Open
+// returns (nil, nil) when the flag is off, and Enabled is nil-safe.
+func (l *Ledger) goalReader() (*PgGoalReader, error) {
+	if !l.Enabled() {
+		return nil, fmt.Errorf("store: the event log is disabled on this host, so it cannot answer questions about goals; enable it with `sprawl config set event_log.enabled true`")
+	}
+	if l.degradedErr != nil {
+		return nil, fmt.Errorf("store: the event log is unreachable, so a goal read would report absence it cannot establish: %w", l.degradedErr)
+	}
+	return &PgGoalReader{Pool: l.pool, Registry: l.registry}, nil
+}
+
+// OpenGoalsForAgent answers "what goal am I working on?" for one agent.
+//
+// Lives on the Ledger rather than only on PgGoalReader because the project id
+// is the one argument a caller must never choose. An MCP tool that picked its
+// own would happily return another repo's goals, and nothing in the result
+// would say so.
+func (l *Ledger) OpenGoalsForAgent(ctx context.Context, agent string) ([]AgentGoal, error) {
+	r, err := l.goalReader()
+	if err != nil {
+		return nil, err
+	}
+	return r.OpenGoalsForAgent(ctx, l.projectID, agent)
+}
+
+// EventsByWorkflowInstance answers "what has happened on my goal?".
+func (l *Ledger) EventsByWorkflowInstance(ctx context.Context, workflowID uuid.UUID, afterSeq int64, limit int) ([]DispatchedEvent, error) {
+	r, err := l.goalReader()
+	if err != nil {
+		return nil, err
+	}
+	return r.EventsByWorkflowInstance(ctx, l.projectID, workflowID, afterSeq, limit)
+}

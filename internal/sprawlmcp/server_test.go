@@ -354,6 +354,9 @@ func TestServer_ToolsList(t *testing.T) {
 		"messages_peek",
 		"ask_user_question",
 		"toast",
+		// QUM-1252: the M3a goal read tools.
+		"reread_my_goal",
+		"get_workflow_log",
 	}
 	// QUM-606: under the sprawl_test build tag, `_test_induce_wedge`
 	// is appended by the inject seam. injectExpectedToolNames is empty

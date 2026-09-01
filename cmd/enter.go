@@ -48,6 +48,7 @@ import (
 	"github.com/dmotles/sprawl/internal/sprawlmcp"
 	"github.com/dmotles/sprawl/internal/sprawlmcp/calllog"
 	"github.com/dmotles/sprawl/internal/state"
+	"github.com/dmotles/sprawl/internal/store"
 	"github.com/dmotles/sprawl/internal/supervisor"
 	"github.com/dmotles/sprawl/internal/supervisor/liveness"
 	"github.com/dmotles/sprawl/internal/tui"
@@ -324,6 +325,20 @@ func resolveEnterDeps() *enterDeps {
 			// re-loading here would swallow a parse error in the TUI launch path,
 			// which is exactly where a broken config costs you the main guards.
 			mcpServer.WithConfig(cfg)
+			// QUM-1252: the goal read tools. store.Process is memoized, so this
+			// is the same Ledger the runtime launcher already opened, and a
+			// disabled store returns (nil, nil) — WithGoals still takes it,
+			// because Enabled() is nil-safe and is what gates the tools.
+			//
+			// An open FAILURE is logged and dropped rather than failing the
+			// session: weave without an event log is the default configuration,
+			// and refusing to start a TUI over it would make a misconfigured
+			// DSN look like a broken product.
+			if ledger, err := store.Process(context.Background(), sprawlRoot); err != nil {
+				fmt.Fprintf(os.Stderr, "[enter] event log unavailable, goal tools will report it as off: %v\n", err)
+			} else {
+				mcpServer.WithGoals(ledger)
+			}
 			childBridge := host.NewMCPBridge()
 			childBridge.Register("sprawl", mcpServer)
 			sup.SetChildMCPConfig(

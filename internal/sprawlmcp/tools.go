@@ -349,6 +349,36 @@ func baseToolDefinitions() []map[string]any {
 			},
 		},
 		{
+			"name":        "reread_my_goal",
+			"description": "Re-read the goal you were spawned to work on, straight from the event log. Use this when you have lost the thread, after a compaction, or before reporting a result — your prompt is a copy made at spawn time, the log is the current truth. Takes no arguments: the caller is identified by the session. Returns each open goal's goal_event_id (the id a close must reference) and workflow_instance_id (the id get_workflow_log takes). Requires the event log to be enabled on this host.",
+			"inputSchema": map[string]any{
+				"type":       "object",
+				"properties": map[string]any{},
+			},
+		},
+		{
+			"name":        "get_workflow_log",
+			"description": "Read one workflow instance's history from the event log, oldest first. Pass the workflow_instance_id from reread_my_goal. Paged: pass the returned next_seq as after_seq to continue, and check `truncated` — a full page does NOT mean the history ended. Requires the event log to be enabled on this host.",
+			"inputSchema": map[string]any{
+				"type": "object",
+				"properties": map[string]any{
+					"workflow_instance_id": map[string]any{
+						"type":        "string",
+						"description": "UUID of the workflow instance, as returned by reread_my_goal.",
+					},
+					"after_seq": map[string]any{
+						"type":        "integer",
+						"description": "Return only events after this sequence number. Optional; defaults to 0 (from the beginning).",
+					},
+					"limit": map[string]any{
+						"type":        "integer",
+						"description": "Maximum events to return. Optional; defaults to 100, clamped to 500.",
+					},
+				},
+				"required": []string{"workflow_instance_id"},
+			},
+		},
+		{
 			"name":        "kill",
 			"description": "Emergency stop an agent process. Preserves state and worktree for inspection.",
 			"inputSchema": map[string]any{

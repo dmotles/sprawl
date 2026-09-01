@@ -66,6 +66,7 @@ type Server struct {
 	callLog   *calllog.Logger
 	msgSender atomic.Pointer[MsgSender] // QUM-497: TUI in-flight indicator hook
 	cfg       *config.Config            // QUM-722: project config for pause defaults; may be nil
+	goals     GoalSource                // QUM-1252: event-log reads for the goal tools; nil means the store is off
 	// QUM-1154 test seams. Nil-defaulting per the repo DI pattern: production
 	// always reads the real process image and the real clock.
 	imageFn func() buildinfo.ImageStatus
@@ -288,6 +289,10 @@ func (s *Server) dispatchTool(ctx context.Context, name string, args json.RawMes
 		return s.toolAskUserQuestion(ctx, args)
 	case "toast":
 		return s.toolToast(ctx, args)
+	case "reread_my_goal":
+		return s.toolRereadMyGoal(ctx)
+	case "get_workflow_log":
+		return s.toolGetWorkflowLog(ctx, args)
 	case "_test_sleep":
 		if !testToolsEnabled() {
 			return "", &unknownToolError{name: name}

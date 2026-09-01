@@ -1,8 +1,12 @@
 package store
 
 import (
+	"context"
+	"errors"
 	"strings"
 	"testing"
+
+	"github.com/google/uuid"
 )
 
 // Statement-shape tests for the goal reader, following the convention set by
@@ -77,5 +81,46 @@ func TestEventsByWorkflowInstanceSQL_SelectsTheSameColumnsAsTheCatchUpScan(t *te
 	got, want := cols(eventsByInstanceSQL), cols(eventScanSQL)
 	if got != want {
 		t.Errorf("the by-instance scan selects different columns than the catch-up scan, so they cannot share a scan helper:\n by-instance: %s\n   catch-up: %s", got, want)
+	}
+}
+
+// The Ledger-level gate. Each of these three states would otherwise answer
+// "you own no open goals" — a legitimate result that means the work is done —
+// so an agent could not tell a finished goal from a store that never looked.
+//
+// Each case is checked against BOTH methods, because the gate is per-method and
+// a reader wired into one and not the other is exactly the shape review misses.
+func TestLedgerGoalReads_RefuseWhenTheStoreCannotAnswer(t *testing.T) {
+	for _, tc := range []struct {
+		name   string
+		ledger *Ledger
+		want   string
+	}{
+		{"nil ledger is the disabled store", nil, "disabled"},
+		{"explicitly disabled", &Ledger{}, "disabled"},
+		{"degraded", &Ledger{enabled: true, degradedErr: errors.New("dial tcp: refused")}, "unreachable"},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			ctx := context.Background()
+			if _, err := tc.ledger.OpenGoalsForAgent(ctx, "finn"); err == nil {
+				t.Error("OpenGoalsForAgent answered from a store that cannot answer")
+			} else if !strings.Contains(err.Error(), tc.want) {
+				t.Errorf("the error should say %q so the caller can tell this from an empty result; got: %v", tc.want, err)
+			}
+			if _, err := tc.ledger.EventsByWorkflowInstance(ctx, uuid.New(), 0, 10); err == nil {
+				t.Error("EventsByWorkflowInstance answered from a store that cannot answer")
+			}
+		})
+	}
+}
+
+// The paired control: an ENABLED, non-degraded Ledger gets PAST the gate. Its
+// query then fails on the nil pool, which is the point — the failure is a
+// database call, not a refusal, so the gate above is not refusing everything.
+func TestLedgerGoalReads_AHealthyLedgerReachesTheQuery(t *testing.T) {
+	l := &Ledger{enabled: true}
+	_, err := l.goalReader()
+	if err != nil {
+		t.Fatalf("a healthy ledger was refused by the gate: %v", err)
 	}
 }
