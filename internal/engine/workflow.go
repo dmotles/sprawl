@@ -293,6 +293,132 @@ func (d Definition) Advance(inst Instance, ev store.Event) (Instance, Advanced, 
 	return inst, Advanced{OK: true, From: inst.Cursor - 1, To: inst.Cursor, Step: step}, nil
 }
 
+// schemaResolver returns a lookup that pins seed event-type names to ids and
+// latches the FIRST failure.
+//
+// Shared by the built-in definitions because they all have the same
+// requirement: resolve every name or refuse to be built. Latching rather than
+// returning per-call errors keeps the definition literal readable — a
+// definition is a table, and threading an error check through every cell of it
+// would bury the shape the table exists to show. Callers MUST check err()
+// before using the definition; every one of them does so immediately after the
+// literal.
+func schemaResolver(reg *store.Registry, workflow string) (resolve func(string) uuid.UUID, err func() error) {
+	var latched error
+	resolve = func(name string) uuid.UUID {
+		if latched != nil {
+			return uuid.Nil
+		}
+		s, ok := reg.ByName(name, 1)
+		if !ok {
+			latched = fmt.Errorf("engine: the %s workflow needs event type %s@1, which is not in the seed registry; a definition built without it would carry a nil trigger that no event can match", workflow, name)
+			return uuid.Nil
+		}
+		return s.ID
+	}
+	return resolve, func() error { return latched }
+}
+
+// Recovery is the verdict on a failed step: what to do, and where the instance
+// stands afterwards.
+//
+// The counterpart to Advanced. Advance answers "did this event move the goal
+// forward"; Recover answers "the step at the cursor failed — now what". Both are
+// pure, and both hand back an Instance the caller persists, so the decision is
+// testable without a database.
+type Recovery struct {
+	// Action is the EFFECTIVE action, not a copy of the policy: a retry past
+	// MaxRetries reports escalate, because that is what actually happens.
+	Action Action
+	// Instance is the instance as it stands after the recovery — cursor rewound
+	// for a backtrack, unchanged for everything else.
+	Instance Instance
+	// SpawnFresh is the re-engagement policy reduced to the question the
+	// interpreter actually asks: does this need a NEW agent? Derived rather than
+	// left to each caller to re-derive from ReEngagement, because a caller that
+	// got that backwards would silently discard an agent's accumulated context.
+	SpawnFresh bool
+	// ReEngagement is the step's declared policy, carried through so a caller
+	// can log which policy produced SpawnFresh.
+	ReEngagement ReEngagement
+	// Attempt is the failure count this verdict was computed from.
+	Attempt int
+	// Reason states why this action was chosen — load-bearing for the escalate
+	// that a retry cap produces, which is otherwise indistinguishable from a
+	// step that declared escalate outright.
+	Reason string
+}
+
+// Recover decides what happens after the step at inst's cursor fails.
+//
+// failures counts the failures of THAT step INCLUDING the one being handled, so
+// the first failure is 1. A count rather than a boolean because the retry cap is
+// the only thing standing between a persistently failing step and an infinite
+// loop, and the count is derivable from the log (the step's failure events)
+// rather than held in memory — the same reason the cursor is derived.
+//
+// MaxRetries counts RE-runs, so MaxRetries=2 permits failures 1 and 2 to retry
+// and turns the 3rd into an escalate. Escalate rather than abort: a step that
+// exhausted its retries is exactly the case where a human should look, and
+// aborting would close the goal with the reason buried in a log nobody is
+// prompted to read.
+func (d Definition) Recover(inst Instance, failures int) (Recovery, error) {
+	if inst.DefName != d.Name || inst.DefVersion != d.Version {
+		return Recovery{}, fmt.Errorf("engine: instance pins %s@%d but was recovered against %s@%d", inst.DefName, inst.DefVersion, d.Name, d.Version)
+	}
+	if failures < 1 {
+		return Recovery{}, fmt.Errorf("engine: instance %s recovered with failure count %d; Recover handles a failure that has already happened, and a count that never grows never reaches the retry cap", inst.ID, failures)
+	}
+	if inst.Cursor < 0 {
+		return Recovery{}, fmt.Errorf("engine: instance %s has a negative cursor (%d)", inst.ID, inst.Cursor)
+	}
+	if inst.Done(d) {
+		return Recovery{}, fmt.Errorf("engine: instance %s is complete (cursor %d of %d steps), so it has no failing step to recover", inst.ID, inst.Cursor, len(d.Steps))
+	}
+
+	step := d.Steps[inst.Cursor]
+	rec := Recovery{
+		Action:       step.Outcome.OnFailure,
+		Instance:     inst,
+		SpawnFresh:   step.ReEngagement == DiscardAndRedo,
+		ReEngagement: step.ReEngagement,
+		Attempt:      failures,
+	}
+
+	switch step.Outcome.OnFailure {
+	case ActionRetry:
+		if failures > step.Outcome.MaxRetries {
+			rec.Action = ActionEscalate
+			rec.Reason = fmt.Sprintf("step %q failed %d times against a cap of %d retries", step.Name, failures, step.Outcome.MaxRetries)
+			break
+		}
+		rec.Reason = fmt.Sprintf("step %q failed %d time(s), retrying within its cap of %d", step.Name, failures, step.Outcome.MaxRetries)
+	case ActionBacktrack:
+		// Validate has already established the target exists, so this lookup
+		// cannot miss for a definition that came through Register.
+		target := -1
+		for i, s := range d.Steps {
+			if s.Name == step.Outcome.BacktrackTo {
+				target = i
+				break
+			}
+		}
+		if target < 0 {
+			return Recovery{}, fmt.Errorf("engine: workflow %s@%d step %q backtracks to %q, which is not a step in this workflow", d.Name, d.Version, step.Name, step.Outcome.BacktrackTo)
+		}
+		// The target's INDEX, not a decrement: a backtrack spanning several
+		// steps would otherwise resume one step early, redoing part of the work
+		// and skipping the rest.
+		rec.Instance.Cursor = target
+		rec.Reason = fmt.Sprintf("step %q failed, backtracking to %q", step.Name, step.Outcome.BacktrackTo)
+	case ActionEscalate:
+		rec.Reason = fmt.Sprintf("step %q failed and escalates to the goal's owner", step.Name)
+	case ActionAbort:
+		rec.Reason = fmt.Sprintf("step %q failed and its policy aborts the workflow", step.Name)
+	}
+	return rec, nil
+}
+
 // Replay derives an instance's cursor by folding Advance over its log.
 //
 // THE CURSOR IS NOT PERSISTED, and that is the point. `workflow_instances` has

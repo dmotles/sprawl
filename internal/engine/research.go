@@ -81,18 +81,7 @@ func ResearchDefinition(reg *store.Registry, researcherCard uuid.UUID) (Definiti
 	// resolve fails the whole construction on the FIRST miss, naming it. A
 	// constructor that collected misses would still have to refuse, and the
 	// first unresolvable name is the actionable one.
-	var resolveErr error
-	resolve := func(name string) uuid.UUID {
-		if resolveErr != nil {
-			return uuid.Nil
-		}
-		s, ok := reg.ByName(name, 1)
-		if !ok {
-			resolveErr = fmt.Errorf("engine: the research workflow needs event type %s@1, which is not in the seed registry; a definition built without it would carry a nil trigger that no event can match", name)
-			return uuid.Nil
-		}
-		return s.ID
-	}
+	resolve, resolveErr := schemaResolver(reg, ResearchWorkflowName)
 
 	d := Definition{
 		Name:               ResearchWorkflowName,
@@ -130,8 +119,8 @@ func ResearchDefinition(reg *store.Registry, researcherCard uuid.UUID) (Definiti
 			},
 		},
 	}
-	if resolveErr != nil {
-		return Definition{}, resolveErr
+	if err := resolveErr(); err != nil {
+		return Definition{}, err
 	}
 	if err := d.Validate(); err != nil {
 		return Definition{}, err
