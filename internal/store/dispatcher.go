@@ -146,6 +146,15 @@ func (r *PgEventReader) Read(ctx context.Context, projectID uuid.UUID, afterSeq 
 	if err != nil {
 		return nil, fmt.Errorf("store: scanning events after seq %d: %w", afterSeq, err)
 	}
+	return scanDispatchedEvents(rows, r.Registry)
+}
+
+// scanDispatchedEvents drains rows selected with eventScanSQL's column list.
+//
+// Shared by every reader returning DispatchedEvent, so the unknown-schema
+// refusal below cannot be present in one reader and quietly absent from
+// another. It closes rows itself; callers hand over ownership.
+func scanDispatchedEvents(rows pgx.Rows, reg *Registry) ([]DispatchedEvent, error) {
 	defer rows.Close()
 
 	var out []DispatchedEvent
@@ -166,7 +175,7 @@ func (r *PgEventReader) Read(ctx context.Context, projectID uuid.UUID, afterSeq 
 		// not know. Refusing is loud and the remedy is obvious (upgrade the
 		// host, or run `sprawl store migrate`), whereas a skip would look like
 		// an idle dispatcher.
-		schema, ok := r.Registry.ByID(ev.SchemaID)
+		schema, ok := reg.ByID(ev.SchemaID)
 		if !ok {
 			return nil, fmt.Errorf("store: event %s at seq %d carries schema_id %s, which this build does not know: upgrade this host, or it cannot safely dispatch anything after this event",
 				ev.ID, ev.Seq, ev.SchemaID)
