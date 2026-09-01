@@ -36,6 +36,12 @@ type GoalSource interface {
 	// than trusting a goal id alone, because the store — not the tool — is
 	// where "is this yours?" has to be answered against the open set.
 	CloseGoalForAgent(ctx context.Context, agent string, goalEventID uuid.UUID, outcome store.GoalOutcome, summary string) (uuid.UUID, error)
+	// AskUser opens a user_question contract. It lives on this interface rather
+	// than a second one so there is a single attach point and a single
+	// enabled/degraded gate: a separate WithUserInbox would be one more piece of
+	// wiring to forget, and forgetting it would make a working store report
+	// itself switched off.
+	AskUser(ctx context.Context, asker, question, questionContext string, goalEventID *uuid.UUID) (uuid.UUID, error)
 }
 
 // workflowLogDefaultLimit / workflowLogMaxLimit bound one page of history.

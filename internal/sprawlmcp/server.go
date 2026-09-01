@@ -295,6 +295,8 @@ func (s *Server) dispatchTool(ctx context.Context, name string, args json.RawMes
 		return s.toolGetWorkflowLog(ctx, args)
 	case "report_result":
 		return s.toolReportResult(ctx, args)
+	case "ask_user":
+		return s.toolAskUser(ctx, args)
 	case "_test_sleep":
 		if !testToolsEnabled() {
 			return "", &unknownToolError{name: name}

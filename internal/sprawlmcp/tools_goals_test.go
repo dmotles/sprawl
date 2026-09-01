@@ -37,6 +37,14 @@ type fakeGoalSource struct {
 	closeCalls    int
 	closeID       uuid.UUID
 	closeErr      error
+
+	askedAsker    string
+	askedQuestion string
+	askedContext  string
+	askedGoal     *uuid.UUID
+	askCalls      int
+	askID         uuid.UUID
+	askErr        error
 }
 
 func (f *fakeGoalSource) CloseGoalForAgent(_ context.Context, agent string, goal uuid.UUID, outcome store.GoalOutcome, summary string) (uuid.UUID, error) {
@@ -318,4 +326,10 @@ func TestGoalTools_Registered(t *testing.T) {
 			t.Errorf("%q is missing from baseToolDefinitions()", name)
 		}
 	}
+}
+
+func (f *fakeGoalSource) AskUser(_ context.Context, asker, question, questionContext string, goal *uuid.UUID) (uuid.UUID, error) {
+	f.askCalls++
+	f.askedAsker, f.askedQuestion, f.askedContext, f.askedGoal = asker, question, questionContext, goal
+	return f.askID, f.askErr
 }

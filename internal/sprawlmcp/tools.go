@@ -402,6 +402,28 @@ func baseToolDefinitions() []map[string]any {
 			},
 		},
 		{
+			"name":        "ask_user",
+			"description": "Record a question for the human in their durable inbox (`sprawl inbox`), to be answered later. This does NOT interrupt anyone and nothing will poke them: do not block waiting for the answer — report what you can and say what you are waiting on. Use ask_user_question instead when you genuinely cannot continue without an answer this turn. Restricted to weave and managers; other agents escalate to their parent. Requires the event log to be enabled on this host.",
+			"inputSchema": map[string]any{
+				"type": "object",
+				"properties": map[string]any{
+					"question": map[string]any{
+						"type":        "string",
+						"description": "The question, written to be understood cold: a person may read it hours later with none of your context.",
+					},
+					"context": map[string]any{
+						"type":        "string",
+						"description": "Optional background — what you tried, what turns on the answer.",
+					},
+					"goal_event_id": map[string]any{
+						"type":        "string",
+						"description": "Optional goal_event_id (from reread_my_goal) this question belongs to, so the question and the answer land on that goal's own history. Must be a goal you own.",
+					},
+				},
+				"required": []string{"question"},
+			},
+		},
+		{
 			"name":        "kill",
 			"description": "Emergency stop an agent process. Preserves state and worktree for inspection.",
 			"inputSchema": map[string]any{
