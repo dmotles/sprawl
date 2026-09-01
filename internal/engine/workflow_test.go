@@ -438,3 +438,149 @@ func TestRegistry_LookupOnAZeroRegistryDoesNotPanic(t *testing.T) {
 		t.Error("an empty registry resolved a definition")
 	}
 }
+
+// ---------------------------------------------------------------------------
+// Replay — the cursor is DERIVED from the log, never stored
+// ---------------------------------------------------------------------------
+
+// The instance cursor is not persisted anywhere, and that is a design position
+// rather than an omission: `workflow_instances` has no cursor column, because
+// under the v2 plan of record the LOG IS THE STATE. A stored cursor is a second
+// source of truth that can disagree with the log, and the disagreement is
+// silent — an instance whose cursor says step 3 while its log shows two events
+// either re-runs a step or skips one, and nothing reports which.
+//
+// Deriving it makes crash-resume fall out for free: there is no checkpoint to
+// lose, so a process that dies mid-goal recovers by reading what already
+// happened.
+
+// TestReplay_DerivesTheCursorFromTheLog is the base case.
+func TestReplay_DerivesTheCursorFromTheLog(t *testing.T) {
+	d := twoStepDef()
+	inst := newInstance(d)
+
+	got, err := d.Replay(inst, []store.Event{eventOf(inst, schemaSpawned)})
+	if err != nil {
+		t.Fatalf("Replay: %v", err)
+	}
+	if got.Cursor != 1 {
+		t.Errorf("after one advancing event the derived cursor is %d, want 1", got.Cursor)
+	}
+	if got.Done(d) {
+		t.Error("the instance reports Done with one of two steps advanced")
+	}
+}
+
+// TestReplay_OfAnEmptyLogIsTheStartingInstance. An instance that has produced
+// no events is at step 0 — and this is the case a stored cursor gets wrong
+// after a crash between "row inserted" and "first event appended".
+func TestReplay_OfAnEmptyLogIsTheStartingInstance(t *testing.T) {
+	d := twoStepDef()
+	inst := newInstance(d)
+
+	got, err := d.Replay(inst, nil)
+	if err != nil {
+		t.Fatalf("Replay: %v", err)
+	}
+	if got.Cursor != 0 {
+		t.Errorf("an instance with no events derived cursor %d, want 0", got.Cursor)
+	}
+}
+
+// TestReplay_IgnoresEventsThatDoNotAdvance is the load-bearing one.
+//
+// The log is a single global stream and an instance's slice of it contains
+// plenty that advances nothing: telemetry, a notification, an event belonging
+// to another instance that a caller's query was sloppy about. A Replay that
+// counted events instead of folding Advance over them would over-advance the
+// cursor and skip steps, and it would pass a test that only ever fed it a
+// perfect log.
+func TestReplay_IgnoresEventsThatDoNotAdvance(t *testing.T) {
+	d := twoStepDef()
+	inst := newInstance(d)
+	other := newInstance(d)
+
+	got, err := d.Replay(inst, []store.Event{
+		eventOf(inst, schemaTrigger),  // the trigger, not a step trigger
+		eventOf(other, schemaSpawned), // right type, WRONG instance
+		eventOf(inst, schemaResult),   // step 2's trigger, arriving while at step 1
+		eventOf(inst, schemaSpawned),  // the one that actually advances
+	})
+	if err != nil {
+		t.Fatalf("Replay: %v", err)
+	}
+	if got.Cursor != 1 {
+		t.Errorf("derived cursor %d, want 1 — Replay advanced on events that do not advance this instance's current step", got.Cursor)
+	}
+}
+
+// TestReplay_IsOrderSensitive pins that Replay folds in the order given.
+//
+// Its NEGATIVE CONTROL is the in-order case, asserted in the same test: the
+// same four events in log order complete the instance, and out of order they
+// do not. Without both halves, "order matters" is satisfied by an
+// implementation that never advances at all.
+func TestReplay_IsOrderSensitive(t *testing.T) {
+	d := twoStepDef()
+	inst := newInstance(d)
+
+	inOrder := []store.Event{eventOf(inst, schemaSpawned), eventOf(inst, schemaResult)}
+	got, err := d.Replay(inst, inOrder)
+	if err != nil {
+		t.Fatalf("Replay in order: %v", err)
+	}
+	if !got.Done(d) {
+		t.Fatalf("the in-order log left the instance at cursor %d, want it complete — this is the control, and the assertion below means nothing without it", got.Cursor)
+	}
+
+	reversed := []store.Event{eventOf(inst, schemaResult), eventOf(inst, schemaSpawned)}
+	got, err = d.Replay(inst, reversed)
+	if err != nil {
+		t.Fatalf("Replay reversed: %v", err)
+	}
+	if got.Done(d) {
+		t.Error("a reversed log completed the instance, so steps are being matched out of order and step 2 could run before step 1")
+	}
+	if got.Cursor != 1 {
+		t.Errorf("the reversed log derived cursor %d, want 1 (only the spawn matched, and only once it was reached)", got.Cursor)
+	}
+}
+
+// TestReplay_IsIdempotentAcrossAPrefix is the crash-resume property stated
+// directly: replaying a prefix and then the remainder must land where replaying
+// the whole log lands. If it did not, a process that crashed halfway would
+// resume at a different step than one that never crashed.
+func TestReplay_IsIdempotentAcrossAPrefix(t *testing.T) {
+	d := twoStepDef()
+	inst := newInstance(d)
+	log := []store.Event{eventOf(inst, schemaSpawned), eventOf(inst, schemaResult)}
+
+	whole, err := d.Replay(inst, log)
+	if err != nil {
+		t.Fatalf("Replay whole: %v", err)
+	}
+	part, err := d.Replay(inst, log[:1])
+	if err != nil {
+		t.Fatalf("Replay prefix: %v", err)
+	}
+	resumed, err := d.Replay(part, log[1:])
+	if err != nil {
+		t.Fatalf("Replay remainder: %v", err)
+	}
+	if resumed.Cursor != whole.Cursor {
+		t.Errorf("resuming from a prefix landed at cursor %d but replaying the whole log lands at %d — a crash mid-goal would resume at the wrong step", resumed.Cursor, whole.Cursor)
+	}
+}
+
+// TestReplay_PropagatesAPinMismatch. Replay folds Advance, which refuses an
+// instance pinned to another definition; swallowing that would silently derive
+// a cursor for the wrong workflow.
+func TestReplay_PropagatesAPinMismatch(t *testing.T) {
+	d := twoStepDef()
+	inst := newInstance(d)
+	inst.DefVersion = 2
+
+	if _, err := d.Replay(inst, []store.Event{eventOf(inst, schemaSpawned)}); err == nil {
+		t.Error("Replay derived a cursor for an instance pinned to a different definition version")
+	}
+}

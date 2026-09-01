@@ -292,3 +292,34 @@ func (d Definition) Advance(inst Instance, ev store.Event) (Instance, Advanced, 
 	inst.Cursor++
 	return inst, Advanced{OK: true, From: inst.Cursor - 1, To: inst.Cursor, Step: step}, nil
 }
+
+// Replay derives an instance's cursor by folding Advance over its log.
+//
+// THE CURSOR IS NOT PERSISTED, and that is the point. `workflow_instances` has
+// no cursor column because under the v2 plan of record the log IS the state; a
+// stored cursor would be a second source of truth, and the two disagree
+// silently — an instance whose row says step 3 while its log shows two events
+// either re-runs a step or skips one, with nothing to say which. Derivation
+// makes the disagreement unrepresentable.
+//
+// Crash-resume is then not a feature but a consequence: there is no checkpoint
+// to lose, so a process that dies mid-goal recovers by reading what already
+// happened. Replaying a prefix and then the remainder lands exactly where
+// replaying the whole log lands.
+//
+// events must be in log (seq) order and should be the instance's own slice of
+// the stream, but neither is trusted: events belonging to another instance, and
+// events that match a LATER step's trigger while an earlier step is still
+// outstanding, advance nothing. Counting events rather than folding Advance
+// over them would over-advance the cursor and skip steps — and would pass any
+// test that only ever fed it a perfect log.
+func (d Definition) Replay(inst Instance, events []store.Event) (Instance, error) {
+	for i, ev := range events {
+		next, _, err := d.Advance(inst, ev)
+		if err != nil {
+			return inst, fmt.Errorf("engine: replaying %s@%d instance %s at log position %d: %w", d.Name, d.Version, inst.ID, i, err)
+		}
+		inst = next
+	}
+	return inst, nil
+}
