@@ -124,3 +124,41 @@ func TestLedgerGoalReads_AHealthyLedgerReachesTheQuery(t *testing.T) {
 		t.Fatalf("a healthy ledger was refused by the gate: %v", err)
 	}
 }
+
+// TestCloseGoalForAgent_RefusesAnOutcomeOutsideTheSet.
+//
+// Checked BEFORE the ledger gate is reachable and before any query, on purpose:
+// the seed validator's keyword subset has no `enum`, so goal_closed.json would
+// accept any string, and this is the only layer that can hold the line. An
+// `outcome` every agent spells differently is a column nobody can query.
+func TestCloseGoalForAgent_RefusesAnOutcomeOutsideTheSet(t *testing.T) {
+	// A DISABLED ledger, so the pair below is distinguished by WHICH refusal
+	// comes back: outcome validation runs before the gate, so an invalid
+	// outcome says "not a goal outcome" and a valid one falls through to
+	// "disabled". Nothing reaches a pool.
+	l := &Ledger{}
+	for _, bad := range []GoalOutcome{"", "done", "Success", "SUCCESS", "ok"} {
+		_, err := l.CloseGoalForAgent(context.Background(), "finn", uuid.New(), bad, "s")
+		if err == nil {
+			t.Errorf("CloseGoalForAgent accepted outcome %q", bad)
+			continue
+		}
+		if !strings.Contains(err.Error(), "not a goal outcome") {
+			t.Errorf("outcome %q was refused for the wrong reason: %v", bad, err)
+		}
+	}
+
+	// The control: every advertised outcome gets PAST the validation. Without
+	// it, validGoalOutcome could reject everything and the loop above would
+	// still pass.
+	for _, good := range ValidGoalOutcomes {
+		_, err := l.CloseGoalForAgent(context.Background(), "finn", uuid.New(), good, "s")
+		if err == nil {
+			t.Errorf("outcome %q was accepted by a DISABLED ledger", good)
+			continue
+		}
+		if strings.Contains(err.Error(), "not a goal outcome") {
+			t.Errorf("the advertised outcome %q was rejected as invalid", good)
+		}
+	}
+}

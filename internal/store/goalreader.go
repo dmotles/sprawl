@@ -174,3 +174,79 @@ func (l *Ledger) EventsByWorkflowInstance(ctx context.Context, workflowID uuid.U
 	}
 	return r.EventsByWorkflowInstance(ctx, l.projectID, workflowID, afterSeq, limit)
 }
+
+// GoalOutcome is the closed set of ways a goal can end.
+//
+// A CLOSED set rather than the free string goal_closed.json permits, because
+// `outcome` is what anyone later asks the log about ("how many goals failed?").
+// A field every agent spells differently is a field nobody can query, and the
+// seed schema validator implements a deliberate keyword subset with no `enum`,
+// so this is the only layer that can hold the line.
+type GoalOutcome string
+
+const (
+	GoalSucceeded GoalOutcome = "success"
+	GoalFailed    GoalOutcome = "failure"
+	GoalBlocked   GoalOutcome = "blocked"
+)
+
+// ValidGoalOutcomes is the ordered set, for error messages and for callers that
+// need to render the choice.
+var ValidGoalOutcomes = []GoalOutcome{GoalSucceeded, GoalFailed, GoalBlocked}
+
+func validGoalOutcome(o GoalOutcome) bool {
+	for _, v := range ValidGoalOutcomes {
+		if v == o {
+			return true
+		}
+	}
+	return false
+}
+
+// CloseGoalForAgent closes one of agent's own open goals.
+//
+// The ownership check is not a courtesy. `closes_event_id` deletes the row from
+// open_contracts, and the log is monotone — a close cannot be taken back, and a
+// defect found afterwards emits rework rather than a mutation. Closing somebody
+// else's goal is therefore unrecoverable, so the goal is looked up THROUGH the
+// caller's own open set rather than by id: an id that is not in that set is
+// refused whatever the reason.
+//
+// The workflow instance is taken from the goal rather than from the caller. An
+// agent that guessed it wrong would append a well-formed close onto an unrelated
+// instance, and the replay that derives that instance's cursor would fold over
+// an event that never belonged to it.
+func (l *Ledger) CloseGoalForAgent(ctx context.Context, agent string, goalEventID uuid.UUID, outcome GoalOutcome, summary string) (uuid.UUID, error) {
+	if !validGoalOutcome(outcome) {
+		return uuid.Nil, fmt.Errorf("store: %q is not a goal outcome; use one of %v", outcome, ValidGoalOutcomes)
+	}
+	open, err := l.OpenGoalsForAgent(ctx, agent)
+	if err != nil {
+		return uuid.Nil, err
+	}
+	var goal *AgentGoal
+	for i := range open {
+		if open[i].GoalEventID == goalEventID {
+			goal = &open[i]
+			break
+		}
+	}
+	if goal == nil {
+		// Deliberately one message for two causes. Telling them apart needs a
+		// second query, and the remedy is the same either way: re-read your own
+		// goals. Naming both is honest; naming one would be a guess.
+		return uuid.Nil, fmt.Errorf("store: %s is not an open goal owned by %q — it is already closed, or it belongs to another agent; re-read your own open goals", goalEventID, agent)
+	}
+
+	closeID := uuid.New()
+	if _, err := l.Emit(ctx, EmitRequest{
+		TypeName: "goal_closed", TypeVersion: 1,
+		EventID:            closeID,
+		WorkflowInstanceID: goal.WorkflowID,
+		ClosesEventID:      &goalEventID,
+		Payload:            map[string]any{"outcome": string(outcome), "summary": summary},
+	}); err != nil {
+		return uuid.Nil, fmt.Errorf("store: closing goal %s: %w", goalEventID, err)
+	}
+	return closeID, nil
+}

@@ -379,6 +379,29 @@ func baseToolDefinitions() []map[string]any {
 			},
 		},
 		{
+			"name":        "report_result",
+			"description": "Close the goal you were given, recording its outcome in the event log. IRREVERSIBLE: the log is monotone and a close cannot be retracted — a defect found afterwards needs rework requested by the goal's owner, not a second close. You may only close a goal you own; pass the goal_event_id from reread_my_goal (NOT the workflow_instance_id). Requires the event log to be enabled on this host.",
+			"inputSchema": map[string]any{
+				"type": "object",
+				"properties": map[string]any{
+					"goal_event_id": map[string]any{
+						"type":        "string",
+						"description": "UUID of the goal_opened event, as returned by reread_my_goal. This is the contract id, not the workflow instance id.",
+					},
+					"outcome": map[string]any{
+						"type":        "string",
+						"description": "How the goal ended. `blocked` means you stopped without finishing and something outside your control must move first.",
+						"enum":        []string{"success", "failure", "blocked"},
+					},
+					"summary": map[string]any{
+						"type":        "string",
+						"description": "What happened, in prose. Required — this is the last thing anyone reads about this goal.",
+					},
+				},
+				"required": []string{"goal_event_id", "outcome", "summary"},
+			},
+		},
+		{
 			"name":        "kill",
 			"description": "Emergency stop an agent process. Preserves state and worktree for inspection.",
 			"inputSchema": map[string]any{

@@ -29,6 +29,20 @@ type fakeGoalSource struct {
 	gotLimit    int
 	events      []store.DispatchedEvent
 	eventsErr   error
+
+	closedAgent   string
+	closedGoal    uuid.UUID
+	closedOutcome store.GoalOutcome
+	closedSummary string
+	closeCalls    int
+	closeID       uuid.UUID
+	closeErr      error
+}
+
+func (f *fakeGoalSource) CloseGoalForAgent(_ context.Context, agent string, goal uuid.UUID, outcome store.GoalOutcome, summary string) (uuid.UUID, error) {
+	f.closeCalls++
+	f.closedAgent, f.closedGoal, f.closedOutcome, f.closedSummary = agent, goal, outcome, summary
+	return f.closeID, f.closeErr
 }
 
 func (f *fakeGoalSource) Enabled() bool { return f.enabled }
@@ -283,7 +297,7 @@ func TestGetWorkflowLog_RefusesAMalformedWorkflowID(t *testing.T) {
 // every unit test above would still pass.
 func TestGoalTools_DispatchWiring(t *testing.T) {
 	s := goalServer(&fakeGoalSource{enabled: true})
-	for _, name := range []string{"reread_my_goal", "get_workflow_log"} {
+	for _, name := range []string{"reread_my_goal", "get_workflow_log", "report_result"} {
 		_, err := s.dispatchTool(callerCtx("finn"), name, json.RawMessage(fmt.Sprintf(`{"workflow_instance_id":%q}`, uuid.New())))
 		var ute *unknownToolError
 		if err != nil && errors.As(err, &ute) {
@@ -299,7 +313,7 @@ func TestGoalTools_Registered(t *testing.T) {
 	for _, def := range baseToolDefinitions() {
 		have[def["name"].(string)] = true
 	}
-	for _, name := range []string{"reread_my_goal", "get_workflow_log"} {
+	for _, name := range []string{"reread_my_goal", "get_workflow_log", "report_result"} {
 		if !have[name] {
 			t.Errorf("%q is missing from baseToolDefinitions()", name)
 		}

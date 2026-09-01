@@ -213,3 +213,90 @@ func TestGoalReaderPg_ByInstanceRefusesANonPositiveLimit(t *testing.T) {
 		t.Error("a zero limit was accepted; LIMIT 0 returns nothing, which reads exactly like a goal with no events yet")
 	}
 }
+
+// TestGoalReaderPg_CloseGoalForAgentClosesOnlyYourOwn.
+//
+// The ownership check is the reason this method exists rather than a bare Emit,
+// and it can only be established against a real database: it is answered by the
+// open_contracts JOIN, not by Go. All three legs matter — a close that lands, a
+// close that must not, and a close that must not land TWICE — because
+// closes_event_id removes the row and the log is monotone, so every refusal
+// here is protecting something unrecoverable.
+func TestGoalReaderPg_CloseGoalForAgentClosesOnlyYourOwn(t *testing.T) {
+	e := newGoalReaderEnv(t)
+	ctx := context.Background()
+
+	mine := e.openGoalFor(t, "finn", "research", uuid.New())
+	theirs := e.openGoalFor(t, "someone-else", "research", uuid.New())
+
+	// Leg 1: another agent's goal is refused, and stays open.
+	if _, err := e.ledger.CloseGoalForAgent(ctx, "finn", theirs, GoalSucceeded, "not mine to close"); err == nil {
+		t.Fatal("finn closed someone-else's goal; the close is irreversible")
+	}
+	still, err := e.goals.OpenGoalsForAgent(ctx, e.projectID, "someone-else")
+	if err != nil {
+		t.Fatalf("re-reading the other agent's goals: %v", err)
+	}
+	if len(still) != 1 {
+		t.Fatalf("someone-else has %d open goals after the refused close, want 1", len(still))
+	}
+
+	// Leg 2: the caller's own goal closes, and leaves the open set. This is the
+	// control for leg 1 — without it, a method that refused everything would
+	// pass leg 1 perfectly.
+	closeID, err := e.ledger.CloseGoalForAgent(ctx, "finn", mine, GoalSucceeded, "did the thing")
+	if err != nil {
+		t.Fatalf("closing my own goal: %v", err)
+	}
+	if closeID == uuid.Nil {
+		t.Error("the close returned a nil event id, so nothing can reference it")
+	}
+	after, err := e.goals.OpenGoalsForAgent(ctx, e.projectID, "finn")
+	if err != nil {
+		t.Fatalf("re-reading my goals: %v", err)
+	}
+	if len(after) != 0 {
+		t.Errorf("my goal is still open after closing it (%d open)", len(after))
+	}
+
+	// Leg 3: closing it again is refused. A second close would append a second
+	// contract-closing event against a contract that is already gone.
+	if _, err := e.ledger.CloseGoalForAgent(ctx, "finn", mine, GoalSucceeded, "again"); err == nil {
+		t.Error("a goal was closed twice")
+	}
+}
+
+// TestGoalReaderPg_CloseGoalRecordsTheOutcomeOnTheGoalsOwnInstance.
+//
+// The workflow instance comes from the GOAL, not the caller. A close appended
+// to the wrong instance is well-formed and invisible, and the replay that
+// derives that instance's cursor would fold over an event that never belonged
+// to it.
+func TestGoalReaderPg_CloseGoalRecordsTheOutcomeOnTheGoalsOwnInstance(t *testing.T) {
+	e := newGoalReaderEnv(t)
+	ctx := context.Background()
+
+	wf := uuid.New()
+	goal := e.openGoalFor(t, "finn", "research", wf)
+	if _, err := e.ledger.CloseGoalForAgent(ctx, "finn", goal, GoalBlocked, "waiting on the owner"); err != nil {
+		t.Fatalf("closing: %v", err)
+	}
+
+	events, err := e.goals.EventsByWorkflowInstance(ctx, e.projectID, wf, 0, 100)
+	if err != nil {
+		t.Fatalf("reading the instance log: %v", err)
+	}
+	if len(events) != 2 {
+		t.Fatalf("the goal's instance holds %d events, want 2 (opened, closed) — the close landed elsewhere", len(events))
+	}
+	closed := events[1]
+	if closed.SchemaName != "goal_closed" {
+		t.Fatalf("the second event is %s, want goal_closed", closed.SchemaName)
+	}
+	if closed.ClosesEventID == nil || *closed.ClosesEventID != goal {
+		t.Errorf("closes_event_id is %v, want %s — this is what removes the contract", closed.ClosesEventID, goal)
+	}
+	if !strings.Contains(string(closed.Payload), `"blocked"`) {
+		t.Errorf("the outcome did not reach the payload: %s", closed.Payload)
+	}
+}

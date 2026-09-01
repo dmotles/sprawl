@@ -32,6 +32,10 @@ type GoalSource interface {
 	Enabled() bool
 	OpenGoalsForAgent(ctx context.Context, agent string) ([]store.AgentGoal, error)
 	EventsByWorkflowInstance(ctx context.Context, workflowID uuid.UUID, afterSeq int64, limit int) ([]store.DispatchedEvent, error)
+	// CloseGoalForAgent is the one WRITE here. It takes the agent name rather
+	// than trusting a goal id alone, because the store — not the tool — is
+	// where "is this yours?" has to be answered against the open set.
+	CloseGoalForAgent(ctx context.Context, agent string, goalEventID uuid.UUID, outcome store.GoalOutcome, summary string) (uuid.UUID, error)
 }
 
 // workflowLogDefaultLimit / workflowLogMaxLimit bound one page of history.
