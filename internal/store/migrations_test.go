@@ -76,6 +76,7 @@ func TestMigrationsFS_CarriesEveryMigration(t *testing.T) {
 		"00002_m1a_app_role.sql",
 		"00003_m2_agent_cards_meta.sql",
 		"00004_m2_agent_card_render_opts.sql",
+		"00005_m3a_follows_event_id.sql",
 	}
 	for _, n := range want {
 		if _, ok := got[n]; !ok {

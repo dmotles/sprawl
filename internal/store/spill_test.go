@@ -366,3 +366,66 @@ func TestFileSpiller_DeadLetterPassesBenignReasonsThroughByteIdentically(t *test
 		})
 	}
 }
+
+// spillableOpeners names every schema that both opens a contract and is
+// spillable. Extracted so the predicate can be exercised against a synthetic
+// input as well as against the real registry: the loader ALSO refuses such a
+// seed, so running this over the registry alone can never make the loop body
+// fire, and a control that only proves the loader works proves nothing about
+// this check.
+func spillableOpeners(schemas []*EventTypeSchema) []string {
+	var bad []string
+	for _, s := range schemas {
+		if s.Opens && s.Spillable {
+			bad = append(bad, s.Name)
+		}
+	}
+	return bad
+}
+
+// TestSpillRecord_NoFollowsFieldIsReachable is the check behind SpillRecord's
+// comment about why it carries no FollowsEventID (QUM-1252).
+//
+// The argument has two legs and neither is self-evident: the appender accepts a
+// follows link only on an OPENING event, and validateSeedDoc refuses to let any
+// contract-taking type be spillable. Together they mean an event carrying a
+// follows link can never reach a spill file. This is a backstop on the second
+// leg — if the loader's rule is ever relaxed, the field becomes reachable and a
+// degraded-mode replay silently drops the link.
+func TestSpillRecord_NoFollowsFieldIsReachable(t *testing.T) {
+	reg, err := SeedRegistry()
+	if err != nil {
+		t.Fatalf("SeedRegistry: %v", err)
+	}
+	if bad := spillableOpeners(reg.All()); len(bad) > 0 {
+		t.Errorf("%v both open a contract and are spillable, so an event carrying follows_event_id could now be spilled — and SpillRecord has no field for it.\n"+
+			"next: either make the type non-spillable or add FollowsEventID to SpillRecord and to the replayer", bad)
+	}
+	// Vacuity guard: with no openers at all the check above is trivially
+	// satisfied and would stay green through the loss of every contract type.
+	openers := 0
+	for _, s := range reg.All() {
+		if s.Opens {
+			openers++
+		}
+	}
+	if openers == 0 {
+		t.Fatal("the seed registry contains no contract-opening types at all, so this test asserted nothing")
+	}
+}
+
+// TestSpillableOpeners_DetectsASpillableOpener is the POSITIVE CONTROL for the
+// test above, and the reason spillableOpeners is a separate function: the seed
+// loader refuses a spillable contract type outright, so the real registry can
+// never exercise the detecting branch. Without this, the assertion above is one
+// nobody has watched fire.
+func TestSpillableOpeners_DetectsASpillableOpener(t *testing.T) {
+	got := spillableOpeners([]*EventTypeSchema{
+		{Name: "clean_opener", Opens: true},
+		{Name: "clean_telemetry", Spillable: true},
+		{Name: "bad_opener", Opens: true, Spillable: true},
+	})
+	if len(got) != 1 || got[0] != "bad_opener" {
+		t.Errorf("spillableOpeners returned %v, want exactly [bad_opener] — the two clean entries are the NEGATIVE control and must not be reported", got)
+	}
+}

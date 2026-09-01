@@ -1,0 +1,17 @@
+{
+  "name": "answer_questions",
+  "version": 1,
+  "opens": false,
+  "spillable": false,
+  "closes": "ask_questions",
+  "json_schema": {
+    "type": "object",
+    "description": "Closes an ask_questions. answers is positional against the ask's questions array; an answer that supersedes an earlier one is a NEW ask/answer pair carrying follow_up_of, never an edit. NOT spillable (contract event).",
+    "required": ["answerer", "answers"],
+    "properties": {
+      "answerer": {"type": "string"},
+      "answers": {"type": "array", "description": "Non-empty array of answer strings, positional against the ask's questions. No `items`/`minItems` — see ask_questions."},
+      "host": {"type": "string"}
+    }
+  }
+}

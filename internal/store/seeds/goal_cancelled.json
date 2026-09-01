@@ -1,0 +1,18 @@
+{
+  "name": "goal_cancelled",
+  "version": 1,
+  "opens": false,
+  "spillable": false,
+  "closes": "goal_opened",
+  "json_schema": {
+    "type": "object",
+    "description": "A goal is cancelled by CLOSING it, never by deleting or mutating it — so cancelled work stays visible in the log with a reason attached. A redirect is a cancel plus a new goal, never an edit. Transitivity to open children is the engine's job at emit time: this type records one cancellation, and cascading it would need the appender to discover children, which is a read the append transaction must not take. Distinct from goal_closed because outcome=aborted on a result an agent produced and a cancellation nobody worked are different facts, and collapsing them makes eval data lie. NOT spillable (contract event).",
+    "required": ["reason", "cancelled_by"],
+    "properties": {
+      "reason": {"type": "string"},
+      "cancelled_by": {"type": "string"},
+      "parent_cancel_event_id": {"type": "string"},
+      "host": {"type": "string"}
+    }
+  }
+}

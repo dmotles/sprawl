@@ -165,6 +165,51 @@ var wantSeeds = []struct {
 		id:       "5c57a39e-7f79-568f-a2a2-2fae6108a610",
 		required: []string{"contract_event_id", "from_owner", "to_owner", "reason"},
 	},
+	// QUM-1252 (M3a). rework_requested is the ONLY way a defect found after a
+	// close is expressed — closes are final — and the contract it continues is
+	// named by the events.follows_event_id COLUMN, not by a payload field.
+	{
+		name: "rework_requested", version: 1,
+		id:       "cfb71518-1b43-58b9-bb70-a51ed5830668",
+		opens:    true,
+		required: []string{"goal_event_id", "owner", "reason"},
+	},
+	// goal_cancelled is kept distinct from goal_closed: an aborted result and a
+	// cancellation nobody ever worked are different facts, and collapsing them
+	// makes eval data lie about how often work actually completed.
+	{
+		name: "goal_cancelled", version: 1,
+		id:       "fa73a666-9c4c-5bbb-a9b8-1738e1131c83",
+		closes:   "goal_opened",
+		required: []string{"reason", "cancelled_by"},
+	},
+	{
+		name: "ask_questions", version: 1,
+		id:       "bdf1d0fc-90f0-58d5-be1e-ea0d721f7ae5",
+		opens:    true,
+		required: []string{"asker", "recipient", "questions"},
+	},
+	{
+		name: "answer_questions", version: 1,
+		id:       "8aa59d50-bee1-5059-a8ea-36874994c678",
+		closes:   "ask_questions",
+		required: []string{"answerer", "answers"},
+	},
+	// user_question is deliberately a SEPARATE type from ask_questions: the
+	// sweeper must never poke a human, and a shared type would make that a
+	// runtime discrimination rather than a structural one.
+	{
+		name: "user_question", version: 1,
+		id:       "c8243462-308b-5d53-90e8-2f8f6f56cf2d",
+		opens:    true,
+		required: []string{"asker", "question"},
+	},
+	{
+		name: "user_answered", version: 1,
+		id:       "60a9ea85-33cc-5820-aaf1-2f48952e8a48",
+		closes:   "user_question",
+		required: []string{"answer"},
+	},
 }
 
 func TestSeedRegistry_MatchesGoldenIDsAndWiring(t *testing.T) {
@@ -405,7 +450,7 @@ func TestSeedRegistry_DocumentedCountMatchesTheRegistry(t *testing.T) {
 	if err != nil {
 		t.Fatalf("SeedRegistry: %v", err)
 	}
-	const documentedTotal = 19
+	const documentedTotal = 25
 	if got := len(reg.All()); got != documentedTotal {
 		t.Errorf("the registry holds %d seed event types but docs/event-log-setup.md documents %d.\n"+
 			"That guide quotes the count inside the verbatim refusal an operator sees when a database is under-migrated "+

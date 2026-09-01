@@ -41,17 +41,23 @@ const SpillRecordVersion = 1
 // build that no longer carries that id would otherwise have nothing but an
 // opaque uuid to put in its dead-letter reason.
 type SpillRecord struct {
-	Version            int             `json:"v"`
-	EventID            uuid.UUID       `json:"event_id"`
-	ProjectID          uuid.UUID       `json:"project_id"`
-	WorkflowInstanceID uuid.UUID       `json:"workflow_instance_id"`
-	SchemaID           uuid.UUID       `json:"schema_id"`
-	SchemaName         string          `json:"schema_name"`
-	SchemaVersion      int             `json:"schema_version"`
-	AgentSessionID     *uuid.UUID      `json:"agent_session_id,omitempty"`
-	OwnerAgentID       *uuid.UUID      `json:"owner_agent_id,omitempty"`
-	ClosesEventID      *uuid.UUID      `json:"closes_event_id,omitempty"`
-	Payload            json.RawMessage `json:"payload"`
+	Version            int        `json:"v"`
+	EventID            uuid.UUID  `json:"event_id"`
+	ProjectID          uuid.UUID  `json:"project_id"`
+	WorkflowInstanceID uuid.UUID  `json:"workflow_instance_id"`
+	SchemaID           uuid.UUID  `json:"schema_id"`
+	SchemaName         string     `json:"schema_name"`
+	SchemaVersion      int        `json:"schema_version"`
+	AgentSessionID     *uuid.UUID `json:"agent_session_id,omitempty"`
+	OwnerAgentID       *uuid.UUID `json:"owner_agent_id,omitempty"`
+	ClosesEventID      *uuid.UUID `json:"closes_event_id,omitempty"`
+	// There is deliberately no FollowsEventID here, and it is a consequence
+	// rather than an omission: the appender only accepts a follows link on an
+	// OPENING event, and validateSeedDoc refuses to let any contract-taking type
+	// be spillable. So an event carrying a follows link can never reach this
+	// record. Pinned by TestSpillRecord_NoFollowsFieldIsReachable, so the
+	// argument is checked rather than asserted in prose.
+	Payload json.RawMessage `json:"payload"`
 	// RemoteURL is the project's identity. Present because a DEGRADED writer
 	// never read the projects row and so has no ProjectID to record — without
 	// this a replayer cannot tell which project a spilled event belongs to.

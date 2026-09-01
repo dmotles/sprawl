@@ -82,8 +82,13 @@ type DispatchedEvent struct {
 	AgentSessionID     *uuid.UUID
 	OwnerAgentID       *uuid.UUID
 	ClosesEventID      *uuid.UUID
-	Payload            json.RawMessage
-	At                 time.Time
+	// FollowsEventID is the rework/continuation link (QUM-1252). Selected here
+	// rather than left for the slice that first walks the chain: a column the
+	// appender writes and the dispatcher does not read hands every consumer a
+	// nil that looks like "this event follows nothing".
+	FollowsEventID *uuid.UUID
+	Payload        json.RawMessage
+	At             time.Time
 	// NOTE there is deliberately no HostAffinity field. There was one, it was
 	// NEVER WRITTEN by anything, and its doc comment said it "names the ONLY host
 	// that may claim this event" — so a future reader who used it would have got
@@ -117,7 +122,8 @@ func (f HandlerFunc) Handle(ctx context.Context, ev DispatchedEvent) error { ret
 //     the entire history into memory at once.
 const eventScanSQL = `
 	SELECT e.seq, e.id, e.project_id, e.workflow_instance_id, e.schema_id,
-	       e.agent_session_id, e.owner_agent_id, e.closes_event_id, e.payload, e.at
+	       e.agent_session_id, e.owner_agent_id, e.closes_event_id, e.payload, e.at,
+	       e.follows_event_id
 	  FROM events e
 	 WHERE e.project_id = $1 AND e.seq > $2
 	 ORDER BY e.seq
@@ -147,7 +153,8 @@ func (r *PgEventReader) Read(ctx context.Context, projectID uuid.UUID, afterSeq 
 		var ev DispatchedEvent
 		var payload []byte
 		if err := rows.Scan(&ev.Seq, &ev.ID, &ev.ProjectID, &ev.WorkflowInstanceID, &ev.SchemaID,
-			&ev.AgentSessionID, &ev.OwnerAgentID, &ev.ClosesEventID, &payload, &ev.At); err != nil {
+			&ev.AgentSessionID, &ev.OwnerAgentID, &ev.ClosesEventID, &payload, &ev.At,
+			&ev.FollowsEventID); err != nil {
 			return nil, fmt.Errorf("store: scanning an event row: %w", err)
 		}
 		ev.Payload = json.RawMessage(payload)
@@ -579,7 +586,8 @@ func (d *Dispatcher) Run(ctx context.Context) error {
 // so the notification handler can find out who owns it.
 const eventByIDSQL = `
 	SELECT e.seq, e.id, e.project_id, e.workflow_instance_id, e.schema_id,
-	       e.agent_session_id, e.owner_agent_id, e.closes_event_id, e.payload, e.at
+	       e.agent_session_id, e.owner_agent_id, e.closes_event_id, e.payload, e.at,
+	       e.follows_event_id
 	  FROM events e
 	 WHERE e.id = $1`
 
@@ -600,6 +608,7 @@ func (r *PgEventReader) ByID(ctx context.Context, id uuid.UUID) (DispatchedEvent
 	if err := r.Pool.QueryRow(ctx, eventByIDSQL, id).Scan(
 		&ev.Seq, &ev.ID, &ev.ProjectID, &ev.WorkflowInstanceID, &ev.SchemaID,
 		&ev.AgentSessionID, &ev.OwnerAgentID, &ev.ClosesEventID, &payload, &ev.At,
+		&ev.FollowsEventID,
 	); err != nil {
 		return DispatchedEvent{}, fmt.Errorf("store: reading event %s: %w", id, err)
 	}

@@ -1084,3 +1084,97 @@ func TestAppend_SpilledReasonPassesBenignTextThroughByteIdentically(t *testing.T
 		t.Errorf("a benign transport error was altered on its way to disk:\n want: %q\n got:  %q", errConnRefused.Error(), rec.Reason)
 	}
 }
+
+// ---------------------------------------------------------------------------
+// follows_event_id — the rework/continuation link (QUM-1252)
+// ---------------------------------------------------------------------------
+
+// TestAppend_FollowsEventIDOnANonOpenerIsRejected pins that the continuation
+// link is only accepted on the event that OPENS the successor contract.
+//
+// A follows link on a close, or on plain telemetry, has no reader: it would be
+// written, indexed, and never walked — a chain that looks recorded and is not.
+// Its POSITIVE CONTROL is the test immediately below, which appends the same
+// link on an opener and requires it to be ACCEPTED; without that pair,
+// "rejected" is satisfied by a validator that refuses everything.
+func TestAppend_FollowsEventIDOnANonOpenerIsRejected(t *testing.T) {
+	reg := testRegistry(t)
+	pool := newRecordingPool()
+	a := newTestAppender(t, pool, &capturingSpiller{})
+
+	follows := uuid.New()
+	ev := runStartedEvent(t, reg)
+	ev.FollowsEventID = &follows
+
+	_, err := a.Append(context.Background(), ev)
+	if err == nil {
+		t.Fatal("a non-opening append carrying a follows_event_id must be rejected")
+	}
+	if !strings.Contains(err.Error(), "follows_event_id") {
+		t.Errorf("the error should name the offending field; got: %v", err)
+	}
+	if indexOf(pool.log(), "insert_event") >= 0 {
+		t.Errorf("the rejected append still wrote an event: %v", pool.log())
+	}
+}
+
+// TestAppend_FollowsEventIDOnAnOpenerIsAccepted is the positive control for the
+// test above AND the assertion that the column is actually written.
+//
+// It asserts on the INSERT's argument list rather than on the SQL, because
+// every wrong value — nil, the wrong uuid, the event's own id — produces
+// byte-identical SQL. rework_requested is the motivating opener.
+func TestAppend_FollowsEventIDOnAnOpenerIsAccepted(t *testing.T) {
+	reg := testRegistry(t)
+	pool := newRecordingPool()
+	a := newTestAppender(t, pool, &capturingSpiller{})
+
+	follows := uuid.New()
+	ev := Event{
+		ProjectID:          uuid.New(),
+		WorkflowInstanceID: uuid.New(),
+		SchemaID:           mustSchema(t, reg, "rework_requested").ID,
+		FollowsEventID:     &follows,
+		Payload:            json.RawMessage(`{"goal_event_id":"g","owner":"finn","reason":"missed a case"}`),
+	}
+	if _, err := a.Append(context.Background(), ev); err != nil {
+		t.Fatalf("an opener carrying a follows_event_id must be accepted: %v", err)
+	}
+	args, ok := pool.argsFor("insert_event")
+	if !ok {
+		t.Fatalf("no insert_event statement was recorded: %v", pool.log())
+	}
+	got, isPtr := args[len(args)-1].(*uuid.UUID)
+	if !isPtr || got == nil {
+		t.Fatalf("the last INSERT argument should be the follows_event_id pointer, got %#v", args[len(args)-1])
+	}
+	if *got != follows {
+		t.Errorf("INSERT wrote follows_event_id=%s, want %s", *got, follows)
+	}
+}
+
+// TestAppend_SelfReferentialFollowsEventIDIsRejected pins the one cycle
+// Postgres's foreign key cannot catch: a row that satisfies its own reference.
+// A cycle of length one makes every chain walk non-terminating.
+func TestAppend_SelfReferentialFollowsEventIDIsRejected(t *testing.T) {
+	reg := testRegistry(t)
+	pool := newRecordingPool()
+	a := newTestAppender(t, pool, &capturingSpiller{})
+
+	id := uuid.New()
+	ev := Event{
+		ID:                 id,
+		ProjectID:          uuid.New(),
+		WorkflowInstanceID: uuid.New(),
+		SchemaID:           mustSchema(t, reg, "rework_requested").ID,
+		FollowsEventID:     &id,
+		Payload:            json.RawMessage(`{"goal_event_id":"g","owner":"finn","reason":"missed a case"}`),
+	}
+	_, err := a.Append(context.Background(), ev)
+	if err == nil {
+		t.Fatal("an event naming itself as its own follows_event_id must be rejected")
+	}
+	if !strings.Contains(err.Error(), "its own follows_event_id") {
+		t.Errorf("the error should say the event references itself; got: %v", err)
+	}
+}

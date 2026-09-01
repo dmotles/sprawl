@@ -1,0 +1,20 @@
+{
+  "name": "rework_requested",
+  "version": 1,
+  "opens": true,
+  "spillable": false,
+  "closes": "",
+  "json_schema": {
+    "type": "object",
+    "description": "A defect was found in work that is already CLOSED. Closes are final and the log is monotone, so this never mutates the original result — it opens a NEW contract, linked to the closed one by the event's follows_event_id column (not a payload field: a link the database can enforce as a foreign key is worth more than one it cannot). Its own close is a goal_closed, exactly as for the goal it follows. re_engagement selects the workflow-defined policy: re-engage the original agent with the miss pointed out, or discard and redo on a stronger model. NOT spillable (contract event).",
+    "required": ["goal_event_id", "owner", "reason"],
+    "properties": {
+      "goal_event_id": {"type": "string"},
+      "owner": {"type": "string"},
+      "reason": {"type": "string"},
+      "re_engagement": {"type": "string", "description": "re_engage_original | discard_and_redo. Constrained in prose rather than by an `enum`, because this repo's validator implements a deliberate subset of JSON Schema and refuses a schema it cannot enforce — a seed carrying `enum` would fail EVERY append of this type at runtime, not just a bad one. The engine is what rejects an unknown value."},
+      "requested_by": {"type": "string"},
+      "host": {"type": "string"}
+    }
+  }
+}

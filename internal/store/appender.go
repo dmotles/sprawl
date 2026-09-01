@@ -70,8 +70,14 @@ type Event struct {
 	// ClosesEventID is required for a closes-typed schema and must be nil
 	// otherwise.
 	ClosesEventID *uuid.UUID
-	Payload       json.RawMessage
-	ArtifactID    *uuid.UUID
+	// FollowsEventID links a NEW contract to the one it continues — the
+	// rework/continuation chain. Optional, and meaningful only on an OPENING
+	// event: it says "this contract carries on from that one", where
+	// ClosesEventID says "this event ends that one". The predecessor is normally
+	// already closed, which is precisely why the relationship cannot be a close.
+	FollowsEventID *uuid.UUID
+	Payload        json.RawMessage
+	ArtifactID     *uuid.UUID
 }
 
 // AppenderDeps follows the repo's deps-struct convention: every collaborator is
@@ -231,8 +237,26 @@ func (a *Appender) prepare(ev Event) (*EventTypeSchema, Event, error) {
 			schema.Name, schema.Version)
 	}
 
+	// FollowsEventID is the continuation link, so it belongs on the event that
+	// OPENS the successor contract. Rejecting it elsewhere is not pedantry: a
+	// follows link on a close or on a plain telemetry event has no reader, so it
+	// would be written, indexed, and silently never walked — a chain that looks
+	// recorded and is not. Rework is the motivating case and rework_requested
+	// opens.
+	if ev.FollowsEventID != nil && !schema.Opens {
+		return nil, ev, fmt.Errorf("store: %s@%d does not open a contract but the append carries a follows_event_id, which only a successor contract's opener can carry",
+			schema.Name, schema.Version)
+	}
+
 	if ev.ID == uuid.Nil {
 		ev.ID = a.newUUID()
+	}
+	// Self-reference is checked AFTER the id is minted, because a caller that
+	// supplies its own id is the only one that can produce one. A cycle of length
+	// one makes every chain walk non-terminating, and Postgres's foreign key
+	// cannot see it: the row satisfies its own reference.
+	if ev.FollowsEventID != nil && *ev.FollowsEventID == ev.ID {
+		return nil, ev, fmt.Errorf("store: event %s declares itself as its own follows_event_id", ev.ID)
 	}
 	return schema, ev, nil
 }
@@ -306,11 +330,13 @@ func (a *Appender) writeWithin(ctx context.Context, tx pgx.Tx, schema *EventType
 	var seq int64
 	if err := tx.QueryRow(ctx,
 		`INSERT INTO events (id, project_id, workflow_instance_id, schema_id,
-		                     agent_session_id, owner_agent_id, closes_event_id, payload, artifact_id)
-		 VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9)
+		                     agent_session_id, owner_agent_id, closes_event_id, payload, artifact_id,
+		                     follows_event_id)
+		 VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10)
 		 RETURNING seq`,
 		ev.ID, ev.ProjectID, ev.WorkflowInstanceID, ev.SchemaID,
 		ev.AgentSessionID, ev.OwnerAgentID, ev.ClosesEventID, []byte(ev.Payload), ev.ArtifactID,
+		ev.FollowsEventID,
 	).Scan(&seq); err != nil {
 		return 0, fmt.Errorf("store: insert event: %w", err)
 	}

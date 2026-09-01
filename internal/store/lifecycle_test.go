@@ -352,11 +352,13 @@ func TestLifecycle_FailedTurnAlsoRecordsATurnBoundary(t *testing.T) {
 
 // artifactArg is artifact_id's position in the events INSERT ($9), and
 // insertEventArgc is that statement's full arity. Both are asserted rather than
-// assumed: artifact_id is last today, so a column inserted before it would move
-// the index and the assertion would read a neighbouring field instead of failing.
+// assumed: a column inserted before artifact_id would move the index and the
+// assertion would read a neighbouring field instead of failing. QUM-1252 added
+// follows_event_id as $10 — AFTER artifact_id, so only the arity moved, and the
+// arity check is precisely what said so rather than letting the index rot.
 const (
 	artifactArg     = 8
-	insertEventArgc = 9
+	insertEventArgc = 10
 )
 
 // TestLifecycle_RunStartedReferencesTheSpawnContextArtifact (QUM-1251, AC6).

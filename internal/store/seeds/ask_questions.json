@@ -1,0 +1,20 @@
+{
+  "name": "ask_questions",
+  "version": 1,
+  "opens": true,
+  "spillable": false,
+  "closes": "",
+  "json_schema": {
+    "type": "object",
+    "description": "An agent blocks on another agent for information. A CONTRACT rather than a message, so an unanswered question is outstanding work the sweeper can see instead of a silence somebody has to notice. follow_up_of names an earlier ask in the same thread; a later answer may supersede an earlier one append-only. Note the recipient key: the sweeper's transitive-block term reads owner-or-recipient, so an agent waiting on an answer is correctly treated as blocked. NOT spillable (contract event).",
+    "required": ["asker", "recipient", "questions"],
+    "properties": {
+      "asker": {"type": "string"},
+      "recipient": {"type": "string"},
+      "questions": {"type": "array", "description": "Non-empty array of question strings. No `items`/`minItems`: the validator implements a subset of JSON Schema and refuses any schema using them, which would fail every append of this type. Emptiness is the caller's to reject."},
+      "goal_event_id": {"type": "string"},
+      "follow_up_of": {"type": "string"},
+      "host": {"type": "string"}
+    }
+  }
+}

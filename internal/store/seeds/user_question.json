@@ -1,0 +1,19 @@
+{
+  "name": "user_question",
+  "version": 1,
+  "opens": true,
+  "spillable": false,
+  "closes": "",
+  "json_schema": {
+    "type": "object",
+    "description": "The human sits ABOVE the system: an agent asks, and the contract stays open until the human answers. Deliberately a separate type from ask_questions rather than a recipient=user special case, because the two differ in the one property that matters operationally — the sweeper must NEVER poke this one. A human is not a stalled agent, and a poke cap would eventually quarantine a question that was merely not answered yet. The sweeper's candidate set is goal_opened only, so today that holds by construction rather than by an exclusion list; anything that widens that set owes an explicit exclusion here. NOT spillable (contract event).",
+    "required": ["asker", "question"],
+    "properties": {
+      "asker": {"type": "string"},
+      "question": {"type": "string"},
+      "goal_event_id": {"type": "string"},
+      "context": {"type": "string"},
+      "host": {"type": "string"}
+    }
+  }
+}

@@ -670,3 +670,86 @@ func TestDispatchPg_EmptyLogIsANoOp(t *testing.T) {
 		t.Errorf("Step on an empty log reported %+v, want zeroes", res)
 	}
 }
+
+// ---------------------------------------------------------------------------
+// follows_event_id round-trip (QUM-1252)
+// ---------------------------------------------------------------------------
+
+// TestDispatchPg_FollowsEventIDRoundTripsThroughTheReader is the assertion that
+// the new column survives append → migration → SELECT → Scan.
+//
+// It has to be an integration test. A unit test can assert that the INSERT
+// carries the value and that the SELECT text names the column, and both can
+// pass while the Scan destinations are one position out of step — the sort of
+// defect only a real driver, against a real column list, reports.
+//
+// Both legs are asserted: a rework_requested that FOLLOWS a goal reads back with
+// the predecessor's id, and a plain event reads back nil. The nil leg is the
+// negative control — without it, a reader that returned the same non-nil pointer
+// for every row would pass.
+func TestDispatchPg_FollowsEventIDRoundTripsThroughTheReader(t *testing.T) {
+	e := newDispatchEnv(t)
+	ctx := context.Background()
+
+	goalSchema, ok := e.registry.ByName("goal_opened", 1)
+	if !ok {
+		t.Fatal("goal_opened@1 missing from the seed registry")
+	}
+	reworkSchema, ok := e.registry.ByName("rework_requested", 1)
+	if !ok {
+		t.Fatal("rework_requested@1 missing from the seed registry")
+	}
+	wf := uuid.New()
+
+	goalID := uuid.New()
+	if _, err := e.appender.Append(ctx, Event{
+		ID: goalID, ProjectID: e.projectID, WorkflowInstanceID: wf,
+		SchemaID: goalSchema.ID,
+		Payload:  json.RawMessage(`{"goal_type":"BACKEND_CODE_CHANGE","text":"do the thing"}`),
+	}); err != nil {
+		t.Fatalf("appending the goal: %v", err)
+	}
+
+	reworkID := uuid.New()
+	if _, err := e.appender.Append(ctx, Event{
+		ID: reworkID, ProjectID: e.projectID, WorkflowInstanceID: wf,
+		SchemaID:       reworkSchema.ID,
+		FollowsEventID: &goalID,
+		Payload:        json.RawMessage(`{"goal_event_id":"g","owner":"finn","reason":"missed a case"}`),
+	}); err != nil {
+		t.Fatalf("appending the rework: %v", err)
+	}
+
+	events, err := e.reader().Read(ctx, e.projectID, 0, 10)
+	if err != nil {
+		t.Fatalf("Read: %v", err)
+	}
+	byID := map[uuid.UUID]DispatchedEvent{}
+	for _, ev := range events {
+		byID[ev.ID] = ev
+	}
+	if len(byID) != 2 {
+		t.Fatalf("read %d events, want the 2 that were appended", len(byID))
+	}
+	rework := byID[reworkID]
+	if rework.FollowsEventID == nil {
+		t.Fatalf("the rework read back with a nil follows_event_id — the link was written but is not being read")
+	}
+	if *rework.FollowsEventID != goalID {
+		t.Errorf("the rework follows %s, want the goal %s", *rework.FollowsEventID, goalID)
+	}
+	// Negative control: an event that follows nothing must read back nil.
+	if got := byID[goalID].FollowsEventID; got != nil {
+		t.Errorf("the goal follows nothing but read back follows_event_id=%s", got)
+	}
+
+	// And ByID, which is a separate query with its own column list and its own
+	// Scan — the two drift independently.
+	one, err := e.reader().ByID(ctx, reworkID)
+	if err != nil {
+		t.Fatalf("ByID: %v", err)
+	}
+	if one.FollowsEventID == nil || *one.FollowsEventID != goalID {
+		t.Errorf("ByID returned follows_event_id=%v, want %s", one.FollowsEventID, goalID)
+	}
+}
