@@ -118,6 +118,11 @@ type enterDeps struct {
 	// a missing hub config is a clean no-op (sprawl stays fully offline), and
 	// any dial/auth failure is logged and swallowed. QUM-877.
 	hubDialOut func(sprawlRoot string, cfg *config.Config)
+	// startEventDispatch, when non-nil AND `event_log.enabled` is on, starts the
+	// event-log dispatcher and sweepers for the life of this session and returns
+	// the func that stops them (QUM-1252, Option A). Nil is tolerated so the
+	// existing enter tests need no dispatch wiring. See cmd/enter_dispatch.go.
+	startEventDispatch func(sprawlRoot string, cfg *config.Config, errOut io.Writer) func()
 }
 
 // resolveAccentColor returns the persisted accent color, seeding a randomly-
@@ -280,10 +285,11 @@ func resolveEnterDeps() *enterDeps {
 	}
 
 	deps := &enterDeps{
-		getenv:     os.Getenv,
-		getwd:      os.Getwd,
-		pickAccent: runtimecfg.PickAccentColor,
-		hubDialOut: func(sprawlRoot string, cfg *config.Config) { defaultHubDialOut(os.Getenv, os.Stderr, sprawlRoot, cfg) },
+		getenv:             os.Getenv,
+		getwd:              os.Getwd,
+		pickAccent:         runtimecfg.PickAccentColor,
+		hubDialOut:         func(sprawlRoot string, cfg *config.Config) { defaultHubDialOut(os.Getenv, os.Stderr, sprawlRoot, cfg) },
+		startEventDispatch: defaultStartEventDispatch,
 		finalizeHandoff: func(ctx context.Context, sprawlRoot string, stdout io.Writer, events chan<- rootinit.ConsolidationEvent) error {
 			deps := rootinit.DefaultDeps()
 			deps.LogPrefix = "[enter]"
@@ -1135,6 +1141,18 @@ func runEnter(deps *enterDeps) error {
 		}
 	}
 
+	// QUM-1252, Option A: the event-log dispatcher and sweepers run for the life
+	// of this session, gated on `event_log.enabled`.
+	//
+	// Started HERE, after the stderr redirect above, for two reasons: its output
+	// then lands in the tui-stderr log instead of over the Bubble Tea
+	// alt-screen, and a session that never reaches the TUI has nothing to stop.
+	// Stopped just past runProgram, alongside the rest of teardown.
+	stopEventDispatch := func() {}
+	if cfg.EventLogEnabled() && deps.startEventDispatch != nil {
+		stopEventDispatch = deps.startEventDispatch(sprawlRoot, cfg, os.Stderr)
+	}
+
 	// QUM-304 regression test hook: if the sentinel env var is set, emit it to
 	// stderr after a brief delay so the TUI is fully rendered. The e2e harness
 	// asserts this sentinel lands in the log file, not on the terminal.
@@ -1165,6 +1183,9 @@ func runEnter(deps *enterDeps) error {
 	)
 	defer stopShutdownWatchdog()
 	close(handoffDone)
+	// Under the watchdog deliberately: the join is bounded, but the watchdog is
+	// what makes a bound we got wrong survivable.
+	stopEventDispatch()
 	// QUM-311: the send function captured by the notifier closure becomes a
 	// no-op once the tea.Program has exited, but be explicit and unregister
 	// the TUI notifier so any lingering in-process messages.Send calls during

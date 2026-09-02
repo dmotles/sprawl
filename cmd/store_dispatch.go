@@ -6,20 +6,21 @@
 // reconciles spawn intents against local state at startup.
 //
 // ===========================================================================
-// WHY THIS IS A SEPARATE COMMAND RATHER THAN WIRED INTO `sprawl enter`
+// THIS IS NO LONGER THE ONLY WAY THE LOOP RUNS
 // ===========================================================================
 //
-// Two reasons, recorded because the second is what makes it the right call
-// rather than a deferral (approved as decision #3 on QUM-1250):
+// QUM-1250 deliberately shipped this command unwired and recorded the wiring as
+// an obligation on QUM-1252. That obligation is now discharged: under Option A
+// `sprawl enter` starts the same dispatcher and sweepers for the life of the
+// session, gated on `event_log.enabled` — see cmd/enter_dispatch.go. Both paths
+// assemble through buildDispatchStack below, so the handler set cannot drift
+// between them.
 //
-//  1. `cmd/enter.go` and `internal/supervisor/*.go` are named by the e2e matrix's
-//     handoff glob row plus seven further per-file rows, so wiring a dispatcher
-//     into the session lifecycle would owe ~8 live-claude rows for a component
-//     with no product surface yet.
-//  2. M3A NEEDS THAT WIRING ANYWAY, and is the first milestone with a reason for
-//     it: until a workflow engine exists nothing appends the events this
-//     consumes, so a dispatcher started by `sprawl enter` today would idle-poll
-//     an empty tail. The obligation is recorded on QUM-1252.
+// The command remains, and is not redundant: it is how a dispatcher is run on a
+// host with no TUI session, how `--once` drives a single deterministic catch-up
+// pass in the e2e rows, and the only path that reconciles spawn intents at
+// startup. Two hosts running it concurrently with a session is safe and expected
+// — event_claims is what makes each event acted on once.
 //
 // ===========================================================================
 // WHAT THIS PROCESS CANNOT DO, AND WHY IT SAYS SO OUT LOUD
@@ -212,15 +213,12 @@ func runStoreDispatch(ctx context.Context, deps *storeDeps) error {
 	// any evidence of the outage it had just caused.
 	logger := dispatchLogger(deps.Stderr)
 
-	emitter := store.LedgerEmitter{Ledger: ledger}
-	registry := ledger.Registry()
-	reader := &store.PgEventReader{Pool: pool, Registry: registry}
-	claims := &store.PgClaimStore{Pool: pool}
-	local := &dispatchadapt.DiskAgents{SprawlRoot: deps.SprawlRoot}
-	notifies := &store.PgNotifyReader{Pool: pool, Registry: registry}
-	injector := &dispatchadapt.QueueInjector{SprawlRoot: deps.SprawlRoot}
-
 	reportDispatchLimits(out, host)
+
+	stack, err := buildDispatchStack(ledger, deps.SprawlRoot, host, logger)
+	if err != nil {
+		return err
+	}
 
 	// Startup reconciliation, BEFORE the loop. An orphan whose intent is still
 	// open must be adopted before anything else acts on the log, or the sweeper
@@ -236,16 +234,60 @@ func runStoreDispatch(ctx context.Context, deps *storeDeps) error {
 	// Reconciliation is a best-effort tidy-up of a previous run. Refusing to
 	// dispatch because it could not be completed is the wrong blast radius, so it
 	// is reported loudly and the loop starts anyway.
-	if err := reportReconcile(ctx, out, store.ReconcileDeps{
-		Intents:   &store.PgIntentReader{Pool: pool, Registry: registry},
-		Local:     local,
-		Emitter:   emitter,
-		ProjectID: ledger.ProjectID(),
-		Host:      host,
-		Logger:    logger,
-	}); err != nil {
+	if err := reportReconcile(ctx, out, stack.reconcile); err != nil {
 		reportReconcileFailure(errOut, err)
 	}
+
+	if dispatchOnce {
+		res, err := stack.dispatcher.Step(ctx)
+		fmt.Fprintf(out, "dispatch pass: scanned %d, handled %d, skipped %d, cursor at %d\n",
+			res.Scanned, res.Handled, res.Skipped, res.AdvancedTo)
+		if err != nil {
+			return err
+		}
+		if !dispatchNoSweeper {
+			reportSweep(ctx, out, errOut, stack.sweeper)
+			reportNotifySweep(ctx, out, errOut, stack.notifySweeper)
+		}
+		return nil
+	}
+
+	if !dispatchNoSweeper {
+		go runSweepTicker(ctx, out, errOut, stack.sweeper, stack.notifySweeper)
+	}
+	fmt.Fprintf(out, "dispatching (Ctrl-C to stop)\n")
+	return stack.dispatcher.Run(ctx)
+}
+
+// dispatchStack is everything a dispatch loop needs, already wired.
+//
+// It exists because `sprawl enter` must run the SAME loop this command runs
+// (QUM-1252, Option A): the dispatcher shipped unwired, and a second
+// hand-assembled copy of this wiring in the session path is how the two silently
+// diverge — a handler registered here and forgotten there means an event type
+// that is dispatched from the CLI and inert in every real session, which reads
+// as "the log is quiet" rather than as a missing handler.
+type dispatchStack struct {
+	dispatcher    *store.Dispatcher
+	reconcile     store.ReconcileDeps
+	sweeper       store.SweeperDeps
+	notifySweeper store.NotifySweeperDeps
+}
+
+// buildDispatchStack wires the dispatcher, the reconciler and both sweepers.
+//
+// It takes an ALREADY-VALIDATED ledger: enabled, non-degraded, with a pool. The
+// two callers reach that state differently — the CLI refuses with an actionable
+// next-step, the session simply declines to start — so the checks stay with the
+// callers and this function stays a pure assembly step.
+func buildDispatchStack(ledger *store.Ledger, sprawlRoot, host string, logger *slog.Logger) (*dispatchStack, error) {
+	pool := ledger.Pool()
+	registry := ledger.Registry()
+	emitter := store.LedgerEmitter{Ledger: ledger}
+	reader := &store.PgEventReader{Pool: pool, Registry: registry}
+	notifies := &store.PgNotifyReader{Pool: pool, Registry: registry}
+	local := &dispatchadapt.DiskAgents{SprawlRoot: sprawlRoot}
+	injector := &dispatchadapt.QueueInjector{SprawlRoot: sprawlRoot}
 
 	notify, err := store.NewNotifyHandler(store.NotifyHandlerDeps{
 		Emitter:  emitter,
@@ -255,13 +297,13 @@ func runStoreDispatch(ctx context.Context, deps *storeDeps) error {
 		Local:    local,
 		// Ownership falls back to the root agent, which is what the plan means by
 		// "reassign to root/workflow engine". The engine takes over in M3a.
-		FallbackOwner: fallbackOwner(deps.SprawlRoot),
+		FallbackOwner: fallbackOwner(sprawlRoot),
 		Host:          host,
 		Consumer:      dispatchConsumer,
 		Logger:        logger,
 	})
 	if err != nil {
-		return err
+		return nil, err
 	}
 	ack, err := store.NewNotifyAckHandler(store.NotifyAckHandlerDeps{
 		Emitter:  emitter,
@@ -270,13 +312,13 @@ func runStoreDispatch(ctx context.Context, deps *storeDeps) error {
 		Logger:   logger,
 	})
 	if err != nil {
-		return err
+		return nil, err
 	}
 
 	dispatcher, err := store.NewDispatcher(store.DispatcherDeps{
 		Events:    reader,
-		Claims:    claims,
-		Cursor:    &store.FileCursorStore{Root: deps.SprawlRoot},
+		Claims:    &store.PgClaimStore{Pool: pool},
+		Cursor:    &store.FileCursorStore{Root: sprawlRoot},
 		Registry:  registry,
 		ProjectID: ledger.ProjectID(),
 		Host:      host,
@@ -296,30 +338,22 @@ func runStoreDispatch(ctx context.Context, deps *storeDeps) error {
 		// not need — its deliveries are already asynchronous.
 	})
 	if err != nil {
-		return err
+		return nil, err
 	}
 
-	if dispatchOnce {
-		res, err := dispatcher.Step(ctx)
-		fmt.Fprintf(out, "dispatch pass: scanned %d, handled %d, skipped %d, cursor at %d\n",
-			res.Scanned, res.Handled, res.Skipped, res.AdvancedTo)
-		if err != nil {
-			return err
-		}
-		if !dispatchNoSweeper {
-			reportSweep(ctx, out, errOut, sweeperDeps(pool, registry, local, emitter, injector, ledger.ProjectID(), host, logger))
-			reportNotifySweep(ctx, out, errOut, notifySweeperDeps(pool, registry, emitter, injector, ledger.ProjectID(), host, logger))
-		}
-		return nil
-	}
-
-	if !dispatchNoSweeper {
-		go runSweepTicker(ctx, out, errOut,
-			sweeperDeps(pool, registry, local, emitter, injector, ledger.ProjectID(), host, logger),
-			notifySweeperDeps(pool, registry, emitter, injector, ledger.ProjectID(), host, logger))
-	}
-	fmt.Fprintf(out, "dispatching (Ctrl-C to stop)\n")
-	return dispatcher.Run(ctx)
+	return &dispatchStack{
+		dispatcher: dispatcher,
+		reconcile: store.ReconcileDeps{
+			Intents:   &store.PgIntentReader{Pool: pool, Registry: registry},
+			Local:     local,
+			Emitter:   emitter,
+			ProjectID: ledger.ProjectID(),
+			Host:      host,
+			Logger:    logger,
+		},
+		sweeper:       sweeperDeps(pool, registry, local, emitter, injector, ledger.ProjectID(), host, logger),
+		notifySweeper: notifySweeperDeps(pool, registry, emitter, injector, ledger.ProjectID(), host, logger),
+	}, nil
 }
 
 // dispatchConsumer is the event_claims consumer name for this loop.
