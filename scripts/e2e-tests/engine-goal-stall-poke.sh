@@ -27,8 +27,8 @@
 # AND THE DEFECT IT WOULD HAVE CAUGHT. Until QUM-1252's AC5 fix, the candidate
 # query measured staleness against the goal's OWNER. A goal's owner is who the
 # RESULT IS REPORTED TO — weave — and weave takes turns constantly, so every
-# delegated goal read as permanently fresh and this scenario produced NO poke at
-# all. That is why the poke's `target` is asserted against the researcher's name
+# goal it had handed to a worker read as permanently fresh and this scenario
+# produced NO poke at all. That is why the poke's `target` is asserted against the researcher's name
 # and separately against the owner's: a row that only asserted "a goal_poke
 # exists" would have passed on the broken code the moment any goal stalled.
 #
@@ -372,8 +372,8 @@ test_run() {
     # addressed to and `owner` is the agent the result is reported to; before
     # AC5 they were the same field doing both jobs, and the consequence was not
     # a mis-addressed poke but NO POKE AT ALL, because weave's own constant
-    # activity made every goal it had delegated look fresh. Asserting both
-    # separately is what makes this row able to tell them apart.
+    # activity made every goal it had handed to a worker look fresh. Asserting
+    # both separately is what makes this row able to tell them apart.
     local POKE_TARGET POKE_OWNER
     POKE_TARGET=$(psql_q "SELECT e.payload->>'target' FROM events e JOIN event_type_schemas s ON s.id = e.schema_id WHERE s.name = 'goal_poke' ORDER BY e.seq LIMIT 1;")
     POKE_OWNER=$(psql_q "SELECT e.payload->>'owner' FROM events e JOIN event_type_schemas s ON s.id = e.schema_id WHERE s.name = 'goal_poke' ORDER BY e.seq LIMIT 1;")
