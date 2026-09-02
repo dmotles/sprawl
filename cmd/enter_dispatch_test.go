@@ -6,6 +6,7 @@ import (
 	"errors"
 	"io"
 	"strings"
+	"sync"
 	"sync/atomic"
 	"testing"
 	"time"
@@ -33,7 +34,13 @@ func enterDepsWithDispatch(root string, ran *bool, w *dispatchWitness) *enterDep
 	deps.startEventDispatch = func(sprawlRoot string, cfg *config.Config, _ io.Writer) func() {
 		w.calls.Add(1)
 		w.root, w.cfg = sprawlRoot, cfg
-		return func() { w.stops.Add(1) }
+		// sync.Once because the REAL stop func is sync.Once-guarded and runEnter
+		// deliberately calls it twice — explicitly on the normal path and via a
+		// defer that closes the panic window. A fake without the guard would count
+		// 2 and turn a correct belt-and-braces stop into a red test, i.e. it would
+		// be asserting against the fake rather than against the contract.
+		var once sync.Once
+		return func() { once.Do(func() { w.stops.Add(1) }) }
 	}
 	return deps
 }
@@ -147,24 +154,39 @@ func TestResolveEnterDeps_WiresTheDispatchHook(t *testing.T) {
 // func is that the runner has ACTUALLY FINISHED when it returns. A stop that
 // only cancels leaves the dispatcher writing to a stderr that `sprawl enter` is
 // about to restore to the user's terminal.
+// It is deliberately structured so a non-joining stop() PROVABLY returns first,
+// rather than merely usually doing so. The obvious spelling — cancel, then check
+// a `finished` channel with a non-blocking select — passes against a broken
+// subject whenever the runner happens to wake before the main goroutine reaches
+// the select. Here the runner stays blocked until this test releases it, so a
+// stop() that returns during that window cannot be a coincidence.
 func TestStartEventDispatch_StopCancelsAndJoins(t *testing.T) {
 	var errOut bytes.Buffer
 	started := make(chan struct{})
-	finished := make(chan struct{})
+	release := make(chan struct{})
 
 	stop := startEventDispatch("/tmp/does-not-matter", &errOut, func(ctx context.Context, _ string, _ io.Writer) error {
 		close(started)
 		<-ctx.Done()
-		close(finished)
+		<-release // still winding down: a joining stop() must wait for this
 		return ctx.Err()
 	})
 	<-started
-	stop()
+
+	stopped := make(chan struct{})
+	go func() { stop(); close(stopped) }()
 
 	select {
-	case <-finished:
-	default:
-		t.Fatal("stop() returned before the runner finished; the join is what makes the dispatcher's stderr writes safe to order against the TUI's stderr restore")
+	case <-stopped:
+		t.Fatal("stop() returned while the runner was still winding down; the join is what makes the dispatcher's stderr writes safe to order against the TUI's stderr restore")
+	case <-time.After(250 * time.Millisecond):
+	}
+	close(release)
+
+	select {
+	case <-stopped:
+	case <-time.After(5 * time.Second):
+		t.Fatal("stop() never returned after the runner finished")
 	}
 	// context.Canceled is the ORDINARY stop path and must not be reported as a
 	// failure — a line on every clean session exit trains readers to ignore the

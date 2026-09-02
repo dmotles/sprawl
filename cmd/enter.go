@@ -1151,6 +1151,13 @@ func runEnter(deps *enterDeps) error {
 	stopEventDispatch := func() {}
 	if cfg.EventLogEnabled() && deps.startEventDispatch != nil {
 		stopEventDispatch = deps.startEventDispatch(sprawlRoot, cfg, os.Stderr)
+		// Belt and braces, exactly as stderrRedirect.Restore() above: the
+		// explicit stop below does the work on every ordinary path, but a PANIC
+		// in runProgram or in teardown would skip a bare call. The stop func is
+		// sync.Once-guarded, so the deferred one is a no-op on the normal path —
+		// and defers being LIFO, it runs before the stderr restore registered
+		// above it, which is the ordering the join exists to guarantee.
+		defer func() { stopEventDispatch() }()
 	}
 
 	// QUM-304 regression test hook: if the sentinel env var is set, emit it to

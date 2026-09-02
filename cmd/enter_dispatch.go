@@ -156,6 +156,26 @@ func runSessionDispatch(ctx context.Context, sprawlRoot string, errOut io.Writer
 	// ordinary session declare another host's agent failed, and reconcile's
 	// grace-period logic is not written against a process that restarts as often
 	// as a TUI does.
-	go runSweepTicker(ctx, io.Discard, errOut, stack.sweeper, stack.notifySweeper)
-	return stack.dispatcher.Run(ctx)
+	// The ticker is JOINED, not detached.
+	//
+	// A detached one breaks the stop func's contract in a way the tests do not
+	// reach: `dispatcher.Run` returns promptly on cancel, so stop() would return,
+	// teardown would run `stderrRedirect.Restore()`, and a sweep that was mid
+	// round-trip when the cancel arrived would then print `sweep failed: context
+	// canceled` onto the shell the user just got back — the exact stderr-ordering
+	// hazard this file exists to prevent, wearing the costume of a real fault.
+	// The wait is bounded by one in-flight sweep because runSweepTicker returns
+	// on ctx.Done(), and the abandon timeout in startEventDispatch backstops it.
+	//
+	// `sprawl store dispatch` detaches the same ticker and that is fine there:
+	// the process exits, so it has no such contract to keep.
+	var sweeps sync.WaitGroup
+	sweeps.Add(1)
+	go func() {
+		defer sweeps.Done()
+		runSweepTicker(ctx, io.Discard, errOut, stack.sweeper, stack.notifySweeper)
+	}()
+	err = stack.dispatcher.Run(ctx)
+	sweeps.Wait()
+	return err
 }
