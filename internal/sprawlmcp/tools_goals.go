@@ -42,6 +42,12 @@ type GoalSource interface {
 	// wiring to forget, and forgetting it would make a working store report
 	// itself switched off.
 	AskUser(ctx context.Context, asker, question, questionContext string, goalEventID *uuid.UUID) (uuid.UUID, error)
+	// AskQuestions / AnswerQuestions are the agent-to-agent pair, here for the
+	// same single-attach-point reason as AskUser. Both take the caller's name
+	// rather than trusting an id alone: "is this addressed to you?" is answered
+	// in the store against the open set, never by whichever tool remembered.
+	AskQuestions(ctx context.Context, asker, recipient string, questions []string, goalEventID, followUpOf *uuid.UUID) (uuid.UUID, error)
+	AnswerQuestions(ctx context.Context, answerer string, askEventID uuid.UUID, answers []string) (uuid.UUID, error)
 }
 
 // workflowLogDefaultLimit / workflowLogMaxLimit bound one page of history.

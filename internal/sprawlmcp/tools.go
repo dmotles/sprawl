@@ -424,6 +424,52 @@ func baseToolDefinitions() []map[string]any {
 			},
 		},
 		{
+			"name":        "ask_questions",
+			"description": "Ask another AGENT for information you need, as a durable contract rather than a message: it stays outstanding in the event log until they answer, so it cannot be lost the way unread mail can. Use send_message for anything you are not blocked on. Do NOT block waiting — say what you are waiting for and do what you can meanwhile. Answers come back positionally, in the order you ask. Requires the event log to be enabled on this host.",
+			"inputSchema": map[string]any{
+				"type": "object",
+				"properties": map[string]any{
+					"recipient": map[string]any{
+						"type":        "string",
+						"description": "Name of the agent you are asking. Cannot be yourself.",
+					},
+					"questions": map[string]any{
+						"type":        "array",
+						"description": "The questions. Answers are matched to them BY POSITION, so ask fewer and sharper rather than padding the list.",
+						"items":       map[string]any{"type": "string"},
+					},
+					"goal_event_id": map[string]any{
+						"type":        "string",
+						"description": "Optional goal_event_id (from reread_my_goal) this question belongs to, so the question and the answer land on that goal's own history. Must be a goal you own.",
+					},
+					"follow_up_of": map[string]any{
+						"type":        "string",
+						"description": "Optional ask_event_id of an earlier ask this one follows up on. The log is append-only: a correction is a new ask, never an edit.",
+					},
+				},
+				"required": []string{"recipient", "questions"},
+			},
+		},
+		{
+			"name":        "answer_questions",
+			"description": "Answer an ask_questions another agent addressed to YOU, closing it. IRREVERSIBLE: the log is monotone, so a correction is a NEW ask/answer pair carrying follow_up_of, not a second answer. You may only answer a question addressed to you, and you must give exactly as many answers as were asked — they are matched by position. Requires the event log to be enabled on this host.",
+			"inputSchema": map[string]any{
+				"type": "object",
+				"properties": map[string]any{
+					"ask_event_id": map[string]any{
+						"type":        "string",
+						"description": "UUID of the ask_questions event you are answering. This is the contract id, not the workflow instance id.",
+					},
+					"answers": map[string]any{
+						"type":        "array",
+						"description": "Your answers, in the same order and of the same length as the questions asked.",
+						"items":       map[string]any{"type": "string"},
+					},
+				},
+				"required": []string{"ask_event_id", "answers"},
+			},
+		},
+		{
 			"name":        "kill",
 			"description": "Emergency stop an agent process. Preserves state and worktree for inspection.",
 			"inputSchema": map[string]any{

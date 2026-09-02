@@ -45,6 +45,22 @@ type fakeGoalSource struct {
 	askCalls      int
 	askID         uuid.UUID
 	askErr        error
+
+	askedQAsker     string
+	askedQRecipient string
+	askedQuestions  []string
+	askedQGoal      *uuid.UUID
+	askedQFollowUp  *uuid.UUID
+	askQCalls       int
+	askQID          uuid.UUID
+	askQErr         error
+
+	answeredBy    string
+	answeredAsk   uuid.UUID
+	answers       []string
+	answerCalls   int
+	answerCloseID uuid.UUID
+	answerErr     error
 }
 
 func (f *fakeGoalSource) CloseGoalForAgent(_ context.Context, agent string, goal uuid.UUID, outcome store.GoalOutcome, summary string) (uuid.UUID, error) {
@@ -332,4 +348,17 @@ func (f *fakeGoalSource) AskUser(_ context.Context, asker, question, questionCon
 	f.askCalls++
 	f.askedAsker, f.askedQuestion, f.askedContext, f.askedGoal = asker, question, questionContext, goal
 	return f.askID, f.askErr
+}
+
+func (f *fakeGoalSource) AskQuestions(_ context.Context, asker, recipient string, questions []string, goal, followUp *uuid.UUID) (uuid.UUID, error) {
+	f.askQCalls++
+	f.askedQAsker, f.askedQRecipient, f.askedQuestions = asker, recipient, questions
+	f.askedQGoal, f.askedQFollowUp = goal, followUp
+	return f.askQID, f.askQErr
+}
+
+func (f *fakeGoalSource) AnswerQuestions(_ context.Context, answerer string, ask uuid.UUID, answers []string) (uuid.UUID, error) {
+	f.answerCalls++
+	f.answeredBy, f.answeredAsk, f.answers = answerer, ask, answers
+	return f.answerCloseID, f.answerErr
 }

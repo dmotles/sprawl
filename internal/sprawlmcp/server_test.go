@@ -359,6 +359,8 @@ func TestServer_ToolsList(t *testing.T) {
 		"get_workflow_log",
 		"report_result",
 		"ask_user",
+		"ask_questions",
+		"answer_questions",
 	}
 	// QUM-606: under the sprawl_test build tag, `_test_induce_wedge`
 	// is appended by the inject seam. injectExpectedToolNames is empty
