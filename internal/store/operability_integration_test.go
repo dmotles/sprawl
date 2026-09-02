@@ -191,3 +191,61 @@ func TestOperabilityPg_OpenWorkflowsCountsTheInstanceAndHidesFinishedOnes(t *tes
 			final[0].Events, final[0].OpenContracts)
 	}
 }
+
+// AN OPEN REWORK CONTRACT IS LISTED (QUM-1336).
+//
+// The operator listing enumerated goal_opened and agent_spawned only, so an
+// outstanding rework — the state QUM-1252's own AC3 introduced — produced
+// "no goals are outstanding." while an agent was mid-rework. The closed
+// original is the control for a listing that had merely started returning
+// everything: it is in the log and must not be in the result.
+func TestOperabilityPg_AnOpenReworkContractIsListed(t *testing.T) {
+	e := newOperabilityEnv(t)
+	ctx := context.Background()
+
+	wf := uuid.New()
+	goal := e.openGoalFor(t, "weave", "research", wf)
+	if _, err := e.emitter.Emit(ctx, EmitRequest{
+		TypeName: "goal_closed", TypeVersion: 1,
+		WorkflowInstanceID: wf,
+		ClosesEventID:      &goal,
+		Payload:            map[string]any{"outcome": "success", "summary": "done"},
+	}); err != nil {
+		t.Fatalf("closing the goal: %v", err)
+	}
+	rework, err := e.emitter.Emit(ctx, EmitRequest{
+		TypeName: "rework_requested", TypeVersion: 1,
+		WorkflowInstanceID: wf,
+		FollowsEventID:     &goal,
+		Payload: map[string]any{
+			"goal_event_id": goal.String(), "owner": "weave",
+			"reason": "the answer missed the question", "re_engagement": string(DiscardAndRedo),
+		},
+	})
+	if err != nil {
+		t.Fatalf("requesting rework: %v", err)
+	}
+
+	got, err := e.ops.AllOpenGoals(ctx, e.projectID)
+	if err != nil {
+		t.Fatalf("AllOpenGoals: %v", err)
+	}
+	if len(got) != 1 {
+		t.Fatalf("got %d outstanding item(s), want 1 (the rework only): %+v", len(got), got)
+	}
+	if got[0].GoalEventID != rework {
+		t.Fatalf("the listed item is %s, want the rework contract %s", got[0].GoalEventID, rework)
+	}
+	if got[0].Owner != "weave" {
+		t.Errorf("owner is %q, want weave — an item with no owner reads as (unowned) in the listing", got[0].Owner)
+	}
+	// The rework payload has no goal_type, so without a type of its own the
+	// listing would print an empty `type:` line for the one kind of outstanding
+	// work an operator most needs to recognise.
+	if got[0].GoalType != "rework" {
+		t.Errorf("type is %q, want rework", got[0].GoalType)
+	}
+	if got[0].Legacy {
+		t.Error("a rework is engine-driven work, not a legacy prose spawn")
+	}
+}

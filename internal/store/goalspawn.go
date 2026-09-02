@@ -164,6 +164,14 @@ func (h *GoalSpawnHandler) Handle(ctx context.Context, ev DispatchedEvent) error
 			"parent":     goal.Owner,
 			"branch":     goalBranch(name, ev.ID),
 			"prompt":     goalPrompt(GoalType(goal.GoalType), goal, ev),
+			// NO `model`, DELIBERATELY (QUM-1337). The seed defines the field and
+			// SpawnRequest carries it, but it is an OPERATOR OVERRIDE, not a
+			// record of the resolved model: it lands on AgentState.Model, which
+			// BuildAgentSessionSpec ranks ABOVE the card
+			// (internal/agentloop/session_spec.go). Resolving the card here and
+			// pinning the answer would therefore make every engine-spawned agent
+			// immune to a later card edit — the exact property QUM-1251 exists to
+			// provide. Left empty, the card wins at launch time.
 		},
 	}); err != nil {
 		return fmt.Errorf("store: requesting a %s for goal_opened %s: %w", spec.agentType, ev.ID, err)

@@ -33,7 +33,9 @@ import (
 //
 // Reads open_contracts for the opener set — the projection is maintained in the
 // append transaction, so it cannot disagree with the log, and the anti-join
-// alternative is a full scan per sweep.
+// alternative is a full scan per sweep. That set is openerSchemaIDs ($5):
+// goal_opened AND rework_requested, because a rework opens a contract exactly as
+// a goal does and a crashed reworker is a stall by every term below.
 //
 // The correlated subqueries are deliberate over joins: each one is
 // naturally-scalar (a max, two counts, a boolean), and expressing them as joins
@@ -64,7 +66,9 @@ const openGoalsSQL = `
 	WITH goals AS (
 	  SELECT g.id, g.project_id, g.workflow_instance_id, g.seq, g.at,
 	         COALESCE(g.payload->>'owner', '')     AS owner,
-	         COALESCE(g.payload->>'goal_type', '') AS goal_type,
+	         COALESCE(NULLIF(g.payload->>'goal_type', ''),
+	                  CASE WHEN g.schema_id = ANY($8) THEN 'rework' END,
+	                  '')                          AS goal_type,
 	         COALESCE((SELECT s.payload->>'agent_name' FROM events s
 	                    WHERE s.project_id = g.project_id
 	                      AND s.schema_id = ANY($7)
@@ -120,6 +124,19 @@ type PgSweepReader struct {
 
 var _ SweepReader = (*PgSweepReader)(nil)
 
+// openerSchemaIDs are the contract-opening types a stall can be measured on.
+//
+// The same pair `reworkable` names in rework.go, and for the same reason: a
+// rework opens a contract that follows one. Enumerating goal_opened alone made
+// an outstanding rework unreachable by the poke path — the contract stayed open
+// forever with nobody swept for it (QUM-1336). agent_spawned is deliberately
+// NOT here: the operator listing shows those so a human can see them, but a
+// prose-spawned agent has no goal to be stalled against and no assignee to aim
+// a poke at.
+func openerSchemaIDs(reg *Registry) []uuid.UUID {
+	return append(schemaIDsFor(reg, "goal_opened"), schemaIDsFor(reg, "rework_requested")...)
+}
+
 // activitySchemaIDs are the turn-boundary types liveness is derived from.
 //
 // run_started AND turn_finished, both. run_started alone would call an agent
@@ -136,9 +153,10 @@ func (r *PgSweepReader) OpenGoals(ctx context.Context, projectID uuid.UUID) ([]S
 		activitySchemaIDs(r.Registry),
 		schemaIDsFor(r.Registry, "goal_poke"),
 		schemaIDsFor(r.Registry, "goal_stuck"),
-		schemaIDsFor(r.Registry, "goal_opened"),
+		openerSchemaIDs(r.Registry),
 		schemaIDsFor(r.Registry, "owner_notify"),
 		schemaIDsFor(r.Registry, "spawn_requested"),
+		schemaIDsFor(r.Registry, "rework_requested"),
 	)
 	if err != nil {
 		return nil, fmt.Errorf("store: reading open goals for the sweeper: %w", err)

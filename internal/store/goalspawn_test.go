@@ -314,3 +314,34 @@ func TestEveryMigratedGoalTypeCanBeDriven(t *testing.T) {
 		t.Error(`goalAgentTypes drives "change", which create_goal refuses — the two tables disagree in the other direction`)
 	}
 }
+
+// THE ENGINE PINS NO MODEL, SO THE CARD RESOLVES IT AT LAUNCH (QUM-1337).
+//
+// This asserts an ABSENCE, which is only worth anything with the consequence
+// spelled out: `model` on a spawn_requested lands on AgentState.Model, and
+// BuildAgentSessionSpec ranks that ABOVE the agent type's card. A spawner that
+// helpfully resolved the card here and wrote the answer down would therefore
+// produce an agent frozen on whatever the card said the day its goal was
+// opened — silently immune to every later card edit, which is the one property
+// cards-as-data exists to provide.
+//
+// Asserted with the keys that ARE set, so a payload that lost every key would
+// fail rather than satisfy this by being empty.
+func TestGoalSpawnHandler_PinsNoModelSoTheCardStillWins(t *testing.T) {
+	em := &recordingEmitter{}
+	h := newGoalSpawnHandler(t, em, &fixedNamer{name: "ada"})
+	ev := goalSpawnEvent(t, map[string]any{
+		"goal_type": "research", "text": "how is the cursor derived?", "owner": "boss",
+	})
+
+	if err := h.Handle(context.Background(), ev); err != nil {
+		t.Fatalf("Handle: %v", err)
+	}
+	pay := decodePayload(t, em.events[0].Payload)
+	if got := pay["agent_type"]; got != "researcher" {
+		t.Fatalf("agent_type is %v, want researcher — without it the absence below proves nothing", got)
+	}
+	if got, ok := pay["model"]; ok {
+		t.Errorf("the request pins model %v; leave it unset so the researcher's card resolves the model at launch", got)
+	}
+}

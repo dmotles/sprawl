@@ -535,3 +535,63 @@ func TestSweepPg_AnUndispatchedGoalHasNoAssigneeAndFallsBackToTheOwner(t *testin
 		t.Error("the owner's turn did not count for an undispatched goal, so it would be poked while its owner is working")
 	}
 }
+
+// reworkOf appends the rework_requested contract that follows a goal, in the
+// goal's own workflow instance, and returns its id.
+//
+// Emitted directly rather than through Ledger.RequestRework because this env
+// holds a bare emitter, and because the write path's kind check is not what is
+// under test here — the candidate query is.
+func (e *sweepEnv) reworkOf(t *testing.T, goalID uuid.UUID, owner string) uuid.UUID {
+	t.Helper()
+	ctx := context.Background()
+	var wf uuid.UUID
+	if err := e.pool.QueryRow(ctx, `SELECT workflow_instance_id FROM events WHERE id = $1`, goalID).Scan(&wf); err != nil {
+		t.Fatalf("reading the goal's workflow instance: %v", err)
+	}
+	id, err := e.emitter.Emit(ctx, EmitRequest{
+		TypeName: "rework_requested", TypeVersion: 1,
+		WorkflowInstanceID: wf,
+		FollowsEventID:     &goalID,
+		Payload: map[string]any{
+			"goal_event_id": goalID.String(), "owner": owner,
+			"reason": "the answer missed the question", "re_engagement": string(DiscardAndRedo),
+		},
+	})
+	if err != nil {
+		t.Fatalf("requesting rework: %v", err)
+	}
+	return id
+}
+
+// AN OPEN REWORK CONTRACT IS A CANDIDATE, AND IT IS AIMED AT ITS ASSIGNEE
+// (QUM-1336).
+//
+// rework_requested opens a contract exactly as goal_opened does, so a rework
+// whose agent has crashed is a stalled goal by every definition the sweeper
+// uses. Until QUM-1336 the candidate query enumerated goal_opened only, so the
+// contract was outstanding forever and unreachable by the poke path.
+//
+// The closed original is this test's own control for "the query did not simply
+// start returning everything": it is in the log, it is not in the result.
+func TestSweepPg_AnOpenReworkContractIsACandidate(t *testing.T) {
+	e := newSweepEnv(t)
+	goal := e.openGoal(t, "weave")
+	e.closeGoal(t, goal)
+	rework := e.reworkOf(t, goal, "weave")
+	e.spawnFor(t, rework, "researcher-2")
+
+	got := e.only(t)
+	if got.GoalEventID != rework {
+		t.Fatalf("candidate is %s, want the open rework contract %s", got.GoalEventID, rework)
+	}
+	if got.Owner != "weave" {
+		t.Errorf("candidate owner is %q, want weave — it is read from the rework payload", got.Owner)
+	}
+	if got.PokeTarget() != "researcher-2" {
+		t.Errorf("PokeTarget() = %q, want researcher-2: a poke aimed at the owner is the AC5 defect all over again", got.PokeTarget())
+	}
+	if got.GoalType != "rework" {
+		t.Errorf("GoalType = %q, want rework — it names the goal in the goal_stuck notification body", got.GoalType)
+	}
+}

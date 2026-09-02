@@ -69,9 +69,14 @@
 # field to hold it. Filed as QUM-1330; not fixed here, since it is a seed change
 # outside this row's slice. The assertion in its place is closes_event_id.
 #
-# NOT ASSERTED: re_engage_original. It is refused at both layers by design
-# (nothing downstream can wake the original agent) and has no live path to
-# exercise. Carried on QUM-1252.
+# NOT ASSERTED: re_engage_original. It has no live path to exercise — but be
+# precise about WHY, because the loose version of this sentence ("refused at
+# both layers") was wrong and is corrected here per QUM-1338: it is REFUSED at
+# one layer (store.RequestRework, and again in ReworkHandler) and merely
+# UNREACHABLE at the other (sprawlmcp's rework tool hardcodes discard_and_redo
+# and has no re_engagement parameter to supply anything else). The effect is the
+# same today; the mechanism is not, and a reader who believes both layers refuse
+# it will not notice when the tool grows the parameter.
 #
 # CONTROL. The rework leg's control was run and FIRED: removing
 # `"rework_requested": rework` from dispatchHandlerSet in cmd/store_dispatch.go
@@ -93,9 +98,11 @@
 # the goal's own contract, the goal contract is closed, the owner was notified,
 # request_rework turn completed, rework_requested present, the rework follows
 # the closed goal, the rework is on the goal's instance, a rework contract is
-# open, a second spawn_requested exists, it names a different agent, and nothing
-# spilled.
-MIN_ASSERTIONS=19
+# open, `sprawl goals` lists it (QUM-1336), a second spawn_requested exists, it
+# names a different agent, and nothing spilled.
+#
+# 19 before QUM-1336 added the `sprawl goals` assertion.
+MIN_ASSERTIONS=20
 
 test_metadata() {
     echo "needs_claude=1 needs_tmux=1"
@@ -411,6 +418,24 @@ test_run() {
     else
         fail "no rework contract is open (got '$OPEN_REWORKS') — without one the rework is telemetry: nothing reports the work as outstanding and nothing demands a close"
         psql_q "SELECT * FROM open_contracts;" >&2 || true
+    fi
+
+    # THE OPERATOR CAN SEE IT (QUM-1336). The assertion above proves the
+    # contract is open in the PROJECTION; this one proves the operator's own
+    # command reports it. They came apart: `sprawl goals` enumerated goal_opened
+    # and agent_spawned only, so this exact state — a rework outstanding, an
+    # agent working it — printed "no goals are outstanding." plus the note that
+    # invites the operator to walk away. A row that only reads Postgres cannot
+    # see that, because the projection was right the whole time.
+    local GOALS_OUT
+    GOALS_OUT=$(cd "$SPRAWL_ROOT" && SPRAWL_ROOT="$SPRAWL_ROOT" SPRAWL_DB_DSN="$DSN" "$SPRAWL_BIN" goals 2>&1) || true
+    echo "    sprawl goals said:"
+    printf '%s\n' "$GOALS_OUT" | sed 's/^/      /'
+    if printf '%s' "$GOALS_OUT" | grep -q "outstanding, oldest first" &&
+       printf '%s' "$GOALS_OUT" | grep -q "type:.*rework"; then
+        pass "sprawl goals lists the outstanding rework"
+    else
+        fail "sprawl goals did not list the outstanding rework — an operator asking what the fleet still owes is told nothing is, while an agent is mid-rework"
     fi
 
     # The whole observable difference between discard_and_redo and doing

@@ -56,6 +56,17 @@
 # Docker-gated, same shape as the sibling store rows: a container this row
 # creates and reaps itself, on a random name and a random host port, so
 # concurrent agents on one host do not collide.
+#
+# WHAT THE MODEL ASSERTION DOES NOT ESTABLISH (QUM-1337). It pins that the
+# engine-spawned researcher launches on `--model opus`, and editing
+# internal/card/seeds/slim-researcher.md is a control that fires. It does NOT
+# distinguish "the card was consulted" from "the card lookup failed and the
+# compiled-in default was used", because rootinit.DefaultAgentModel is ALSO
+# opus — so a regression that silently stops reading cards passes this
+# assertion. Stated rather than glossed: the failure scenario QUM-1337 opens
+# with is exactly that regression, and this row narrows it without closing it.
+# Closing it needs a researcher card whose model differs from the default, which
+# is a seed decision outside this row.
 
 # QUM-1029: the number of assertions a COMPLETE, PASSING run of this row makes.
 # Hand-counted: container ready, migrate ok, TUI rendered, create_goal turn
@@ -63,9 +74,11 @@
 # present, spawn_requested names a researcher, its branch is a goal/ branch,
 # spawn_intent present, intent carries the same name, spawn_committed present,
 # the state file exists AT THE LOG'S NAME, its parent is weave, its branch
-# matches the log's branch, the goal contract is still open, and nothing
-# spilled.
-MIN_ASSERTIONS=17
+# matches the log's branch, the researcher launched on its card's model
+# (QUM-1337), the goal contract is still open, and nothing spilled.
+#
+# 17 before QUM-1337 added the model assertion.
+MIN_ASSERTIONS=18
 
 test_metadata() {
     echo "needs_claude=1 needs_tmux=1"
@@ -133,6 +146,13 @@ test_run() {
     fi
     if ! docker info >/dev/null 2>&1; then
         e2e_skip_row "docker is installed but the daemon is unreachable"
+        return
+    fi
+    # Skipped rather than failed: without pgrep the model assertion below cannot
+    # resolve the researcher's process, and the row would fail red pointing at
+    # the product for a missing host tool.
+    if ! command -v pgrep >/dev/null 2>&1; then
+        e2e_skip_row "pgrep not found on PATH — the model assertion cannot resolve the researcher's claude process"
         return
     fi
 
@@ -370,6 +390,42 @@ test_run() {
         pass "the agent is on the branch the log asked for ($ST_BRANCH)"
     else
         fail "the agent is on branch '$ST_BRANCH' but the log asked for '$LOG_BRANCH'"
+    fi
+
+    # THE MODEL THE CARD NAMES (QUM-1337).
+    #
+    # Read off the LAUNCHED PROCESS, not off the state file: the engine pins no
+    # `model` on spawn_requested (deliberately — see goalspawn.go), so the state
+    # file has no model field at all and asserting on it would assert nothing.
+    # `--model` on the child's own command line is the end of the chain and the
+    # only place the resolved answer is observable.
+    #
+    # PID recipe is engine-goal-stall-poke's `pids_for`, not
+    # death-observability.sh's: match the SESSION ID and then require
+    # /proc/<pid>/comm == claude, and take every match. A bare `pgrep -af claude`
+    # matches harness subshells and killed the harness in 3 of 4 runs (QUM-1334).
+    local ST_SESSION MODEL_PIDS CMDLINE p
+    ST_SESSION=$(grep -o '"session_id"[[:space:]]*:[[:space:]]*"[^"]*"' "$STATE_FILE" | head -1 | sed 's/.*"\([^"]*\)"$/\1/')
+    CMDLINE=""
+    if [ -n "$ST_SESSION" ]; then
+        MODEL_PIDS=$(pgrep -f -- "$ST_SESSION" 2>/dev/null || true)
+        for p in $MODEL_PIDS; do
+            if [ "$(cat "/proc/$p/comm" 2>/dev/null || true)" = "claude" ]; then
+                CMDLINE=$(tr '\0' ' ' < "/proc/$p/cmdline" 2>/dev/null || true)
+                break
+            fi
+        done
+    fi
+    echo "    the researcher's claude was launched as: ${CMDLINE:-<not resolved>}"
+    # RESEARCHER_CARD_MODEL is the `model:` line of internal/card/seeds/
+    # slim-researcher.md, hard-coded rather than read back from the card so that
+    # editing the card and re-running is a control that FIRES. Reading the
+    # expectation from the same card the product reads would make the two move
+    # together and assert nothing.
+    if printf '%s' "$CMDLINE" | grep -q -- "--model opus"; then
+        pass "the engine-spawned researcher launched on the model its card names (opus)"
+    else
+        fail "the researcher's command line does not carry '--model opus' (got: ${CMDLINE:-<no claude process resolved for session $ST_SESSION>}) — a card-lookup regression downgrades every engine-spawned researcher silently, and the only symptom is worse research"
     fi
 
     # The goal contract is STILL OPEN, and that is the correct state: nothing has

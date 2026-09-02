@@ -40,13 +40,21 @@ type OpenGoal struct {
 
 // allOpenGoalsSQL is every open goal in the project, oldest first.
 //
-// It reads TWO contract types, and that is the point rather than an
-// optimisation: `goal_opened` is engine-driven work, `agent_spawned` is a
+// It reads THREE contract types, and that is the point rather than an
+// optimisation: `goal_opened` is engine-driven work, `rework_requested` is
+// engine-driven work that is being redone (QUM-1336), `agent_spawned` is a
 // prose-spawned agent's existence (slice 10), and a listing that showed only the
 // first would answer "what does the fleet still owe?" with a fraction of the
-// truth while looking authoritative. The two payloads name the same two things
+// truth while looking authoritative. The payloads name the same two things
 // under different keys, so each is COALESCEd onto one column — `owner`/
 // `agent_name`, `goal_type`/`agent_type`.
+//
+// A rework has NO type key of its own: its subject lives on the goal it
+// follows, several hops back along follows_event_id. Rather than walk that
+// chain in the listing query, the type is the literal `rework` — which is the
+// word an operator needs to recognise the item anyway, and $3 (the rework
+// schema ids) is what selects it. NULLIF before the COALESCE so a payload that
+// carries an EMPTY goal_type still falls through to it.
 //
 // `legacy` is read as a jsonb equality rather than a cast to boolean. A cast
 // raises on any payload whose `legacy` is a string or a number, and it would
@@ -55,7 +63,10 @@ type OpenGoal struct {
 // must survive a bad row.
 const allOpenGoalsSQL = `
 	SELECT e.id, e.workflow_instance_id,
-	       COALESCE(e.payload->>'goal_type', e.payload->>'agent_type', ''),
+	       COALESCE(NULLIF(e.payload->>'goal_type', ''),
+	                NULLIF(e.payload->>'agent_type', ''),
+	                CASE WHEN e.schema_id = ANY($3) THEN 'rework' END,
+	                ''),
 	       COALESCE(e.payload->>'owner', e.payload->>'agent_name', ''),
 	       COALESCE(e.payload->'legacy' = 'true'::jsonb, false),
 	       oc.opened_at
@@ -106,8 +117,10 @@ type PgOperabilityReader struct {
 
 // AllOpenGoals returns every open goal in the project, oldest first.
 func (r *PgOperabilityReader) AllOpenGoals(ctx context.Context, projectID uuid.UUID) ([]OpenGoal, error) {
+	rework := schemaIDsFor(r.Registry, "rework_requested")
 	schemas := append(schemaIDsFor(r.Registry, "goal_opened"), schemaIDsFor(r.Registry, "agent_spawned")...)
-	rows, err := r.Pool.Query(ctx, allOpenGoalsSQL, projectID, schemas)
+	schemas = append(schemas, rework...)
+	rows, err := r.Pool.Query(ctx, allOpenGoalsSQL, projectID, schemas, rework)
 	if err != nil {
 		return nil, fmt.Errorf("store: reading open goals: %w", err)
 	}
