@@ -263,6 +263,20 @@ type SupervisorSpawner struct {
 var _ store.Spawner = (*SupervisorSpawner)(nil)
 
 func (s *SupervisorSpawner) Spawn(ctx context.Context, req store.SpawnRequest) error {
+	// The parent is checked HERE, at the seam that depends on it, rather than
+	// trusted from the event. An empty one is not inert: the supervisor reads ""
+	// as "no caller" and falls back to whichever identity runs the dispatcher, so
+	// the mis-parenting the next comment describes would arrive silently. And the
+	// parent is joined into a state-file path and exported to the child as its
+	// identity, so it earns the same name validation agent_name gets.
+	// GoalSpawnHandler rejects an empty owner today; a hand-appended or replayed
+	// spawn_requested bypasses it entirely.
+	if req.Parent == "" {
+		return fmt.Errorf("dispatchadapt: the spawn_requested for %s names no parent, so the agent would be parented to whichever identity runs the dispatcher and its result would go to the wrong agent", req.AgentName)
+	}
+	if err := agent.ValidateName(req.Parent); err != nil {
+		return fmt.Errorf("dispatchadapt: the spawn_requested for %s names parent %q: %w", req.AgentName, req.Parent, err)
+	}
 	// The goal's owner becomes the spawned agent's parent. The supervisor derives
 	// the parent from the CALLER IDENTITY, not from a field on the request, so
 	// this context value is the only way to say it — without it the agent is

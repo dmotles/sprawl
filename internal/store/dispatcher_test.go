@@ -402,6 +402,47 @@ func TestDispatcher_UnhandledTypesAdvanceTheCursorWithoutClaiming(t *testing.T) 
 	}
 }
 
+// Two loops on ONE sprawl root with DIFFERENT handler tables must not share a
+// cursor (QUM-1252).
+//
+// The standalone `sprawl store dispatch` and the dispatcher inside `sprawl
+// enter` compete for events through the shared claims consumer — that is
+// deliberate, and is what makes dispatch act-once. But an event the standalone
+// loop does not handle is advanced past WITHOUT a claim, so if the two loops
+// also shared a cursor file the session's loop would load the advanced cursor
+// and never scan that event: no claim row, no lease, nothing for
+// TakeoverExpired or the reconciler to recover. The event is lost, silently,
+// and only for the types the two tables disagree about — which is exactly
+// spawn_requested.
+func TestDispatcher_ASecondLoopWithItsOwnCursorStillSeesAnEventTheFirstSkipped(t *testing.T) {
+	f := newDispatchFixture(t, 1)
+
+	// Loop 1: no handler for the type (the standalone path, which has no
+	// supervisor). Same claims store, same cursor STORE, own cursor name.
+	f.deps.Handlers = map[string]Handler{}
+	f.deps.CursorConsumer = "dispatcher-standalone"
+	f.step(t, f.dispatcher(t))
+
+	// Loop 2: handles the type (the session path).
+	f.deps.Handlers = map[string]Handler{dispatchType: f.handler}
+	f.deps.CursorConsumer = "dispatcher-session"
+	f.step(t, f.dispatcher(t))
+
+	if f.handler.count() != 1 {
+		t.Errorf("the second loop handled %d events, want 1 — the first loop's skip advanced a cursor the second loop reads, so the event was lost rather than deferred", f.handler.count())
+	}
+}
+
+// An unset CursorConsumer falls back to Consumer, so the single-loop case is
+// unchanged.
+func TestDispatcher_CursorConsumerDefaultsToTheClaimsConsumer(t *testing.T) {
+	f := newDispatchFixture(t, 1)
+	f.step(t, f.dispatcher(t))
+	if got := f.cursor.get("dispatcher"); got != 1 {
+		t.Errorf("cursor for consumer %q is at %d, want 1 — an unset CursorConsumer must fall back to Consumer, not to an empty name", "dispatcher", got)
+	}
+}
+
 // ---------------------------------------------------------------------------
 // Claims
 // ---------------------------------------------------------------------------

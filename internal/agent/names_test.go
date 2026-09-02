@@ -365,3 +365,40 @@ func TestNamePool_IsUnionOfAllPools(t *testing.T) {
 		}
 	}
 }
+
+// ReserveName is the check that replaces AllocateName when the log pins a name
+// (QUM-1252), and it is a security boundary: the name arrives from an event
+// payload and becomes a filesystem path and a tmux session name.
+func TestReserveName(t *testing.T) {
+	dir := t.TempDir()
+	if err := os.WriteFile(filepath.Join(dir, "taken.json"), []byte("{}"), 0o644); err != nil {
+		t.Fatalf("seeding a taken name: %v", err)
+	}
+	if err := os.Mkdir(filepath.Join(dir, "takendir"), 0o755); err != nil {
+		t.Fatalf("seeding a taken dir: %v", err)
+	}
+
+	cases := []struct {
+		name string
+		want string // substring of the expected error; "" means it must be accepted
+	}{
+		{"vector", ""},
+		{"", "empty"},
+		{"../escape", "invalid agent name"},
+		{"has space", "invalid agent name"},
+		{strings.Repeat("a", 65), "invalid agent name"},
+		{"taken", "already in use"},
+		{"takendir", "already in use"},
+	}
+	for _, c := range cases {
+		err := ReserveName(dir, c.name)
+		switch {
+		case c.want == "" && err != nil:
+			t.Errorf("ReserveName(%q) = %v, want accepted", c.name, err)
+		case c.want != "" && err == nil:
+			t.Errorf("ReserveName(%q) was accepted, want an error mentioning %q", c.name, c.want)
+		case c.want != "" && !strings.Contains(err.Error(), c.want):
+			t.Errorf("ReserveName(%q) = %v, want an error mentioning %q", c.name, err, c.want)
+		}
+	}
+}

@@ -575,8 +575,11 @@ func TestPrepareSpawnAs_RefusesANameAlreadyTaken(t *testing.T) {
 	if err == nil {
 		t.Fatal("a second spawn reused a live agent's name, which overwrites its state file")
 	}
-	if !strings.Contains(err.Error(), "vector") {
-		t.Errorf("the refusal should name the taken name; got: %v", err)
+	// `already in use` and not just the name: most spawn errors for this agent
+	// mention its name, so a name-only match cannot tell the collision check
+	// from a worktree or branch failure.
+	if !strings.Contains(err.Error(), "already in use") || !strings.Contains(err.Error(), "vector") {
+		t.Errorf("the refusal should say the name is already in use and name it; got: %v", err)
 	}
 }
 
@@ -587,7 +590,14 @@ func TestPrepareSpawnAs_RefusesAnUnsafeName(t *testing.T) {
 	tmpDir := t.TempDir()
 	deps, _ := newBaseRefSpawnDeps(t, tmpDir)
 
-	if _, err := agentops.PrepareSpawnAs(deps, "../escape", "engineering", "researcher", "task", "goal/x", false); err == nil {
+	_, err := agentops.PrepareSpawnAs(deps, "../escape", "engineering", "researcher", "task", "goal/x", false)
+	if err == nil {
 		t.Fatal("a pinned name containing a path traversal was accepted")
+	}
+	// The message, not just err != nil: prepareSpawn can fail for a dozen
+	// reasons around the name check, so a bare non-nil assertion stays green
+	// with the validation deleted as long as something else downstream fails.
+	if !strings.Contains(err.Error(), "invalid agent name") {
+		t.Errorf("error should mention 'invalid agent name', got: %v", err)
 	}
 }

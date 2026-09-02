@@ -319,6 +319,11 @@ func resolveEnterDeps() *enterDeps {
 			})
 			if err != nil {
 				fmt.Fprintf(os.Stderr, "[enter] supervisor unavailable: %v\n", err)
+				// An UNTYPED nil, and it must stay one: dispatchSpawner's
+				// `sup == nil` guard is what keeps the event dispatcher from
+				// registering a spawn handler with no supervisor behind it, and a
+				// typed `(*supervisor.Real)(nil)` returned here would pass that
+				// guard and panic on the first spawn_requested.
 				return nil, nil
 			}
 			// QUM-494: install the per-MCP-call observability logger on the

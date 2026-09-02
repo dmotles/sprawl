@@ -115,9 +115,17 @@ func startEventDispatch(sprawlRoot string, errOut io.Writer, run func(context.Co
 func defaultStartEventDispatch(sprawlRoot string, _ *config.Config, sup supervisor.Supervisor, errOut io.Writer) func() {
 	spawner := dispatchSpawner(sup)
 	return startEventDispatch(sprawlRoot, errOut, func(ctx context.Context, root string, out io.Writer) error {
-		return runSessionDispatch(ctx, root, spawner, out)
+		return sessionDispatchRun(ctx, root, spawner, out)
 	})
 }
+
+// sessionDispatchRun is the loop the hook above starts, as a var so a test can
+// observe WHICH spawner reaches it.
+//
+// The two ends of that plumbing were each tested and the join between them was
+// not: passing nil here instead of the spawner left the whole suite green while
+// every engine-driven goal stopped at spawn_requested.
+var sessionDispatchRun = runSessionDispatch
 
 // dispatchSpawner adapts this session's supervisor into the store's spawner
 // seam, and returns a TRUE nil when there is no supervisor.

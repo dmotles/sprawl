@@ -472,3 +472,47 @@ func TestSupervisorSpawner_ReportsAFailedSpawn(t *testing.T) {
 		t.Errorf("the underlying cause was dropped from %v", err)
 	}
 }
+
+// The parent is CHECKED here, at the seam that depends on it (QUM-1252).
+//
+// backend.WithCallerIdentity(ctx, "") stores an empty string, and the
+// supervisor reads "" as absent and falls back to the identity running the
+// dispatcher — which is exactly the mis-parenting the caller-identity plumbing
+// exists to prevent, arrived at silently. GoalSpawnHandler rejects an empty
+// owner, but any other producer of spawn_requested bypasses it.
+func TestSupervisorSpawner_RefusesAnEventWithNoParent(t *testing.T) {
+	rec := &recordingSpawner{}
+	s := &SupervisorSpawner{Sup: rec}
+	err := s.Spawn(context.Background(), store.SpawnRequest{
+		AgentName: "vector", AgentType: "researcher", Family: "engineering", Prompt: "go",
+	})
+	if err == nil {
+		t.Fatal("a spawn_requested with no parent was accepted; the agent would be parented to whoever runs the dispatcher and its result would go to the wrong agent")
+	}
+	if !strings.Contains(err.Error(), "names no parent") {
+		t.Errorf("error should say the event names no parent, got: %v", err)
+	}
+	if rec.calls != 0 {
+		t.Errorf("the supervisor was called %d times despite the refusal; the agent exists and the log says it failed", rec.calls)
+	}
+}
+
+// A parent reaches a path join and the child's environment, so it gets the same
+// name validation agent_name gets.
+func TestSupervisorSpawner_RefusesAnUnsafeParentName(t *testing.T) {
+	rec := &recordingSpawner{}
+	s := &SupervisorSpawner{Sup: rec}
+	err := s.Spawn(context.Background(), store.SpawnRequest{
+		AgentName: "vector", AgentType: "researcher", Family: "engineering",
+		Parent: "../escape", Prompt: "go",
+	})
+	if err == nil {
+		t.Fatal("a parent containing a path traversal was accepted; it is joined into a state-file path and exported to the child as its identity")
+	}
+	if !strings.Contains(err.Error(), "invalid agent name") {
+		t.Errorf("error should mention 'invalid agent name', got: %v", err)
+	}
+	if rec.calls != 0 {
+		t.Errorf("the supervisor was called %d times despite the refusal", rec.calls)
+	}
+}

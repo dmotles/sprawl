@@ -153,8 +153,14 @@ func TestGoalSpawnHandler_RequestsAWorktreeTheSpawnerCanActuallyCreate(t *testin
 		t.Errorf("branch %q does not derive from the goal event id %s, so two goals for one agent name could collide",
 			branch, ev.ID)
 	}
-	if sub, ok := pay["subagent"].(bool); ok && sub {
-		t.Error("the request asks for a sub-agent; an engine-driven goal needs its own worktree, and a sub-agent must have no branch")
+	// Absent-or-false, asserted explicitly: the payload carries no `subagent`
+	// key today, so a `v, ok := ...; ok && v` form is unreachable and cannot
+	// fail against the current implementation.
+	switch sub, ok := pay["subagent"]; {
+	case !ok:
+		// Absent means false to every consumer of the payload. Correct.
+	case sub != false:
+		t.Errorf("the request sets subagent=%v; an engine-driven goal needs its own worktree, and a sub-agent must have no branch", sub)
 	}
 }
 

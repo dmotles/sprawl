@@ -208,6 +208,15 @@ type DispatcherDeps struct {
 	// same Consumer compete for events; two with different Consumers each see
 	// every event.
 	Consumer string
+	// CursorConsumer names this loop's SCAN POSITION, and defaults to Consumer.
+	//
+	// Separate from Consumer because the two names answer different questions:
+	// Consumer is half the claim key and must be SHARED so loops compete, while
+	// the cursor is one loop's private progress and must NOT be shared by loops
+	// with different handler tables. An unhandled type advances the cursor
+	// without claiming, so a loop sharing a cursor with a loop that skips an
+	// event never scans it — no claim row, no lease, nothing to recover.
+	CursorConsumer string
 
 	// Handlers is keyed by schema NAME. A name with no entry is skipped and the
 	// cursor advances past it — unhandled types are the common case.
@@ -234,8 +243,10 @@ type Dispatcher struct {
 	projectID uuid.UUID
 	host      string
 	consumer  string
-	handlers  map[string]Handler
-	doorbell  Doorbell
+	// cursorConsumer is this loop's cursor name; see DispatcherDeps.
+	cursorConsumer string
+	handlers       map[string]Handler
+	doorbell       Doorbell
 
 	now   func() time.Time
 	poll  func() time.Duration
@@ -281,8 +292,12 @@ func NewDispatcher(d DispatcherDeps) (*Dispatcher, error) {
 	dp := &Dispatcher{
 		events: d.Events, claims: d.Claims, cursor: d.Cursor, registry: d.Registry,
 		projectID: d.ProjectID, host: d.Host, consumer: d.Consumer,
-		handlers: d.Handlers, doorbell: d.Doorbell,
+		cursorConsumer: d.CursorConsumer,
+		handlers:       d.Handlers, doorbell: d.Doorbell,
 		now: d.Now, poll: d.Poll, lease: d.Lease, batch: d.Batch, log: d.Logger,
+	}
+	if dp.cursorConsumer == "" {
+		dp.cursorConsumer = d.Consumer
 	}
 	if dp.handlers == nil {
 		dp.handlers = map[string]Handler{}
@@ -321,7 +336,7 @@ type StepResult struct {
 func (d *Dispatcher) Step(ctx context.Context) (StepResult, error) {
 	var res StepResult
 
-	cursor, err := d.cursor.Load(d.consumer)
+	cursor, err := d.cursor.Load(d.cursorConsumer)
 	if err != nil {
 		// A cursor that cannot be read is NOT treated as 0. Re-scanning from the
 		// start is safe (claims absorb it) but doing so silently, on every poll,
@@ -348,7 +363,7 @@ func (d *Dispatcher) Step(ctx context.Context) (StepResult, error) {
 		if cursor == persisted {
 			return nil
 		}
-		if err := d.cursor.Save(d.consumer, cursor); err != nil {
+		if err := d.cursor.Save(d.cursorConsumer, cursor); err != nil {
 			return err
 		}
 		persisted = cursor
@@ -396,7 +411,7 @@ func (d *Dispatcher) Step(ctx context.Context) (StepResult, error) {
 			if handled {
 				// The AC1 boundary: recorded only after the side effect, and
 				// before anything else is attempted.
-				if err := d.cursor.Save(d.consumer, cursor); err != nil {
+				if err := d.cursor.Save(d.cursorConsumer, cursor); err != nil {
 					return res, err
 				}
 				persisted = cursor

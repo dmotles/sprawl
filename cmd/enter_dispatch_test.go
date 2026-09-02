@@ -12,8 +12,10 @@ import (
 	"time"
 
 	"github.com/dmotles/sprawl/internal/config"
+	"github.com/dmotles/sprawl/internal/dispatchadapt"
 	"github.com/dmotles/sprawl/internal/sprawlmcp"
 	"github.com/dmotles/sprawl/internal/sprawlmcp/calllog"
+	"github.com/dmotles/sprawl/internal/store"
 	"github.com/dmotles/sprawl/internal/supervisor"
 	"github.com/dmotles/sprawl/internal/supervisor/supervisortest"
 )
@@ -318,5 +320,33 @@ func TestDispatchSpawner_IsATrueNilWithoutASupervisor(t *testing.T) {
 	}
 	if s := dispatchSpawner(&supervisortest.NoopSupervisor{}); s == nil {
 		t.Error("dispatchSpawner returned nil for a real supervisor, so spawn_requested would go unhandled inside a session")
+	}
+}
+
+// The session's dispatch loop receives THIS SESSION's supervisor as a spawner
+// (QUM-1252).
+//
+// The join between dispatchSpawner and the loop, which the two end-to-end tests
+// above and below leave open: hand defaultStartEventDispatch a supervisor and
+// assert the loop it starts is given a live spawner, not nil.
+func TestDefaultStartEventDispatch_HandsTheLoopASpawnerBuiltFromTheSupervisor(t *testing.T) {
+	got := make(chan store.Spawner, 1)
+	orig := sessionDispatchRun
+	sessionDispatchRun = func(_ context.Context, _ string, spawner store.Spawner, _ io.Writer) error {
+		got <- spawner
+		return nil
+	}
+	t.Cleanup(func() { sessionDispatchRun = orig })
+
+	stop := defaultStartEventDispatch(t.TempDir(), nil, &supervisortest.NoopSupervisor{}, io.Discard)
+	defer stop()
+
+	select {
+	case spawner := <-got:
+		if _, ok := spawner.(*dispatchadapt.SupervisorSpawner); !ok {
+			t.Fatalf("the loop was given %T, want *dispatchadapt.SupervisorSpawner — a nil spawner registers no spawn handler and every engine goal stops at spawn_requested", spawner)
+		}
+	case <-time.After(5 * time.Second):
+		t.Fatal("the dispatch loop never started")
 	}
 }

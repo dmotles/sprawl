@@ -366,8 +366,11 @@ func buildDispatchStack(ledger *store.Ledger, sprawlRoot, host string, spawner s
 		ProjectID: ledger.ProjectID(),
 		Host:      host,
 		Consumer:  dispatchConsumer,
-		Handlers:  dispatchHandlerSet(notify, ack, goalSpawn, spawn),
-		Logger:    logger,
+		// Per-path, because the handler tables differ — see
+		// dispatchCursorConsumer.
+		CursorConsumer: dispatchCursorConsumer(spawner != nil),
+		Handlers:       dispatchHandlerSet(notify, ack, goalSpawn, spawn),
+		Logger:         logger,
 		// Doorbell deliberately nil: correctness is the poll, and a standalone
 		// process holding a LISTEN connection open buys latency this process does
 		// not need — its deliveries are already asynchronous.
@@ -417,8 +420,14 @@ func dispatchHandlerSet(notify, ack, goalSpawn, spawn store.Handler) map[string]
 	// `sprawl store dispatch` that registered this anyway would CLAIM each
 	// spawn_requested and then fail it — and the claim is precisely what stops
 	// the session's dispatcher, which could have run it, from taking the event.
-	// Leaving it unregistered means the event is skipped without a claim and the
-	// session picks it up on its next pass.
+	// Leaving it unregistered means the event is skipped without a claim, so the
+	// session's dispatcher still scans it and acts on it.
+	//
+	// That last sentence is only true because the two loops have SEPARATE
+	// cursors (dispatchCursorConsumer below). Sharing one would make the
+	// standalone loop's skip advance the position the session loop reads, and the
+	// event would be lost rather than deferred — silently, and only for the
+	// types the two tables disagree about.
 	if spawn != nil {
 		set["spawn_requested"] = spawn
 	}
@@ -432,6 +441,22 @@ func dispatchHandlerSet(notify, ack, goalSpawn, spawn store.Handler) map[string]
 // would give every host its own claim key, so every host would act on every
 // event — which is the exactly-once failure, arriving through a naming decision.
 const dispatchConsumer = "dispatcher"
+
+// dispatchCursorConsumer names a loop's SCAN POSITION, which — unlike the claims
+// consumer above — must NOT be shared between the two dispatch paths.
+//
+// The paths run different handler tables (only the session has a supervisor, so
+// only it handles spawn_requested), and an unhandled type advances the cursor
+// without claiming. One shared cursor therefore lets the standalone loop advance
+// past a spawn_requested the session loop would have handled, leaving no claim
+// row, no lease, and nothing for TakeoverExpired or the reconciler to recover.
+// Two names, so each loop's progress is its own.
+func dispatchCursorConsumer(session bool) string {
+	if session {
+		return dispatchConsumer + "-session"
+	}
+	return dispatchConsumer + "-standalone"
+}
 
 func sweeperDeps(pool *pgxpool.Pool, registry *store.Registry, local store.LocalAgents,
 	emitter store.EventEmitter, injector store.Injector,
@@ -553,4 +578,5 @@ func reportDispatchLimits(out io.Writer, host string) {
 	fmt.Fprintf(out, "  a failed injection is retried by each sweep on a widening backoff, then recorded undelivered at the cap and never retried again\n")
 	fmt.Fprintf(out, "  the stall sweeper is INERT here: turn state is only observable inside a sprawl session, and an unobserved turn state is never poked\n")
 	fmt.Fprintf(out, "  goal_opened IS handled here — it appends spawn_requested — but spawn_requested is NOT handled here: launching a session needs the supervisor, so a goal opened against this host gets a request and waits for a `sprawl enter` dispatcher to turn it into an agent\n")
+	fmt.Fprintf(out, "  cursor: %s (this loop's own scan position; the `sprawl enter` dispatcher keeps a separate one, so the spawn_requested skipped above is still scanned there)\n", dispatchCursorConsumer(false))
 }

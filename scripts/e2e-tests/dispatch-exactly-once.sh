@@ -290,7 +290,7 @@ test_run() {
         fail "no shared 'dispatcher' claim; a per-host consumer would let every host act on every event"
     fi
 
-    local CURSOR="$SPRAWL_ROOT/.sprawl/store/dispatch/cursor-dispatcher.json"
+    local CURSOR="$SPRAWL_ROOT/.sprawl/store/dispatch/cursor-dispatcher-standalone.json"
     if [ -f "$CURSOR" ]; then
         pass "the cursor landed where the command documents it ($(basename "$CURSOR"))"
     else
