@@ -49,12 +49,17 @@ type OpenGoal struct {
 // under different keys, so each is COALESCEd onto one column — `owner`/
 // `agent_name`, `goal_type`/`agent_type`.
 //
-// A rework has NO type key of its own: its subject lives on the goal it
-// follows, several hops back along follows_event_id. Rather than walk that
-// chain in the listing query, the type is the literal `rework` — which is the
-// word an operator needs to recognise the item anyway, and $3 (the rework
-// schema ids) is what selects it. NULLIF before the COALESCE so a payload that
-// carries an EMPTY goal_type still falls through to it.
+// A rework has NO type key of its own: its subject lives on the goal it follows,
+// along follows_event_id. This query does NOT walk that link, and the reason is
+// the operator, not the cost — goalreader.go already walks it in one hop with a
+// plain LEFT JOIN. A human asking what the fleet owes needs the word `rework` to
+// recognise the item; the AGENT working it needs the subject. So the same open
+// contract deliberately answers `rework` here and in sweepreader.go, and
+// `research`/`bug_investigation` in goalreader.go's OpenGoalsForAgent. That
+// divergence is intentional (QUM-1336) — do not unify the three queries onto one
+// answer without deciding which reader you are breaking. $3 (the rework schema
+// ids) is what selects the literal, and NULLIF precedes the COALESCE so a
+// payload carrying an EMPTY goal_type still falls through to it.
 //
 // `legacy` is read as a jsonb equality rather than a cast to boolean. A cast
 // raises on any payload whose `legacy` is a string or a number, and it would

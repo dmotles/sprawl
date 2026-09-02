@@ -35,7 +35,10 @@ import (
 // append transaction, so it cannot disagree with the log, and the anti-join
 // alternative is a full scan per sweep. That set is openerSchemaIDs ($5):
 // goal_opened AND rework_requested, because a rework opens a contract exactly as
-// a goal does and a crashed reworker is a stall by every term below.
+// a goal does and a crashed reworker is a stall by every term below. A rework's
+// goal_type is reported as the literal `rework` rather than the subject of the
+// goal it follows — the same deliberate divergence from goalreader.go that
+// operability.go's header explains.
 //
 // The correlated subqueries are deliberate over joins: each one is
 // naturally-scalar (a max, two counts, a boolean), and expressing them as joins

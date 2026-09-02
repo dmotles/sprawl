@@ -154,6 +154,13 @@ test_run() {
     # Skipped rather than failed: without pgrep the model assertion below cannot
     # resolve the researcher's process, and the row would fail red pointing at
     # the product for a missing host tool.
+    #
+    # The cost is stated rather than hidden: e2e_skip_row voids the WHOLE row, so
+    # a host without pgrep loses all 18 assertions — including the 17 that
+    # predate QUM-1337 and need no PID resolution — and a skipped row discharges
+    # no gate obligation. Scoping the skip to the one assertion is not possible
+    # while MIN_ASSERTIONS is per-row. Failing loudly on every pgrep-less host
+    # was judged worse; this way the shortfall is visible in the skip banner.
     if ! command -v pgrep >/dev/null 2>&1; then
         e2e_skip_row "pgrep not found on PATH — the model assertion cannot resolve the researcher's claude process"
         return
@@ -405,8 +412,13 @@ test_run() {
     #
     # PID recipe is engine-goal-stall-poke's `pids_for`, not
     # death-observability.sh's: match the SESSION ID and then require
-    # /proc/<pid>/comm == claude, and take every match. A bare `pgrep -af claude`
-    # matches harness subshells and killed the harness in 3 of 4 runs (QUM-1334).
+    # /proc/<pid>/comm == claude, and take EVERY match rather than the first. A
+    # bare `pgrep -af claude` matches harness subshells and killed the harness in
+    # 3 of 4 runs (QUM-1334). Every match, not the first, because a session id
+    # that ever resolves to two claude processes (a resume, a leaked child) would
+    # otherwise have the assertion read a process it did not mean to; collecting
+    # them all and passing if ANY carries the expected model keeps the assertion
+    # aimed at the researcher rather than at pgrep's ordering.
     local ST_SESSION MODEL_PIDS CMDLINE p
     ST_SESSION=$(grep -o '"session_id"[[:space:]]*:[[:space:]]*"[^"]*"' "$STATE_FILE" | head -1 | sed 's/.*"\([^"]*\)"$/\1/')
     CMDLINE=""
@@ -414,17 +426,16 @@ test_run() {
         MODEL_PIDS=$(pgrep -f -- "$ST_SESSION" 2>/dev/null || true)
         for p in $MODEL_PIDS; do
             if [ "$(cat "/proc/$p/comm" 2>/dev/null || true)" = "claude" ]; then
-                CMDLINE=$(tr '\0' ' ' < "/proc/$p/cmdline" 2>/dev/null || true)
-                break
+                CMDLINE="$CMDLINE $(tr '\0' ' ' < "/proc/$p/cmdline" 2>/dev/null || true)"
             fi
         done
     fi
     echo "    the researcher's claude was launched as: ${CMDLINE:-<not resolved>}"
-    # RESEARCHER_CARD_MODEL is the `model:` line of internal/card/seeds/
-    # slim-researcher.md, hard-coded rather than read back from the card so that
-    # editing the card and re-running is a control that FIRES. Reading the
-    # expectation from the same card the product reads would make the two move
-    # together and assert nothing.
+    # `--model opus` is the `model:` line of internal/card/seeds/
+    # slim-researcher.md as an inline LITERAL — deliberately not read back from
+    # the card into a variable, so that editing the card and re-running is a
+    # control that FIRES. Reading the expectation from the same card the product
+    # reads would make the two move together and assert nothing.
     if printf '%s' "$CMDLINE" | grep -q -- "--model opus"; then
         pass "the engine-spawned researcher launched on the model its card names (opus)"
     else
