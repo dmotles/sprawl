@@ -359,6 +359,7 @@ func TestServer_ToolsList(t *testing.T) {
 		"reread_my_goal",
 		"get_workflow_log",
 		"report_result",
+		"request_rework",
 		"ask_user",
 		"ask_questions",
 		"answer_questions",

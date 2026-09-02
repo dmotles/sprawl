@@ -71,11 +71,14 @@ type PgIntentReader struct {
 var _ IntentReader = (*PgIntentReader)(nil)
 
 // schemaIDsFor collects every version's id for one event-type name.
-func schemaIDsFor(reg *Registry, name string) []uuid.UUID {
+func schemaIDsFor(reg *Registry, names ...string) []uuid.UUID {
 	var ids []uuid.UUID
 	for _, s := range reg.All() {
-		if s.Name == name {
-			ids = append(ids, s.ID)
+		for _, name := range names {
+			if s.Name == name {
+				ids = append(ids, s.ID)
+				break
+			}
 		}
 	}
 	return ids

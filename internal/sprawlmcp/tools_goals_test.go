@@ -70,6 +70,15 @@ type fakeGoalSource struct {
 	openedGoal  store.OpenedGoal
 	openErr     error
 
+	// AC3 — request_rework.
+	reworkOwner    string
+	reworkRejected uuid.UUID
+	reworkReason   string
+	reworkPolicy   store.ReEngagement
+	reworkCalls    int
+	rework         store.RequestedRework
+	reworkErr      error
+
 	// Slice 10 — the legacy lifecycle pair. Exercised in tools_legacylog_test.go.
 	legacySpawns    []store.LegacyAgent
 	legacySpawnID   uuid.UUID
@@ -110,6 +119,15 @@ func (f *fakeGoalSource) OpenGoal(_ context.Context, gt store.GoalType, text, ow
 	f.openCalls++
 	f.openedType, f.openedText, f.openedOwner = gt, text, owner
 	return f.openedGoal, nil
+}
+
+func (f *fakeGoalSource) RequestRework(_ context.Context, owner string, rejected uuid.UUID, reason string, re store.ReEngagement) (store.RequestedRework, error) {
+	if f.reworkErr != nil {
+		return store.RequestedRework{}, f.reworkErr
+	}
+	f.reworkCalls++
+	f.reworkOwner, f.reworkRejected, f.reworkReason, f.reworkPolicy = owner, rejected, reason, re
+	return f.rework, nil
 }
 
 func (f *fakeGoalSource) Enabled() bool { return f.enabled }

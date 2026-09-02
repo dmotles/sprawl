@@ -458,6 +458,11 @@ type EmitRequest struct {
 	AgentSessionID *uuid.UUID
 	OwnerAgentID   *uuid.UUID
 	ClosesEventID  *uuid.UUID
+	// FollowsEventID is the continuation link, and the appender accepts it only
+	// on a contract-OPENING schema. Rework is the motivating case: it is how a
+	// redone attempt is tied to the rejected one by a link the database can
+	// enforce.
+	FollowsEventID *uuid.UUID
 	ArtifactID     *uuid.UUID
 	Payload        any
 }
@@ -502,6 +507,7 @@ func (l *Ledger) Emit(ctx context.Context, req EmitRequest) (int64, error) {
 		AgentSessionID:     req.AgentSessionID,
 		OwnerAgentID:       req.OwnerAgentID,
 		ClosesEventID:      req.ClosesEventID,
+		FollowsEventID:     req.FollowsEventID,
 		ArtifactID:         req.ArtifactID,
 		Payload:            payload,
 	})

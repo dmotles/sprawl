@@ -54,6 +54,12 @@ type GoalSource interface {
 	// resolves the calling session's name, because the store cannot see who is
 	// calling and a guessed owner is a result delivered to the wrong agent.
 	OpenGoal(ctx context.Context, goalType store.GoalType, text, owner string) (store.OpenedGoal, error)
+	// RequestRework is request_rework's whole store contact: it appends
+	// `rework_requested` and nothing else. Here for the single-attach-point
+	// reason above. It takes the OWNER for the same reason OpenGoal does — the
+	// store cannot see who is calling, and a guessed owner sends the redone
+	// result to an agent that is not waiting for it.
+	RequestRework(ctx context.Context, owner string, rejectedEventID uuid.UUID, reason string, re store.ReEngagement) (store.RequestedRework, error)
 	// RecordLegacySpawn / RecordLegacyRetire are the paired lifecycle events for
 	// prose-spawned agents (slice 10). They are on THIS interface for the
 	// single-attach-point reason above, not because spawn is a goal tool: a

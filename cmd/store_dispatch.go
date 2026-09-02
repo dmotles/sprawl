@@ -330,6 +330,20 @@ func buildDispatchStack(ledger *store.Ledger, sprawlRoot, host string, spawner s
 	if err != nil {
 		return nil, err
 	}
+	// rework_requested -> the next spawn_requested (QUM-1252, AC3). Registered
+	// alongside goalSpawn and for the same reason: it only appends, so it needs
+	// no supervisor and belongs in both dispatch paths. Unregistered, an owner's
+	// rejection would be recorded and then acted on by nobody, which reads
+	// exactly like a rework that was never asked for.
+	rework, err := store.NewReworkHandler(store.ReworkHandlerDeps{
+		Emitter: emitter,
+		Names:   &dispatchadapt.PoolNamer{SprawlRoot: sprawlRoot},
+		Lookup:  &store.PgEventReader{Pool: pool, Registry: registry},
+		Logger:  logger,
+	})
+	if err != nil {
+		return nil, err
+	}
 	// spawn_requested -> an actual agent, write-ahead first (QUM-1252). Declared
 	// as the interface so that with no spawner it stays a TRUE nil rather than a
 	// non-nil interface holding a nil pointer, which dispatchHandlerSet's guard
@@ -369,7 +383,7 @@ func buildDispatchStack(ledger *store.Ledger, sprawlRoot, host string, spawner s
 		// Per-path, because the handler tables differ — see
 		// dispatchCursorConsumer.
 		CursorConsumer: dispatchCursorConsumer(spawner != nil),
-		Handlers:       dispatchHandlerSet(notify, ack, goalSpawn, spawn),
+		Handlers:       dispatchHandlerSet(notify, ack, goalSpawn, rework, spawn),
 		Logger:         logger,
 		// Doorbell deliberately nil: correctness is the poll, and a standalone
 		// process holding a LISTEN connection open buys latency this process does
@@ -406,7 +420,7 @@ func buildDispatchStack(ledger *store.Ledger, sprawlRoot, host string, spawner s
 // notifying on event types nobody has thought about.
 // spawn is nil on the standalone path and only there — see the comment on the
 // registration below for why that is a deliberate hole rather than a gap.
-func dispatchHandlerSet(notify, ack, goalSpawn, spawn store.Handler) map[string]store.Handler {
+func dispatchHandlerSet(notify, ack, goalSpawn, rework, spawn store.Handler) map[string]store.Handler {
 	set := map[string]store.Handler{
 		// Every close-typed event that can land a result for an owner.
 		"goal_closed": notify,
@@ -414,6 +428,8 @@ func dispatchHandlerSet(notify, ack, goalSpawn, spawn store.Handler) map[string]
 		"turn_finished": ack,
 		// The engine's start leg: a goal becomes a spawn request.
 		"goal_opened": goalSpawn,
+		// The rework leg: a rejected result becomes the next spawn request.
+		"rework_requested": rework,
 	}
 	// CONDITIONAL, unlike every other row. Launching a session needs the
 	// supervisor, which exists only inside `sprawl enter`. A standalone

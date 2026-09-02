@@ -58,11 +58,19 @@ type AgentGoal struct {
 // to the one agent whose entire prompt is that goal, and report_result then
 // refuses its close, so the contract can only ever be discharged by the agent
 // that did not do the work.
+// A rework_requested is one of the goal-shaped schemas $2 carries, not a
+// separate question. It opens a contract of its own and is discharged by its own
+// goal_closed, so to the agent doing the work it IS the goal — and an agent that
+// could not see it would read "you have no goal" and have nothing to close. Its
+// goal_type comes from the goal it FOLLOWS, because the rework payload states
+// what was wrong rather than restating the task.
 const openGoalsForAgentSQL = `
-	SELECT e.id, e.workflow_instance_id, COALESCE(e.payload->>'goal_type', ''),
+	SELECT e.id, e.workflow_instance_id,
+	       COALESCE(e.payload->>'goal_type', f.payload->>'goal_type', ''),
 	       COALESCE(e.payload->>'owner', ''), oc.opened_at
 	  FROM open_contracts oc
 	  JOIN events e ON e.id = oc.event_id
+	  LEFT JOIN events f ON f.id = e.follows_event_id
 	 WHERE e.project_id = $1
 	   AND e.schema_id = ANY($2)
 	   AND (e.payload->>'owner' = $3
@@ -98,7 +106,7 @@ func (r *PgGoalReader) OpenGoalsForAgent(ctx context.Context, projectID uuid.UUI
 		return nil, fmt.Errorf("store: reading an agent's open goals requires an agent name")
 	}
 	rows, err := r.Pool.Query(ctx, openGoalsForAgentSQL, projectID,
-		schemaIDsFor(r.Registry, "goal_opened"), agent, schemaIDsFor(r.Registry, "spawn_requested"))
+		schemaIDsFor(r.Registry, "goal_opened", "rework_requested"), agent, schemaIDsFor(r.Registry, "spawn_requested"))
 	if err != nil {
 		return nil, fmt.Errorf("store: reading open goals for %q: %w", agent, err)
 	}

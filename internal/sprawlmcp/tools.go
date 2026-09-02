@@ -398,6 +398,24 @@ func baseToolDefinitions() []map[string]any {
 			},
 		},
 		{
+			"name":        "request_rework",
+			"description": "Reject a goal's landed result and ask for the work to be redone. Closes are final and the log is monotone, so this never reopens or edits the original goal — it records a NEW contract linked to the rejected one, and the dispatcher spawns a FRESH agent from it. Nothing is running when this returns, so do not report the rework as underway. Restricted to weave and managers. Requires the event log to be enabled on this host.",
+			"inputSchema": map[string]any{
+				"type": "object",
+				"properties": map[string]any{
+					"goal_event_id": map[string]any{
+						"type":        "string",
+						"description": "The goal_event_id of the work you are rejecting — the same id `report_result` closed. Read it off the notification you got when the goal closed.",
+					},
+					"reason": map[string]any{
+						"type":        "string",
+						"description": "What was wrong with the result. This is ALL the fresh agent is told about the miss, and it cannot see this conversation, so be specific: an agent given the same task with no explanation tends to produce the same answer.",
+					},
+				},
+				"required": []string{"goal_event_id", "reason"},
+			},
+		},
+		{
 			"name":        "report_result",
 			"description": "Close the goal you were given, recording its outcome in the event log. IRREVERSIBLE: the log is monotone and a close cannot be retracted — a defect found afterwards needs rework requested by the goal's owner, not a second close. You may only close a goal you own; pass the goal_event_id from reread_my_goal (NOT the workflow_instance_id). Requires the event log to be enabled on this host.",
 			"inputSchema": map[string]any{

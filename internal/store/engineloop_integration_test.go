@@ -86,11 +86,17 @@ func (e *engineLoopEnv) dispatcher(t *testing.T, namer NameAllocator) *Dispatche
 		t.Fatalf("NewGoalSpawnHandler: %v", err)
 	}
 
+	rework, err := NewReworkHandler(ReworkHandlerDeps{Emitter: e.emitter, Names: namer, Lookup: e.reader()})
+	if err != nil {
+		t.Fatalf("NewReworkHandler: %v", err)
+	}
+
 	deps := e.deps("host-a", notify)
 	deps.Handlers = map[string]Handler{
-		"goal_opened":   goalSpawn,
-		"goal_closed":   notify,
-		"turn_finished": ack,
+		"goal_opened":      goalSpawn,
+		"goal_closed":      notify,
+		"turn_finished":    ack,
+		"rework_requested": rework,
 	}
 	d, err := NewDispatcher(deps)
 	if err != nil {

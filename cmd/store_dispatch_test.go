@@ -481,9 +481,9 @@ func TestDispatchDegradedRefusal_PreservesTheCause(t *testing.T) {
 // nothing in the logs to say why.
 func TestDispatchHandlerSet_RegistersTheEngineStartLeg(t *testing.T) {
 	nop := store.HandlerFunc(func(context.Context, store.DispatchedEvent) error { return nil })
-	set := dispatchHandlerSet(nop, nop, nop, nop)
+	set := dispatchHandlerSet(nop, nop, nop, nop, nop)
 
-	for _, evType := range []string{"goal_opened", "goal_closed", "turn_finished"} {
+	for _, evType := range []string{"goal_opened", "goal_closed", "turn_finished", "rework_requested"} {
 		if set[evType] == nil {
 			t.Errorf("no handler is registered for %q; the dispatcher would skip it and advance the cursor", evType)
 		}
@@ -505,7 +505,7 @@ func TestDispatchHandlerSet_RegistersTheEngineStartLeg(t *testing.T) {
 func TestDispatchHandlerSet_RegistersSpawnOnlyWhenASpawnerExists(t *testing.T) {
 	nop := store.HandlerFunc(func(context.Context, store.DispatchedEvent) error { return nil })
 
-	withSpawn := dispatchHandlerSet(nop, nop, nop, nop)
+	withSpawn := dispatchHandlerSet(nop, nop, nop, nop, nop)
 	if withSpawn["spawn_requested"] == nil {
 		t.Error("no handler for spawn_requested when a spawn handler was supplied; every engine goal would stop one step short of an agent")
 	}
@@ -513,7 +513,7 @@ func TestDispatchHandlerSet_RegistersSpawnOnlyWhenASpawnerExists(t *testing.T) {
 	// The standalone path passes nil, and a TYPED nil must not register either —
 	// a non-nil interface holding a nil pointer is the classic way this check
 	// passes while the dispatcher panics on the first event.
-	withoutSpawn := dispatchHandlerSet(nop, nop, nop, nil)
+	withoutSpawn := dispatchHandlerSet(nop, nop, nop, nop, nil)
 	// KEY PRESENCE, not a nil value. The dispatcher reads its table as
 	// `handler, wanted := handlers[type]`, so a key mapped to a nil handler is
 	// `wanted` — it CLAIMS the event and then panics dereferencing the handler.

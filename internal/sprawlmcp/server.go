@@ -296,6 +296,8 @@ func (s *Server) dispatchTool(ctx context.Context, name string, args json.RawMes
 		return s.toolGetWorkflowLog(ctx, args)
 	case "create_goal":
 		return s.toolCreateGoal(ctx, args)
+	case "request_rework":
+		return s.toolRequestRework(ctx, args)
 	case "report_result":
 		return s.toolReportResult(ctx, args)
 	case "ask_user":
