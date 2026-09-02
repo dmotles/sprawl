@@ -222,7 +222,16 @@ func runStoreDispatch(ctx context.Context, deps *storeDeps) error {
 
 	reportDispatchLimits(out, host)
 
-	stack, err := buildDispatchStack(ledger, deps.SprawlRoot, host, nil, logger)
+	// No Sup and so no StallAfter: without a supervisor the stall sweeper is inert
+	// by construction (see buildDispatchStack), so a threshold here would be a
+	// config key that changes nothing. The knob is read on the session path, which
+	// is the one that can act on it.
+	stack, err := buildDispatchStack(dispatchStackOpts{
+		Ledger:     ledger,
+		SprawlRoot: deps.SprawlRoot,
+		Host:       host,
+		Logger:     logger,
+	})
 	if err != nil {
 		return err
 	}
@@ -281,6 +290,23 @@ type dispatchStack struct {
 	notifySweeper store.NotifySweeperDeps
 }
 
+// dispatchStackOpts is buildDispatchStack's input.
+//
+// A struct rather than a parameter list because the two optional members are
+// both zero-valued on the standalone path, and `buildDispatchStack(ledger, root,
+// host, nil, 0, logger)` is a call nobody can read.
+type dispatchStackOpts struct {
+	Ledger     *store.Ledger
+	SprawlRoot string
+	Host       string
+	// Sup is nil outside a `sprawl enter` session. See buildDispatchStack.
+	Sup dispatchadapt.SessionSupervisor
+	// StallAfter is zero when the caller has no config to read it from, which
+	// leaves store.DefaultStallAfter in force.
+	StallAfter time.Duration
+	Logger     *slog.Logger
+}
+
 // buildDispatchStack wires the dispatcher, the reconciler and both sweepers.
 //
 // It takes an ALREADY-VALIDATED ledger: enabled, non-degraded, with a pool. The
@@ -288,19 +314,38 @@ type dispatchStack struct {
 // next-step, the session simply declines to start — so the checks stay with the
 // callers and this function stays a pure assembly step.
 //
-// spawner is nil from `sprawl store dispatch` and supervisor-backed from
-// `sprawl enter`. It is the ONLY difference between the two stacks, and it is a
-// parameter rather than something derived here because this function cannot see
-// whether a supervisor exists — that is a property of the process, not the
-// ledger.
-func buildDispatchStack(ledger *store.Ledger, sprawlRoot, host string, spawner store.Spawner, logger *slog.Logger) (*dispatchStack, error) {
+// opts.Sup is nil from `sprawl store dispatch` and the live supervisor from
+// `sprawl enter`. It is the ONLY difference between the two stacks — it decides
+// the spawn handler, the turn observation and whether a poke can revive a
+// crashed owner — and it is a parameter rather than something derived here
+// because this function cannot see whether a supervisor exists; that is a
+// property of the process, not the ledger.
+func buildDispatchStack(o dispatchStackOpts) (*dispatchStack, error) {
+	ledger, sprawlRoot, host, logger := o.Ledger, o.SprawlRoot, o.Host, o.Logger
 	pool := ledger.Pool()
 	registry := ledger.Registry()
 	emitter := store.LedgerEmitter{Ledger: ledger}
 	reader := &store.PgEventReader{Pool: pool, Registry: registry}
 	notifies := &store.PgNotifyReader{Pool: pool, Registry: registry}
-	local := &dispatchadapt.DiskAgents{SprawlRoot: sprawlRoot}
-	injector := &dispatchadapt.QueueInjector{SprawlRoot: sprawlRoot}
+	disk := &dispatchadapt.DiskAgents{SprawlRoot: sprawlRoot}
+	queue := &dispatchadapt.QueueInjector{SprawlRoot: sprawlRoot}
+
+	// THE TWO SEAMS THAT DECIDE WHETHER THE STALL SWEEPER DOES ANYTHING.
+	//
+	// With no supervisor both fall back to the disk-only pair, and the sweeper is
+	// inert by construction: DiskAgents cannot observe turn state, so the
+	// tri-state gate skips every candidate. With one, turn state is observable
+	// for an agent with no live subprocess and a poke can wake a crashed owner —
+	// which together are AC5. The fallback is deliberate rather than a
+	// degradation to be fixed: the alternative for a process that cannot see turn
+	// state is to poke every working agent in the fleet.
+	var local store.LocalAgents = disk
+	var injector store.Injector = queue
+	if o.Sup != nil {
+		local = &dispatchadapt.SupervisorAgents{Disk: disk, Sup: o.Sup}
+		injector = &dispatchadapt.WakeInjector{Queue: queue, Sup: o.Sup, Disk: disk}
+	}
+	spawner := dispatchSpawner(o.Sup)
 
 	notify, err := store.NewNotifyHandler(store.NotifyHandlerDeps{
 		Emitter:  emitter,
@@ -403,7 +448,7 @@ func buildDispatchStack(ledger *store.Ledger, sprawlRoot, host string, spawner s
 			Host:      host,
 			Logger:    logger,
 		},
-		sweeper:       sweeperDeps(pool, registry, local, emitter, injector, ledger.ProjectID(), host, logger),
+		sweeper:       sweeperDeps(pool, registry, local, emitter, injector, ledger.ProjectID(), host, o.StallAfter, logger),
 		notifySweeper: notifySweeperDeps(pool, registry, emitter, injector, ledger.ProjectID(), host, logger),
 	}, nil
 }
@@ -474,18 +519,23 @@ func dispatchCursorConsumer(session bool) string {
 	return dispatchConsumer + "-standalone"
 }
 
+// stallAfter of zero is PASSED THROUGH rather than replaced here, because
+// store.Sweep already reads a zero as "use DefaultStallAfter". Substituting the
+// default at this seam would put a second copy of that decision in the tree, and
+// the two would disagree the first time one of them changed.
 func sweeperDeps(pool *pgxpool.Pool, registry *store.Registry, local store.LocalAgents,
 	emitter store.EventEmitter, injector store.Injector,
-	projectID uuid.UUID, host string, sweepLogger *slog.Logger,
+	projectID uuid.UUID, host string, stallAfter time.Duration, sweepLogger *slog.Logger,
 ) store.SweeperDeps {
 	return store.SweeperDeps{
-		Goals:     &store.PgSweepReader{Pool: pool, Registry: registry},
-		Local:     local,
-		Emitter:   emitter,
-		Injector:  injector,
-		ProjectID: projectID,
-		Host:      host,
-		Logger:    sweepLogger,
+		Goals:      &store.PgSweepReader{Pool: pool, Registry: registry},
+		Local:      local,
+		Emitter:    emitter,
+		Injector:   injector,
+		ProjectID:  projectID,
+		Host:       host,
+		StallAfter: stallAfter,
+		Logger:     sweepLogger,
 	}
 }
 

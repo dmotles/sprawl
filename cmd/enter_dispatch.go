@@ -112,19 +112,30 @@ func startEventDispatch(sprawlRoot string, errOut io.Writer, run func(context.Co
 // rather than re-read here: `sprawl enter` resolves its root from SPRAWL_ROOT or
 // the cwd, and a second config.Load inside a session-scoped helper is how the
 // two come to disagree.
-func defaultStartEventDispatch(sprawlRoot string, _ *config.Config, sup supervisor.Supervisor, errOut io.Writer) func() {
-	spawner := dispatchSpawner(sup)
+func defaultStartEventDispatch(sprawlRoot string, cfg *config.Config, sup supervisor.Supervisor, errOut io.Writer) func() {
+	// A BAD goal_stall.after IS REPORTED AND THEN IGNORED, not fatal. The
+	// accessor returns the default alongside its error, and refusing to dispatch
+	// over an unparseable duration would take notifications, acks and the engine
+	// down with it — a far worse outcome than sweeping on 30m.
+	var stallAfter time.Duration
+	if cfg != nil {
+		d, err := cfg.GoalStallAfterDuration()
+		if err != nil {
+			fmt.Fprintf(errOut, "[enter] %s\n", err)
+		}
+		stallAfter = d
+	}
 	return startEventDispatch(sprawlRoot, errOut, func(ctx context.Context, root string, out io.Writer) error {
-		return sessionDispatchRun(ctx, root, spawner, out)
+		return sessionDispatchRun(ctx, root, sup, stallAfter, out)
 	})
 }
 
 // sessionDispatchRun is the loop the hook above starts, as a var so a test can
-// observe WHICH spawner reaches it.
+// observe WHICH supervisor reaches it.
 //
 // The two ends of that plumbing were each tested and the join between them was
-// not: passing nil here instead of the spawner left the whole suite green while
-// every engine-driven goal stopped at spawn_requested.
+// not: passing nil here instead of the supervisor left the whole suite green
+// while every engine-driven goal stopped at spawn_requested.
 var sessionDispatchRun = runSessionDispatch
 
 // dispatchSpawner adapts this session's supervisor into the store's spawner
@@ -135,7 +146,7 @@ var sessionDispatchRun = runSessionDispatch
 // store.Spawner, so it would pass buildDispatchStack's `!= nil` guard, register
 // a spawn handler, and panic on the first spawn_requested — instead of declining
 // to register and leaving the event for a process that can do the work.
-func dispatchSpawner(sup supervisor.Supervisor) store.Spawner {
+func dispatchSpawner(sup dispatchadapt.SessionSupervisor) store.Spawner {
 	if sup == nil {
 		return nil
 	}
@@ -150,7 +161,7 @@ func dispatchSpawner(sup supervisor.Supervisor) store.Spawner {
 // `event_log.enabled` as true, so reaching one of these means the log is
 // configured but not usable — which `sprawl store doctor` diagnoses properly and
 // a line in a session log file does not.
-func runSessionDispatch(ctx context.Context, sprawlRoot string, spawner store.Spawner, errOut io.Writer) error {
+func runSessionDispatch(ctx context.Context, sprawlRoot string, sup dispatchadapt.SessionSupervisor, stallAfter time.Duration, errOut io.Writer) error {
 	ledger, err := store.Process(ctx, sprawlRoot)
 	if err != nil {
 		return fmt.Errorf("opening the event log for dispatch: %w", err)
@@ -174,7 +185,14 @@ func runSessionDispatch(ctx context.Context, sprawlRoot string, spawner store.Sp
 	}
 
 	logger := dispatchLogger(errOut)
-	stack, err := buildDispatchStack(ledger, sprawlRoot, host, spawner, logger)
+	stack, err := buildDispatchStack(dispatchStackOpts{
+		Ledger:     ledger,
+		SprawlRoot: sprawlRoot,
+		Host:       host,
+		Sup:        sup,
+		StallAfter: stallAfter,
+		Logger:     logger,
+	})
 	if err != nil {
 		return err
 	}

@@ -133,6 +133,22 @@ func TestStoreDispatch_SweepIntervalIsMuchLongerThanTheDispatchPoll(t *testing.T
 	}
 }
 
+// sweeperDeps carries the caller's stall threshold, and passes a zero THROUGH
+// rather than substituting the default itself (QUM-1252, AC5).
+//
+// The pass-through is the half worth pinning: store.Sweep already reads zero as
+// "use DefaultStallAfter", so substituting here would be a second copy of that
+// decision, and a caller could no longer tell the two apart.
+func TestSweeperDeps_CarriesTheStallThreshold(t *testing.T) {
+	got := sweeperDeps(nil, nil, nil, nil, nil, uuid.Nil, "h", 45*time.Second, nil)
+	if got.StallAfter != 45*time.Second {
+		t.Errorf("StallAfter = %v, want 45s; an unthreaded knob leaves every sweep on the %v default", got.StallAfter, store.DefaultStallAfter)
+	}
+	if zero := sweeperDeps(nil, nil, nil, nil, nil, uuid.Nil, "h", 0, nil); zero.StallAfter != 0 {
+		t.Errorf("a zero threshold became %v, so the caller can no longer express 'no override'", zero.StallAfter)
+	}
+}
+
 // fallbackOwner returns the ROOT agent, and an EMPTY string when there is none.
 //
 // The empty case is the load-bearing one: it DISABLES reassignment rather than

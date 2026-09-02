@@ -87,6 +87,14 @@ type Config struct {
 	IdleReclaimAfter string `yaml:"idle_reclaim.after,omitempty" sprawl:"default=0 (DISABLED),purpose=Idle time before an agent's subprocess is reclaimed as a Go duration. DEFAULT 0 = OFF. Two HARD PRECONDITIONS on enabling: (1) QUM-1213 — LastActivityAt can go stale during a long tool call and the quiescent term reads it; (2) a recorded e2e run in which an agent whose ONLY outstanding work is a live SIDECHAIN survives the sweep with the refusal record naming blocker=work_outstanding. That second join is covered today by construction and by a unit test — not by a run — and it is 43 of 263 recorded turn closures. Also note a wedged background task has no auto-expiry by design, so it pins its agent until an operator reads the refusal record"`
 	IdleReclaimSweep string `yaml:"idle_reclaim.sweep,omitempty" sprawl:"default=1m,purpose=How often the idle reaper sweeps the runtime registry as a Go duration"`
 
+	// GoalStallAfter is how long an owner must be quiet before one of its open
+	// goals is a stall candidate (QUM-1252, AC5). A duration string on the
+	// idle_reclaim.* precedent above, with ONE divergence: an explicit zero does
+	// NOT mean disabled. A zero threshold makes every open goal stalled the
+	// instant it opens, so GoalStallAfterDuration reports a non-positive value
+	// and returns the default rather than honouring it.
+	GoalStallAfter string `yaml:"goal_stall.after,omitempty" sprawl:"default=30m,purpose=How long a goal owner must be quiet before the stall sweeper pokes it, as a Go duration. Must be positive; 0 is refused rather than read as 'poke immediately'. Lowering this below the length of a real turn pokes working agents"`
+
 	// EventLog is the QUM-1249 event-log feature flag ("true" enables it).
 	//
 	// A STRING and not a bool because registry() panics on any field kind but
@@ -227,6 +235,32 @@ func (c *Config) IdleReclaimAfterDuration() (time.Duration, error) {
 // unset/zero/unparseable contract as IdleReclaimAfterDuration.
 func (c *Config) IdleReclaimSweepDuration() (time.Duration, error) {
 	return parseDurationKey("idle_reclaim.sweep", c.IdleReclaimSweep, DefaultIdleReclaimSweep)
+}
+
+// DefaultGoalStallAfter is the fallback stall threshold. It must agree with
+// store.DefaultStallAfter — the sweeper falls back to that when nothing wires a
+// value, so a disagreement here would make the configured default and the
+// unconfigured one differ. Not imported from internal/store because internal/
+// config is imported BY store's callers and the dependency would run backwards.
+const DefaultGoalStallAfter = 30 * time.Minute
+
+// GoalStallAfterDuration returns the stall threshold.
+//
+// Unset returns the default. Unparseable returns (default, error) on the
+// IdleReclaimAfterDuration precedent — a typo must be reportable rather than
+// read as a deliberate value. NON-POSITIVE also returns (default, error), which
+// is where this diverges from every other duration key in this file: there is no
+// "off" reading of a zero stall threshold, only "every open goal is stalled",
+// and that is a token-burn footgun one keystroke away in a tracked config file.
+func (c *Config) GoalStallAfterDuration() (time.Duration, error) {
+	d, err := parseDurationKey("goal_stall.after", c.GoalStallAfter, DefaultGoalStallAfter)
+	if err != nil {
+		return d, err
+	}
+	if d <= 0 {
+		return DefaultGoalStallAfter, fmt.Errorf("config: goal_stall.after = %q is not positive; a zero or negative stall threshold makes every open goal a stall candidate the moment it opens, so the default %s is being used instead", c.GoalStallAfter, DefaultGoalStallAfter)
+	}
+	return d, nil
 }
 
 // parseDurationKey resolves a duration-string key: empty → def, parseable →

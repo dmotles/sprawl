@@ -329,6 +329,39 @@ func TestSweeper_PokesTheSameOwnerWhenNotPaused(t *testing.T) {
 	f.assertPoked(t, "the identical fixture with the status flipped to active")
 }
 
+// GATE 2b — OPERATOR-KILLED (QUM-1252, AC5). The same decision as gate 2, for
+// the same reason, and it has to be its own gate because `killed` is NOT
+// terminal: state.IsTerminal covers only retired and retiring, so a killed owner
+// used to fall through every gate and be poked on every sweep.
+//
+// Poking one is worse than useless. AC5's delivery path WAKES an offline owner
+// so a crashed agent can finish its goal, and `sprawl kill` is a human decision
+// exactly as `sprawl pause` is — so without this gate a sweep timer would revive
+// an agent an operator had just shot. And even with delivery refusing, each poke
+// consumes an epoch, so the goal would march to its quarantine cap for no reason
+// but that its owner was killed.
+func TestSweeper_DoesNotPokeAKilledOwner(t *testing.T) {
+	f := newSweepFixture(t)
+	f.local.agents = []LocalAgent{{Name: "alice", Status: state.StatusKilled, Turn: TurnIdle}}
+
+	res := f.sweep(t)
+	f.assertNotPoked(t, "an operator-killed owner")
+	f.assertGate(t, res, "operator-killed")
+}
+
+// POSITIVE CONTROL for gate 2b, and it is doing real work rather than being
+// symmetric with the others: `died` is the state AC5's scenario actually
+// produces, so this leg is what proves the new gate discriminates between "a
+// human shot it" and "it crashed" instead of excluding every offline owner and
+// making the sweeper inert against exactly the case it was extended for.
+func TestSweeper_PokesACrashedOwner(t *testing.T) {
+	f := newSweepFixture(t)
+	f.local.agents = []LocalAgent{{Name: "alice", Status: state.StatusDied, Turn: TurnIdle}}
+
+	f.sweep(t)
+	f.assertPoked(t, "the identical fixture with the status flipped to died — nobody chose that state")
+}
+
 // GATE 3 — HUMAN-OWNED WAIT. There is no process to poke.
 //
 // A goal owned by the human is waiting on a person, and the sweeper has no way to

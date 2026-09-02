@@ -390,6 +390,18 @@ func gateFor(c StalledCandidate, locals map[string]LocalAgent, now time.Time, st
 	if local.Status == state.StatusPaused {
 		return true, "the owner is operator-paused, which is deliberately excluded from auto-resume"
 	}
+	// OPERATOR-KILLED, its own gate rather than a widening of the one above:
+	// `killed` is NOT terminal (IsTerminal is retired/retiring only), so it
+	// reached the poke path. A kill is a human decision in exactly the way a
+	// pause is, and the delivery path can now WAKE an offline owner — so without
+	// this a sweep timer revives an agent an operator has just shot. Even with
+	// delivery declining, each poke consumes an epoch and marches the goal to its
+	// quarantine cap for no reason but that its owner was killed. A CRASHED owner
+	// (died, faulted, resume_failed) is a different thing and is still poked:
+	// nobody chose that state, and it is the case AC5 exists for.
+	if local.Status == state.StatusKilled {
+		return true, "the owner was operator-killed, and reviving it on a sweep timer would override that decision"
+	}
 	if state.IsTerminal(local.Status) {
 		return true, "the owner is " + local.Status + " and cannot be woken"
 	}

@@ -323,30 +323,103 @@ func TestDispatchSpawner_IsATrueNilWithoutASupervisor(t *testing.T) {
 	}
 }
 
-// The session's dispatch loop receives THIS SESSION's supervisor as a spawner
-// (QUM-1252).
+// The session's dispatch loop receives THIS SESSION's supervisor (QUM-1252).
 //
-// The join between dispatchSpawner and the loop, which the two end-to-end tests
-// above and below leave open: hand defaultStartEventDispatch a supervisor and
-// assert the loop it starts is given a live spawner, not nil.
-func TestDefaultStartEventDispatch_HandsTheLoopASpawnerBuiltFromTheSupervisor(t *testing.T) {
-	got := make(chan store.Spawner, 1)
+// The join between defaultStartEventDispatch and the loop, which the two
+// end-to-end tests above and below leave open: hand it a supervisor and assert
+// the loop it starts is given that supervisor, not nil. Everything the stack
+// derives from it — the spawner, the turn observer, the waking injector — is
+// nil-or-inert without this.
+func TestDefaultStartEventDispatch_HandsTheLoopTheSupervisor(t *testing.T) {
+	got := make(chan dispatchadapt.SessionSupervisor, 1)
 	orig := sessionDispatchRun
-	sessionDispatchRun = func(_ context.Context, _ string, spawner store.Spawner, _ io.Writer) error {
-		got <- spawner
+	sessionDispatchRun = func(_ context.Context, _ string, sup dispatchadapt.SessionSupervisor, _ time.Duration, _ io.Writer) error {
+		got <- sup
 		return nil
 	}
 	t.Cleanup(func() { sessionDispatchRun = orig })
 
-	stop := defaultStartEventDispatch(t.TempDir(), nil, &supervisortest.NoopSupervisor{}, io.Discard)
+	sup := &supervisortest.NoopSupervisor{}
+	stop := defaultStartEventDispatch(t.TempDir(), nil, sup, io.Discard)
 	defer stop()
 
 	select {
-	case spawner := <-got:
-		if _, ok := spawner.(*dispatchadapt.SupervisorSpawner); !ok {
-			t.Fatalf("the loop was given %T, want *dispatchadapt.SupervisorSpawner — a nil spawner registers no spawn handler and every engine goal stops at spawn_requested", spawner)
+	case reached := <-got:
+		if reached != dispatchadapt.SessionSupervisor(sup) {
+			t.Fatalf("the loop was given %#v, want the session's supervisor — without it the session registers no spawn_requested handler and the stall sweeper stays inert", reached)
 		}
 	case <-time.After(5 * time.Second):
 		t.Fatal("the dispatch loop never started")
+	}
+}
+
+// The configured goal_stall.after reaches the loop (QUM-1252, AC5).
+//
+// Its own test rather than a second assertion in the one above, because the two
+// fail for unrelated reasons: a supervisor that does not arrive breaks spawning,
+// while a threshold that does not arrive leaves the sweeper on 30m and is
+// invisible to any e2e that cannot wait that long.
+func TestDefaultStartEventDispatch_HandsTheLoopTheConfiguredStallThreshold(t *testing.T) {
+	got := make(chan time.Duration, 1)
+	orig := sessionDispatchRun
+	sessionDispatchRun = func(_ context.Context, _ string, _ dispatchadapt.SessionSupervisor, stallAfter time.Duration, _ io.Writer) error {
+		got <- stallAfter
+		return nil
+	}
+	t.Cleanup(func() { sessionDispatchRun = orig })
+
+	cfg := &config.Config{GoalStallAfter: "45s"}
+	stop := defaultStartEventDispatch(t.TempDir(), cfg, &supervisortest.NoopSupervisor{}, io.Discard)
+	defer stop()
+
+	select {
+	case reached := <-got:
+		if reached != 45*time.Second {
+			t.Fatalf("the loop was given a stall threshold of %s, want 45s — an unthreaded knob leaves the sweeper on %s and no e2e can observe it", reached, store.DefaultStallAfter)
+		}
+	case <-time.After(5 * time.Second):
+		t.Fatal("the dispatch loop never started")
+	}
+}
+
+// An unparseable goal_stall.after is reported and the default used (QUM-1252,
+// AC5) — it does not take the session's dispatch loop down with it.
+func TestDefaultStartEventDispatch_ABadStallThresholdIsReportedNotFatal(t *testing.T) {
+	got := make(chan time.Duration, 1)
+	orig := sessionDispatchRun
+	sessionDispatchRun = func(_ context.Context, _ string, _ dispatchadapt.SessionSupervisor, stallAfter time.Duration, _ io.Writer) error {
+		got <- stallAfter
+		return nil
+	}
+	t.Cleanup(func() { sessionDispatchRun = orig })
+
+	var errOut bytes.Buffer
+	cfg := &config.Config{GoalStallAfter: "30min"}
+	stop := defaultStartEventDispatch(t.TempDir(), cfg, &supervisortest.NoopSupervisor{}, &errOut)
+
+	select {
+	case reached := <-got:
+		if reached != config.DefaultGoalStallAfter {
+			t.Fatalf("an unparseable threshold produced %s, want the default %s", reached, config.DefaultGoalStallAfter)
+		}
+	case <-time.After(5 * time.Second):
+		t.Fatal("the dispatch loop never started, so a bad duration string stopped the session dispatching")
+	}
+	stop()
+
+	if !strings.Contains(errOut.String(), "goal_stall.after") {
+		t.Errorf("stderr did not name the offending key, so the operator cannot find it: %q", errOut.String())
+	}
+}
+
+// The two defaults must agree (QUM-1252, AC5).
+//
+// config.DefaultGoalStallAfter cannot import store.DefaultStallAfter — the
+// dependency would run backwards — so nothing but this assertion stops the
+// documented default and the effective one from drifting apart.
+func TestGoalStallDefaultsAgree(t *testing.T) {
+	if config.DefaultGoalStallAfter != store.DefaultStallAfter {
+		t.Errorf("config.DefaultGoalStallAfter = %s but store.DefaultStallAfter = %s; the config default documents a threshold the sweeper does not use",
+			config.DefaultGoalStallAfter, store.DefaultStallAfter)
 	}
 }
