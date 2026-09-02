@@ -472,3 +472,25 @@ func TestDispatchDegradedRefusal_PreservesTheCause(t *testing.T) {
 		t.Errorf("dispatchDegradedRefusal dropped its cause from the chain: %v", err)
 	}
 }
+
+// TestDispatchHandlerSet_RegistersTheEngineStartLeg (QUM-1252).
+//
+// An unregistered handler is the quietest failure this loop has: the dispatcher
+// scans the event, skips it, advances the cursor and reports itself healthy, so
+// a goal opened by create_goal would sit open forever with nobody working it and
+// nothing in the logs to say why.
+func TestDispatchHandlerSet_RegistersTheEngineStartLeg(t *testing.T) {
+	nop := store.HandlerFunc(func(context.Context, store.DispatchedEvent) error { return nil })
+	set := dispatchHandlerSet(nop, nop, nop)
+
+	for _, evType := range []string{"goal_opened", "goal_closed", "turn_finished"} {
+		if set[evType] == nil {
+			t.Errorf("no handler is registered for %q; the dispatcher would skip it and advance the cursor", evType)
+		}
+	}
+	// Control: an event type nobody registered must stay unregistered, or the
+	// assertion above would pass against a catch-all.
+	if set["run_started"] != nil {
+		t.Error(`a handler is registered for "run_started", which nothing in this loop acts on`)
+	}
+}

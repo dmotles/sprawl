@@ -39,8 +39,12 @@
 //     IS INERT HERE: every candidate is skipped on the unobserved-turn-state
 //     gate. That is deliberate and it is the safe direction — the alternative
 //     reports "not in turn" for every working agent and pokes them all.
-//   - THERE IS NO SPAWN HANDLER. Launching a session needs the supervisor, and
-//     nothing emits spawn_requested in M1b anyway.
+//   - THERE IS NO SPAWN HANDLER. Launching a session needs the supervisor. As of
+//     QUM-1252 something DOES emit spawn_requested — the goal_opened handler
+//     registered below turns an engine-driven goal into a request — so the gap is
+//     no longer theoretical: a request appended here waits until a process with a
+//     supervisor consumes it. That is stated at startup rather than left to be
+//     discovered as "the goal never started".
 //
 // The command PRINTS these limits at startup rather than leaving them to be
 // discovered, because per /cli-ux-best-practices the primary consumer is an agent
@@ -305,6 +309,18 @@ func buildDispatchStack(ledger *store.Ledger, sprawlRoot, host string, logger *s
 	if err != nil {
 		return nil, err
 	}
+	// goal_opened -> spawn_requested (QUM-1252). Registered in BOTH dispatch
+	// paths, because it needs no supervisor: it only appends. What consumes
+	// spawn_requested and actually launches a session is a separate handler that
+	// does need one, and is not registered here.
+	goalSpawn, err := store.NewGoalSpawnHandler(store.GoalSpawnHandlerDeps{
+		Emitter: emitter,
+		Names:   &dispatchadapt.PoolNamer{SprawlRoot: sprawlRoot},
+		Logger:  logger,
+	})
+	if err != nil {
+		return nil, err
+	}
 	ack, err := store.NewNotifyAckHandler(store.NotifyAckHandlerDeps{
 		Emitter:  emitter,
 		Notifies: notifies,
@@ -323,16 +339,8 @@ func buildDispatchStack(ledger *store.Ledger, sprawlRoot, host string, logger *s
 		ProjectID: ledger.ProjectID(),
 		Host:      host,
 		Consumer:  dispatchConsumer,
-		Handlers: map[string]store.Handler{
-			// Every close-typed event that can land a result for an owner. Kept
-			// explicit rather than "anything with closes_event_id": a handler
-			// registered by name is a decision, and a catch-all would silently
-			// start notifying on event types nobody has thought about.
-			"goal_closed": notify,
-			// The ack, from the log rather than a runtime hook.
-			"turn_finished": ack,
-		},
-		Logger: logger,
+		Handlers:  dispatchHandlerSet(notify, ack, goalSpawn),
+		Logger:    logger,
 		// Doorbell deliberately nil: correctness is the poll, and a standalone
 		// process holding a LISTEN connection open buys latency this process does
 		// not need — its deliveries are already asynchronous.
@@ -354,6 +362,27 @@ func buildDispatchStack(ledger *store.Ledger, sprawlRoot, host string, logger *s
 		sweeper:       sweeperDeps(pool, registry, local, emitter, injector, ledger.ProjectID(), host, logger),
 		notifySweeper: notifySweeperDeps(pool, registry, emitter, injector, ledger.ProjectID(), host, logger),
 	}, nil
+}
+
+// dispatchHandlerSet is the event-type -> handler table.
+//
+// A function rather than a literal inside buildDispatchStack so the table can be
+// asserted without a live Postgres: everything else in that function needs a
+// pool, and an unregistered handler is invisible from outside — the event is
+// scanned, skipped, and the loop reports itself healthy.
+//
+// Kept explicit rather than "anything with closes_event_id": a handler
+// registered by name is a decision, and a catch-all would silently start
+// notifying on event types nobody has thought about.
+func dispatchHandlerSet(notify, ack, goalSpawn store.Handler) map[string]store.Handler {
+	return map[string]store.Handler{
+		// Every close-typed event that can land a result for an owner.
+		"goal_closed": notify,
+		// The ack, from the log rather than a runtime hook.
+		"turn_finished": ack,
+		// The engine's start leg: a goal becomes a spawn request.
+		"goal_opened": goalSpawn,
+	}
 }
 
 // dispatchConsumer is the event_claims consumer name for this loop.
@@ -483,5 +512,5 @@ func reportDispatchLimits(out io.Writer, host string) {
 	fmt.Fprintf(out, "  notifications are enqueued durably and delivered when the recipient next drains, not immediately\n")
 	fmt.Fprintf(out, "  a failed injection is retried by each sweep on a widening backoff, then recorded undelivered at the cap and never retried again\n")
 	fmt.Fprintf(out, "  the stall sweeper is INERT here: turn state is only observable inside a sprawl session, and an unobserved turn state is never poked\n")
-	fmt.Fprintf(out, "  no spawn handler: launching a session needs the supervisor (M3a)\n")
+	fmt.Fprintf(out, "  goal_opened IS handled here — it appends spawn_requested — but NOTHING CONSUMES spawn_requested yet: launching a session needs the supervisor, so a goal opened against this host gets a request and no agent\n")
 }

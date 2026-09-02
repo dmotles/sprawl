@@ -1,0 +1,182 @@
+// goalspawn.go — goal_opened -> spawn_requested (QUM-1252, M3a slice 10b).
+//
+// This is the handler that makes create_goal non-inert. create_goal appends a
+// goal and returns; nothing is running when it does. The dispatcher picks the
+// event up here, under the claim that makes it act-once, and turns it into a
+// spawn request.
+//
+// It stops at spawn_requested rather than spawning. Two reasons, and the second
+// is the load-bearing one:
+//
+//   - Launching a session needs the supervisor, which lives inside a
+//     `sprawl enter` process. This handler runs in both that process AND in a
+//     standalone `sprawl store dispatch`, which has no supervisor at all.
+//   - spawn.go's SpawnHandler already owns the write-ahead sequence
+//     (spawn_intent -> local resource -> spawn_committed) that makes a crashed
+//     spawn reconcilable. Doing the side effect from here would duplicate it,
+//     and a second, subtly different write-ahead is worse than none.
+package store
+
+import (
+	"context"
+	"encoding/json"
+	"fmt"
+	"log/slog"
+	"sort"
+)
+
+// NameAllocator hands out an unused agent name for a type.
+//
+// An interface, and taking the TYPE, because the name pools are partitioned per
+// agent type and live in internal/agent — which this package must not import
+// (the direction is supervisor -> store). Implemented in internal/dispatchadapt.
+type NameAllocator interface {
+	AllocateName(ctx context.Context, agentType string) (string, error)
+}
+
+// goalAgentTypes is the routing table from goal type to the kind of agent that
+// runs it.
+//
+// A CLOSED map, and an unmapped goal type is a hard failure rather than a
+// default: defaulting would put the wrong agent on the work while looking
+// exactly like success, and the goal would close with a result nobody asked for.
+// A failure, by contrast, leaves the goal visibly unstarted and the dispatcher
+// retrying.
+//
+// The pairing itself is a policy decision, not a technical one, and it is one
+// map because it is expected to be revised.
+var goalAgentTypes = map[GoalType]string{
+	GoalResearch: "researcher",
+	// An engineer rather than a researcher: investigating a bug means running
+	// the code, reading the failure and reproducing it in a worktree, which is
+	// the engineer card's whole shape. The prompt below says explicitly that the
+	// deliverable is the diagnosis, because an engineer's default is to fix.
+	GoalBugInvestigation: "engineer",
+}
+
+type GoalSpawnHandlerDeps struct {
+	Emitter EventEmitter
+	Names   NameAllocator
+	Logger  *slog.Logger
+}
+
+// GoalSpawnHandler turns a goal_opened event into a spawn request.
+type GoalSpawnHandler struct {
+	emitter EventEmitter
+	names   NameAllocator
+	log     *slog.Logger
+}
+
+var _ Handler = (*GoalSpawnHandler)(nil)
+
+func NewGoalSpawnHandler(d GoalSpawnHandlerDeps) (*GoalSpawnHandler, error) {
+	switch {
+	case d.Emitter == nil:
+		return nil, fmt.Errorf("store: the goal spawn handler needs an event emitter; without one it would consume goal_opened events and report success while requesting nothing")
+	case d.Names == nil:
+		return nil, fmt.Errorf("store: the goal spawn handler needs a name allocator; spawn_requested requires an agent_name and the reconciler matches intents to local agents by name")
+	}
+	log := d.Logger
+	if log == nil {
+		log = slog.New(slog.DiscardHandler)
+	}
+	return &GoalSpawnHandler{emitter: d.Emitter, names: d.Names, log: log}, nil
+}
+
+type goalOpenedPayload struct {
+	GoalType string `json:"goal_type"`
+	Text     string `json:"text"`
+	Owner    string `json:"owner"`
+}
+
+func (h *GoalSpawnHandler) Handle(ctx context.Context, ev DispatchedEvent) error {
+	var goal goalOpenedPayload
+	if err := json.Unmarshal(ev.Payload, &goal); err != nil {
+		return fmt.Errorf("store: goal_opened %s has an unreadable payload: %w", ev.ID, err)
+	}
+
+	agentType, ok := goalAgentTypes[GoalType(goal.GoalType)]
+	if !ok {
+		return fmt.Errorf("store: goal_opened %s has goal_type %q, which no agent type is mapped to (mapped: %v); refusing rather than spawning a default agent onto work nobody chose it for",
+			ev.ID, goal.GoalType, mappedGoalTypes())
+	}
+	// The owner becomes the spawned agent's parent. An agent with no parent has
+	// nobody to report to, and its close notification would go to whatever the
+	// notify handler's host-level fallback owner names — successfully, and to the
+	// wrong agent.
+	if goal.Owner == "" {
+		return fmt.Errorf("store: goal_opened %s names no owner, so a spawned agent would have no parent to report to", ev.ID)
+	}
+	if goal.Text == "" {
+		return fmt.Errorf("store: goal_opened %s has empty text, which is the entire task the agent would be given", ev.ID)
+	}
+
+	// Named BEFORE the append, because the log cannot be edited: an unnamed
+	// spawn_requested is unreconcilable by construction (the reconciler matches
+	// by name), so it would sit there forever matching nothing.
+	name, err := h.names.AllocateName(ctx, agentType)
+	if err != nil {
+		return fmt.Errorf("store: allocating a %s name for goal_opened %s: %w", agentType, ev.ID, err)
+	}
+
+	if _, err := h.emitter.Emit(ctx, EmitRequest{
+		TypeName:    "spawn_requested",
+		TypeVersion: 1,
+		// The GOAL's workflow instance, not a new one. It is how the spawned
+		// agent's reread_my_goal and report_result find the goal at all; a fresh
+		// id would spawn a healthy-looking agent onto an empty workflow that
+		// closes nothing.
+		WorkflowInstanceID: ev.WorkflowInstanceID,
+		Payload: map[string]any{
+			"agent_name": name,
+			"agent_type": agentType,
+			"parent":     goal.Owner,
+			"prompt":     goalPrompt(GoalType(goal.GoalType), goal, ev),
+		},
+	}); err != nil {
+		return fmt.Errorf("store: requesting a %s for goal_opened %s: %w", agentType, ev.ID, err)
+	}
+	h.log.Info("requested an agent for a goal",
+		"goal_event_id", ev.ID, "goal_type", goal.GoalType, "agent", name, "agent_type", agentType)
+	return nil
+}
+
+// goalPrompt is the entire task the spawned agent gets.
+//
+// It carries the two ids because an agent that cannot name its own workflow
+// cannot read its log or close its goal — and a goal that is never closed is the
+// engine's characteristic failure: it looks like work in progress forever.
+func goalPrompt(gt GoalType, goal goalOpenedPayload, ev DispatchedEvent) string {
+	var deliverable string
+	switch gt {
+	case GoalBugInvestigation:
+		deliverable = "Your deliverable is the DIAGNOSIS, not a fix: find the root cause and report it. " +
+			"Do not change behaviour to make the symptom go away."
+	default:
+		deliverable = "Your deliverable is the answer to the question, reported as your result."
+	}
+	return fmt.Sprintf(`%s
+
+%s
+
+This work is an engine-driven goal (goal_type %q). Its identifiers:
+  goal_event_id:        %s
+  workflow_instance_id: %s
+
+Use `+"`reread_my_goal`"+` if you lose track of what you were asked, and `+"`get_workflow_log`"+`
+to see what has already happened on it. When you are done, close the goal with
+`+"`report_result`"+` — nothing else closes it, and until it is closed the goal reads
+as work still in progress. Report to %s.`,
+		goal.Text, deliverable, string(gt), ev.ID, ev.WorkflowInstanceID, goal.Owner)
+}
+
+// mappedGoalTypes lists the driveable goal types, sorted so the error message is
+// stable across runs (Go map iteration order is not).
+func mappedGoalTypes() []string {
+	out := make([]string, 0, len(goalAgentTypes))
+	for gt := range goalAgentTypes {
+		out = append(out, string(gt))
+	}
+	sort.Strings(out)
+	return out
+}

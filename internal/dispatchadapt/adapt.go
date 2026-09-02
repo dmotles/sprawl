@@ -46,6 +46,7 @@ import (
 	"context"
 	"fmt"
 
+	"github.com/dmotles/sprawl/internal/agent"
 	"github.com/dmotles/sprawl/internal/agentloop"
 	"github.com/dmotles/sprawl/internal/messages"
 	"github.com/dmotles/sprawl/internal/state"
@@ -210,4 +211,30 @@ func (q *QueueInjector) Inject(_ context.Context, recipient, body string) error 
 		return fmt.Errorf("dispatchadapt: enqueueing for %q: %w", recipient, err)
 	}
 	return nil
+}
+
+// PoolNamer is a store.NameAllocator over the agent name pools (QUM-1252).
+//
+// It reads the SAME .sprawl/agents directory the legacy `spawn` path allocates
+// from, which is the entire point: an engine-driven goal and a prose-driven
+// spawn must not be able to hand out the same name, and the on-disk directory is
+// the only thing both paths can see.
+//
+// The allocation is not transactional against a concurrent spawn — two
+// allocations racing on one host can pick the same name. That race predates this
+// type (agent.AllocateName has always had it) and is not made worse here; the
+// spawn write-ahead in internal/store/spawn.go is what catches the collision,
+// because the local spawn fails and the intent stays open for the reconciler.
+type PoolNamer struct {
+	SprawlRoot string
+}
+
+var _ store.NameAllocator = (*PoolNamer)(nil)
+
+func (p *PoolNamer) AllocateName(_ context.Context, agentType string) (string, error) {
+	name, err := agent.AllocateName(state.AgentsDir(p.SprawlRoot), agentType)
+	if err != nil {
+		return "", fmt.Errorf("dispatchadapt: allocating a name for a %s: %w", agentType, err)
+	}
+	return name, nil
 }

@@ -5,9 +5,11 @@ import (
 	"errors"
 	"os"
 	"path/filepath"
+	"slices"
 	"strings"
 	"testing"
 
+	"github.com/dmotles/sprawl/internal/agent"
 	"github.com/dmotles/sprawl/internal/agentloop"
 	"github.com/dmotles/sprawl/internal/messages"
 	"github.com/dmotles/sprawl/internal/state"
@@ -347,5 +349,55 @@ func seedAgent(t *testing.T, root string, a *state.AgentState) {
 	}
 	if _, err := os.Stat(filepath.Join(state.AgentsDir(root), a.Name+".json")); err != nil {
 		t.Fatalf("state file was not written: %v", err)
+	}
+}
+
+// TestPoolNamer_AllocatesFromTheTypedPool (QUM-1252, M3a slice 10b).
+//
+// The allocator reads the SAME .sprawl/agents directory the legacy `spawn` path
+// allocates from. If it read anywhere else, an engine-driven goal and a
+// prose-driven spawn could hand out the same name concurrently, and the second
+// agent would silently inherit the first's per-agent directory.
+func TestPoolNamer_AllocatesFromTheTypedPool(t *testing.T) {
+	root := t.TempDir()
+	if err := os.MkdirAll(state.AgentsDir(root), 0o755); err != nil {
+		t.Fatalf("creating agents dir: %v", err)
+	}
+	n := &PoolNamer{SprawlRoot: root}
+
+	first, err := n.AllocateName(context.Background(), "researcher")
+	if err != nil {
+		t.Fatalf("AllocateName: %v", err)
+	}
+	if first == "" {
+		t.Fatal("AllocateName returned an empty name; spawn_requested requires an agent_name")
+	}
+	if !slices.Contains(agent.ResearcherNames, first) {
+		t.Errorf("allocated %q, which is not in the researcher pool — the pools are partitioned per type", first)
+	}
+
+	// A name already on disk must not be handed out again.
+	if err := os.WriteFile(filepath.Join(state.AgentsDir(root), first+".json"), []byte("{}"), 0o644); err != nil {
+		t.Fatalf("seeding an in-use name: %v", err)
+	}
+	second, err := n.AllocateName(context.Background(), "researcher")
+	if err != nil {
+		t.Fatalf("AllocateName (second): %v", err)
+	}
+	if second == first {
+		t.Errorf("allocated %q twice; the second agent would inherit the first's state directory", first)
+	}
+}
+
+// TestPoolNamer_RefusesAnUnknownType. An unknown agent type has no pool, and a
+// name invented outside the pools is a name nothing else knows to avoid.
+func TestPoolNamer_RefusesAnUnknownType(t *testing.T) {
+	n := &PoolNamer{SprawlRoot: t.TempDir()}
+	if _, err := n.AllocateName(context.Background(), "wizard"); err == nil {
+		t.Fatal("a name was allocated for an unknown agent type")
+	}
+	// Control: a known type succeeds, so the refusal is about the type.
+	if _, err := n.AllocateName(context.Background(), "engineer"); err != nil {
+		t.Fatalf("control: a known agent type was refused: %v", err)
 	}
 }
