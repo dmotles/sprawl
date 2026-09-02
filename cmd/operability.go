@@ -96,9 +96,10 @@ func runGoals(ctx context.Context, deps *operabilityDeps) error {
 	}
 	if len(goals) == 0 {
 		fmt.Fprintln(deps.Stdout, "no goals are outstanding.")
-		// Said even on the empty listing, because the empty listing is exactly
-		// where it misleads: only engine-driven work opens a goal contract.
-		fmt.Fprintln(deps.Stdout, "note: prose-spawned agents do not open goals yet — run `sprawl status` for those.")
+		// Said even on the empty listing — especially on it. Both kinds of work
+		// are listed now, but only work started while the log was reachable was
+		// ever recorded, so "nothing outstanding" is a claim about the log.
+		fmt.Fprintln(deps.Stdout, "note: an agent spawned while the event log was off has no record here — run `sprawl status` for the live fleet.")
 		return nil
 	}
 
@@ -202,8 +203,9 @@ var goalsCmd = &cobra.Command{
 	Long: "List every open goal contract in this project, across all agents, oldest first.\n\n" +
 		"A goal is outstanding until a close event references it; the log is monotone, so a " +
 		"goal that has left this list cannot come back — rework opens a new linked goal.\n\n" +
-		"Only engine-driven work opens goal contracts today. Agents started by the older prose " +
-		"`spawn` path do not appear here; `sprawl status` lists those.\n\n" +
+		"Agents started by the older prose `spawn` path appear too, marked `(legacy spawn)`: their " +
+		"existence is the contract, closed when they retire. Both kinds are listed because a view " +
+		"that showed only one would answer \"what is still owed\" with a fraction of the truth.\n\n" +
 		"Requires the event log (`event_log.enabled`).",
 	Args: cobra.NoArgs,
 	RunE: func(cmd *cobra.Command, _ []string) error {

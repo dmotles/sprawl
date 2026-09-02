@@ -61,6 +61,32 @@ type fakeGoalSource struct {
 	answerCalls   int
 	answerCloseID uuid.UUID
 	answerErr     error
+
+	// Slice 10 — the legacy lifecycle pair. Exercised in tools_legacylog_test.go.
+	legacySpawns    []store.LegacyAgent
+	legacySpawnID   uuid.UUID
+	legacySpawnErr  error
+	legacyRetires   []legacyRetireCall
+	legacyRetireErr error
+}
+
+// legacyRetireCall records one RecordLegacyRetire call. A slice of these, not a
+// set of last-call fields: a cascading retire closes several contracts, and the
+// defect worth catching is closing only the first.
+type legacyRetireCall struct {
+	agent   string
+	outcome string
+	merged  bool
+}
+
+func (f *fakeGoalSource) RecordLegacySpawn(_ context.Context, a store.LegacyAgent) (uuid.UUID, error) {
+	f.legacySpawns = append(f.legacySpawns, a)
+	return f.legacySpawnID, f.legacySpawnErr
+}
+
+func (f *fakeGoalSource) RecordLegacyRetire(_ context.Context, agent, outcome string, merged bool) (uuid.UUID, error) {
+	f.legacyRetires = append(f.legacyRetires, legacyRetireCall{agent: agent, outcome: outcome, merged: merged})
+	return uuid.New(), f.legacyRetireErr
 }
 
 func (f *fakeGoalSource) CloseGoalForAgent(_ context.Context, agent string, goal uuid.UUID, outcome store.GoalOutcome, summary string) (uuid.UUID, error) {

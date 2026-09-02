@@ -18,6 +18,7 @@ import (
 	"github.com/dmotles/sprawl/internal/rootinit"
 	"github.com/dmotles/sprawl/internal/sprawlmcp/calllog"
 	"github.com/dmotles/sprawl/internal/state"
+	"github.com/dmotles/sprawl/internal/store"
 	"github.com/dmotles/sprawl/internal/supervisor"
 	"github.com/dmotles/sprawl/internal/tui"
 )
@@ -466,6 +467,17 @@ func (s *Server) toolSpawn(ctx context.Context, args json.RawMessage) (string, e
 	if err != nil {
 		return "", err
 	}
+	// Recorded from `info`, not from `req`: the name is allocated during the
+	// spawn and the branch may have been resolved, so `req` describes what was
+	// asked for and `info` describes what exists.
+	s.recordLegacySpawn(ctx, store.LegacyAgent{
+		AgentName: info.Name,
+		AgentType: info.Type,
+		Family:    info.Family,
+		Parent:    info.Parent,
+		Branch:    info.Branch,
+		Subagent:  info.Subagent,
+	})
 	data, _ := json.MarshalIndent(info, "", "  ")
 	result := fmt.Sprintf("Spawned agent:\n%s", string(data))
 	// QUM-719: when the root weave (empty caller identity) spawns an
@@ -706,6 +718,7 @@ func (s *Server) toolRetire(ctx context.Context, args json.RawMessage) (string, 
 	if err != nil {
 		return "", err
 	}
+	s.recordLegacyRetire(ctx, retired, p.Merge)
 	return retireSuccessMessage(target, retired, p.Merge, p.Abandon, p.Cascade), nil
 }
 

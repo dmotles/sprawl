@@ -40,6 +40,14 @@ type OpenGoal struct {
 
 // allOpenGoalsSQL is every open goal in the project, oldest first.
 //
+// It reads TWO contract types, and that is the point rather than an
+// optimisation: `goal_opened` is engine-driven work, `agent_spawned` is a
+// prose-spawned agent's existence (slice 10), and a listing that showed only the
+// first would answer "what does the fleet still owe?" with a fraction of the
+// truth while looking authoritative. The two payloads name the same two things
+// under different keys, so each is COALESCEd onto one column — `owner`/
+// `agent_name`, `goal_type`/`agent_type`.
+//
 // `legacy` is read as a jsonb equality rather than a cast to boolean. A cast
 // raises on any payload whose `legacy` is a string or a number, and it would
 // take the whole listing down over one malformed event written by some future
@@ -47,7 +55,8 @@ type OpenGoal struct {
 // must survive a bad row.
 const allOpenGoalsSQL = `
 	SELECT e.id, e.workflow_instance_id,
-	       COALESCE(e.payload->>'goal_type', ''), COALESCE(e.payload->>'owner', ''),
+	       COALESCE(e.payload->>'goal_type', e.payload->>'agent_type', ''),
+	       COALESCE(e.payload->>'owner', e.payload->>'agent_name', ''),
 	       COALESCE(e.payload->'legacy' = 'true'::jsonb, false),
 	       oc.opened_at
 	  FROM open_contracts oc
@@ -97,7 +106,8 @@ type PgOperabilityReader struct {
 
 // AllOpenGoals returns every open goal in the project, oldest first.
 func (r *PgOperabilityReader) AllOpenGoals(ctx context.Context, projectID uuid.UUID) ([]OpenGoal, error) {
-	rows, err := r.Pool.Query(ctx, allOpenGoalsSQL, projectID, schemaIDsFor(r.Registry, "goal_opened"))
+	schemas := append(schemaIDsFor(r.Registry, "goal_opened"), schemaIDsFor(r.Registry, "agent_spawned")...)
+	rows, err := r.Pool.Query(ctx, allOpenGoalsSQL, projectID, schemas)
 	if err != nil {
 		return nil, fmt.Errorf("store: reading open goals: %w", err)
 	}

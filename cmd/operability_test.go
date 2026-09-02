@@ -113,9 +113,14 @@ func TestOperability_UnusableStoreIsNeverReportedAsQuiet(t *testing.T) {
 		t.Errorf("an empty healthy store should say so; got: %q", out.String())
 	}
 	// The caveat belongs on the empty listing specifically: that is where it is
-	// load-bearing, because "no goals" reads as "no work".
+	// load-bearing, because "no goals" reads as "no work". Since slice 10 it
+	// names the remaining gap — work started while the log was off is still
+	// unrecorded — rather than the whole legacy path.
 	if !strings.Contains(out.String(), "sprawl status") {
-		t.Errorf("the empty listing should point at prose-spawned agents; got: %q", out.String())
+		t.Errorf("the empty listing should point at the live fleet; got: %q", out.String())
+	}
+	if !strings.Contains(out.String(), "event log was off") {
+		t.Errorf("the empty listing should say which work it cannot see; got: %q", out.String())
 	}
 }
 
@@ -317,8 +322,12 @@ func TestOperabilityCommands_AreRegisteredAndReadOnly(t *testing.T) {
 			t.Errorf("%s's help should name the config it requires; got: %q", name, c.long)
 		}
 	}
-	if !strings.Contains(found["goals"].long, "sprawl status") {
-		t.Error("goals' help should point prose-spawn users at `sprawl status`, since their work is absent from it")
+	// Slice 10 changed the true claim here: prose spawns are listed now, so the
+	// help must say they appear and how they are marked. Until slice 10 this
+	// pinned the opposite ("their work is absent; run `sprawl status`"), and
+	// leaving that assertion in place would have kept a now-false promise green.
+	if !strings.Contains(found["goals"].long, "legacy spawn") {
+		t.Errorf("goals' help should say prose-spawned agents appear and how they are marked; got: %q", found["goals"].long)
 	}
 }
 

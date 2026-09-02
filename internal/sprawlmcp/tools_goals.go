@@ -48,6 +48,15 @@ type GoalSource interface {
 	// in the store against the open set, never by whichever tool remembered.
 	AskQuestions(ctx context.Context, asker, recipient string, questions []string, goalEventID, followUpOf *uuid.UUID) (uuid.UUID, error)
 	AnswerQuestions(ctx context.Context, answerer string, askEventID uuid.UUID, answers []string) (uuid.UUID, error)
+	// RecordLegacySpawn / RecordLegacyRetire are the paired lifecycle events for
+	// prose-spawned agents (slice 10). They are on THIS interface for the
+	// single-attach-point reason above, not because spawn is a goal tool: a
+	// second surface would be a second thing to forget to wire, and forgetting
+	// it would silently halve what `sprawl goals` reports.
+	//
+	// Both are called BEST-EFFORT by their tools — see recordLegacySpawn below.
+	RecordLegacySpawn(ctx context.Context, a store.LegacyAgent) (uuid.UUID, error)
+	RecordLegacyRetire(ctx context.Context, agent, outcome string, merged bool) (uuid.UUID, error)
 }
 
 // workflowLogDefaultLimit / workflowLogMaxLimit bound one page of history.
