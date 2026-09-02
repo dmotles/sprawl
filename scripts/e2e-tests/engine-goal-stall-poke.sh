@@ -106,7 +106,7 @@ wait_for_event() {
     return 1
 }
 
-# pid_for resolves an agent's claude subprocess by matching the session id in
+# pids_for resolves an agent's claude subprocess by matching the session id in
 # its state file, and then requiring the match to actually BE a claude — its
 # /proc/<pid>/comm, not merely the string "claude" somewhere in its command
 # line.
@@ -129,6 +129,17 @@ wait_for_event() {
 # A session id belongs to exactly one agent, so every claude bearing it is that
 # agent's, and killing all of them is both more correct and free of the
 # ordering nondeterminism.
+#
+# It does NOT close the TOCTOU window: between the comm read and the kill a pid
+# can exit and be reused, so the comm filter narrows the mis-kill risk rather
+# than eliminating it. Do not read the paragraph above as if it did.
+#
+# The rc contract is "the session id resolved", NOT "at least one pid was
+# emitted": the explicit `return 0` is there because `[ … ] && echo` as the
+# loop's last command would otherwise make a run that emitted three pids
+# return 1 whenever the FOURTH candidate failed the comm test. Callers that
+# care about emptiness must test the output, and the `-z "$PIDS"` check at the
+# kill site does exactly that.
 pids_for() {
     local name="$1"
     local sid p
@@ -137,6 +148,7 @@ pids_for() {
     for p in $(pgrep -f -- "$sid" 2>/dev/null || true); do
         [ "$(cat "/proc/$p/comm" 2>/dev/null || true)" = "claude" ] && echo "$p"
     done
+    return 0
 }
 
 status_of() {
@@ -156,6 +168,10 @@ test_run() {
     fi
     if ! command -v jq >/dev/null 2>&1; then
         e2e_skip_row "jq not found on PATH — the PID recipe reads the agent's session id from its state file"
+        return
+    fi
+    if ! command -v pgrep >/dev/null 2>&1; then
+        e2e_skip_row "pgrep not found on PATH — the PID recipe cannot resolve the researcher's claude"
         return
     fi
 
@@ -275,15 +291,23 @@ test_run() {
 
     local STATE_FILE="$SPRAWL_ROOT/.sprawl/agents/$LOG_NAME.json"
     local waited=0
+    # ST is captured inside the loop and asserted on OUTSIDE it, rather than
+    # re-read. The assertion has to require `active` for the same reason the
+    # loop waits for it (see the note at the kill site), and a re-read is a
+    # second observation: on the 180s timeout the old form asserted only that
+    # the file existed while its pass message claimed `active`, so a state
+    # still at `starting` passed here and then got SIGKILLed mid-handshake.
+    local ST=""
     while [ "$waited" -lt 180 ]; do
-        [ -f "$STATE_FILE" ] && [ "$(status_of "$LOG_NAME")" = "active" ] && break
+        ST=$(status_of "$LOG_NAME")
+        [ -f "$STATE_FILE" ] && [ "$ST" = "active" ] && break
         sleep 3
         waited=$((waited + 3))
     done
-    if [ -n "$LOG_NAME" ] && [ -f "$STATE_FILE" ]; then
+    if [ -n "$LOG_NAME" ] && [ -f "$STATE_FILE" ] && [ "$ST" = "active" ]; then
         pass "the researcher exists at the log's name and is active: $LOG_NAME (after ${waited}s)"
     else
-        fail "no active agent at $STATE_FILE within 180s — there is nothing to kill, so the rest of this row would measure nothing"
+        fail "no active agent at $STATE_FILE within 180s (status='$ST') — there is nothing to kill, so the rest of this row would measure nothing"
         ls -la "$SPRAWL_ROOT/.sprawl/agents" >&2 2>/dev/null || true
         e2e_print_results
         return 1
@@ -320,6 +344,11 @@ test_run() {
     # PID is the pre-death identity the revival check compares against. With
     # more than one match (an agent mid-resume can briefly have two), the
     # revival assertion below wants "not any of the old ones", so keep the set.
+    #
+    # NON-EMPTINESS IS LOAD-BEARING and is established by the `fail … return 1`
+    # above, not here. `grep -qx` against an empty OLD_PIDS matches nothing, so
+    # the revival assertion would accept the FIRST pid it ever sees as proof of
+    # a new one — vacuous. Do not move or soften that early return.
     local OLD_PIDS="$PIDS"
 
     for _p in $PIDS; do kill -9 "$_p" 2>/dev/null || true; done
@@ -339,16 +368,22 @@ test_run() {
         pass "SIGKILL reaped the researcher's claude PID(s)"
     fi
 
+    # Same capture-once discipline: the loop's observation IS the assertion's
+    # subject. `died` is not terminal — QUM-1333 has resume_failed reachable
+    # from here — so re-reading would let an onward transition fail the row
+    # with a message about a state the row never gated on.
     waited=0
+    ST=""
     while [ "$waited" -lt 120 ]; do
-        [ "$(status_of "$LOG_NAME")" = "died" ] && break
+        ST=$(status_of "$LOG_NAME")
+        [ "$ST" = "died" ] && break
         sleep 3
         waited=$((waited + 3))
     done
-    if [ "$(status_of "$LOG_NAME")" = "died" ]; then
+    if [ "$ST" = "died" ]; then
         pass "the researcher's disk state transitioned to status=died (after ${waited}s)"
     else
-        fail "the researcher is '$(status_of "$LOG_NAME")' after 120s, want died — the sweeper's turn gate reads this, so without it the poke path is not being exercised"
+        fail "the researcher is '$ST' after 120s, want died — the sweeper's turn gate reads this, so without it the poke path is not being exercised"
         cat "$STATE_FILE" >&2 2>/dev/null || true
         e2e_print_results
         return 1
