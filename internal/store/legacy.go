@@ -126,10 +126,13 @@ func (l *Ledger) legacyReader() (*PgLegacyReader, error) {
 
 // RecordLegacySpawn opens an agent_spawned contract for a prose-spawned agent.
 //
-// `legacy` is written true unconditionally, which is correct today because
-// nothing else reaches this function: the engine's spawn path is
-// spawn_requested -> spawn_intent -> spawn_committed and has no Spawner wired to
-// the supervisor at all. When one is wired, it must NOT route through here — an
+// `legacy` is written true unconditionally, which is correct because nothing
+// else reaches this function: the engine's spawn path is spawn_requested ->
+// spawn_intent -> spawn_committed. Slice 11 DID wire a Spawner to the supervisor
+// (cmd/enter_dispatch.go, dispatchadapt.SupervisorSpawner), so the condition this
+// comment once described as hypothetical has already happened (QUM-1340) — the
+// engine path calls sup.Spawn directly and bypasses toolSpawn, which is what
+// keeps it out of here. Any future engine path must stay out too: an
 // engine-driven agent's work is already visible as its goal, and recording it
 // again as legacy would double-count the same obligation.
 func (l *Ledger) RecordLegacySpawn(ctx context.Context, a LegacyAgent) (uuid.UUID, error) {

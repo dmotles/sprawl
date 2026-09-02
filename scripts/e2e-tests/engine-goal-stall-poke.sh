@@ -55,15 +55,22 @@
 # a real regression gets absorbed as "the flaky one".
 #
 # So the revival is OBSERVED and PRINTED as a diagnostic and contributes ZERO to
-# the assertion count. It is NOT a silently-succeeding fallback — it cannot pass
-# or fail anything. The wake leg has its own row filed as QUM-1335, blocked by
-# QUM-1333.
+# the assertion count. It is NOT a silently-succeeding fallback: it records
+# neither a pass nor a fail of its own. It is not entirely inert either
+# (QUM-1340) — its non-revival arm calls capture_pane, and a nonzero tmux status
+# there writes the fault ledger, which reddens the row. That is a diagnostic
+# about the HARNESS (the weave session died too), never a verdict on the
+# revival. The wake leg has its own row filed as QUM-1335, blocked by QUM-1333.
 #
 # WHAT IS ASSERTED is the part sprawl controls end to end and that is
 # deterministic across every run measured: the death is observed as an OS fact,
 # the poke is emitted, and it is addressed to the right agent with the right
-# owner. Both halves of that last pair have their own aimed watched failure
-# recorded on QUM-1252.
+# owner. Only the OWNER half of that last pair has an aimed watched failure
+# recorded on QUM-1252 (QUM-1340): under the original owner-sweep defect the row
+# dies earlier, at the `wait_for_event goal_poke` gate, printing `FAIL: no
+# goal_poke appeared` — so that mutation never reaches the target assertion. The
+# target assertion is not vacuous (splitting gating from delivery would fire
+# it), but it has not been watched failing, and saying otherwise overstated it.
 #
 # TIMING. `dispatchSweepInterval` is a hard-coded 2 minutes in
 # cmd/store_dispatch.go, so a low `goal_stall.after` shortens the THRESHOLD but

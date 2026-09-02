@@ -271,6 +271,12 @@ func (l *Ledger) CloseGoalForAgent(ctx context.Context, agent string, goalEventI
 	}
 
 	closeID := uuid.New()
+	// PROVISIONAL, and the only in-code record of that (QUM-1340). One generic
+	// `goal_closed` closes every goal type, rather than a per-type closer such
+	// as report_research_result. It is a working default pending dmotles's
+	// confirm on QUM-1252 and is kept swappable: four production sites emit or
+	// match this name (here, internal/engine/research.go, internal/engine/bug.go,
+	// cmd/store_dispatch.go), so changing it is a four-line edit, not a redesign.
 	if _, err := l.Emit(ctx, EmitRequest{
 		TypeName: "goal_closed", TypeVersion: 1,
 		EventID:            closeID,
