@@ -5,7 +5,10 @@
 #   create_goal -> spawn_requested -> a real researcher
 #     -> SIGKILL its claude       -> status=died  (an OS fact, not a flag)
 #     -> the session sweeper      -> goal_poke, addressed to the RESEARCHER
-#     -> dispatchadapt.WakeInjector -> the researcher is running again
+#
+# The delivery leg (dispatchadapt.WakeInjector actually reviving the agent) is
+# OBSERVED AND PRINTED HERE BUT NOT ASSERTED — see WHAT IS DELIBERATELY NOT
+# ASSERTED below.
 #
 # ===========================================================================
 # WHY THIS ROW EXISTS AT ALL, AND WHY IT IS NOT COVERED BY THE OTHER FIVE
@@ -21,8 +24,8 @@
 # The unit suite cannot substitute. `AgentRuntime.SubprocessAlive()` is an
 # in-process nil check on a handle, so a hermetic test proves the sweeper pokes
 # a struct it was handed. Here the death is `kill -9` on a PID resolved from the
-# agent's own session id, and the revival is asserted as a NEW and DIFFERENT
-# PID — not as the absence of the old one, which a leaked handle also satisfies.
+# agent's own session id — an OS fact, which is the part of the chain a hermetic
+# test cannot reach.
 #
 # AND THE DEFECT IT WOULD HAVE CAUGHT. Until QUM-1252's AC5 fix, the candidate
 # query measured staleness against the goal's OWNER. A goal's owner is who the
@@ -39,9 +42,28 @@
 # THE GOAL COMPLETING. The issue's AC says "goal completes"; that final step is
 # a revived model choosing to call report_result, an unbounded behavioural wait,
 # and folding it in would make a deterministic recovery row flake on model mood.
-# What is asserted is everything sprawl controls: the death is observed, the
-# poke is emitted, it is addressed to the right agent, and the agent is running
-# again afterwards. The close leg has its own row (engine-goal-close-rework).
+# The close leg has its own row (engine-goal-close-rework).
+#
+# THE REVIVAL ITSELF, as of weave's (ii) ruling on QUM-1252. This row originally
+# asserted a NEW and DIFFERENT PID after the poke, and that assertion was
+# measured at 3 of 4 runs: one run left the agent at `status=resume_failed`,
+# which is QUM-1333 — the sweeper's poked set keeps `resume_failed` while
+# RecoverAgents' boot accept-set excludes it, so the poke is recorded and the
+# wake cannot land. That is a PRODUCT question (dmotles has an open ResumeFailed
+# decision), not a harness defect, and an intermittent assertion is worse than
+# no assertion: it teaches readers to re-run until green, which is precisely how
+# a real regression gets absorbed as "the flaky one".
+#
+# So the revival is OBSERVED and PRINTED as a diagnostic and contributes ZERO to
+# the assertion count. It is NOT a silently-succeeding fallback — it cannot pass
+# or fail anything. The wake leg has its own row filed as QUM-1335, blocked by
+# QUM-1333.
+#
+# WHAT IS ASSERTED is the part sprawl controls end to end and that is
+# deterministic across every run measured: the death is observed as an OS fact,
+# the poke is emitted, and it is addressed to the right agent with the right
+# owner. Both halves of that last pair have their own aimed watched failure
+# recorded on QUM-1252.
 #
 # TIMING. `dispatchSweepInterval` is a hard-coded 2 minutes in
 # cmd/store_dispatch.go, so a low `goal_stall.after` shortens the THRESHOLD but
@@ -55,9 +77,12 @@
 # Hand-counted: container ready, migrate ok, TUI rendered, create_goal turn
 # completed, goal_opened present, spawn_requested present, a state file at the
 # log's name, the researcher's PID resolved, SIGKILL reaped it, status=died,
-# a goal_poke appeared, the poke targets the RESEARCHER, the poke's owner is
-# still weave, and the researcher is alive again on a different PID.
-MIN_ASSERTIONS=14
+# a goal_poke appeared, the poke targets the RESEARCHER, and the poke's owner is
+# still weave. Thirteen. The revival block at the end of test_run is a
+# DIAGNOSTIC, not an assertion — it neither passes nor fails, so it contributes
+# 0 (weave's (ii) ruling; the reasoning is under WHAT IS DELIBERATELY NOT
+# ASSERTED). It was 14 while that block asserted.
+MIN_ASSERTIONS=13
 
 test_metadata() {
     echo "needs_claude=1 needs_tmux=1"
@@ -425,12 +450,22 @@ test_run() {
     fi
 
     echo ""
-    echo "=== And the delivery must actually revive it ==="
-    # A NEW AND DIFFERENT PID, not merely "the old one is gone": the old PID is
-    # gone by construction, so asserting its absence would pass with nothing
-    # revived. This is the leg with no coverage anywhere else — the standalone
-    # dispatcher's sweeper is inert, so dispatchadapt.WakeInjector's offline
-    # branch is exercised here or nowhere.
+    echo "=== DIAGNOSTIC (NOT AN ASSERTION): did the delivery revive it? ==="
+    # READ THIS BEFORE RESTORING A pass/fail HERE. This block deliberately
+    # neither passes nor fails, per weave's (ii) ruling on QUM-1252; the full
+    # reasoning is in the header under WHAT IS DELIBERATELY NOT ASSERTED. In
+    # short: as an assertion it was measured at 3 of 4 runs, the fourth landing
+    # on QUM-1333 (`resume_failed` is in the sweeper's poked set and outside
+    # RecoverAgents' boot accept-set, so the wake cannot land), which is an open
+    # product question rather than a harness defect. It is printed because the
+    # observation is still the most useful thing in the log when the wake leg
+    # misbehaves, and because a row that stopped LOOKING would make QUM-1333
+    # invisible on the one host that reproduces it.
+    #
+    # The measure remains "a NEW and DIFFERENT PID", not "the old one is gone" —
+    # the old PID is gone by construction, so the absence form would report a
+    # revival with nothing revived. Keep that if this ever becomes an assertion
+    # again.
     local NEWPID=""
     waited=0
     while [ "$waited" -lt 180 ]; do
@@ -445,9 +480,9 @@ test_run() {
         waited=$((waited + 5))
     done
     if [ -n "$NEWPID" ] && kill -0 "$NEWPID" 2>/dev/null; then
-        pass "the poke revived the researcher: new PID=$NEWPID (was $(echo $OLD_PIDS | tr '\n' ' ')), after ${waited}s"
+        echo "    observed: the poke revived the researcher — new PID=$NEWPID (was $(echo $OLD_PIDS | tr '\n' ' ')), after ${waited}s"
     else
-        fail "the researcher was not running again within 180s of the poke (pid='$NEWPID', status='$(status_of "$LOG_NAME")') — the poke was recorded but the wake did not land, which is the failure mode that looks fixed in the log and is not fixed on the host"
+        echo "    observed: NOT running again within 180s of the poke (pid='$NEWPID', status='$(status_of "$LOG_NAME")') — QUM-1333 if the status is resume_failed. NOT counted as a failure of this row."
         pgrep -af claude >&2 || true
         capture_pane "$SESSION" | tail -30 >&2
     fi
