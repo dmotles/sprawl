@@ -32,7 +32,7 @@
 # counted absences would pass against a dispatcher that did nothing at all.
 
 # QUM-1029: assertions a COMPLETE, PASSING run makes. Hand-counted against the
-# pass/fail pairs below: docker ready, migrate, first dispatch handled 1,
+# pass/fail pairs below: docker ready, migrate, first dispatch handled 2,
 # envelope present, envelope body names the event, queue entry present and
 # async-class, owner_notify outstanding, per-recipient claim present, shared
 # consumer claim present, cursor file written, AC1 no-duplicate after cursor
@@ -205,8 +205,15 @@ test_run() {
 
     # POSITIVE CONTROL FIRST: the notification must actually happen, or every
     # no-duplicate assertion below is vacuous.
-    if echo "$OUT" | grep -qE "^dispatch pass: scanned [0-9]+, handled 1,"; then
-        pass "the first pass handled exactly one event (the landing result)"
+    # TWO, not one, since QUM-1252: the seed above writes a goal_opened AND the
+    # goal_closed that lands on it, and goal_opened is now handled too — it is the
+    # engine's start leg, which turns the goal into a spawn_requested. The count
+    # is still asserted rather than loosened to `handled [0-9]+` because the whole
+    # point of this control is that a dispatcher which handled NOTHING would make
+    # every no-duplicate assertion below vacuous; the maildir assertions that
+    # follow are what pin which of the two was the notification.
+    if echo "$OUT" | grep -qE "^dispatch pass: scanned [0-9]+, handled 2,"; then
+        pass "the first pass handled both seeded events (the landing result and the goal that opens)"
     else
         fail "the first pass did not handle the landing result: $(echo "$OUT" | grep '^dispatch pass' || echo 'no pass line')"
         return 1
