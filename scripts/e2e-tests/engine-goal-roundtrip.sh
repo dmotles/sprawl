@@ -58,8 +58,11 @@
 # concurrent agents on one host do not collide.
 #
 # WHAT THE MODEL ASSERTION DOES NOT ESTABLISH (QUM-1337). It pins that the
-# engine-spawned researcher launches on `--model opus`, and editing
-# internal/card/seeds/slim-researcher.md is a control that fires. It does NOT
+# engine-spawned researcher launches on `--model opus`. Its control was RUN AND
+# FIRED: `model: sonnet` in internal/card/seeds/slim-researcher.md fails the row
+# with "the researcher's command line does not carry '--model opus' (got: …
+# --model sonnet …)" at 17 passed / 1 failed, which also shows the card IS being
+# read at launch on the tree that control was run against. It does NOT
 # distinguish "the card was consulted" from "the card lookup failed and the
 # compiled-in default was used", because rootinit.DefaultAgentModel is ALSO
 # opus — so a regression that silently stops reading cards passes this
