@@ -93,7 +93,10 @@ var storeDispatchCmd = &cobra.Command{
 		"LIMITS OF A STANDALONE RUN: notifications are enqueued durably but " +
 		"delivered when the recipient next drains, and the stall sweeper is " +
 		"inert because turn state is only observable from inside a sprawl " +
-		"session. Both are reported at startup.",
+		"session. Both are reported at startup. A notification whose injection " +
+		"fails is NOT lost: the contract stays open and each sweep re-delivers " +
+		"it on a widening backoff, until a cap past which it is recorded " +
+		"undelivered and never retried again.",
 	Args: cobra.NoArgs,
 	RunE: func(cmd *cobra.Command, _ []string) error {
 		return runStoreDispatch(cmd.Context(), resolveStoreDeps())
@@ -305,12 +308,15 @@ func runStoreDispatch(ctx context.Context, deps *storeDeps) error {
 		}
 		if !dispatchNoSweeper {
 			reportSweep(ctx, out, errOut, sweeperDeps(pool, registry, local, emitter, injector, ledger.ProjectID(), host, logger))
+			reportNotifySweep(ctx, out, errOut, notifySweeperDeps(pool, registry, emitter, injector, ledger.ProjectID(), host, logger))
 		}
 		return nil
 	}
 
 	if !dispatchNoSweeper {
-		go runSweepTicker(ctx, out, errOut, sweeperDeps(pool, registry, local, emitter, injector, ledger.ProjectID(), host, logger))
+		go runSweepTicker(ctx, out, errOut,
+			sweeperDeps(pool, registry, local, emitter, injector, ledger.ProjectID(), host, logger),
+			notifySweeperDeps(pool, registry, emitter, injector, ledger.ProjectID(), host, logger))
 	}
 	fmt.Fprintf(out, "dispatching (Ctrl-C to stop)\n")
 	return dispatcher.Run(ctx)
@@ -339,7 +345,21 @@ func sweeperDeps(pool *pgxpool.Pool, registry *store.Registry, local store.Local
 	}
 }
 
-func runSweepTicker(ctx context.Context, out, errOut io.Writer, deps store.SweeperDeps) {
+func notifySweeperDeps(pool *pgxpool.Pool, registry *store.Registry,
+	emitter store.EventEmitter, injector store.Injector,
+	projectID uuid.UUID, host string, sweepLogger *slog.Logger,
+) store.NotifySweeperDeps {
+	return store.NotifySweeperDeps{
+		Notifications: &store.PgNotifySweepReader{Pool: pool, Registry: registry},
+		Emitter:       emitter,
+		Injector:      injector,
+		ProjectID:     projectID,
+		Host:          host,
+		Logger:        sweepLogger,
+	}
+}
+
+func runSweepTicker(ctx context.Context, out, errOut io.Writer, deps store.SweeperDeps, notifyDeps store.NotifySweeperDeps) {
 	t := time.NewTicker(dispatchSweepInterval)
 	defer t.Stop()
 	for {
@@ -348,7 +368,27 @@ func runSweepTicker(ctx context.Context, out, errOut io.Writer, deps store.Sweep
 			return
 		case <-t.C:
 			reportSweep(ctx, out, errOut, deps)
+			reportNotifySweep(ctx, out, errOut, notifyDeps)
 		}
+	}
+}
+
+// reportNotifySweep runs the notification re-delivery pass.
+//
+// A SEPARATE PASS from the goal sweep rather than a stage inside it, because the
+// two answer different questions about different subjects and a failure in
+// either must not stop the other: a store that cannot record a poke can still be
+// reachable enough to say a notification was already delivered, and a fleet with
+// no goals at all can still have an undelivered result.
+func reportNotifySweep(ctx context.Context, out, errOut io.Writer, deps store.NotifySweeperDeps) { //nolint:revive // out is the success surface, errOut the failure surface
+	res, err := store.SweepNotifications(ctx, deps)
+	if err != nil {
+		fmt.Fprintf(errOut, "notification sweep failed: %s\n", store.RedactError(err))
+		return
+	}
+	if res.Considered > 0 {
+		fmt.Fprintf(out, "notify sweep: considered %d, delivered %d, quarantined %d, skipped %d\n",
+			res.Considered, res.Delivered, res.Quarantined, res.Skipped)
 	}
 }
 
@@ -407,6 +447,7 @@ func reportDispatchLimits(out io.Writer, host string) {
 	fmt.Fprintf(out, "consumer: %s (shared across hosts; event_claims makes each event act-once)\n", dispatchConsumer)
 	fmt.Fprintf(out, "limits of a standalone run:\n")
 	fmt.Fprintf(out, "  notifications are enqueued durably and delivered when the recipient next drains, not immediately\n")
+	fmt.Fprintf(out, "  a failed injection is retried by each sweep on a widening backoff, then recorded undelivered at the cap and never retried again\n")
 	fmt.Fprintf(out, "  the stall sweeper is INERT here: turn state is only observable inside a sprawl session, and an unobserved turn state is never poked\n")
 	fmt.Fprintf(out, "  no spawn handler: launching a session needs the supervisor (M3a)\n")
 }

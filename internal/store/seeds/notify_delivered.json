@@ -1,0 +1,18 @@
+{
+  "name": "notify_delivered",
+  "version": 1,
+  "opens": false,
+  "spillable": false,
+  "closes": "",
+  "json_schema": {
+    "type": "object",
+    "description": "An owner_notify was injected into its recipient's stream successfully. This is the DELIVERY PREDICATE: notify_acked may only close a notification that has one of these, because a turn boundary proves the agent took a turn and proves nothing about whether it was ever told anything. Deliberately not the close itself — delivered and acknowledged are different facts, and collapsing them would make an undelivered notification indistinguishable from an unread one.",
+    "required": ["notify_event_id", "recipient"],
+    "properties": {
+      "notify_event_id": {"type": "string"},
+      "recipient": {"type": "string"},
+      "epoch": {"type": "integer"},
+      "host": {"type": "string"}
+    }
+  }
+}

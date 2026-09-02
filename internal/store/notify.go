@@ -82,6 +82,12 @@ type OpenNotify struct {
 	// second query.
 	SubjectEventID string
 	WorkflowID     uuid.UUID
+	// Delivered is true when a notify_delivered event exists for this
+	// notification. IT IS THE ACK'S PRECONDITION: a turn boundary proves the
+	// recipient took a turn and proves nothing about whether it was ever told
+	// anything, so without this the ack closed notifications that had never been
+	// delivered. See notifysweep.go's header.
+	Delivered bool
 }
 
 // NotifyReader reads outstanding notifications.
@@ -265,13 +271,28 @@ func (h *NotifyHandler) Handle(ctx context.Context, ev DispatchedEvent) error {
 		return nil
 	}
 
-	if err := h.injector.Inject(ctx, recipient, notifyBody(ev, opener)); err != nil {
-		// The contract stays OPEN, and the dispatcher keeps its cursor on this
-		// event — so the next pass finds the contract outstanding and injects
-		// again. THAT is the re-delivery, and it is the dispatcher's retry rather
-		// than anything in the sweeper: an earlier version of this comment
-		// claimed the sweeper re-delivered, and no such code existed.
-		return fmt.Errorf("store: injecting the notification for %q (the contract stays open and the next dispatch pass will try again): %w", recipient, err)
+	delivered, err := attemptNotifyDelivery(ctx, h.emitter, h.injector, h.host, notifyDelivery{
+		NotifyEventID: notifyID,
+		WorkflowID:    ev.WorkflowInstanceID,
+		Recipient:     recipient,
+		// The FIRST attempt. A second one is the notification sweeper's, at a
+		// higher epoch — this handler never retries itself.
+		Epoch: 0,
+		Body:  notifyBody(ev, opener),
+	})
+	if err != nil {
+		return fmt.Errorf("store: delivering the notification for %q: %w", recipient, err)
+	}
+	if !delivered {
+		// NOT AN ERROR ANY MORE, and this is the point of the slice. Returning one
+		// left the dispatcher's cursor on this event, and the dispatcher blocks
+		// head-of-line by design — so a single unreachable recipient stalled every
+		// other event in the project behind it, forever. The contract stays open
+		// and the attempt is recorded, so SweepNotifications re-delivers it with
+		// backoff and gives up at a cap. Advancing past it is only safe BECAUSE
+		// that sweep exists; do not restore this return without removing it.
+		h.log.Warn("the notification could not be delivered; it stays open for the sweeper to retry",
+			"recipient", recipient, "notify", notifyID, "event", ev.ID)
 	}
 	return nil
 }
@@ -462,6 +483,17 @@ func (h *NotifyAckHandler) Handle(ctx context.Context, ev DispatchedEvent) error
 	// has nothing outstanding. Emitting anything would hit ErrNoOpenContract and
 	// dead-letter once per turn across the whole system.
 	for _, n := range open {
+		if !n.Delivered {
+			// THE DELIVERY PREDICATE (QUM-1325). A turn boundary says the agent
+			// took a turn; it says nothing about whether this notification ever
+			// reached it. Closing on the turn alone made an undelivered
+			// notification indistinguishable from an unread one and silently
+			// discarded the result — the exact failure the open/close pair exists
+			// to catch. Left open, the notification sweeper re-delivers it.
+			h.log.Debug("not acking a notification that was never delivered",
+				"recipient", p.AgentName, "notify", n.EventID, "turn", ev.ID)
+			continue
+		}
 		if _, err := h.emitter.Emit(ctx, EmitRequest{
 			TypeName:           "notify_acked",
 			TypeVersion:        1,

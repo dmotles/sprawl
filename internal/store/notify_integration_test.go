@@ -6,6 +6,7 @@ import (
 	"context"
 	"errors"
 	"testing"
+	"time"
 
 	"github.com/google/uuid"
 )
@@ -174,15 +175,20 @@ func TestNotifyPg_TurnBoundaryClosesTheContract(t *testing.T) {
 	}
 }
 
-// A FAILED INJECTION LEAVES THE CONTRACT OUTSTANDING — the whole reason the
-// record is appended first.
-func TestNotifyPg_FailedInjectionLeavesAnOutstandingContract(t *testing.T) {
+// A FAILED INJECTION LEAVES THE CONTRACT OUTSTANDING AND UNDELIVERED, and the
+// undelivered half is what the database has to establish.
+//
+// Delivered is an EXISTS subquery in openNotifiesSQL, and a fake reader can be
+// made to agree with a wrong one. That flag is the ack's precondition, so
+// getting it wrong here means every turn boundary closes contracts for results
+// nobody was ever told about — the QUM-1325 defect, restored through the SQL.
+func TestNotifyPg_FailedInjectionLeavesAnOutstandingUndeliveredContract(t *testing.T) {
 	e := newNotifyEnv(t)
 	ctx := context.Background()
 	broken := &recordingInjector{err: errors.New("stdin is wedged")}
 
-	if err := e.handler(t, broken).Handle(ctx, e.closeGoal(t, e.openGoal(t, "weave"))); err == nil {
-		t.Fatal("Handle reported success although the injection failed")
+	if err := e.handler(t, broken).Handle(ctx, e.closeGoal(t, e.openGoal(t, "weave"))); err != nil {
+		t.Fatalf("Handle returned %v; a failed injection must not fail the dispatch", err)
 	}
 
 	open, err := e.notifies.OpenNotifies(ctx, e.projectID, "weave")
@@ -190,7 +196,187 @@ func TestNotifyPg_FailedInjectionLeavesAnOutstandingContract(t *testing.T) {
 		t.Fatalf("OpenNotifies: %v", err)
 	}
 	if len(open) != 1 {
-		t.Errorf("%d outstanding notifications after a FAILED delivery, want 1 — the result would sit unobserved with nothing to sweep", len(open))
+		t.Fatalf("%d outstanding notifications after a FAILED delivery, want 1 — the result would sit unobserved with nothing to sweep", len(open))
+	}
+	if open[0].Delivered {
+		t.Error("the outstanding notification reads as delivered although the injection failed; the recipient's next turn boundary would ack it")
+	}
+	if got := e.eventCount(t, "notify_attempt"); got != 1 {
+		t.Errorf("%d notify_attempt events, want 1 — without one the sweeper's epoch never advances", got)
+	}
+	if got := e.eventCount(t, "notify_delivered"); got != 0 {
+		t.Errorf("%d notify_delivered events after a failed injection, want 0", got)
+	}
+}
+
+// A SUCCESSFUL DELIVERY MARKS THE CONTRACT DELIVERED — the positive leg of the
+// pair above, and the negative control for the EXISTS subquery.
+//
+// Without it, a Delivered that was hard-wired false would satisfy every
+// assertion above while breaking every ack in the system.
+func TestNotifyPg_ASuccessfulDeliveryMarksTheContractDelivered(t *testing.T) {
+	e := newNotifyEnv(t)
+	ctx := context.Background()
+
+	if err := e.handler(t, e.injector).Handle(ctx, e.closeGoal(t, e.openGoal(t, "weave"))); err != nil {
+		t.Fatalf("Handle: %v", err)
+	}
+
+	open, err := e.notifies.OpenNotifies(ctx, e.projectID, "weave")
+	if err != nil {
+		t.Fatalf("OpenNotifies: %v", err)
+	}
+	if len(open) != 1 {
+		t.Fatalf("%d outstanding notifications, want 1", len(open))
+	}
+	if !open[0].Delivered {
+		t.Error("a delivered notification reads as undelivered, so its recipient can never ack it and the sweeper re-delivers it forever")
+	}
+}
+
+// THE SWEEP RE-DELIVERS AN UNDELIVERED NOTIFICATION, end to end through the real
+// reader.
+//
+// The unit tests hand SweepNotifications its candidates. This is the only place
+// that establishes openNotificationsSQL actually FINDS an undelivered
+// notification and counts its attempts — three correlated subqueries keyed on a
+// jsonb field, none of which a fake can get wrong on the implementation's behalf.
+func TestNotifySweepPg_ReDeliversAnUndeliveredNotification(t *testing.T) {
+	e := newNotifyEnv(t)
+	ctx := context.Background()
+	broken := &recordingInjector{err: errors.New("stdin is wedged")}
+	if err := e.handler(t, broken).Handle(ctx, e.closeGoal(t, e.openGoal(t, "weave"))); err != nil {
+		t.Fatalf("Handle: %v", err)
+	}
+
+	reader := &PgNotifySweepReader{Pool: e.pool, Registry: e.registry}
+	got, err := reader.OpenNotifications(ctx, e.projectID)
+	if err != nil {
+		t.Fatalf("OpenNotifications: %v", err)
+	}
+	if len(got) != 1 {
+		t.Fatalf("%d re-delivery candidates, want 1", len(got))
+	}
+	if got[0].Recipient != "weave" || got[0].Delivered || got[0].Quarantined {
+		t.Errorf("candidate = %+v, want recipient weave, undelivered, unquarantined", got[0])
+	}
+	if got[0].Attempts != 1 {
+		t.Fatalf("candidate reports %d attempt(s), want 1 — the epoch is the count of notify_attempt events and it drives both the backoff and the cap", got[0].Attempts)
+	}
+	if got[0].LastAttemptAt.IsZero() {
+		t.Error("candidate has no last-attempt time, so the backoff gate can never hold and it is re-delivered on every sweep")
+	}
+
+	// Past the epoch-1 backoff, with a working injector.
+	working := &recordingInjector{}
+	res, err := SweepNotifications(ctx, NotifySweeperDeps{
+		Notifications: reader, Emitter: e.emitter, Injector: working,
+		ProjectID: e.projectID, Host: "host-a",
+		Now: func() time.Time { return time.Now().Add(2 * notifyBackoff(0)) },
+	})
+	if err != nil {
+		t.Fatalf("SweepNotifications: %v", err)
+	}
+	if res.Delivered != 1 {
+		t.Fatalf("result = %+v, want delivered 1", res)
+	}
+	if n := working.count(); n != 1 {
+		t.Errorf("injected %d times, want 1", n)
+	}
+	if n := e.eventCount(t, "notify_delivered"); n != 1 {
+		t.Errorf("%d notify_delivered events, want 1", n)
+	}
+
+	// And now the recipient's turn boundary CAN ack it — the loop closing, which
+	// is the property the delivery predicate exists to make true.
+	ack, err := NewNotifyAckHandler(NotifyAckHandlerDeps{Emitter: e.emitter, Notifies: e.notifies, Host: "host-a"})
+	if err != nil {
+		t.Fatalf("NewNotifyAckHandler: %v", err)
+	}
+	turn := turnFinishedEvent("weave")
+	turn.ProjectID = e.projectID
+	if err := ack.Handle(ctx, turn); err != nil {
+		t.Fatalf("ack Handle: %v", err)
+	}
+	if n := e.openContractCount(t, "owner_notify"); n != 0 {
+		t.Errorf("%d owner_notify contracts still open after a delivery and a turn boundary, want 0", n)
+	}
+}
+
+// A TURN BOUNDARY DOES NOT ACK AN UNDELIVERED NOTIFICATION (QUM-1325), through
+// the real reader.
+//
+// Negative control for the test above, and the one that only Postgres can
+// settle: the predicate is an EXISTS over a jsonb field, so a subquery matching
+// the wrong column reads as "delivered" for everything and the whole fix
+// evaporates while every unit test stays green.
+func TestNotifyPg_ATurnBoundaryDoesNotAckAnUndeliveredNotification(t *testing.T) {
+	e := newNotifyEnv(t)
+	ctx := context.Background()
+	broken := &recordingInjector{err: errors.New("stdin is wedged")}
+	if err := e.handler(t, broken).Handle(ctx, e.closeGoal(t, e.openGoal(t, "weave"))); err != nil {
+		t.Fatalf("Handle: %v", err)
+	}
+
+	ack, err := NewNotifyAckHandler(NotifyAckHandlerDeps{Emitter: e.emitter, Notifies: e.notifies, Host: "host-a"})
+	if err != nil {
+		t.Fatalf("NewNotifyAckHandler: %v", err)
+	}
+	turn := turnFinishedEvent("weave")
+	turn.ProjectID = e.projectID
+	if err := ack.Handle(ctx, turn); err != nil {
+		t.Fatalf("ack Handle: %v", err)
+	}
+
+	if got := e.eventCount(t, "notify_acked"); got != 0 {
+		t.Errorf("%d notify_acked events for a notification that was never delivered, want 0 — the result is discarded and nothing can ever find it again", got)
+	}
+	if got := e.openContractCount(t, "owner_notify"); got != 1 {
+		t.Errorf("%d owner_notify contracts open, want 1 — the contract must survive the turn boundary for the sweeper to re-deliver it", got)
+	}
+}
+
+// A CAPPED NOTIFICATION IS QUARANTINED AND THE CONTRACT STAYS OPEN.
+//
+// The open contract is the assertion Postgres is needed for: notify_undelivered
+// declares no `closes`, and whether that actually leaves the open_contracts row
+// alone is enforced by the appender's transaction, not by the seed's prose.
+func TestNotifySweepPg_AtTheCapItQuarantinesAndLeavesTheContractOpen(t *testing.T) {
+	e := newNotifyEnv(t)
+	ctx := context.Background()
+	broken := &recordingInjector{err: errors.New("stdin is wedged")}
+	if err := e.handler(t, broken).Handle(ctx, e.closeGoal(t, e.openGoal(t, "weave"))); err != nil {
+		t.Fatalf("Handle: %v", err)
+	}
+
+	reader := &PgNotifySweepReader{Pool: e.pool, Registry: e.registry}
+	deps := NotifySweeperDeps{
+		Notifications: reader, Emitter: e.emitter, Injector: broken,
+		ProjectID: e.projectID, Host: "host-a",
+	}
+	// Sweep past every backoff window until the cap is reached. The clock is
+	// pushed far enough forward each pass that the backoff can never be the
+	// reason a pass did nothing — otherwise this loop would "reach the cap" by
+	// running out of iterations, which looks identical from the assertions below.
+	for i := 0; i < maxNotifyAttempts+1; i++ {
+		at := time.Now().Add(time.Duration(i+1) * 24 * time.Hour)
+		if _, err := SweepNotifications(ctx, func() NotifySweeperDeps {
+			d := deps
+			d.Now = func() time.Time { return at }
+			return d
+		}()); err != nil {
+			t.Fatalf("sweep %d: %v", i, err)
+		}
+	}
+
+	if got := e.eventCount(t, "notify_attempt"); got != maxNotifyAttempts {
+		t.Errorf("%d notify_attempt events, want exactly %d — the cap is the only thing that stops an unreachable recipient costing tokens forever", got, maxNotifyAttempts)
+	}
+	if got := e.eventCount(t, "notify_undelivered"); got != 1 {
+		t.Errorf("%d notify_undelivered events, want 1", got)
+	}
+	if got := e.openContractCount(t, "owner_notify"); got != 1 {
+		t.Errorf("%d owner_notify contracts open after quarantine, want 1 — quarantine stops the retries, it does not discharge the contract", got)
 	}
 }
 

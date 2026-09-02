@@ -111,10 +111,11 @@ fails when the count is short, because the alternative is an append that
 FK-violates on a pinned `schema_id` later, at run time, in production.
 
 This is not hypothetical. M1b (`QUM-1250`) added **ten** event types to the
-nine M1a shipped, and M3a (`QUM-1252`) added **six** more — rework
+nine M1a shipped, and M3a (`QUM-1252`) added **nine** more — rework
 (`rework_requested`), cancellation (`goal_cancelled`), agent-to-agent Q&A
-(`ask_questions`, `answer_questions`) and the user inbox (`user_question`,
-`user_answered`) — for **25** in total. The M1b ten are the spawn write-ahead
+(`ask_questions`, `answer_questions`), the user inbox (`user_question`,
+`user_answered`) and notification re-delivery (`notify_attempt`,
+`notify_delivered`, `notify_undelivered`) — for **28** in total. The M1b ten are the spawn write-ahead
 (`spawn_requested`, `spawn_intent`, `spawn_committed`, `spawn_failed`,
 `stray_reclaimed`), notification delivery (`owner_notify`, `notify_acked`), the
 sweeper (`goal_poke`, `goal_stuck`) and owner-dead handling
@@ -131,7 +132,7 @@ sprawl store status     # confirm the log opens
 The error names the remedy, so a missed migration is loud rather than mysterious:
 
 ```
-store: the event log has 9 of this build's 25 event-type schemas published
+store: the event log has 9 of this build's 28 event-type schemas published
 next: run `sprawl store migrate` with a privileged DSN to publish them; until
 then an append would fail its schema_id foreign key
 ```

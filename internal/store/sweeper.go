@@ -131,8 +131,14 @@ type StalledCandidate struct {
 	// Quarantined is true when a goal_stuck event exists for this goal.
 	Quarantined bool
 	// OtherOpenContracts counts this owner's OTHER open contracts — a delegated
-	// child goal, an unanswered question, an unacked notification. Non-zero
-	// means blocked rather than stalled.
+	// child goal, an unanswered question. Non-zero means blocked rather than
+	// stalled.
+	//
+	// owner_notify is EXCLUDED (openGoalsSQL's $6), and this comment used to
+	// claim the opposite. An outstanding notification is something owed TO the
+	// owner, not something it is waiting on, so counting it would make every
+	// agent with an undelivered notification permanently un-pokable — and
+	// undelivered notifications are precisely what a stalled fleet accumulates.
 	OtherOpenContracts int
 }
 

@@ -210,6 +210,25 @@ var wantSeeds = []struct {
 		closes:   "user_question",
 		required: []string{"answer"},
 	},
+	// QUM-1252 (M3a): notification re-delivery. None of the three OPENS or
+	// CLOSES anything, and notify_undelivered's not-closing is the load-bearing
+	// one — quarantine stops the retries while the owner_notify contract stays
+	// open, because the result really is still unobserved.
+	{
+		name: "notify_attempt", version: 1,
+		id:       "84cbad8b-a262-5e8d-a2ff-89c5f62c247a",
+		required: []string{"notify_event_id", "recipient", "epoch"},
+	},
+	{
+		name: "notify_delivered", version: 1,
+		id:       "082c75a9-26b8-583e-8a26-082e8582502d",
+		required: []string{"notify_event_id", "recipient"},
+	},
+	{
+		name: "notify_undelivered", version: 1,
+		id:       "f49539c7-7953-564d-888a-eee67db94b8d",
+		required: []string{"notify_event_id", "recipient", "attempts"},
+	},
 }
 
 func TestSeedRegistry_MatchesGoldenIDsAndWiring(t *testing.T) {
@@ -450,7 +469,7 @@ func TestSeedRegistry_DocumentedCountMatchesTheRegistry(t *testing.T) {
 	if err != nil {
 		t.Fatalf("SeedRegistry: %v", err)
 	}
-	const documentedTotal = 25
+	const documentedTotal = 28
 	if got := len(reg.All()); got != documentedTotal {
 		t.Errorf("the registry holds %d seed event types but docs/event-log-setup.md documents %d.\n"+
 			"That guide quotes the count inside the verbatim refusal an operator sees when a database is under-migrated "+

@@ -1,0 +1,18 @@
+{
+  "name": "notify_attempt",
+  "version": 1,
+  "opens": false,
+  "spillable": false,
+  "closes": "",
+  "json_schema": {
+    "type": "object",
+    "description": "A delivery of an owner_notify was attempted. Recorded BEFORE the injection, never after: the epoch is the COUNT of these events, so a marker written only on success would leave a failed attempt invisible and the next pass recomputing an identical backoff key with no progress. NOT a contract — an attempt expects no reply. NOT spillable: an attempt recorded only locally is invisible to the other host's dedup, so two sweepers would double-deliver.",
+    "required": ["notify_event_id", "recipient", "epoch"],
+    "properties": {
+      "notify_event_id": {"type": "string"},
+      "recipient": {"type": "string"},
+      "epoch": {"type": "integer"},
+      "host": {"type": "string"}
+    }
+  }
+}

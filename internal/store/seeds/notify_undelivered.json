@@ -1,0 +1,19 @@
+{
+  "name": "notify_undelivered",
+  "version": 1,
+  "opens": false,
+  "spillable": false,
+  "closes": "",
+  "json_schema": {
+    "type": "object",
+    "description": "A notification hit the re-delivery cap without ever being delivered, and will not be attempted again. Existence-based quarantine, mirroring goal_stuck: the presence of this event is what stops the retries, as opposed to an escalation event that coexists with continued attempts and would look like a fix while costing the same. The owner_notify contract stays OPEN on purpose — the result really is still unobserved, and closing it here would hide exactly the thing an operator needs to see.",
+    "required": ["notify_event_id", "recipient", "attempts"],
+    "properties": {
+      "notify_event_id": {"type": "string"},
+      "recipient": {"type": "string"},
+      "attempts": {"type": "integer"},
+      "reason": {"type": "string"},
+      "host": {"type": "string"}
+    }
+  }
+}

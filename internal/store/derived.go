@@ -77,6 +77,17 @@ const (
 	// kindOwnershipReassigned is (contract, new owner): reassigning the same
 	// contract to the same fallback twice is one event.
 	kindOwnershipReassigned = "ownership_reassigned"
+	// kindNotifyAttempt is (notification, epoch), the same shape as kindGoalPoke
+	// and for the same reason: it is what makes a concurrent second deliverer's
+	// attempt at the same epoch collide while leaving the next epoch free.
+	kindNotifyAttempt = "notify_attempt"
+	// kindNotifyDelivered is (notification) alone: a notification is delivered
+	// once. Which ATTEMPT succeeded is recorded in the payload, not in the id —
+	// keying on the epoch would let a second successful delivery of the same
+	// notification record itself as a separate fact.
+	kindNotifyDelivered = "notify_delivered"
+	// kindNotifyUndelivered is (notification) alone: quarantined once, ever.
+	kindNotifyUndelivered = "notify_undelivered"
 )
 
 // DerivedEventID builds the stable id for one logical action.

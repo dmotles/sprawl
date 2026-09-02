@@ -181,7 +181,11 @@ func TestStoreDispatch_IsRegisteredWithItsFlags(t *testing.T) {
 			// The limits have to be discoverable from --help, not only from
 			// startup output: an agent deciding WHETHER to run this reads help
 			// first.
-			for _, must := range []string{"event_claims", "cursor", "inert"} {
+			// "backoff" and "undelivered" are here because a caller who reads
+			// only the first half of that paragraph concludes a failed
+			// injection is dropped, and the whole point of the re-delivery
+			// leg is that it is not.
+			for _, must := range []string{"event_claims", "cursor", "inert", "backoff", "undelivered"} {
 				if !strings.Contains(c.Long, must) {
 					t.Errorf("the long help does not mention %q, so a caller cannot tell from --help what this does or does not guarantee", must)
 				}

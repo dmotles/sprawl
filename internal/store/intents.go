@@ -207,7 +207,11 @@ func (r *PgIntentReader) FailedIntents(ctx context.Context, projectID uuid.UUID,
 // and the anti-join alternative would run on every turn boundary of every agent —
 // which is the single hottest path in this file.
 const openNotifiesSQL = `
-	SELECT e.id, e.workflow_instance_id, COALESCE(e.payload->>'subject_event_id', '')
+	SELECT e.id, e.workflow_instance_id, COALESCE(e.payload->>'subject_event_id', ''),
+	       EXISTS (SELECT 1 FROM events d
+	                WHERE d.project_id = e.project_id
+	                  AND d.schema_id = ANY($4)
+	                  AND d.payload->>'notify_event_id' = e.id::text)
 	  FROM open_contracts oc
 	  JOIN events e ON e.id = oc.event_id
 	 WHERE e.project_id = $1
@@ -232,7 +236,9 @@ func (r *PgNotifyReader) OpenNotifies(ctx context.Context, projectID uuid.UUID, 
 		// failure the open/close pair exists to prevent.
 		return nil, fmt.Errorf("store: reading outstanding notifications requires a recipient")
 	}
-	rows, err := r.Pool.Query(ctx, openNotifiesSQL, projectID, schemaIDsFor(r.Registry, "owner_notify"), recipient)
+	rows, err := r.Pool.Query(ctx, openNotifiesSQL, projectID,
+		schemaIDsFor(r.Registry, "owner_notify"), recipient,
+		schemaIDsFor(r.Registry, "notify_delivered"))
 	if err != nil {
 		return nil, fmt.Errorf("store: reading outstanding notifications for %q: %w", recipient, err)
 	}
@@ -241,7 +247,7 @@ func (r *PgNotifyReader) OpenNotifies(ctx context.Context, projectID uuid.UUID, 
 	var out []OpenNotify
 	for rows.Next() {
 		n := OpenNotify{Recipient: recipient}
-		if err := rows.Scan(&n.EventID, &n.WorkflowID, &n.SubjectEventID); err != nil {
+		if err := rows.Scan(&n.EventID, &n.WorkflowID, &n.SubjectEventID, &n.Delivered); err != nil {
 			return nil, fmt.Errorf("store: scanning an outstanding notification: %w", err)
 		}
 		out = append(out, n)

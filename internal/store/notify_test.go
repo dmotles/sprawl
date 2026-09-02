@@ -236,7 +236,11 @@ func TestNotifyHandler_RecordsThenInjects(t *testing.T) {
 	}
 
 	got := f.trace.all()
-	want := []string{"emit:owner_notify", "inject:weave"}
+	// notify_attempt sits BEFORE the injection and notify_delivered AFTER it, and
+	// the order is the mechanism rather than bookkeeping: the epoch is a COUNT of
+	// attempts, so an attempt recorded only on success leaves a failed delivery
+	// invisible and the next pass recomputing an identical backoff key.
+	want := []string{"emit:owner_notify", "emit:notify_attempt", "inject:weave", "emit:notify_delivered"}
 	if fmt.Sprint(got) != fmt.Sprint(want) {
 		t.Errorf("trace = %v, want %v", got, want)
 	}
@@ -330,27 +334,39 @@ func TestNotifyHandler_NonClosingEventIsIgnored(t *testing.T) {
 	}
 }
 
-// A FAILED INJECTION LEAVES THE CONTRACT OPEN, and reports the failure.
+// A FAILED INJECTION LEAVES THE CONTRACT OPEN AND NO DELIVERY RECORD, and does
+// NOT fail the dispatch.
 //
-// This is the whole reason the record comes first. The contract stays open and the
-// error surfaces, so the dispatcher keeps its cursor on the event and the NEXT
-// PASS retries the delivery (see TestNotifyHandler_RetryAfterAFailedInjectionReDelivers).
-// An earlier version of this comment said the sweeper re-delivered; it does not,
-// and no such code ever existed.
-func TestNotifyHandler_FailedInjectionLeavesTheContractOpenAndReportsIt(t *testing.T) {
+// The not-an-error half is the QUM-1252 change and it is a deliberate reversal.
+// Returning an error kept the dispatcher's cursor on this event, and the
+// dispatcher blocks head-of-line by design — so ONE unreachable recipient stalled
+// every other event in the project behind it. Advancing is only safe because
+// SweepNotifications now re-delivers; the assertions below are what says the
+// sweep will have something to find.
+//
+// The absent notify_delivered is the load-bearing one. It is the predicate the
+// ack reads, so emitting it here would let the recipient's next turn boundary
+// close a contract for a result it was never told about — which is exactly the
+// defect this slice fixes (QUM-1325).
+func TestNotifyHandler_FailedInjectionLeavesTheContractOpenWithNoDeliveryRecord(t *testing.T) {
 	f := newNotifyFixture(t, "weave")
 	f.injector.err = errors.New("recipient stdin is wedged")
 
-	err := f.handler.Handle(context.Background(), f.closeEv)
-	if err == nil {
-		t.Fatal("Handle reported success although the injection failed; the dispatcher would advance past a result nobody was told about")
+	if err := f.handler.Handle(context.Background(), f.closeEv); err != nil {
+		t.Fatalf("Handle returned %v; a failed injection must not fail the dispatch, or one wedged recipient blocks the whole project's log behind it", err)
 	}
 	notifies := f.emitter.byName("owner_notify")
 	if len(notifies) != 1 {
 		t.Fatalf("%d owner_notify events, want 1 — a failed delivery must leave a record to retry against", len(notifies))
 	}
+	if got := f.emitter.byName("notify_attempt"); len(got) != 1 {
+		t.Errorf("%d notify_attempt events, want 1 — without one the sweeper's epoch never advances and the backoff never widens", len(got))
+	}
+	if got := f.emitter.byName("notify_delivered"); len(got) != 0 {
+		t.Errorf("emitted %d notify_delivered event(s) after a FAILED injection; the recipient's next turn boundary would ack a result it was never told about", len(got))
+	}
 	if got := f.emitter.byName("notify_acked"); len(got) != 0 {
-		t.Errorf("emitted %v after a FAILED injection; the contract must stay open so the next pass retries", got)
+		t.Errorf("emitted %v after a FAILED injection; the contract must stay open for the sweeper", got)
 	}
 }
 
@@ -464,9 +480,11 @@ func turnFinishedEvent(agent string) DispatchedEvent {
 func TestNotifyAckHandler_TurnBoundaryClosesTheRecipientsNotifications(t *testing.T) {
 	f := newAckFixture(t)
 	n1, n2 := uuid.New(), uuid.New()
+	// Delivered, because that is now the ack's precondition — see
+	// TestNotifyAckHandler_DoesNotAckANotificationThatWasNeverDelivered.
 	f.notifies.open = []OpenNotify{
-		{EventID: n1, Recipient: "weave"},
-		{EventID: n2, Recipient: "weave"},
+		{EventID: n1, Recipient: "weave", Delivered: true},
+		{EventID: n2, Recipient: "weave", Delivered: true},
 	}
 
 	if err := f.handler.Handle(context.Background(), turnFinishedEvent("weave")); err != nil {
@@ -486,6 +504,39 @@ func TestNotifyAckHandler_TurnBoundaryClosesTheRecipientsNotifications(t *testin
 	}
 	if !closed[n1] || !closed[n2] {
 		t.Errorf("acks closed %v, want both %s and %s", closed, n1, n2)
+	}
+}
+
+// A NOTIFICATION THAT WAS NEVER DELIVERED IS NOT ACKED (QUM-1325).
+//
+// The defect this replaces: the ack closed EVERY open notification for an agent
+// on ANY turn_finished, with no reference to whether an injection had ever
+// succeeded. So an agent that was never told anything acked its way out of the
+// contract at its next turn — the result was discarded silently, and the open
+// contract recorded UNACKED rather than the UNDELIVERED everything downstream
+// assumed it meant.
+//
+// The mixed fixture is the point. A test with only an undelivered notification
+// is satisfied by a handler that acks nothing at all, so the delivered one is the
+// positive control that keeps this assertion honest about which predicate fired.
+func TestNotifyAckHandler_DoesNotAckANotificationThatWasNeverDelivered(t *testing.T) {
+	f := newAckFixture(t)
+	delivered, never := uuid.New(), uuid.New()
+	f.notifies.open = []OpenNotify{
+		{EventID: delivered, Recipient: "weave", Delivered: true},
+		{EventID: never, Recipient: "weave"},
+	}
+
+	if err := f.handler.Handle(context.Background(), turnFinishedEvent("weave")); err != nil {
+		t.Fatalf("Handle: %v", err)
+	}
+	acks := f.emitter.byName("notify_acked")
+	if len(acks) != 1 {
+		t.Fatalf("emitted %d notify_acked events, want exactly 1 — the delivered one", len(acks))
+	}
+	if acks[0].ClosesEventID == nil || *acks[0].ClosesEventID != delivered {
+		t.Errorf("the ack closed %v, want the DELIVERED notification %s; closing %s would discard a result nobody was ever told about",
+			acks[0].ClosesEventID, delivered, never)
 	}
 }
 
@@ -769,7 +820,7 @@ func TestNotifyHandler_ReassignmentIsRecordedBeforeTheNotification(t *testing.T)
 		t.Fatalf("Handle: %v", err)
 	}
 	got := tr.all()
-	want := []string{"emit:ownership_reassigned", "emit:owner_notify", "inject:weave"}
+	want := []string{"emit:ownership_reassigned", "emit:owner_notify", "emit:notify_attempt", "inject:weave", "emit:notify_delivered"}
 	if fmt.Sprint(got) != fmt.Sprint(want) {
 		t.Errorf("trace = %v, want %v", got, want)
 	}
@@ -935,20 +986,21 @@ func TestNotifyHandler_RetryAfterAFailedAppendStillDelivers(t *testing.T) {
 	}
 }
 
-// A FAILED INJECTION IS RE-DELIVERED BY THE NEXT PASS, because the contract is
-// still open.
+// RE-DELIVERY IS THE SWEEPER'S, NOT THE HANDLER'S — a second pass over the same
+// event injects nothing.
 //
-// The third HIGH defect: six comments claimed the SWEEPER re-delivered, and no
-// such code existed anywhere. The mechanism that does exist is the DISPATCHER's
-// retry — it keeps its cursor on a failing event — and it only works if the
-// handler re-injects when it finds the contract outstanding. The old code hit the
-// same lost-claim short-circuit and skipped.
-func TestNotifyHandler_RetryAfterAFailedInjectionReDelivers(t *testing.T) {
+// This replaces an assertion that the handler itself re-injected on a second
+// dispatch pass. That behaviour is gone on purpose and its absence is now the
+// thing under test: the handler returns nil on a failed injection, so the
+// dispatcher never comes back, and a handler that re-injected anyway would
+// deliver at epoch 0 forever with no backoff and no cap. The retry lives in
+// TestSweepNotifications_ReDeliversAnUndeliveredNotification.
+func TestNotifyHandler_DoesNotReDeliverOnASecondPass(t *testing.T) {
 	f := newNotifyFixture(t, "weave")
 	f.injector.err = errors.New("stdin is wedged")
 
-	if err := f.handler.Handle(context.Background(), f.closeEv); err == nil {
-		t.Fatal("Handle reported success although the injection failed")
+	if err := f.handler.Handle(context.Background(), f.closeEv); err != nil {
+		t.Fatalf("Handle: %v", err)
 	}
 	// The contract is already open: the emitter's onEmit opened it when the
 	// record landed, exactly as the appender does inside its transaction.
@@ -957,10 +1009,13 @@ func TestNotifyHandler_RetryAfterAFailedInjectionReDelivers(t *testing.T) {
 	f.injector.mu.Unlock()
 
 	if err := f.handler.Handle(context.Background(), f.closeEv); err != nil {
-		t.Fatalf("retry: %v", err)
+		t.Fatalf("second pass: %v", err)
 	}
-	if got := f.injector.count(); got != 1 {
-		t.Errorf("injected %d times after the retry, want 1 — a failed delivery must be retried, and nothing in the sweeper does it", got)
+	if got := f.injector.count(); got != 0 {
+		t.Errorf("injected %d time(s); epoch 0 was already attempted, so a second handler pass must defer to the sweeper rather than deliver again with no backoff", got)
+	}
+	if got := len(f.emitter.byName("notify_attempt")); got != 1 {
+		t.Errorf("%d notify_attempt events, want 1 — the derived (notification, epoch) id is what stops a second pass re-attempting the same epoch", got)
 	}
 	// And exactly ONE contract, not two: the derived id made the append idempotent.
 	if got := len(f.emitter.byName("owner_notify")); got != 1 {
