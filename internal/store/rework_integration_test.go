@@ -201,6 +201,74 @@ func TestReworkPg_TheReworkingAgentSeesAndClosesTheReworkContract(t *testing.T) 
 	}
 }
 
+// A REWORK MUST NAME A REWORKABLE EVENT, AND THE REFUSAL BELONGS ON THE WRITE
+// SIDE — otherwise the mistake becomes a poison event that wedges the whole
+// project's dispatch.
+//
+// RequestRework only ever required the rejected id to EXIST (the FK enforces
+// that much). Nothing checked what kind of event it named, so any id the caller
+// had to hand was accepted and appended. The handler then walks
+// follows_event_id back looking for a goal_opened and returns a PERMANENT error
+// when the chain does not reach one — and a handler error leaves the dispatch
+// cursor put, so the event is retried forever with spawn_requested,
+// notifications and acks queued behind it. One mistyped argument, and the
+// project stops dispatching until someone edits the database by hand.
+//
+// The mistake is reachable rather than exotic: the tool's own text asks for "the
+// goal_event_id of the work being rejected", and an owner looking at a goal it
+// has just closed plausibly reaches for the goal_closed id. goal_closed carries
+// closes_event_id, not follows_event_id, so the walk hits nil on hop 1 and
+// refuses for good.
+//
+// Refusing at the write side turns an unrecoverable log state into an error
+// message the caller can act on, which is the whole difference. The handler's
+// own refusal stays as defence in depth.
+func TestReworkPg_ANonReworkableEventIsRefusedAtTheWriteSide(t *testing.T) {
+	e := newEngineLoopEnv(t)
+	ctx := context.Background()
+
+	d := e.dispatcher(t, &seqNamer{names: []string{"ghost", "spectre"}})
+	goal, err := e.ledger.OpenGoal(ctx, GoalResearch, "find out", "weave")
+	if err != nil {
+		t.Fatalf("OpenGoal: %v", err)
+	}
+	if _, err := d.Step(ctx); err != nil { // goal_opened -> spawn_requested, assigning "ghost"
+		t.Fatalf("Step over goal_opened: %v", err)
+	}
+	closeID, err := e.ledger.CloseGoalForAgent(ctx, "ghost", goal.GoalEventID, GoalSucceeded, "done")
+	if err != nil {
+		t.Fatalf("CloseGoalForAgent: %v", err)
+	}
+
+	// The realistic slip: the id of the CLOSE rather than of the goal.
+	_, err = e.ledger.RequestRework(ctx, "weave", closeID, "the answer is thin", DiscardAndRedo)
+	if err == nil {
+		t.Fatal("RequestRework accepted a goal_closed id; that appends a rework_requested whose goal can never be identified, and the dispatcher retries it forever with every other event stuck behind it")
+	}
+	if !strings.Contains(err.Error(), "goal_closed") {
+		t.Errorf("the refusal does not name the kind of event that was passed, which is the one thing that tells the caller what they did wrong: %v", err)
+	}
+
+	// CONTROL: the goal's own id is still accepted. Without this the assertion
+	// above would also pass if RequestRework had simply started refusing
+	// everything — which is the failure mode a kind-check is most likely to
+	// introduce.
+	rework, err := e.ledger.RequestRework(ctx, "weave", goal.GoalEventID, "the answer is thin", DiscardAndRedo)
+	if err != nil {
+		t.Fatalf("RequestRework on the goal's own id: %v — the kind check has refused a legitimate rework", err)
+	}
+
+	// SECOND CONTROL, and it pins the other half of the set: a rework_requested
+	// is itself reworkable, because a redone result can be rejected too and the
+	// handler's walk is written to chase a chain rather than read one hop. A
+	// check that allowed only goal_opened would pass every assertion above while
+	// making the second rejection impossible — measured: narrowing the set to
+	// goal_opened alone left the whole suite green before this leg existed.
+	if _, err := e.ledger.RequestRework(ctx, "weave", rework.ReworkEventID, "still thin", DiscardAndRedo); err != nil {
+		t.Fatalf("RequestRework on a rework_requested id: %v — a rework of a rework is legitimate and the chain walk supports it", err)
+	}
+}
+
 // re_engage_original is defined by the seed and by internal/engine, and the
 // dispatcher does NOT implement it. Asserted rather than left undefined: an
 // unhandled policy that fell through to "allocate a fresh name" would silently

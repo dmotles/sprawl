@@ -36,7 +36,17 @@ import (
 //	transitively       it is blocked on a child goal or an unanswered question.
 //	 blocked           Poking says "get on with it" about something it cannot get
 //	                   on with — repeatedly, and pokes cost tokens.
+//	operator-killed    the same decision as operator-paused, and it needs its own
+//	                   gate because StatusKilled is NOT terminal: it reached the
+//	                   poke path, and the delivery layer can now WAKE an offline
+//	                   owner, so without this a sweep timer revives an agent an
+//	                   operator has just shot.
 //	terminal           retired or retiring. It cannot be woken at all.
+//
+// The list above is the reasoning, not the enumeration — gateFor also skips a
+// quarantined goal, one with no owner, one whose owner is on another host, and
+// one whose turn state is unobservable. Read gateFor for the full order; this
+// header exists to say WHY each kind of quiet is not a stall.
 //
 // AND THE ONE THAT STOPS THE BLEEDING (AC6): per-goal exponential backoff, and at
 // the cap a goal_stuck event plus quarantine. Quarantine is expressed as "a goal
@@ -116,9 +126,17 @@ func pokeBackoff(epoch int) time.Duration {
 type StalledCandidate struct {
 	GoalEventID uuid.UUID
 	WorkflowID  uuid.UUID
-	Owner       string
-	GoalType    string
-	OpenedAt    time.Time
+	// Owner is who the RESULT IS REPORTED TO — the agent that opened the goal.
+	// It is NOT necessarily the agent doing the work, and conflating the two is
+	// the defect PokeTarget exists to fix.
+	Owner string
+	// Assignee is the agent currently doing the work: the agent_name on this
+	// goal's newest spawn_requested. Empty when the goal has not been dispatched
+	// yet, in which case there is no assignee and the owner is the only agent
+	// there is.
+	Assignee string
+	GoalType string
+	OpenedAt time.Time
 	// LastOwnerActivity is the most recent turn-boundary event for this owner.
 	// ZERO means this owner has never produced one, which is a real state (an
 	// agent that never started) and not an error — the goal's own age is used
@@ -140,6 +158,27 @@ type StalledCandidate struct {
 	// agent with an undelivered notification permanently un-pokable — and
 	// undelivered notifications are precisely what a stalled fleet accumulates.
 	OtherOpenContracts int
+}
+
+// PokeTarget is the agent a poke is delivered to AND the agent every gate is
+// evaluated against — deliberately one function, because splitting them is the
+// subtle version of the bug it fixes: gating on the owner while delivering to
+// the assignee pokes a mid-turn or operator-killed assignee whenever the owner
+// happens to look pokable.
+//
+// The assignee wins when there is one. A goal's `owner` is who the result is
+// reported to, which on the create_goal path is the caller — so measuring
+// staleness against the owner measured weave, which is never quiet, and no goal
+// with a crashed worker was ever a stall candidate.
+//
+// The owner is the fallback rather than an error case: a goal that has not been
+// dispatched yet has no spawn_requested and so no assignee, and the owner is
+// then the only agent there is.
+func (c StalledCandidate) PokeTarget() string {
+	if c.Assignee != "" {
+		return c.Assignee
+	}
+	return c.Owner
 }
 
 // SweepReader produces the candidates.
@@ -234,7 +273,7 @@ func Sweep(ctx context.Context, d SweeperDeps) (SweepResult, error) {
 		if skip {
 			res.Skipped++
 			res.note(c.GoalEventID, why)
-			log.Debug("not poking", "goal", c.GoalEventID, "owner", c.Owner, "reason", why)
+			log.Debug("not poking", "goal", c.GoalEventID, "target", c.PokeTarget(), "reason", why)
 			continue
 		}
 
@@ -254,6 +293,7 @@ func Sweep(ctx context.Context, d SweeperDeps) (SweepResult, error) {
 				Payload: map[string]any{
 					"goal_event_id": c.GoalEventID.String(),
 					"owner":         c.Owner,
+					"target":        c.PokeTarget(),
 					"pokes":         c.Pokes,
 					"reason":        fmt.Sprintf("no progress after %d pokes; quarantined and no longer poked", c.Pokes),
 					"host":          d.Host,
@@ -263,7 +303,7 @@ func Sweep(ctx context.Context, d SweeperDeps) (SweepResult, error) {
 			}
 			res.Quarantined++
 			log.Warn("goal reached the poke cap; quarantined and will not be poked again",
-				"goal", c.GoalEventID, "owner", c.Owner, "pokes", c.Pokes)
+				"goal", c.GoalEventID, "target", c.PokeTarget(), "pokes", c.Pokes)
 			continue
 		}
 
@@ -278,8 +318,8 @@ func Sweep(ctx context.Context, d SweeperDeps) (SweepResult, error) {
 		// that then FAILED left the epoch unchanged and the claim held — and the
 		// next sweep computed the same key, lost it to its own corpse, and
 		// skipped. Forever. The goal was never poked again AND never quarantined,
-		// reported under `Skipped` where it is indistinguishable from the five
-		// legitimate gates. Verified with a probe in code review.
+		// reported under `Skipped` where it is indistinguishable from a
+		// legitimate gate. Verified with a probe in code review.
 		idle := now().Sub(activitySince(c))
 		pokeErr := func() error {
 			_, err := d.Emitter.Emit(ctx, EmitRequest{
@@ -290,6 +330,7 @@ func Sweep(ctx context.Context, d SweeperDeps) (SweepResult, error) {
 				Payload: map[string]any{
 					"goal_event_id": c.GoalEventID.String(),
 					"owner":         c.Owner,
+					"target":        c.PokeTarget(),
 					"epoch":         c.Pokes,
 					"reason":        fmt.Sprintf("no turn boundary for %s while this goal is open", idle.Round(time.Minute)),
 					"host":          d.Host,
@@ -316,16 +357,16 @@ func Sweep(ctx context.Context, d SweeperDeps) (SweepResult, error) {
 		}
 		res.Poked++
 
-		if err := d.Injector.Inject(ctx, c.Owner, pokeBody(c)); err != nil {
+		if err := d.Injector.Inject(ctx, c.PokeTarget(), pokeBody(c)); err != nil {
 			// The goal_poke event STAYS. The poke was attempted and the backoff
-			// must advance regardless, or a persistently unreachable owner is
+			// must advance regardless, or a persistently unreachable target is
 			// poked at the base interval forever — the runaway AC6 exists to
 			// prevent.
 			return res, fmt.Errorf("store: delivering poke %d to %q for goal %s (the poke is recorded, so the backoff still advances): %w",
-				c.Pokes, c.Owner, c.GoalEventID, err)
+				c.Pokes, c.PokeTarget(), c.GoalEventID, err)
 		}
-		log.Info("poked a stalled goal's owner",
-			"goal", c.GoalEventID, "owner", c.Owner, "epoch", c.Pokes, "idle", idle)
+		log.Info("poked a stalled goal",
+			"goal", c.GoalEventID, "target", c.PokeTarget(), "owner", c.Owner, "epoch", c.Pokes, "idle", idle)
 	}
 	return res, nil
 }
@@ -350,26 +391,30 @@ func activitySince(c StalledCandidate) time.Time {
 // it once, and — more usefully — so a test can assert WHICH gate held rather
 // than merely that nothing happened.
 func gateFor(c StalledCandidate, locals map[string]LocalAgent, now time.Time, stallAfter time.Duration) (skip bool, why string) {
+	// EVERY GATE BELOW IS ABOUT THE POKE TARGET, which is the assignee when the
+	// goal has one. See PokeTarget: gating on the owner while delivering to the
+	// assignee is a distinct bug from gating on the owner and delivering to it.
+	target := c.PokeTarget()
 	if c.Quarantined {
 		return true, "quarantined: a goal_stuck event already exists for this goal"
 	}
-	if c.Owner == "" {
-		return true, "the goal names no owner, so there is nobody to poke"
+	if target == "" {
+		return true, "the goal names neither an assignee nor an owner, so there is nobody to poke"
 	}
-	if c.Owner == HumanOwner {
+	if target == HumanOwner {
 		return true, "human-owned wait: a person is the blocker and there is no process to poke"
 	}
 	if c.OtherOpenContracts > 0 {
-		return true, fmt.Sprintf("transitively blocked: the owner has %d other open contract(s)", c.OtherOpenContracts)
+		return true, fmt.Sprintf("transitively blocked: the poke target has %d other open contract(s)", c.OtherOpenContracts)
 	}
 
-	local, known := locals[c.Owner]
+	local, known := locals[target]
 	if !known {
 		// See the KNOWN GAP note in the file header. Skipping is the safe
 		// direction: this host cannot evaluate the in-turn or operator-paused
-		// gates for an owner it cannot see, and poking blind could override a
+		// gates for an agent it cannot see, and poking blind could override a
 		// pause set on a machine it cannot observe.
-		return true, "the owner is not on this host, so its in-turn and paused state cannot be observed"
+		return true, "the poke target is not on this host, so its in-turn and paused state cannot be observed"
 	}
 	// THE TRI-STATE GATE. An UNOBSERVED turn state is not an idle one.
 	//
@@ -381,29 +426,29 @@ func gateFor(c StalledCandidate, locals map[string]LocalAgent, now time.Time, st
 	// string rather than latent in the behaviour.
 	switch local.Turn {
 	case TurnUnknown:
-		return true, "the owner's turn state is not observable from this process, and an unobserved turn state is not an idle one"
+		return true, "the poke target's turn state is not observable from this process, and an unobserved turn state is not an idle one"
 	case TurnInTurn:
-		return true, "the owner is mid-turn"
+		return true, "the poke target is mid-turn"
 	case TurnIdle:
 		// Observed idle: keep going.
 	}
 	if local.Status == state.StatusPaused {
-		return true, "the owner is operator-paused, which is deliberately excluded from auto-resume"
+		return true, "the poke target is operator-paused, which is deliberately excluded from auto-resume"
 	}
 	// OPERATOR-KILLED, its own gate rather than a widening of the one above:
 	// `killed` is NOT terminal (IsTerminal is retired/retiring only), so it
 	// reached the poke path. A kill is a human decision in exactly the way a
-	// pause is, and the delivery path can now WAKE an offline owner — so without
+	// pause is, and the delivery path can now WAKE an offline agent — so without
 	// this a sweep timer revives an agent an operator has just shot. Even with
 	// delivery declining, each poke consumes an epoch and marches the goal to its
-	// quarantine cap for no reason but that its owner was killed. A CRASHED owner
+	// quarantine cap for no reason but that the agent holding it was killed. A CRASHED agent
 	// (died, faulted, resume_failed) is a different thing and is still poked:
 	// nobody chose that state, and it is the case AC5 exists for.
 	if local.Status == state.StatusKilled {
-		return true, "the owner was operator-killed, and reviving it on a sweep timer would override that decision"
+		return true, "the poke target was operator-killed, and reviving it on a sweep timer would override that decision"
 	}
 	if state.IsTerminal(local.Status) {
-		return true, "the owner is " + local.Status + " and cannot be woken"
+		return true, "the poke target is " + local.Status + " and cannot be woken"
 	}
 
 	if idle := now.Sub(activitySince(c)); idle < stallAfter {

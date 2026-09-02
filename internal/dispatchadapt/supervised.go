@@ -29,6 +29,7 @@ package dispatchadapt
 
 import (
 	"context"
+	"errors"
 	"fmt"
 
 	agentpkg "github.com/dmotles/sprawl/internal/agent"
@@ -194,7 +195,20 @@ func (w *WakeInjector) Inject(ctx context.Context, recipient, body string) error
 		// are byte-pinned by a test in internal/agent — a new one is a contract
 		// change this slice does not need.
 		if _, err := w.Sup.Wake(ctx, recipient, agentpkg.WakeReasonSendMessage, body); err != nil {
-			return fmt.Errorf("dispatchadapt: waking %q to deliver a poke (it is %s and its goal is still open): %w", recipient, a.Status, err)
+			// ErrWakeNotNeeded IS NOT A FAILURE AND IS NOT A DELIVERY. It comes
+			// from a short-circuit that fires before the injection is forwarded, so
+			// the agent is alive, healthy, and has NOT been given the body. Breaking
+			// here loses the poke on both paths at once — no wake, and no enqueue,
+			// because this return skips the queue below — while Sweep has already
+			// emitted goal_poke and consumed the epoch. The queue is exactly right
+			// for a live agent, which is what this error means it is.
+			//
+			// The stale-status window that reaches here is real: the status is read
+			// from a file, the handle lives in memory.
+			if !errors.Is(err, supervisor.ErrWakeNotNeeded) {
+				return fmt.Errorf("dispatchadapt: waking %q to deliver a poke (it is %s and its goal is still open): %w", recipient, a.Status, err)
+			}
+			return w.Queue.Inject(ctx, recipient, body)
 		}
 		// No enqueue. The wake already delivered the body, and doing both is the
 		// same poke twice.

@@ -445,3 +445,93 @@ func TestSweepPg_APermanentlyStalledGoalReachesGoalStuckAndStops(t *testing.T) {
 		t.Errorf("a quarantined goal delivered %d further pokes across 10 sweeps, want 0 — this is the token burn AC6 exists to stop", got-before)
 	}
 }
+
+// spawnFor appends the spawn_requested the dispatcher would have appended,
+// assigning agent to the goal's own workflow instance.
+func (e *sweepEnv) spawnFor(t *testing.T, goalID uuid.UUID, agent string) {
+	t.Helper()
+	ctx := context.Background()
+	var wf uuid.UUID
+	if err := e.pool.QueryRow(ctx, `SELECT workflow_instance_id FROM events WHERE id = $1`, goalID).Scan(&wf); err != nil {
+		t.Fatalf("reading the goal's workflow instance: %v", err)
+	}
+	if _, err := e.emitter.Emit(ctx, EmitRequest{
+		TypeName: "spawn_requested", TypeVersion: 1,
+		WorkflowInstanceID: wf,
+		Payload: map[string]any{
+			"agent_name": agent, "agent_type": "researcher", "family": "product",
+			"parent": "weave", "branch": "goal/" + agent, "prompt": "do the thing",
+		},
+	}); err != nil {
+		t.Fatalf("requesting a spawn for %q: %v", agent, err)
+	}
+}
+
+// THE STALL IS MEASURED AGAINST THE ASSIGNEE, NOT THE OWNER (AC5).
+//
+// The owner is who the result is reported TO — create_goal sets it to the
+// caller, which for a delegated goal is a manager taking turns constantly. The
+// agent doing the work is named on the goal's newest spawn_requested. Measuring
+// against the owner therefore kept every delegated goal permanently fresh, so a
+// goal whose worker had crashed was never a stall candidate at all.
+//
+// Every leg here is a control for another: the owner's turn must NOT count once
+// there is an assignee, the assignee's turn MUST, and the newest spawn must win
+// over an earlier one.
+func TestSweepPg_ActivityIsMeasuredAgainstTheAssignee(t *testing.T) {
+	e := newSweepEnv(t)
+	goal := e.openGoal(t, "weave")
+	e.spawnFor(t, goal, "researcher-1")
+
+	if got := e.only(t); got.Assignee != "researcher-1" {
+		t.Fatalf("Assignee = %q, want researcher-1 — the assignee is read from the goal's spawn_requested", got.Assignee)
+	}
+
+	// The OWNER taking turns must not make the goal look fresh.
+	e.emit(t, "turn_finished", map[string]any{
+		"agent_name": "weave", "session_id": "s0", "input_tokens": 1, "output_tokens": 1,
+	})
+	if got := e.only(t); !got.LastOwnerActivity.IsZero() {
+		t.Errorf("the owner's turn counted as activity (%v); a busy manager would keep every goal it delegated permanently fresh", got.LastOwnerActivity)
+	}
+
+	// The ASSIGNEE's turn must.
+	e.emit(t, "turn_finished", map[string]any{
+		"agent_name": "researcher-1", "session_id": "s1", "input_tokens": 1, "output_tokens": 1,
+	})
+	if got := e.only(t); got.LastOwnerActivity.IsZero() {
+		t.Error("the assignee's turn did not count as activity, so a working agent's goal would still be poked")
+	}
+
+	// A RE-SPAWN moves the assignee: the newest spawn_requested wins.
+	e.spawnFor(t, goal, "researcher-2")
+	if got := e.only(t); got.Assignee != "researcher-2" {
+		t.Errorf("Assignee = %q after a re-spawn, want researcher-2 — the NEWEST spawn_requested names the agent working the goal now", got.Assignee)
+	}
+	if got := e.only(t); !got.LastOwnerActivity.IsZero() {
+		t.Errorf("activity for the replaced assignee still counts (%v), so a crashed re-spawned goal reads as fresh", got.LastOwnerActivity)
+	}
+}
+
+// AND WITH NO SPAWN AT ALL, THE OWNER IS THE TARGET — the negative control for
+// the test above. A goal that has not been dispatched yet has no assignee, and
+// the owner is then the only agent there is; a candidate with an empty target
+// would be skipped by gateFor and never swept.
+func TestSweepPg_AnUndispatchedGoalHasNoAssigneeAndFallsBackToTheOwner(t *testing.T) {
+	e := newSweepEnv(t)
+	e.openGoal(t, "alice")
+
+	got := e.only(t)
+	if got.Assignee != "" {
+		t.Errorf("Assignee = %q for a goal with no spawn_requested, want empty", got.Assignee)
+	}
+	if got.PokeTarget() != "alice" {
+		t.Errorf("PokeTarget() = %q, want alice — with no assignee the owner is the only agent there is", got.PokeTarget())
+	}
+	e.emit(t, "turn_finished", map[string]any{
+		"agent_name": "alice", "session_id": "s1", "input_tokens": 1, "output_tokens": 1,
+	})
+	if e.only(t).LastOwnerActivity.IsZero() {
+		t.Error("the owner's turn did not count for an undispatched goal, so it would be poked while its owner is working")
+	}
+}

@@ -362,6 +362,88 @@ func TestSweeper_PokesACrashedOwner(t *testing.T) {
 	f.assertPoked(t, "the identical fixture with the status flipped to died — nobody chose that state")
 }
 
+// THE POKE GOES TO THE ASSIGNEE, NOT THE OWNER (QUM-1252, AC5).
+//
+// This is the fix for the defect that made AC5 unreachable, and it is worth
+// stating as a spec bug rather than as a behaviour change. A goal contract's
+// `owner` is the agent the RESULT IS REPORTED TO — create_goal sets it to the
+// caller, so on the arc AC5 describes the owner is weave. The agent doing the
+// work is the one the dispatcher spawned, named on the goal's newest
+// spawn_requested.
+//
+// Measuring staleness against the OWNER therefore measured the wrong agent
+// entirely: weave takes turns constantly, so its last_activity is always fresh,
+// so a goal whose researcher died holding it was never a stall candidate at all.
+// The sweeper could not have poked it however many gates it passed — and the
+// WakeInjector, whose whole purpose is to revive that researcher, was
+// unreachable by the scenario it was written for. Poking the owner instead would
+// have been worse than nothing: it wakes weave to tell it about work weave is
+// not doing.
+//
+// The same owner/assignee double-duty was the root cause fixed in the close leg.
+func TestSweeper_PokesTheAssigneeRatherThanTheOwner(t *testing.T) {
+	f := newSweepFixture(t)
+	c := f.candidate()
+	c.Owner = "weave"
+	c.Assignee = "researcher-1"
+	// The owner is BUSY and the assignee is idle-and-dead — the real shape of
+	// AC5. If the sweeper still evaluated the owner, the in-turn gate would hold
+	// and nothing would be poked.
+	f.local.agents = []LocalAgent{
+		{Name: "weave", Status: "active", Turn: TurnInTurn},
+		{Name: "researcher-1", Status: state.StatusDied, Turn: TurnIdle},
+	}
+
+	f.sweep(t)
+	f.assertPoked(t, "a goal owned by weave but assigned to a crashed researcher")
+	if got := f.injector.all(); len(got) != 1 || got[0].Recipient != "researcher-1" {
+		t.Fatalf("poked %v, want exactly one poke to \"researcher-1\" — poking the owner wakes weave about work it is not doing, and leaves the agent that is actually holding the goal asleep", got)
+	}
+}
+
+// CONTROL: with no assignee, the owner is still the target.
+//
+// A goal that has not been dispatched yet has no spawn_requested and therefore
+// no assignee, and its owner is the only agent there is. Without this leg the
+// assignee change could have been implemented as "only ever poke the assignee",
+// which would silently stop poking every undispatched goal — a strictly larger
+// hole than the one being fixed, and invisible in a suite whose other fixtures
+// all set an assignee.
+func TestSweeper_FallsBackToTheOwnerWhenThereIsNoAssignee(t *testing.T) {
+	f := newSweepFixture(t)
+	c := f.candidate()
+	c.Owner = "alice"
+	c.Assignee = ""
+
+	f.sweep(t)
+	f.assertPoked(t, "a goal with no assignee yet")
+	if got := f.injector.all(); len(got) != 1 || got[0].Recipient != "alice" {
+		t.Fatalf("poked %v, want one poke to the owner \"alice\"", got)
+	}
+}
+
+// The gates are evaluated against the POKE TARGET too, not just the delivery.
+//
+// Splitting those would be the subtle version of this bug: gating on the owner
+// while delivering to the assignee means an operator-killed or mid-turn ASSIGNEE
+// gets poked because the OWNER looks pokable. Asserted through the killed gate
+// because that one has a consequence beyond noise — it would revive an agent an
+// operator shot.
+func TestSweeper_GatesOnTheAssigneeNotTheOwner(t *testing.T) {
+	f := newSweepFixture(t)
+	c := f.candidate()
+	c.Owner = "weave"
+	c.Assignee = "researcher-1"
+	f.local.agents = []LocalAgent{
+		{Name: "weave", Status: "active", Turn: TurnIdle},
+		{Name: "researcher-1", Status: state.StatusKilled, Turn: TurnIdle},
+	}
+
+	res := f.sweep(t)
+	f.assertNotPoked(t, "a pokable owner but an operator-killed assignee")
+	f.assertGate(t, res, "operator-killed")
+}
+
 // GATE 3 — HUMAN-OWNED WAIT. There is no process to poke.
 //
 // A goal owned by the human is waiting on a person, and the sweeper has no way to

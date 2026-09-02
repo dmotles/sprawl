@@ -29,8 +29,8 @@ import (
 // unobserved with nothing able to discover it; for a poke it is worse, because the
 // epoch is DERIVED FROM THE EVENT THAT FAILED TO BE WRITTEN — so the same key is
 // retried forever, the goal is never poked again AND never quarantined, and the
-// sweep reports it under `Skipped` where it is indistinguishable from the five
-// legitimate gates. Both were verified with probes in code review.
+// sweep reports it under `Skipped` where it is indistinguishable from a
+// legitimate gate. Both were verified with probes in code review.
 //
 // THE FIX IS TO STOP NEEDING A CLAIM. Deriving the event's id from the facts that
 // identify the work makes the APPEND ITSELF the exclusion mechanism: `events.id`

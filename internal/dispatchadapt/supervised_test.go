@@ -286,6 +286,42 @@ func TestWakeInjector_WakeFailureIsReported(t *testing.T) {
 	}
 }
 
+// ErrWakeNotNeeded IS NOT A FAILURE, AND IT IS NOT A DELIVERY EITHER — it is
+// the one wake outcome that needs the queue.
+//
+// AgentRuntime.Wake returns it from a short-circuit that fires BEFORE the
+// injection is forwarded, so the body is genuinely undelivered: the agent is
+// alive and healthy, it just did not get the poke. Treating that as an error
+// loses the body twice over — no wake, and no enqueue either, because the
+// fall-through to the queue is skipped — while Sweep has already emitted
+// goal_poke and consumed the epoch. The goal then marches to its quarantine cap
+// on pokes that reached nobody.
+//
+// The state is reachable rather than theoretical: the disk status is read from a
+// file and the runtime handle is in memory, so any stale-status window (a `died`
+// or `resume_failed` sticker that a recovery has already superseded, or a
+// `complete` agent parked while its handle is still live per QUM-818) lands
+// exactly here. Every other caller in the tree already special-cases it —
+// internal/sprawlmcp/server.go treats it as success, internal/supervisor/idlereap.go
+// logs it as a WARN — and this one is the only place where getting it wrong
+// silently drops a message.
+func TestWakeInjector_WakeNotNeededFallsBackToTheQueue(t *testing.T) {
+	root := t.TempDir()
+	seedAgent(t, root, &state.AgentState{Name: "ghost", Status: state.StatusDied, Branch: "b", Worktree: "/wt/g"})
+	sup := &fakeSup{wakeErr: supervisor.ErrWakeNotNeeded}
+	inj, enqueued := newWakeInjector(t, root, sup)
+
+	if err := inj.Inject(context.Background(), "ghost", "your goal is still open"); err != nil {
+		t.Fatalf("Inject: %v — ErrWakeNotNeeded means the session is healthy, which is not a delivery failure", err)
+	}
+	if len(*enqueued) != 1 {
+		t.Fatalf("enqueued %v, want one durable entry: the wake short-circuited BEFORE forwarding the injection, so this poke has not been delivered by any path", *enqueued)
+	}
+	if !strings.Contains((*enqueued)[0], "your goal is still open") {
+		t.Errorf("queued entry %q does not carry the poke body", (*enqueued)[0])
+	}
+}
+
 // An agent that is not on disk at all cannot be classified, so it falls back to
 // the durable queue rather than being woken on a guess.
 func TestWakeInjector_UnknownAgentFallsBackToTheQueue(t *testing.T) {

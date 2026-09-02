@@ -79,7 +79,7 @@ func (l *Ledger) RequestRework(ctx context.Context, owner string, rejectedEventI
 	}
 	switch re {
 	case DiscardAndRedo:
-	case ReEngageOriginal, "never":
+	case ReEngageOriginal:
 		// Refused rather than accepted-and-approximated. Waking the original
 		// agent means finding it, proving it is still alive, and re-prompting a
 		// live session — none of which the dispatcher can do — and falling
@@ -101,6 +101,23 @@ func (l *Ledger) RequestRework(ctx context.Context, owner string, rejectedEventI
 	if err != nil {
 		return RequestedRework{}, fmt.Errorf("store: reading the event %s being reworked: %w", rejectedEventID, err)
 	}
+	// THE KIND CHECK, AND WHY IT IS HERE RATHER THAN ONLY IN THE HANDLER. The FK
+	// proves the id exists; nothing proved it names something reworkable. The
+	// handler walks follows_event_id back to a goal_opened and returns a
+	// PERMANENT error when it does not find one — and a handler error leaves the
+	// dispatch cursor put, so the event is retried forever with spawn_requested,
+	// notifications and acks stuck behind it. An accepted mistake here is
+	// therefore not a bad rework, it is a stalled project.
+	//
+	// Refused at the write side, the same mistake is a message the caller can
+	// act on. The handler keeps its own refusal as defence in depth.
+	//
+	// goal_closed is the id an owner most plausibly reaches for — it is the event
+	// they were just looking at — and it is the one that cannot work: it carries
+	// closes_event_id, not follows_event_id, so the walk ends on hop 1.
+	if !reworkable(rejected.SchemaName) {
+		return RequestedRework{}, fmt.Errorf("store: %s names a %q event, which cannot be reworked; pass the id of the goal_opened that stated the work (or of an earlier rework_requested), not of the event that closed or reported it", rejectedEventID, rejected.SchemaName)
+	}
 
 	out := RequestedRework{ReworkEventID: uuid.New(), WorkflowID: rejected.WorkflowInstanceID}
 	if _, err := l.Emit(ctx, EmitRequest{
@@ -120,6 +137,19 @@ func (l *Ledger) RequestRework(ctx context.Context, owner string, rejectedEventI
 		return RequestedRework{}, fmt.Errorf("store: requesting rework of %s: %w", rejectedEventID, err)
 	}
 	return out, nil
+}
+
+// reworkable reports whether an event of this kind states work that could be
+// redone.
+//
+// The set is the contract-OPENING pair, and it is the same pair goalreader.go
+// uses to find an agent's open goals — a rework opens a contract that follows
+// one, so the thing it follows has to be a contract opener. Everything else in
+// the log either closes one (goal_closed), reports against one (result events),
+// or is downstream bookkeeping (spawn_requested, notifications, pokes), and none
+// of those states work.
+func reworkable(schemaName string) bool {
+	return schemaName == "goal_opened" || schemaName == "rework_requested"
 }
 
 // eventLookup builds a by-id reader bound to this Ledger's pool.

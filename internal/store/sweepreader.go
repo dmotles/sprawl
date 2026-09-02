@@ -45,41 +45,70 @@ import (
 // itself. Without that exclusion every open goal is its own blocker and the
 // sweeper never pokes anything — a total, silent failure that looks like a quiet
 // fleet.
+//
+// THE STALL IS MEASURED AGAINST THE POKE TARGET, NOT THE OWNER (AC5). A goal
+// contract's `owner` is who the RESULT IS REPORTED TO — create_goal sets it to
+// the CALLER — while the agent actually doing the work is named on the goal's
+// newest spawn_requested. Measuring last_activity against the owner made every
+// goal opened by a busy manager permanently fresh, so a goal whose worker had
+// crashed was never a stall candidate and the poke path was unreachable by the
+// very scenario it exists for. The same substitution applies to other_open:
+// counting the OWNER's other open contracts declares every delegated goal
+// transitively blocked, because the owner necessarily holds the goal it
+// delegated.
+//
+// The CTE exists because a SELECT alias cannot be referenced from the same
+// SELECT list, and `target` is needed in three places — repeating the COALESCE
+// three times is exactly how the terms drift apart.
 const openGoalsSQL = `
+	WITH goals AS (
+	  SELECT g.id, g.project_id, g.workflow_instance_id, g.seq, g.at,
+	         COALESCE(g.payload->>'owner', '')     AS owner,
+	         COALESCE(g.payload->>'goal_type', '') AS goal_type,
+	         COALESCE((SELECT s.payload->>'agent_name' FROM events s
+	                    WHERE s.project_id = g.project_id
+	                      AND s.schema_id = ANY($7)
+	                      AND s.workflow_instance_id = g.workflow_instance_id
+	                    ORDER BY s.seq DESC LIMIT 1), '')  AS assignee
+	    FROM open_contracts oc
+	    JOIN events g ON g.id = oc.event_id
+	   WHERE g.project_id = $1
+	     AND g.schema_id = ANY($5)
+	), t AS (
+	  SELECT goals.*, COALESCE(NULLIF(assignee, ''), owner) AS target FROM goals
+	)
 	SELECT
-	    g.id,
-	    g.workflow_instance_id,
-	    COALESCE(g.payload->>'owner', '')     AS owner,
-	    COALESCE(g.payload->>'goal_type', '') AS goal_type,
-	    g.at,
+	    t.id,
+	    t.workflow_instance_id,
+	    t.owner,
+	    t.assignee,
+	    t.goal_type,
+	    t.at,
 	    (SELECT max(a.at) FROM events a
-	      WHERE a.project_id = g.project_id
+	      WHERE a.project_id = t.project_id
 	        AND a.schema_id = ANY($2)
-	        AND a.payload->>'agent_name' = g.payload->>'owner')            AS last_activity,
+	        AND a.payload->>'agent_name' = t.target)                       AS last_activity,
 	    (SELECT count(*) FROM events p
-	      WHERE p.project_id = g.project_id
+	      WHERE p.project_id = t.project_id
 	        AND p.schema_id = ANY($3)
-	        AND p.payload->>'goal_event_id' = g.id::text)                  AS pokes,
+	        AND p.payload->>'goal_event_id' = t.id::text)                  AS pokes,
 	    (SELECT max(p.at) FROM events p
-	      WHERE p.project_id = g.project_id
+	      WHERE p.project_id = t.project_id
 	        AND p.schema_id = ANY($3)
-	        AND p.payload->>'goal_event_id' = g.id::text)                  AS last_poke_at,
+	        AND p.payload->>'goal_event_id' = t.id::text)                  AS last_poke_at,
 	    EXISTS (SELECT 1 FROM events s
-	             WHERE s.project_id = g.project_id
+	             WHERE s.project_id = t.project_id
 	               AND s.schema_id = ANY($4)
-	               AND s.payload->>'goal_event_id' = g.id::text)           AS quarantined,
+	               AND s.payload->>'goal_event_id' = t.id::text)           AS quarantined,
 	    (SELECT count(*) FROM open_contracts oc2
 	       JOIN events o2 ON o2.id = oc2.event_id
-	      WHERE o2.project_id = g.project_id
-	        AND o2.id <> g.id
+	      WHERE o2.project_id = t.project_id
+	        AND o2.id <> t.id
 	        AND o2.schema_id <> ALL($6)
 	        AND COALESCE(o2.payload->>'owner', o2.payload->>'recipient', '')
-	            = g.payload->>'owner')                                     AS other_open
-	  FROM open_contracts oc
-	  JOIN events g ON g.id = oc.event_id
-	 WHERE g.project_id = $1
-	   AND g.schema_id = ANY($5)
-	 ORDER BY g.seq`
+	            = t.target)                                                AS other_open
+	  FROM t
+	 ORDER BY t.seq`
 
 // PgSweepReader produces stall candidates through a pgx pool.
 type PgSweepReader struct {
@@ -109,6 +138,7 @@ func (r *PgSweepReader) OpenGoals(ctx context.Context, projectID uuid.UUID) ([]S
 		schemaIDsFor(r.Registry, "goal_stuck"),
 		schemaIDsFor(r.Registry, "goal_opened"),
 		schemaIDsFor(r.Registry, "owner_notify"),
+		schemaIDsFor(r.Registry, "spawn_requested"),
 	)
 	if err != nil {
 		return nil, fmt.Errorf("store: reading open goals for the sweeper: %w", err)
@@ -123,13 +153,13 @@ func (r *PgSweepReader) OpenGoals(ctx context.Context, projectID uuid.UUID) ([]S
 			lastPoke     *time.Time
 		)
 		if err := rows.Scan(
-			&c.GoalEventID, &c.WorkflowID, &c.Owner, &c.GoalType, &c.OpenedAt,
+			&c.GoalEventID, &c.WorkflowID, &c.Owner, &c.Assignee, &c.GoalType, &c.OpenedAt,
 			&lastActivity, &c.Pokes, &lastPoke, &c.Quarantined, &c.OtherOpenContracts,
 		); err != nil {
 			return nil, fmt.Errorf("store: scanning a stall candidate: %w", err)
 		}
 		// NULL stays the ZERO time rather than becoming now(). The sweeper reads
-		// a zero LastOwnerActivity as "this owner has never taken a turn" and
+		// a zero LastOwnerActivity as "the poke target has never taken a turn" and
 		// falls back to the goal's own age; substituting now() would make every
 		// such goal permanently fresh and therefore never swept.
 		if lastActivity != nil {
