@@ -300,3 +300,73 @@ func TestGoalReaderPg_CloseGoalRecordsTheOutcomeOnTheGoalsOwnInstance(t *testing
 		t.Errorf("the outcome did not reach the payload: %s", closed.Payload)
 	}
 }
+
+// requestSpawnFor appends the spawn_requested the dispatcher would have
+// appended, assigning agent to the goal's workflow instance.
+func (e *goalReaderEnv) requestSpawnFor(t *testing.T, agent, parent string, wf uuid.UUID) {
+	t.Helper()
+	if _, err := e.emitter.Emit(context.Background(), EmitRequest{
+		TypeName: "spawn_requested", TypeVersion: 1,
+		WorkflowInstanceID: wf,
+		Payload: map[string]any{
+			"agent_name": agent, "agent_type": "researcher", "family": "product",
+			"parent": parent, "branch": "goal/" + agent, "prompt": "do the thing",
+		},
+	}); err != nil {
+		t.Fatalf("requesting a spawn for %q: %v", agent, err)
+	}
+}
+
+// TestGoalReaderPg_TheAssignedAgentSeesAndClosesTheGoalItWasSpawnedFor.
+//
+// THE CLOSE LEG, and the reason this test exists rather than a narrower one:
+// `owner` in a goal_opened payload is the REQUESTER — who the result is
+// reported to — while the agent that does the work is named later, by the
+// spawn_requested the dispatcher appends onto the same workflow instance.
+// Matching only on `owner` therefore answers "you have no goal" to the one
+// agent whose entire prompt is that goal, and report_result then refuses the
+// close, so the contract can never be discharged by the agent holding it.
+//
+// Both legs are asserted because either alone is satisfiable by a defect: a
+// reader that matched everything would pass leg 1, and leg 2's refusal is what
+// says the assignment predicate is scoped rather than open.
+func TestGoalReaderPg_TheAssignedAgentSeesAndClosesTheGoalItWasSpawnedFor(t *testing.T) {
+	e := newGoalReaderEnv(t)
+	ctx := context.Background()
+
+	wf := uuid.New()
+	goal := e.openGoalFor(t, "weave", "research", wf)
+	e.requestSpawnFor(t, "ghost", "weave", wf)
+
+	got, err := e.goals.OpenGoalsForAgent(ctx, e.projectID, "ghost")
+	if err != nil {
+		t.Fatalf("OpenGoalsForAgent(ghost): %v", err)
+	}
+	if len(got) != 1 || got[0].GoalEventID != goal {
+		t.Fatalf("the assigned agent sees %d goals, want the one it was spawned for (%s)", len(got), goal)
+	}
+	if got[0].Owner != "weave" {
+		t.Errorf("the goal came back owned by %q, want weave — Owner is the requester the result is reported to, not the reader", got[0].Owner)
+	}
+
+	// Leg 2, the negative control: assignment is per-instance. An unrelated
+	// agent still sees nothing.
+	none, err := e.goals.OpenGoalsForAgent(ctx, e.projectID, "someone-else")
+	if err != nil {
+		t.Fatalf("OpenGoalsForAgent(someone-else): %v", err)
+	}
+	if len(none) != 0 {
+		t.Errorf("an agent assigned to nothing sees %d goals, want 0", len(none))
+	}
+
+	if _, err := e.ledger.CloseGoalForAgent(ctx, "ghost", goal, GoalSucceeded, "answered the question"); err != nil {
+		t.Fatalf("the assigned agent could not close its own goal: %v", err)
+	}
+	after, err := e.goals.OpenGoalsForAgent(ctx, e.projectID, "weave")
+	if err != nil {
+		t.Fatalf("re-reading the requester's goals: %v", err)
+	}
+	if len(after) != 0 {
+		t.Errorf("the goal is still open after the assigned agent closed it (%d open)", len(after))
+	}
+}

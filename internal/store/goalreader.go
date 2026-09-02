@@ -31,27 +31,47 @@ type AgentGoal struct {
 	GoalEventID uuid.UUID
 	WorkflowID  uuid.UUID
 	GoalType    string
-	Owner       string
-	OpenedAt    time.Time
+	// Owner is the REQUESTER — who asked for the work and who the result is
+	// notified to. It is not necessarily the reader: an agent spawned for a
+	// goal reaches it by assignment, and reads someone else's name here.
+	Owner    string
+	OpenedAt time.Time
 }
 
-// openGoalsForAgentSQL finds every OPEN goal owned by one agent.
+// openGoalsForAgentSQL finds every OPEN goal an agent is party to.
 //
 // Reads open_contracts rather than anti-joining events against itself, for the
 // reason openNotifiesSQL gives: the projection is maintained inside the append
 // transaction, so it cannot disagree with the log.
 //
-// Ownership comes from the PAYLOAD, not from events.owner_agent_id. That column
-// exists but is not populated in practice — notify.go:159 documents the same
-// thing for the same reason — and reading it would return an empty set that
-// looks exactly like "this agent has no goal".
+// Both identities come from the PAYLOAD, not from events.owner_agent_id. That
+// column exists but is not populated in practice — notify.go:159 documents the
+// same thing for the same reason — and reading it would return an empty set
+// that looks exactly like "this agent has no goal".
+//
+// TWO predicates, because a goal has two parties and they are not the same
+// agent. `owner` is the REQUESTER: who asked for the work and who the result is
+// notified to when the goal closes. The agent that DOES the work is named
+// later, by the spawn_requested the dispatcher appends onto the same workflow
+// instance — it cannot be in goal_opened, since the name is allocated after the
+// goal exists. Matching on `owner` alone therefore answers "you have no goal"
+// to the one agent whose entire prompt is that goal, and report_result then
+// refuses its close, so the contract can only ever be discharged by the agent
+// that did not do the work.
 const openGoalsForAgentSQL = `
-	SELECT e.id, e.workflow_instance_id, COALESCE(e.payload->>'goal_type', ''), oc.opened_at
+	SELECT e.id, e.workflow_instance_id, COALESCE(e.payload->>'goal_type', ''),
+	       COALESCE(e.payload->>'owner', ''), oc.opened_at
 	  FROM open_contracts oc
 	  JOIN events e ON e.id = oc.event_id
 	 WHERE e.project_id = $1
 	   AND e.schema_id = ANY($2)
-	   AND e.payload->>'owner' = $3
+	   AND (e.payload->>'owner' = $3
+	        OR EXISTS (SELECT 1
+	                     FROM events s
+	                    WHERE s.project_id = e.project_id
+	                      AND s.workflow_instance_id = e.workflow_instance_id
+	                      AND s.schema_id = ANY($4)
+	                      AND s.payload->>'agent_name' = $3))
 	 ORDER BY e.seq`
 
 // PgGoalReader answers an agent's questions about its own work.
@@ -77,7 +97,8 @@ func (r *PgGoalReader) OpenGoalsForAgent(ctx context.Context, projectID uuid.UUI
 	if agent == "" {
 		return nil, fmt.Errorf("store: reading an agent's open goals requires an agent name")
 	}
-	rows, err := r.Pool.Query(ctx, openGoalsForAgentSQL, projectID, schemaIDsFor(r.Registry, "goal_opened"), agent)
+	rows, err := r.Pool.Query(ctx, openGoalsForAgentSQL, projectID,
+		schemaIDsFor(r.Registry, "goal_opened"), agent, schemaIDsFor(r.Registry, "spawn_requested"))
 	if err != nil {
 		return nil, fmt.Errorf("store: reading open goals for %q: %w", agent, err)
 	}
@@ -85,8 +106,11 @@ func (r *PgGoalReader) OpenGoalsForAgent(ctx context.Context, projectID uuid.UUI
 
 	var out []AgentGoal
 	for rows.Next() {
-		g := AgentGoal{Owner: agent}
-		if err := rows.Scan(&g.GoalEventID, &g.WorkflowID, &g.GoalType, &g.OpenedAt); err != nil {
+		// Owner is SCANNED, not assumed to be the caller: the assigned agent
+		// reaches its goal through the second predicate, and it needs to know
+		// who to report to rather than being told it is its own requester.
+		var g AgentGoal
+		if err := rows.Scan(&g.GoalEventID, &g.WorkflowID, &g.GoalType, &g.Owner, &g.OpenedAt); err != nil {
 			return nil, fmt.Errorf("store: scanning an open goal for %q: %w", agent, err)
 		}
 		out = append(out, g)
