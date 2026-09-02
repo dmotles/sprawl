@@ -70,7 +70,7 @@ func TestRealSpawn_Subagent_SharesParentWorktreeAndBranch(t *testing.T) {
 	})
 
 	wc := &countingWorktreeCreator{path: "/should/not/be/used"}
-	r.spawnFn = agentops.PrepareSpawn
+	r.spawnFn = agentops.PrepareSpawnAs
 	r.spawnDeps = subagentSpawnDeps(tmpDir, wc)
 
 	ctx := backendpkg.WithCallerIdentity(context.Background(), "runner-1")
@@ -120,7 +120,7 @@ func TestRealSpawn_Subagent_RootCannotHost(t *testing.T) {
 	r.gitRevParseHEAD = func(string) (string, error) { return "", nil }
 
 	wc := &countingWorktreeCreator{path: "/unused"}
-	r.spawnFn = agentops.PrepareSpawn
+	r.spawnFn = agentops.PrepareSpawnAs
 	r.spawnDeps = subagentSpawnDeps(tmpDir, wc)
 
 	ctx := backendpkg.WithCallerIdentity(context.Background(), "weave")
@@ -159,7 +159,7 @@ func TestRealSpawn_Subagent_BranchRejected(t *testing.T) {
 	})
 
 	wc := &countingWorktreeCreator{path: "/unused"}
-	r.spawnFn = agentops.PrepareSpawn
+	r.spawnFn = agentops.PrepareSpawnAs
 	r.spawnDeps = subagentSpawnDeps(tmpDir, wc)
 
 	ctx := backendpkg.WithCallerIdentity(context.Background(), "runner-1")
@@ -230,7 +230,7 @@ func TestRealSpawn_Subagent_DepthCapAtThree(t *testing.T) {
 	})
 
 	wc := &countingWorktreeCreator{path: "/unused"}
-	r.spawnFn = agentops.PrepareSpawn
+	r.spawnFn = agentops.PrepareSpawnAs
 	r.spawnDeps = subagentSpawnDeps(tmpDir, wc)
 
 	ctx := backendpkg.WithCallerIdentity(context.Background(), "sub3")
@@ -271,7 +271,7 @@ func TestRealSpawn_Subagent_TypeNotPermitted(t *testing.T) {
 	})
 
 	wc := &countingWorktreeCreator{path: "/unused"}
-	r.spawnFn = agentops.PrepareSpawn
+	r.spawnFn = agentops.PrepareSpawnAs
 	r.spawnDeps = subagentSpawnDeps(tmpDir, wc)
 
 	ctx := backendpkg.WithCallerIdentity(context.Background(), "tester-1")
@@ -286,5 +286,50 @@ func TestRealSpawn_Subagent_TypeNotPermitted(t *testing.T) {
 	}
 	if !strings.Contains(err.Error(), `agent type "tester" is not permitted to spawn sub-agents`) {
 		t.Errorf("error %q missing expected disallowed-type substring", err.Error())
+	}
+}
+
+// TestRealSpawn_HonoursAPinnedName pins QUM-1252's engine path: an event-log
+// driven spawn is named by the LOG, and Spawn must use that name rather than
+// allocating its own.
+//
+// The reconciler matches spawn intents to local agents BY NAME, so a supervisor
+// that renamed the agent would leave the intent matching nothing — and past the
+// grace period the reconciler emits spawn_failed for an agent that is alive.
+func TestRealSpawn_HonoursAPinnedName(t *testing.T) {
+	r, tmpDir := newFakeReal(t)
+	r.gitRevParseHEAD = func(string) (string, error) { return "", nil }
+	wc := &countingWorktreeCreator{path: tmpDir + "/wt"}
+	r.spawnFn = agentops.PrepareSpawnAs
+	r.spawnDeps = subagentSpawnDeps(tmpDir, wc)
+
+	ctx := backendpkg.WithCallerIdentity(context.Background(), "weave")
+	info, err := r.Spawn(ctx, SpawnRequest{
+		Name:   "vector",
+		Family: "engineering",
+		Type:   "researcher",
+		Prompt: "investigate",
+		Branch: "goal/vector-abc",
+	})
+	if err != nil {
+		t.Fatalf("Spawn(pinned): %v", err)
+	}
+	if info.Name != "vector" {
+		t.Errorf("Spawn named the agent %q, want the pinned vector", info.Name)
+	}
+
+	// Control: an unpinned request still gets a pool name, so the assertion above
+	// is about the pin and not about "vector" being what this pool hands out.
+	ctrl, err := r.Spawn(ctx, SpawnRequest{
+		Family: "engineering",
+		Type:   "researcher",
+		Prompt: "investigate",
+		Branch: "goal/ctrl",
+	})
+	if err != nil {
+		t.Fatalf("control Spawn: %v", err)
+	}
+	if ctrl.Name == "vector" {
+		t.Errorf("the control was also named %q, so the test cannot tell a pin from a coincidence", ctrl.Name)
 	}
 }

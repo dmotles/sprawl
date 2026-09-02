@@ -93,6 +93,25 @@ func AllocateName(stateDir string, agentType string) (string, error) {
 	}
 }
 
+// ReserveName checks that a CALLER-SUPPLIED name is usable for a new agent
+// (QUM-1252).
+//
+// The engine names an agent in the event log before anything is created locally,
+// so the pinned name skips AllocateName — which was the only thing checking the
+// name is both well-formed and free. Both checks move here rather than being
+// assumed: the name arrives from an event payload and ends up as a filesystem
+// path and a tmux session name, and reusing a live agent's name overwrites its
+// state file and hands its worktree to a second process.
+func ReserveName(stateDir, name string) error {
+	if err := ValidateName(name); err != nil {
+		return err
+	}
+	if nameInUse(stateDir, name) {
+		return fmt.Errorf("agent name %q is already in use", name)
+	}
+	return nil
+}
+
 // nameInUse reports whether either <name>.json or <name>/ exists in stateDir.
 func nameInUse(stateDir, name string) bool {
 	if _, err := os.Stat(filepath.Join(stateDir, name+".json")); err == nil {

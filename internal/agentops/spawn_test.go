@@ -529,3 +529,65 @@ func TestPrepareSpawn_Subagent_CapabilityRejected(t *testing.T) {
 		t.Errorf("err = %q, want substring %q", err.Error(), "not permitted to spawn sub-agents")
 	}
 }
+
+// TestPrepareSpawnAs_UsesThePinnedName pins QUM-1252: an engine-driven spawn is
+// named by the LOG, not by the local pool.
+//
+// GoalSpawnHandler allocates the name before appending spawn_requested, and
+// SpawnHandler's write-ahead records it on spawn_intent, because the reconciler
+// matches intents to local agents BY NAME. A local spawn that picked its own name
+// would leave that intent matching nothing forever — and past the grace period
+// the reconciler emits spawn_failed for an agent that is alive and working.
+func TestPrepareSpawnAs_UsesThePinnedName(t *testing.T) {
+	tmpDir := t.TempDir()
+	deps, _ := newBaseRefSpawnDeps(t, tmpDir)
+
+	got, err := agentops.PrepareSpawnAs(deps, "vector", "engineering", "researcher", "task body", "goal/vector-abc", false)
+	if err != nil {
+		t.Fatalf("PrepareSpawnAs: %v", err)
+	}
+	if got.Name != "vector" {
+		t.Errorf("spawned agent is named %q, want the pinned name vector; an intent naming vector would never reconcile", got.Name)
+	}
+	// Control: with no pinned name the allocator still chooses, so the assertion
+	// above is about the pin rather than about "vector" being the pool's head.
+	ctrl, err := agentops.PrepareSpawn(deps, "engineering", "researcher", "task body", "goal/ctrl", false)
+	if err != nil {
+		t.Fatalf("control PrepareSpawn: %v", err)
+	}
+	if ctrl.Name == "vector" {
+		t.Errorf("control also got %q, so the test would pass against an implementation that ignores the pin", ctrl.Name)
+	}
+}
+
+// TestPrepareSpawnAs_RefusesANameAlreadyTaken. The pin bypasses AllocateName,
+// which is the only thing that was checking the name is free. Handing out a live
+// agent's name would overwrite its state file and hand its worktree to a second
+// process — so the collision check has to move with the pin, not be assumed.
+func TestPrepareSpawnAs_RefusesANameAlreadyTaken(t *testing.T) {
+	tmpDir := t.TempDir()
+	deps, _ := newBaseRefSpawnDeps(t, tmpDir)
+
+	if _, err := agentops.PrepareSpawnAs(deps, "vector", "engineering", "researcher", "first", "goal/one", false); err != nil {
+		t.Fatalf("first spawn: %v", err)
+	}
+	_, err := agentops.PrepareSpawnAs(deps, "vector", "engineering", "researcher", "second", "goal/two", false)
+	if err == nil {
+		t.Fatal("a second spawn reused a live agent's name, which overwrites its state file")
+	}
+	if !strings.Contains(err.Error(), "vector") {
+		t.Errorf("the refusal should name the taken name; got: %v", err)
+	}
+}
+
+// TestPrepareSpawnAs_RefusesAnUnsafeName. The pinned name reaches the filesystem
+// and a tmux session name, and it arrives from an event payload rather than from
+// a validated pool — so it is a boundary, and agent.ValidateName has to run.
+func TestPrepareSpawnAs_RefusesAnUnsafeName(t *testing.T) {
+	tmpDir := t.TempDir()
+	deps, _ := newBaseRefSpawnDeps(t, tmpDir)
+
+	if _, err := agentops.PrepareSpawnAs(deps, "../escape", "engineering", "researcher", "task", "goal/x", false); err == nil {
+		t.Fatal("a pinned name containing a path traversal was accepted")
+	}
+}

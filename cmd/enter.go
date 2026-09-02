@@ -122,7 +122,12 @@ type enterDeps struct {
 	// event-log dispatcher and sweepers for the life of this session and returns
 	// the func that stops them (QUM-1252, Option A). Nil is tolerated so the
 	// existing enter tests need no dispatch wiring. See cmd/enter_dispatch.go.
-	startEventDispatch func(sprawlRoot string, cfg *config.Config, errOut io.Writer) func()
+	//
+	// sup is this session's live supervisor, and it is what lets the session's
+	// dispatcher handle spawn_requested — nothing else can launch an agent. It
+	// may be nil (tests that wire no supervisor), in which case the dispatcher
+	// runs without a spawn handler exactly as the standalone command does.
+	startEventDispatch func(sprawlRoot string, cfg *config.Config, sup supervisor.Supervisor, errOut io.Writer) func()
 }
 
 // resolveAccentColor returns the persisted accent color, seeding a randomly-
@@ -1150,7 +1155,7 @@ func runEnter(deps *enterDeps) error {
 	// Stopped just past runProgram, alongside the rest of teardown.
 	stopEventDispatch := func() {}
 	if cfg.EventLogEnabled() && deps.startEventDispatch != nil {
-		stopEventDispatch = deps.startEventDispatch(sprawlRoot, cfg, os.Stderr)
+		stopEventDispatch = deps.startEventDispatch(sprawlRoot, cfg, sup, os.Stderr)
 		// Belt and braces, exactly as stderrRedirect.Restore() above: the
 		// explicit stop below does the work on every ordinary path, but a PANIC
 		// in runProgram or in teardown would skip a bare call. The stop func is

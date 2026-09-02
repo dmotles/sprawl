@@ -11,9 +11,11 @@ import (
 
 	"github.com/dmotles/sprawl/internal/agent"
 	"github.com/dmotles/sprawl/internal/agentloop"
+	"github.com/dmotles/sprawl/internal/backend"
 	"github.com/dmotles/sprawl/internal/messages"
 	"github.com/dmotles/sprawl/internal/state"
 	"github.com/dmotles/sprawl/internal/store"
+	"github.com/dmotles/sprawl/internal/supervisor"
 )
 
 // The dispatch layer's local seams.
@@ -399,5 +401,74 @@ func TestPoolNamer_RefusesAnUnknownType(t *testing.T) {
 	// Control: a known type succeeds, so the refusal is about the type.
 	if _, err := n.AllocateName(context.Background(), "engineer"); err != nil {
 		t.Fatalf("control: a known agent type was refused: %v", err)
+	}
+}
+
+// ---------------------------------------------------------------------------
+// SupervisorSpawner (QUM-1252, M3a slice 10c)
+// ---------------------------------------------------------------------------
+
+type recordingSpawner struct {
+	req    supervisor.SpawnRequest
+	caller string
+	err    error
+	calls  int
+}
+
+func (r *recordingSpawner) Spawn(ctx context.Context, req supervisor.SpawnRequest) (*supervisor.AgentInfo, error) {
+	r.calls++
+	r.req = req
+	r.caller = backend.CallerIdentity(ctx)
+	if r.err != nil {
+		return nil, r.err
+	}
+	return &supervisor.AgentInfo{Name: req.Name}, nil
+}
+
+func TestSupervisorSpawner_PassesTheLogsNameAndParentThrough(t *testing.T) {
+	sup := &recordingSpawner{}
+	s := &SupervisorSpawner{Sup: sup}
+
+	err := s.Spawn(context.Background(), store.SpawnRequest{
+		AgentName: "vector",
+		AgentType: "researcher",
+		Family:    "engineering",
+		Parent:    "weave",
+		Branch:    "goal/vector-deadbeef",
+		Prompt:    "find out",
+	})
+	if err != nil {
+		t.Fatalf("Spawn() error: %v", err)
+	}
+	// The NAME is the load-bearing one: the reconciler matches spawn_intent to
+	// local agents by name, so a supervisor that allocated its own would leave
+	// the intent matching nothing and produce a spawn_failed for a live agent.
+	if sup.req.Name != "vector" {
+		t.Errorf("supervisor was asked for name %q, want the log's name vector", sup.req.Name)
+	}
+	if sup.req.Type != "researcher" || sup.req.Family != "engineering" {
+		t.Errorf("type/family are %q/%q, want researcher/engineering", sup.req.Type, sup.req.Family)
+	}
+	if sup.req.Branch != "goal/vector-deadbeef" || sup.req.Prompt != "find out" {
+		t.Errorf("branch/prompt are %q/%q, want goal/vector-deadbeef/find out", sup.req.Branch, sup.req.Prompt)
+	}
+	// The goal's OWNER becomes the spawned agent's parent, and the supervisor
+	// derives the parent from the caller identity — not from any field on the
+	// request. Without this the agent is parented to whoever runs the dispatcher.
+	if sup.caller != "weave" {
+		t.Errorf("caller identity is %q, want the goal owner weave", sup.caller)
+	}
+}
+
+func TestSupervisorSpawner_ReportsAFailedSpawn(t *testing.T) {
+	sup := &recordingSpawner{err: errors.New("worktree exists")}
+	s := &SupervisorSpawner{Sup: sup}
+
+	err := s.Spawn(context.Background(), store.SpawnRequest{AgentName: "vector", AgentType: "researcher", Parent: "weave"})
+	if err == nil {
+		t.Fatal("a failed supervisor spawn was reported as success; the write-ahead would then append spawn_committed for an agent that does not exist")
+	}
+	if !strings.Contains(err.Error(), "worktree exists") {
+		t.Errorf("the underlying cause was dropped from %v", err)
 	}
 }

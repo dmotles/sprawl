@@ -41,10 +41,13 @@
 //     reports "not in turn" for every working agent and pokes them all.
 //   - THERE IS NO SPAWN HANDLER. Launching a session needs the supervisor. As of
 //     QUM-1252 something DOES emit spawn_requested — the goal_opened handler
-//     registered below turns an engine-driven goal into a request — so the gap is
-//     no longer theoretical: a request appended here waits until a process with a
-//     supervisor consumes it. That is stated at startup rather than left to be
-//     discovered as "the goal never started".
+//     registered below turns an engine-driven goal into a request — and a
+//     `sprawl enter` dispatcher consumes it. So a request appended here waits for
+//     a session, and is UNCLAIMED while it waits: registering the handler out
+//     here would take the claim and then fail, which is worse than not
+//     registering, because the claim is what stops the session from running it.
+//     That is stated at startup rather than left to be discovered as "the goal
+//     never started".
 //
 // The command PRINTS these limits at startup rather than leaving them to be
 // discovered, because per /cli-ux-best-practices the primary consumer is an agent
@@ -219,7 +222,7 @@ func runStoreDispatch(ctx context.Context, deps *storeDeps) error {
 
 	reportDispatchLimits(out, host)
 
-	stack, err := buildDispatchStack(ledger, deps.SprawlRoot, host, logger)
+	stack, err := buildDispatchStack(ledger, deps.SprawlRoot, host, nil, logger)
 	if err != nil {
 		return err
 	}
@@ -284,7 +287,13 @@ type dispatchStack struct {
 // two callers reach that state differently — the CLI refuses with an actionable
 // next-step, the session simply declines to start — so the checks stay with the
 // callers and this function stays a pure assembly step.
-func buildDispatchStack(ledger *store.Ledger, sprawlRoot, host string, logger *slog.Logger) (*dispatchStack, error) {
+//
+// spawner is nil from `sprawl store dispatch` and supervisor-backed from
+// `sprawl enter`. It is the ONLY difference between the two stacks, and it is a
+// parameter rather than something derived here because this function cannot see
+// whether a supervisor exists — that is a property of the process, not the
+// ledger.
+func buildDispatchStack(ledger *store.Ledger, sprawlRoot, host string, spawner store.Spawner, logger *slog.Logger) (*dispatchStack, error) {
 	pool := ledger.Pool()
 	registry := ledger.Registry()
 	emitter := store.LedgerEmitter{Ledger: ledger}
@@ -311,8 +320,8 @@ func buildDispatchStack(ledger *store.Ledger, sprawlRoot, host string, logger *s
 	}
 	// goal_opened -> spawn_requested (QUM-1252). Registered in BOTH dispatch
 	// paths, because it needs no supervisor: it only appends. What consumes
-	// spawn_requested and actually launches a session is a separate handler that
-	// does need one, and is not registered here.
+	// spawn_requested and actually launches a session is the separate handler
+	// below, which does need one.
 	goalSpawn, err := store.NewGoalSpawnHandler(store.GoalSpawnHandlerDeps{
 		Emitter: emitter,
 		Names:   &dispatchadapt.PoolNamer{SprawlRoot: sprawlRoot},
@@ -321,6 +330,24 @@ func buildDispatchStack(ledger *store.Ledger, sprawlRoot, host string, logger *s
 	if err != nil {
 		return nil, err
 	}
+	// spawn_requested -> an actual agent, write-ahead first (QUM-1252). Declared
+	// as the interface so that with no spawner it stays a TRUE nil rather than a
+	// non-nil interface holding a nil pointer, which dispatchHandlerSet's guard
+	// could not tell from a real handler.
+	var spawn store.Handler
+	if spawner != nil {
+		h, err := store.NewSpawnHandler(store.SpawnHandlerDeps{
+			Emitter: emitter,
+			Spawner: spawner,
+			Host:    host,
+			Logger:  logger,
+		})
+		if err != nil {
+			return nil, err
+		}
+		spawn = h
+	}
+
 	ack, err := store.NewNotifyAckHandler(store.NotifyAckHandlerDeps{
 		Emitter:  emitter,
 		Notifies: notifies,
@@ -339,7 +366,7 @@ func buildDispatchStack(ledger *store.Ledger, sprawlRoot, host string, logger *s
 		ProjectID: ledger.ProjectID(),
 		Host:      host,
 		Consumer:  dispatchConsumer,
-		Handlers:  dispatchHandlerSet(notify, ack, goalSpawn),
+		Handlers:  dispatchHandlerSet(notify, ack, goalSpawn, spawn),
 		Logger:    logger,
 		// Doorbell deliberately nil: correctness is the poll, and a standalone
 		// process holding a LISTEN connection open buys latency this process does
@@ -374,8 +401,10 @@ func buildDispatchStack(ledger *store.Ledger, sprawlRoot, host string, logger *s
 // Kept explicit rather than "anything with closes_event_id": a handler
 // registered by name is a decision, and a catch-all would silently start
 // notifying on event types nobody has thought about.
-func dispatchHandlerSet(notify, ack, goalSpawn store.Handler) map[string]store.Handler {
-	return map[string]store.Handler{
+// spawn is nil on the standalone path and only there — see the comment on the
+// registration below for why that is a deliberate hole rather than a gap.
+func dispatchHandlerSet(notify, ack, goalSpawn, spawn store.Handler) map[string]store.Handler {
+	set := map[string]store.Handler{
 		// Every close-typed event that can land a result for an owner.
 		"goal_closed": notify,
 		// The ack, from the log rather than a runtime hook.
@@ -383,6 +412,17 @@ func dispatchHandlerSet(notify, ack, goalSpawn store.Handler) map[string]store.H
 		// The engine's start leg: a goal becomes a spawn request.
 		"goal_opened": goalSpawn,
 	}
+	// CONDITIONAL, unlike every other row. Launching a session needs the
+	// supervisor, which exists only inside `sprawl enter`. A standalone
+	// `sprawl store dispatch` that registered this anyway would CLAIM each
+	// spawn_requested and then fail it — and the claim is precisely what stops
+	// the session's dispatcher, which could have run it, from taking the event.
+	// Leaving it unregistered means the event is skipped without a claim and the
+	// session picks it up on its next pass.
+	if spawn != nil {
+		set["spawn_requested"] = spawn
+	}
+	return set
 }
 
 // dispatchConsumer is the event_claims consumer name for this loop.
@@ -512,5 +552,5 @@ func reportDispatchLimits(out io.Writer, host string) {
 	fmt.Fprintf(out, "  notifications are enqueued durably and delivered when the recipient next drains, not immediately\n")
 	fmt.Fprintf(out, "  a failed injection is retried by each sweep on a widening backoff, then recorded undelivered at the cap and never retried again\n")
 	fmt.Fprintf(out, "  the stall sweeper is INERT here: turn state is only observable inside a sprawl session, and an unobserved turn state is never poked\n")
-	fmt.Fprintf(out, "  goal_opened IS handled here — it appends spawn_requested — but NOTHING CONSUMES spawn_requested yet: launching a session needs the supervisor, so a goal opened against this host gets a request and no agent\n")
+	fmt.Fprintf(out, "  goal_opened IS handled here — it appends spawn_requested — but spawn_requested is NOT handled here: launching a session needs the supervisor, so a goal opened against this host gets a request and waits for a `sprawl enter` dispatcher to turn it into an agent\n")
 }

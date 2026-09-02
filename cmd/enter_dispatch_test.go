@@ -12,6 +12,10 @@ import (
 	"time"
 
 	"github.com/dmotles/sprawl/internal/config"
+	"github.com/dmotles/sprawl/internal/sprawlmcp"
+	"github.com/dmotles/sprawl/internal/sprawlmcp/calllog"
+	"github.com/dmotles/sprawl/internal/supervisor"
+	"github.com/dmotles/sprawl/internal/supervisor/supervisortest"
 )
 
 // enterDepsWithDispatch is enterDepsForRoot plus a recording dispatch hook.
@@ -27,13 +31,14 @@ type dispatchWitness struct {
 	stops atomic.Int32
 	root  string
 	cfg   *config.Config
+	sup   supervisor.Supervisor
 }
 
 func enterDepsWithDispatch(root string, ran *bool, w *dispatchWitness) *enterDeps {
 	deps := enterDepsForRoot(root, ran)
-	deps.startEventDispatch = func(sprawlRoot string, cfg *config.Config, _ io.Writer) func() {
+	deps.startEventDispatch = func(sprawlRoot string, cfg *config.Config, sup supervisor.Supervisor, _ io.Writer) func() {
 		w.calls.Add(1)
-		w.root, w.cfg = sprawlRoot, cfg
+		w.root, w.cfg, w.sup = sprawlRoot, cfg, sup
 		// sync.Once because the REAL stop func is sync.Once-guarded and runEnter
 		// deliberately calls it twice — explicitly on the normal path and via a
 		// defer that closes the panic window. A fake without the guard would count
@@ -272,5 +277,46 @@ func TestStartEventDispatch_StopIsIdempotent(t *testing.T) {
 
 	if got := strings.Count(errOut.String(), "abandoning"); got != 1 {
 		t.Errorf("the abandon notice was reported %d time(s) across two stops, want exactly 1; got %q", got, errOut.String())
+	}
+}
+
+// TestRunEnter_HandsTheDispatcherTheSessionsSupervisor (QUM-1252, 10c).
+//
+// The supervisor is the only thing that can turn a spawn_requested into an
+// agent, and it exists nowhere else — so a hook that starts a dispatcher without
+// it produces a session that looks fully wired and silently stops one step short
+// of every engine-driven goal.
+func TestRunEnter_HandsTheDispatcherTheSessionsSupervisor(t *testing.T) {
+	root := writeEnterConfig(t, "event_log.enabled: true\n")
+
+	ranProgram := false
+	var w dispatchWitness
+	deps := enterDepsWithDispatch(root, &ranProgram, &w)
+	sup := &supervisortest.NoopSupervisor{}
+	deps.newSupervisor = func(string, *calllog.Logger, *config.Config) (supervisor.Supervisor, *sprawlmcp.Server) {
+		return sup, nil
+	}
+	if err := runEnter(deps); err != nil {
+		t.Fatalf("runEnter: %v", err)
+	}
+	if got := w.calls.Load(); got != 1 {
+		t.Fatalf("the dispatch hook was called %d time(s), want 1 — this test proves nothing otherwise", got)
+	}
+	if w.sup != supervisor.Supervisor(sup) {
+		t.Error("the dispatch hook got a nil supervisor, so the session registers no spawn_requested handler and every engine goal stops at the request")
+	}
+}
+
+// TestDispatchSpawner_IsATrueNilWithoutASupervisor (QUM-1252, 10c).
+//
+// The typed-nil trap: returning a *SupervisorSpawner built over a nil supervisor
+// yields a NON-nil store.Spawner, which passes every `!= nil` guard downstream
+// and panics on the first spawn_requested instead of declining to register.
+func TestDispatchSpawner_IsATrueNilWithoutASupervisor(t *testing.T) {
+	if s := dispatchSpawner(nil); s != nil {
+		t.Errorf("dispatchSpawner(nil) returned %#v, want a true nil store.Spawner", s)
+	}
+	if s := dispatchSpawner(&supervisortest.NoopSupervisor{}); s == nil {
+		t.Error("dispatchSpawner returned nil for a real supervisor, so spawn_requested would go unhandled inside a session")
 	}
 }

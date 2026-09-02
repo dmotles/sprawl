@@ -73,7 +73,7 @@ func ensureRuntimeWithStarter(t *testing.T, r *Real, sprawlRoot string, agentSta
 
 func TestRealSpawn_RegistersRuntimeForSpawnedAgent(t *testing.T) {
 	r, _ := newFakeReal(t)
-	r.spawnFn = func(_ *agentops.SpawnDeps, _, _, _, _ string, _ bool) (*state.AgentState, error) {
+	r.spawnFn = func(_ *agentops.SpawnDeps, _, _, _, _, _ string, _ bool) (*state.AgentState, error) {
 		return testAgentState("alice"), nil
 	}
 
@@ -104,7 +104,7 @@ func TestRealSpawn_StartsTrackedRuntime(t *testing.T) {
 	}
 	starter := &runtimeTestStarter{session: session}
 	rt := ensureRuntimeWithStarter(t, r, tmpDir, agentState, starter)
-	r.spawnFn = func(_ *agentops.SpawnDeps, _, _, _, _ string, _ bool) (*state.AgentState, error) {
+	r.spawnFn = func(_ *agentops.SpawnDeps, _, _, _, _, _ string, _ bool) (*state.AgentState, error) {
 		return agentState, nil
 	}
 
@@ -128,7 +128,7 @@ func TestRealSpawn_StartsTrackedRuntime(t *testing.T) {
 func TestRealSpawn_FreshSpawnUsesBootstrapAndRuntimeStarter(t *testing.T) {
 	r, tmpDir := newFakeReal(t)
 	worktreePath := filepath.Join(tmpDir, ".sprawl", "worktrees", "alice")
-	r.spawnFn = agentops.PrepareSpawn
+	r.spawnFn = agentops.PrepareSpawnAs
 	r.spawnDeps = &agentops.SpawnDeps{
 		WorktreeCreator: &spawnPathWorktreeCreator{path: worktreePath},
 		Getenv: func(key string) string {
@@ -198,7 +198,7 @@ func TestRealSpawn_RuntimeStartFailureRollsBackPersistedArtifacts(t *testing.T) 
 
 	starter := &runtimeTestStarter{err: errors.New("runtime start failed")}
 	ensureRuntimeWithStarter(t, r, tmpDir, agentState, starter)
-	r.spawnFn = func(_ *agentops.SpawnDeps, _, _, _, _ string, _ bool) (*state.AgentState, error) {
+	r.spawnFn = func(_ *agentops.SpawnDeps, _, _, _, _, _ string, _ bool) (*state.AgentState, error) {
 		return agentState, nil
 	}
 
@@ -233,7 +233,7 @@ func TestRealSpawn_RuntimeStartFailureRollsBackPersistedArtifacts(t *testing.T) 
 
 func TestRealSpawn_FailedSpawnDoesNotRegisterRuntime(t *testing.T) {
 	r, _ := newFakeReal(t)
-	r.spawnFn = func(_ *agentops.SpawnDeps, _, _, _, _ string, _ bool) (*state.AgentState, error) {
+	r.spawnFn = func(_ *agentops.SpawnDeps, _, _, _, _, _ string, _ bool) (*state.AgentState, error) {
 		return nil, errors.New("boom")
 	}
 

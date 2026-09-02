@@ -48,9 +48,11 @@ import (
 
 	"github.com/dmotles/sprawl/internal/agent"
 	"github.com/dmotles/sprawl/internal/agentloop"
+	"github.com/dmotles/sprawl/internal/backend"
 	"github.com/dmotles/sprawl/internal/messages"
 	"github.com/dmotles/sprawl/internal/state"
 	"github.com/dmotles/sprawl/internal/store"
+	"github.com/dmotles/sprawl/internal/supervisor"
 )
 
 // DiskAgents is a store.LocalAgents backed by the on-disk agent state.
@@ -237,4 +239,48 @@ func (p *PoolNamer) AllocateName(_ context.Context, agentType string) (string, e
 		return "", fmt.Errorf("dispatchadapt: allocating a name for a %s: %w", agentType, err)
 	}
 	return name, nil
+}
+
+// AgentSpawner is the slice of supervisor.Supervisor a spawn needs (QUM-1252).
+//
+// Declared here, at the consumer, rather than taking supervisor.Supervisor
+// whole: the full interface is two dozen methods, so a test double for it would
+// be pages of nil stubs whose bulk hides the one method that matters.
+type AgentSpawner interface {
+	Spawn(ctx context.Context, req supervisor.SpawnRequest) (*supervisor.AgentInfo, error)
+}
+
+// SupervisorSpawner is a store.Spawner over a live supervisor (QUM-1252).
+//
+// It is the piece that makes a spawn_requested event become an actual agent, and
+// it exists only inside a `sprawl enter` process — a standalone
+// `sprawl store dispatch` has no supervisor, so it registers no spawn handler at
+// all rather than one that fails on every event.
+type SupervisorSpawner struct {
+	Sup AgentSpawner
+}
+
+var _ store.Spawner = (*SupervisorSpawner)(nil)
+
+func (s *SupervisorSpawner) Spawn(ctx context.Context, req store.SpawnRequest) error {
+	// The goal's owner becomes the spawned agent's parent. The supervisor derives
+	// the parent from the CALLER IDENTITY, not from a field on the request, so
+	// this context value is the only way to say it — without it the agent is
+	// parented to whichever identity happens to be running the dispatcher, and
+	// its result notification goes to the wrong agent.
+	ctx = backend.WithCallerIdentity(ctx, req.Parent)
+	if _, err := s.Sup.Spawn(ctx, supervisor.SpawnRequest{
+		// Name, not an allocation: the log named this agent before anything
+		// existed locally and the reconciler matches spawn_intent BY NAME.
+		Name:     req.AgentName,
+		Type:     req.AgentType,
+		Family:   req.Family,
+		Prompt:   req.Prompt,
+		Branch:   req.Branch,
+		Model:    req.Model,
+		Subagent: req.Subagent,
+	}); err != nil {
+		return fmt.Errorf("dispatchadapt: spawning %s for the event log: %w", req.AgentName, err)
+	}
+	return nil
 }

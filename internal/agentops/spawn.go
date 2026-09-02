@@ -85,7 +85,7 @@ func IsValidFamily(f string) bool {
 	return false
 }
 
-func prepareSpawn(deps *SpawnDeps, family, agentType, prompt, branch string, subagent bool) (*preparedSpawn, error) {
+func prepareSpawn(deps *SpawnDeps, pinnedName, family, agentType, prompt, branch string, subagent bool) (*preparedSpawn, error) {
 	// Validate type
 	if !IsValidType(agentType) {
 		return nil, fmt.Errorf("invalid agent type %q; valid types: %v", agentType, ValidTypes)
@@ -165,7 +165,7 @@ func prepareSpawn(deps *SpawnDeps, family, agentType, prompt, branch string, sub
 	}
 	defer release() //nolint:errcheck // best-effort lock release
 
-	agentName, err := agent.AllocateName(agentsDir, agentType)
+	agentName, err := resolveSpawnName(agentsDir, agentType, pinnedName)
 	if err != nil {
 		return nil, err
 	}
@@ -319,9 +319,39 @@ func prepareSpawn(deps *SpawnDeps, family, agentType, prompt, branch string, sub
 // When subagent is true the child reuses the caller's worktree and branch
 // rather than getting a new one (QUM-709).
 func PrepareSpawn(deps *SpawnDeps, family, agentType, prompt, branch string, subagent bool) (*state.AgentState, error) {
-	prepared, err := prepareSpawn(deps, family, agentType, prompt, branch, subagent)
+	return PrepareSpawnAs(deps, "", family, agentType, prompt, branch, subagent)
+}
+
+// PrepareSpawnAs is PrepareSpawn with the agent's name supplied by the caller
+// (QUM-1252). An empty pinnedName allocates from the typed pool exactly as
+// before, which is what PrepareSpawn passes.
+//
+// It exists for the event-log engine: a goal names its agent in the log BEFORE
+// anything exists locally, because store's spawn write-ahead records that name on
+// spawn_intent and the reconciler matches intents to local agents by name. A
+// locally-chosen name would leave the intent matching nothing, and past the grace
+// period the reconciler declares a live agent failed.
+func PrepareSpawnAs(deps *SpawnDeps, pinnedName, family, agentType, prompt, branch string, subagent bool) (*state.AgentState, error) {
+	prepared, err := prepareSpawn(deps, pinnedName, family, agentType, prompt, branch, subagent)
 	if err != nil {
 		return nil, err
 	}
 	return prepared.agentState, nil
+}
+
+// resolveSpawnName picks the new agent's name: the caller's, or the pool's.
+//
+// The pinned branch runs the same two checks AllocateName provides implicitly —
+// well-formed, and not already taken — because it is a boundary: the name comes
+// from an event payload and becomes a filesystem path. It is checked INSIDE the
+// spawn lock, with the same lifetime as the allocation it replaces, so two
+// concurrent spawns cannot both pass the free check.
+func resolveSpawnName(agentsDir, agentType, pinnedName string) (string, error) {
+	if pinnedName == "" {
+		return agent.AllocateName(agentsDir, agentType)
+	}
+	if err := agent.ReserveName(agentsDir, pinnedName); err != nil {
+		return "", err
+	}
+	return pinnedName, nil
 }

@@ -75,7 +75,7 @@ type Real struct {
 	retireDeps *agentops.RetireDeps
 	killDeps   *agentops.KillDeps
 
-	spawnFn  func(*agentops.SpawnDeps, string, string, string, string, bool) (*state.AgentState, error)
+	spawnFn  func(*agentops.SpawnDeps, string, string, string, string, string, bool) (*state.AgentState, error)
 	mergeFn  func(context.Context, *agentops.MergeDeps, string, string, bool, bool, bool) (*agentops.MergeOutcome, error)
 	retireFn func(context.Context, *agentops.RetireDeps, string, bool, bool, bool, bool, bool) ([]string, error)
 	killFn   func(*agentops.KillDeps, string, bool) error
@@ -388,7 +388,7 @@ func NewReal(cfg Config) (*Real, error) {
 			Getenv: supervisorGetenv,
 		},
 
-		spawnFn:  agentops.PrepareSpawn,
+		spawnFn:  agentops.PrepareSpawnAs,
 		mergeFn:  agentops.Merge,
 		retireFn: agentops.Retire,
 		killFn:   agentops.Kill,
@@ -647,7 +647,7 @@ func (r *Real) Status(_ context.Context) ([]AgentInfo, error) {
 
 func (r *Real) Spawn(ctx context.Context, req SpawnRequest) (*AgentInfo, error) {
 	deps := r.spawnDepsForCaller(r.effectiveCaller(ctx))
-	st, err := r.spawnFn(deps, req.Family, req.Type, req.Prompt, req.Branch, req.Subagent)
+	st, err := r.spawnFn(deps, req.Name, req.Family, req.Type, req.Prompt, req.Branch, req.Subagent)
 	if err != nil {
 		return nil, err
 	}

@@ -9,7 +9,9 @@ import (
 	"time"
 
 	"github.com/dmotles/sprawl/internal/config"
+	"github.com/dmotles/sprawl/internal/dispatchadapt"
 	"github.com/dmotles/sprawl/internal/store"
+	"github.com/dmotles/sprawl/internal/supervisor"
 )
 
 // Lifecycle wiring for the event-log dispatcher (QUM-1252, M3a, Option A).
@@ -110,8 +112,26 @@ func startEventDispatch(sprawlRoot string, errOut io.Writer, run func(context.Co
 // rather than re-read here: `sprawl enter` resolves its root from SPRAWL_ROOT or
 // the cwd, and a second config.Load inside a session-scoped helper is how the
 // two come to disagree.
-func defaultStartEventDispatch(sprawlRoot string, _ *config.Config, errOut io.Writer) func() {
-	return startEventDispatch(sprawlRoot, errOut, runSessionDispatch)
+func defaultStartEventDispatch(sprawlRoot string, _ *config.Config, sup supervisor.Supervisor, errOut io.Writer) func() {
+	spawner := dispatchSpawner(sup)
+	return startEventDispatch(sprawlRoot, errOut, func(ctx context.Context, root string, out io.Writer) error {
+		return runSessionDispatch(ctx, root, spawner, out)
+	})
+}
+
+// dispatchSpawner adapts this session's supervisor into the store's spawner
+// seam, and returns a TRUE nil when there is no supervisor.
+//
+// The nil-ness is the point and is why this is a function rather than a struct
+// literal at the call site: `&SupervisorSpawner{Sup: nil}` is a non-nil
+// store.Spawner, so it would pass buildDispatchStack's `!= nil` guard, register
+// a spawn handler, and panic on the first spawn_requested — instead of declining
+// to register and leaving the event for a process that can do the work.
+func dispatchSpawner(sup supervisor.Supervisor) store.Spawner {
+	if sup == nil {
+		return nil
+	}
+	return &dispatchadapt.SupervisorSpawner{Sup: sup}
 }
 
 // runSessionDispatch is the session's dispatch loop.
@@ -122,7 +142,7 @@ func defaultStartEventDispatch(sprawlRoot string, _ *config.Config, errOut io.Wr
 // `event_log.enabled` as true, so reaching one of these means the log is
 // configured but not usable — which `sprawl store doctor` diagnoses properly and
 // a line in a session log file does not.
-func runSessionDispatch(ctx context.Context, sprawlRoot string, errOut io.Writer) error {
+func runSessionDispatch(ctx context.Context, sprawlRoot string, spawner store.Spawner, errOut io.Writer) error {
 	ledger, err := store.Process(ctx, sprawlRoot)
 	if err != nil {
 		return fmt.Errorf("opening the event log for dispatch: %w", err)
@@ -146,7 +166,7 @@ func runSessionDispatch(ctx context.Context, sprawlRoot string, errOut io.Writer
 	}
 
 	logger := dispatchLogger(errOut)
-	stack, err := buildDispatchStack(ledger, sprawlRoot, host, logger)
+	stack, err := buildDispatchStack(ledger, sprawlRoot, host, spawner, logger)
 	if err != nil {
 		return err
 	}

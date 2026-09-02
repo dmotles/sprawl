@@ -121,6 +121,43 @@ func TestGoalSpawnHandler_RequestsAnAgentForAResearchGoal(t *testing.T) {
 	}
 }
 
+// TestGoalSpawnHandler_RequestsAWorktreeTheSpawnerCanActuallyCreate.
+//
+// family and branch are not decoration: agentops.PrepareSpawn REFUSES a spawn
+// with an invalid family, and REFUSES one with an empty branch when subagent is
+// false. A request missing either is a well-formed event that every consumer
+// rejects — the goal would look requested and never start.
+//
+// The branch is derived from the goal event id rather than from the goal text so
+// two goals opened against the same agent name cannot collide, and it is prefixed
+// `goal/` so an engine-created branch is identifiable without consulting the log.
+func TestGoalSpawnHandler_RequestsAWorktreeTheSpawnerCanActuallyCreate(t *testing.T) {
+	em := &recordingEmitter{}
+	h := newGoalSpawnHandler(t, em, &fixedNamer{name: "ada"})
+	ev := goalSpawnEvent(t, map[string]any{
+		"goal_type": "research", "text": "q", "owner": "boss",
+	})
+
+	if err := h.Handle(context.Background(), ev); err != nil {
+		t.Fatalf("Handle: %v", err)
+	}
+	pay := decodePayload(t, em.events[0].Payload)
+	if got := pay["family"]; got != "engineering" {
+		t.Errorf("family is %v, want engineering — an invalid family is refused by the spawner", got)
+	}
+	branch, _ := pay["branch"].(string)
+	if !strings.HasPrefix(branch, "goal/ada-") {
+		t.Errorf("branch is %q, want a goal/<agent>-<id> branch; the spawner refuses an empty branch", branch)
+	}
+	if !strings.HasPrefix(ev.ID.String(), strings.TrimPrefix(branch, "goal/ada-")) {
+		t.Errorf("branch %q does not derive from the goal event id %s, so two goals for one agent name could collide",
+			branch, ev.ID)
+	}
+	if sub, ok := pay["subagent"].(bool); ok && sub {
+		t.Error("the request asks for a sub-agent; an engine-driven goal needs its own worktree, and a sub-agent must have no branch")
+	}
+}
+
 // TestGoalSpawnHandler_MapsBugInvestigationToItsOwnAgentType is the routing
 // table's second row, and a control on the first: without it, a handler that
 // hard-coded "researcher" would pass every assertion above.

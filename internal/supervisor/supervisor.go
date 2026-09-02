@@ -170,6 +170,12 @@ type MessagesPeekResult struct {
 
 // SpawnRequest holds parameters for spawning a new agent.
 type SpawnRequest struct {
+	// Name, when non-empty, is the agent's name, supplied by the caller instead
+	// of allocated from the typed pool (QUM-1252). Only the event-log engine
+	// sets it: a goal names its agent in the log before anything exists locally,
+	// and store's spawn write-ahead records that name on spawn_intent, which the
+	// reconciler matches against local agents BY NAME.
+	Name     string `json:"name,omitempty"`
 	Family   string `json:"family"`
 	Type     string `json:"type"`
 	Prompt   string `json:"prompt"`
