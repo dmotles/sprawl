@@ -34,19 +34,7 @@ type askUserOutput struct {
 // no agent record backs. So the root's real name is read from the supervisor,
 // and a store with no root record is refused rather than guessed at.
 func (s *Server) askUserAsker(ctx context.Context, caller string) (string, error) {
-	if caller != "" {
-		return caller, nil
-	}
-	agents, err := s.sup.Status(ctx)
-	if err != nil {
-		return "", fmt.Errorf("ask_user: looking up the root agent's name: %w", err)
-	}
-	for _, a := range agents {
-		if a.Type == "root" {
-			return a.Name, nil
-		}
-	}
-	return "", fmt.Errorf("ask_user cannot tell which agent is asking: the call carries no identity and no root agent is registered, and a question the human cannot attribute is one they cannot answer")
+	return s.callerOrRootName(ctx, caller, "ask_user")
 }
 
 func (s *Server) toolAskUser(ctx context.Context, args json.RawMessage) (string, error) {

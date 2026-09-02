@@ -379,6 +379,25 @@ func baseToolDefinitions() []map[string]any {
 			},
 		},
 		{
+			"name":        "create_goal",
+			"description": "Open an engine-driven goal. The goal is RECORDED in the event log and the dispatcher spawns the agent from it — this tool does not spawn anyone, so nothing is running when it returns and you must not report the work as underway. Only `research` and `bug_investigation` run on the engine; for EVERY other kind of work use `spawn` as you always have. Restricted to weave and managers. Requires the event log to be enabled on this host.",
+			"inputSchema": map[string]any{
+				"type": "object",
+				"properties": map[string]any{
+					"goal_type": map[string]any{
+						"type":        "string",
+						"description": "Which workflow drives this goal. `research` answers questions from the codebase, environment or web. `bug_investigation` traces a defect and either reproduces it or proposes candidate causes. Anything else belongs to `spawn`.",
+						"enum":        []string{"research", "bug_investigation"},
+					},
+					"text": map[string]any{
+						"type":        "string",
+						"description": "The task, in prose. This is the ENTIRE brief the spawned agent receives — it cannot see this conversation, so state the question, the context it needs, and what a good answer looks like.",
+					},
+				},
+				"required": []string{"goal_type", "text"},
+			},
+		},
+		{
 			"name":        "report_result",
 			"description": "Close the goal you were given, recording its outcome in the event log. IRREVERSIBLE: the log is monotone and a close cannot be retracted — a defect found afterwards needs rework requested by the goal's owner, not a second close. You may only close a goal you own; pass the goal_event_id from reread_my_goal (NOT the workflow_instance_id). Requires the event log to be enabled on this host.",
 			"inputSchema": map[string]any{

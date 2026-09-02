@@ -48,6 +48,12 @@ type GoalSource interface {
 	// in the store against the open set, never by whichever tool remembered.
 	AskQuestions(ctx context.Context, asker, recipient string, questions []string, goalEventID, followUpOf *uuid.UUID) (uuid.UUID, error)
 	AnswerQuestions(ctx context.Context, answerer string, askEventID uuid.UUID, answers []string) (uuid.UUID, error)
+	// OpenGoal is create_goal's whole store contact: it appends `goal_opened`
+	// and nothing else. It is on this interface for the single-attach-point
+	// reason above. Note it takes the OWNER rather than deriving one — the tool
+	// resolves the calling session's name, because the store cannot see who is
+	// calling and a guessed owner is a result delivered to the wrong agent.
+	OpenGoal(ctx context.Context, goalType store.GoalType, text, owner string) (store.OpenedGoal, error)
 	// RecordLegacySpawn / RecordLegacyRetire are the paired lifecycle events for
 	// prose-spawned agents (slice 10). They are on THIS interface for the
 	// single-attach-point reason above, not because spawn is a goal tool: a

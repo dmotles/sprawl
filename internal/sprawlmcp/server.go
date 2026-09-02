@@ -294,6 +294,8 @@ func (s *Server) dispatchTool(ctx context.Context, name string, args json.RawMes
 		return s.toolRereadMyGoal(ctx)
 	case "get_workflow_log":
 		return s.toolGetWorkflowLog(ctx, args)
+	case "create_goal":
+		return s.toolCreateGoal(ctx, args)
 	case "report_result":
 		return s.toolReportResult(ctx, args)
 	case "ask_user":
@@ -1027,24 +1029,66 @@ func (s *Server) toolAskUserQuestion(ctx context.Context, args json.RawMessage) 
 // or Type=="root" passes. Engineer and researcher callers (and any other
 // type) get the canonical structured restriction error.
 func (s *Server) askUserQuestionEligibility(ctx context.Context, caller string) error {
-	if caller == "" {
-		// Root weave session — no per-agent record, always allowed.
-		return nil
-	}
-	agents, err := s.sup.Status(ctx)
+	ok, err := s.callerIsManagerOrRoot(ctx, caller)
 	if err != nil {
 		return fmt.Errorf("ask_user_question: looking up caller %q: %w", caller, err)
 	}
+	if !ok {
+		return errors.New(askUserQuestionRestrictedError)
+	}
+	return nil
+}
+
+// callerIsManagerOrRoot is the shared eligibility DECISION behind the tools that
+// only weave and managers may call.
+//
+// Shared deliberately. The reasoning in tools_askuser.go applies to every tool
+// in this class: two gates that were meant to be identical are two gates that
+// eventually differ, and the way they differ is that one of them quietly starts
+// admitting engineers. Only the decision is shared — each caller supplies its
+// own refusal message, because a create_goal caller told "ask_user_question is
+// restricted" has been handed a true statement about the wrong tool.
+func (s *Server) callerIsManagerOrRoot(ctx context.Context, caller string) (bool, error) {
+	if caller == "" {
+		// Root weave session — no per-agent record, always allowed.
+		return true, nil
+	}
+	agents, err := s.sup.Status(ctx)
+	if err != nil {
+		return false, err
+	}
 	for _, a := range agents {
 		if a.Name == caller {
-			if a.Type == "manager" || a.Type == "root" {
-				return nil
-			}
-			return errors.New(askUserQuestionRestrictedError)
+			return a.Type == "manager" || a.Type == "root", nil
 		}
 	}
 	// Unknown caller — be conservative and reject.
-	return errors.New(askUserQuestionRestrictedError)
+	return false, nil
+}
+
+// callerOrRootName resolves the agent name to record for a call that may carry
+// no identity.
+//
+// The root weave session calls tools with an empty identity, and for the tools
+// gated to weave and managers it is the most likely caller — so an empty
+// identity cannot be refused outright. But the name that goes in the log has to
+// be one an agent record backs: a literal "weave" would be a name nobody can
+// look up on a fleet whose root is called something else, so a store with no
+// root record is refused rather than guessed at.
+func (s *Server) callerOrRootName(ctx context.Context, caller, tool string) (string, error) {
+	if caller != "" {
+		return caller, nil
+	}
+	agents, err := s.sup.Status(ctx)
+	if err != nil {
+		return "", fmt.Errorf("%s: looking up the root agent's name: %w", tool, err)
+	}
+	for _, a := range agents {
+		if a.Type == "root" {
+			return a.Name, nil
+		}
+	}
+	return "", fmt.Errorf("%s cannot tell which agent is asking: the call carries no identity and no root agent is registered, and a record no agent backs is worse than a refusal", tool)
 }
 
 // unknownToolError is used to distinguish unknown tool errors from supervisor errors.

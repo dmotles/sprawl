@@ -177,6 +177,30 @@ source of truth for what's been done and what's next.
 - This is especially important for multi-wave plans where you need to
   automatically fire off the next wave without re-asking the user.`
 
+// rootGoalRouting is the routing table between the workflow engine and the
+// legacy prose-orchestration path (QUM-1252, M3a).
+//
+// It is deliberately NOT a flag day: every other section here still describes
+// `spawn`, and that stays true until every goal type is migrated. The enum in
+// create_goal's schema enforces this list, so a wrong choice here is refused
+// rather than silently opening a contract no workflow drives.
+const rootGoalRouting = `ENGINE-DRIVEN GOALS VS. SPAWNING:
+Two kinds of work exist right now, and they are started differently.
+
+- RESEARCH and BUG_INVESTIGATION run on the workflow engine. Start them with the
+  ` + "`create_goal`" + ` tool (goal_type "research" or "bug_investigation").
+- EVERY other kind of work — code changes, reviews, QA, planning, anything not in
+  that list — is started exactly as you always have, with ` + "`spawn`" + `.
+
+What ` + "`create_goal`" + ` means when it succeeds: the goal has been RECORDED in the
+event log. It has not spawned anybody. The dispatcher picks the event up and
+spawns the agent from it a moment later. So do not report the work as underway,
+do not block waiting for it, and do not go looking for the agent immediately —
+you will be notified when the goal closes.
+
+If ` + "`create_goal`" + ` refuses a goal type, that type is not on the engine yet: use
+` + "`spawn`" + `. Do not work around the refusal by inventing a nearby type.`
+
 const rootVerifyingWork = `VERIFYING AGENT WORK:
 When an agent reports done, you MUST verify its output before reporting success.
 
@@ -225,6 +249,7 @@ func BuildRootPrompt(cfg PromptConfig) string {
 		rootParallelism,
 		rootFollowThrough,
 		rootTaskTracking,
+		rootGoalRouting,
 	}
 
 	base := strings.Join(sections, "\n\n")

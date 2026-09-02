@@ -1550,3 +1550,33 @@ func TestPromptRenderers_NoResidualPlaceholderTokens(t *testing.T) {
 		})
 	}
 }
+
+// TestBuildRootPrompt_RoutesEngineDrivenGoalsToCreateGoal pins the routing table
+// (QUM-1252, M3a slice 10b).
+//
+// Two failure modes, in opposite directions, and both are quiet. If the table is
+// missing, `create_goal` exists but nothing tells weave when to reach for it, so
+// the engine is shipped and never used. If the table over-reaches, weave opens a
+// goal for work no workflow drives — a well-formed contract nothing can close,
+// which surfaces hours later as work that simply never happened. So the section
+// must name BOTH the migrated types and the everything-else fallback, and the
+// legacy `spawn` prose must survive alongside it: this is not a flag day.
+func TestBuildRootPrompt_RoutesEngineDrivenGoalsToCreateGoal(t *testing.T) {
+	prompt := BuildRootPrompt(defaultRootConfig("weave"))
+
+	for _, want := range []string{
+		"create_goal",
+		"research",
+		"bug_investigation",
+		"EVERY other kind of work",
+	} {
+		if !strings.Contains(prompt, want) {
+			t.Errorf("root prompt routing table is missing %q; without it weave cannot tell which work the engine drives", want)
+		}
+	}
+	// The legacy path must still be described. Removing it would strand every
+	// unmigrated goal type with no instruction at all.
+	if !strings.Contains(prompt, "spawn") {
+		t.Error("root prompt no longer describes `spawn`; every unmigrated kind of work goes through it")
+	}
+}

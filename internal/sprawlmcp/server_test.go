@@ -354,7 +354,8 @@ func TestServer_ToolsList(t *testing.T) {
 		"messages_peek",
 		"ask_user_question",
 		"toast",
-		// QUM-1252: the M3a goal read tools.
+		// QUM-1252: the M3a goal tools.
+		"create_goal",
 		"reread_my_goal",
 		"get_workflow_log",
 		"report_result",

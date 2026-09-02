@@ -62,6 +62,14 @@ type fakeGoalSource struct {
 	answerCloseID uuid.UUID
 	answerErr     error
 
+	// Slice 10b — create_goal.
+	openedType  store.GoalType
+	openedText  string
+	openedOwner string
+	openCalls   int
+	openedGoal  store.OpenedGoal
+	openErr     error
+
 	// Slice 10 — the legacy lifecycle pair. Exercised in tools_legacylog_test.go.
 	legacySpawns    []store.LegacyAgent
 	legacySpawnID   uuid.UUID
@@ -93,6 +101,15 @@ func (f *fakeGoalSource) CloseGoalForAgent(_ context.Context, agent string, goal
 	f.closeCalls++
 	f.closedAgent, f.closedGoal, f.closedOutcome, f.closedSummary = agent, goal, outcome, summary
 	return f.closeID, f.closeErr
+}
+
+func (f *fakeGoalSource) OpenGoal(_ context.Context, gt store.GoalType, text, owner string) (store.OpenedGoal, error) {
+	if f.openErr != nil {
+		return store.OpenedGoal{}, f.openErr
+	}
+	f.openCalls++
+	f.openedType, f.openedText, f.openedOwner = gt, text, owner
+	return f.openedGoal, nil
 }
 
 func (f *fakeGoalSource) Enabled() bool { return f.enabled }

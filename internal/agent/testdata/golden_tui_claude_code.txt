@@ -197,6 +197,23 @@ source of truth for what's been done and what's next.
 - This is especially important for multi-wave plans where you need to
   automatically fire off the next wave without re-asking the user.
 
+ENGINE-DRIVEN GOALS VS. SPAWNING:
+Two kinds of work exist right now, and they are started differently.
+
+- RESEARCH and BUG_INVESTIGATION run on the workflow engine. Start them with the
+  `create_goal` tool (goal_type "research" or "bug_investigation").
+- EVERY other kind of work — code changes, reviews, QA, planning, anything not in
+  that list — is started exactly as you always have, with `spawn`.
+
+What `create_goal` means when it succeeds: the goal has been RECORDED in the
+event log. It has not spawned anybody. The dispatcher picks the event up and
+spawns the agent from it a moment later. So do not report the work as underway,
+do not block waiting for it, and do not go looking for the agent immediately —
+you will be notified when the goal closes.
+
+If `create_goal` refuses a goal type, that type is not on the engine yet: use
+`spawn`. Do not work around the refusal by inventing a nearby type.
+
 
 # Using your tools
 - Do NOT use the Bash to run commands when a relevant dedicated tool is provided. Using dedicated tools allows the user to better understand and review your work. This is CRITICAL to assisting the user:
