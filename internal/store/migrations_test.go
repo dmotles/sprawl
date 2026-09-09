@@ -77,7 +77,7 @@ func TestMigrationsFS_CarriesEveryMigration(t *testing.T) {
 		"00003_m2_agent_cards_meta.sql",
 		"00004_m2_agent_card_render_opts.sql",
 		"00005_m3a_follows_event_id.sql",
-		"00006_ui_ro_role.sql",
+		"00006_ro_role.sql",
 	}
 	for _, n := range want {
 		if _, ok := got[n]; !ok {
@@ -191,7 +191,7 @@ func TestMigrations_AppendOnlyMigrationGrantsNoMutatingPrivilegeOnEvents(t *test
 //     asserts it was written, which is what a reviewer of a future migration
 //     will actually be told about.
 func TestMigrations_UIReadRoleGrantsOnlySelect(t *testing.T) {
-	const file = "00006_ui_ro_role.sql"
+	const file = "00006_ro_role.sql"
 	body, ok := readMigrations(t)[file]
 	if !ok {
 		t.Fatalf("%s is not embedded, so this assertion has nothing to read", file)
@@ -208,6 +208,13 @@ func TestMigrations_UIReadRoleGrantsOnlySelect(t *testing.T) {
 		if strings.Contains(upper, "ALTER DEFAULT PRIVILEGES") &&
 			strings.Contains(upper, "GRANT SELECT ON TABLES") {
 			sawDefaultPrivileges = true
+			// FOR ROLE is not optional decoration. Unqualified, the default
+			// privilege attaches to whoever ran the migration; when that is an
+			// admin who is not the schema owner it covers no future table at
+			// all, and it fails by NO-OP with no error to notice.
+			if !strings.Contains(upper, "FOR ROLE") {
+				t.Errorf("%s issues ALTER DEFAULT PRIVILEGES without FOR ROLE: %q — unscoped it attaches to the migrating role, so a migrate run by an admin who is not the schema owner silently covers nothing", file, trimmed)
+			}
 		}
 		// A REVOKE names the writing verbs on purpose, and ALTER DEFAULT
 		// PRIVILEGES ... REVOKE (the Down leg) contains the word GRANT nowhere.
@@ -225,7 +232,7 @@ func TestMigrations_UIReadRoleGrantsOnlySelect(t *testing.T) {
 		}
 		for _, verb := range []string{"INSERT", "UPDATE", "DELETE", "TRUNCATE", "ALL"} {
 			if strings.Contains(privs, verb) {
-				t.Errorf("%s grants %s: %q — sprawl_ui_ro is SELECT-only, and it is browser-reachable", file, verb, trimmed)
+				t.Errorf("%s grants %s: %q — sprawl_ro is SELECT-only, and it is browser-reachable", file, verb, trimmed)
 			}
 		}
 	}
