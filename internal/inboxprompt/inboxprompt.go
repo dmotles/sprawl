@@ -55,29 +55,6 @@ type Entry struct {
 	EnqueuedAt string   `json:"enqueued_at"`
 }
 
-// DisplaySubject returns the human-facing subject for an inbox entry. When
-// Subject is non-empty, returns it as-is. Otherwise falls back to the first
-// non-empty line of Body, hard-truncated at 80 bytes (QUM-550). The fallback
-// supports send_message entries which carry no explicit subject. Retained
-// post-QUM-555 for non-prompt surfaces (TUI labels, future tooling) even
-// though the rendered flush prompts no longer embed it.
-func DisplaySubject(e Entry) string {
-	if e.Subject != "" {
-		return e.Subject
-	}
-	for _, line := range strings.Split(e.Body, "\n") {
-		trimmed := strings.TrimSpace(line)
-		if trimmed == "" {
-			continue
-		}
-		if len(trimmed) > 80 {
-			return trimmed[:80]
-		}
-		return trimmed
-	}
-	return ""
-}
-
 // displayMessageID returns the short maildir ID when available, falling back
 // to the queue UUID. The flush prompts cite this as the `id=` argument of
 // `mcp__sprawl__messages_read(...)` (ResolvePrefix on the MCP tool side
@@ -139,24 +116,4 @@ func BuildInterruptFlushPrompt(entries []Entry) string {
 			e.From, displayMessageID(e))
 	}
 	return b.String()
-}
-
-// heartbeatNotificationBody is the verbatim body of the QUM-730 supervisor
-// heartbeat liveness-check nudge. Pinned by
-// TestBuildHeartbeatNotification_VerbatimBody — do NOT tweak without
-// updating the test in lockstep.
-const heartbeatNotificationBody = `<system-notification type="liveness_check">This is an automated liveness check from the sprawl system. If there's no work to do just ignore this message. If you're still waiting on something or you were in the middle of something, please continue your work.</system-notification>` + "\n"
-
-// BuildHeartbeatNotification returns the verbatim liveness-check
-// system-notification line. Always ends with a newline.
-//
-// NO PRODUCTION CALLER since QUM-1071 deleted the supervisor heartbeat that
-// injected it; its only remaining caller is its own test. Retained as the
-// documented record of the historical wire string, which still appears in
-// archived wire logs and is still rendered from them by
-// internal/tui/messages.go's NotificationKindLivenessCheck. Note that is a
-// documentation link, not a dependency: the parser hardcodes its own
-// "liveness_check" constant and does not call this. (QUM-730/QUM-1071)
-func BuildHeartbeatNotification() string {
-	return heartbeatNotificationBody
 }

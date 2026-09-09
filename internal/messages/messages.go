@@ -37,9 +37,9 @@ var RandReader = rand.Reader
 // The constant and the List() filters below are retained so an installation
 // upgrading across that change keeps hiding any envelope still on disk rather
 // than surfacing it as mail. The same string is still the wire `type` attribute
-// on the notification line itself (inboxprompt.BuildHeartbeatNotification →
-// internal/tui/messages.go's NotificationKindLivenessCheck), which is a separate
-// use and is NOT legacy.
+// on notification lines in archived wire logs, which internal/tui/messages.go
+// renders as NotificationKindLivenessCheck off its own hardcoded constant —
+// a separate use, and NOT legacy.
 const TypeLivenessCheck = "liveness_check"
 
 // legacyTypeStatusChange is the retired QUM-614 status_change envelope type,
