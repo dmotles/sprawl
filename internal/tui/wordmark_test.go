@@ -3,8 +3,6 @@ package tui
 import (
 	"strings"
 	"testing"
-
-	"charm.land/lipgloss/v2"
 )
 
 // TestHexToRGB_RoundTripsEndpoints verifies the gradient endpoint hex values
@@ -51,57 +49,23 @@ func TestGradientLine_EmptyString(t *testing.T) {
 	}
 }
 
-// TestRenderWordmark_WideHasThreeLines asserts the wide variant is exactly
-// three lines and each line spans the full terminal width.
-func TestRenderWordmark_WideHasThreeLines(t *testing.T) {
-	out := RenderWordmark(120)
-	lines := strings.Split(out, "\n")
-	if len(lines) != WordmarkHeight(120) {
-		t.Errorf("wide wordmark: got %d lines, want %d", len(lines), WordmarkHeight(120))
-	}
-	if len(lines) != 3 {
-		t.Fatalf("wide wordmark: expected 3 lines, got %d", len(lines))
-	}
-	for i, ln := range lines {
-		if w := lipgloss.Width(ln); w != 120 {
-			t.Errorf("line %d width = %d, want 120", i, w)
-		}
-	}
-}
-
-// TestRenderWordmark_NarrowOneLine verifies the narrow fallback collapses to a
-// single gradient SPRAWL line padded to width.
-func TestRenderWordmark_NarrowOneLine(t *testing.T) {
-	out := RenderWordmark(60)
-	if strings.Contains(out, "\n") {
-		t.Errorf("narrow wordmark should be a single line, got:\n%s", out)
+// TestWordmarkHeight covers the row-count contract RenderHeader depends on:
+// zero rows at degenerate width, one row below the narrow threshold, and the
+// full glyph height at or above it.
+func TestWordmarkHeight(t *testing.T) {
+	if WordmarkHeight(0) != 0 {
+		t.Errorf("WordmarkHeight(0) = %d, want 0", WordmarkHeight(0))
 	}
 	if WordmarkHeight(60) != 1 {
 		t.Errorf("WordmarkHeight(60) = %d, want 1", WordmarkHeight(60))
 	}
-	if w := lipgloss.Width(out); w != 60 {
-		t.Errorf("narrow wordmark width = %d, want 60", w)
-	}
-}
-
-// TestRenderWordmark_BoundaryWidth confirms the wide/narrow boundary lives at
-// wordmarkNarrowThreshold.
-func TestRenderWordmark_BoundaryWidth(t *testing.T) {
 	if WordmarkHeight(wordmarkNarrowThreshold-1) != 1 {
-		t.Errorf("just-below-threshold should pick narrow (1 line)")
+		t.Errorf("just-below-threshold should pick narrow (1 line), got %d", WordmarkHeight(wordmarkNarrowThreshold-1))
 	}
 	if WordmarkHeight(wordmarkNarrowThreshold) != 3 {
-		t.Errorf("at-threshold should pick wide (3 lines)")
+		t.Errorf("at-threshold should pick wide (3 lines), got %d", WordmarkHeight(wordmarkNarrowThreshold))
 	}
-}
-
-// TestRenderWordmark_ZeroWidth must not panic and must return safely.
-func TestRenderWordmark_ZeroWidth(t *testing.T) {
-	out := RenderWordmark(0)
-	if out != "" {
-		t.Errorf("RenderWordmark(0) = %q, want empty", out)
-	}
-	if WordmarkHeight(0) != 0 {
-		t.Errorf("WordmarkHeight(0) = %d, want 0", WordmarkHeight(0))
+	if WordmarkHeight(120) != 3 {
+		t.Errorf("WordmarkHeight(120) = %d, want 3", WordmarkHeight(120))
 	}
 }

@@ -35,8 +35,8 @@ const (
 	wordmarkNarrowThreshold = 70
 )
 
-// WordmarkHeight reports how many rows RenderWordmark will produce at the
-// given terminal width. Zero width yields zero rows so callers can subtract
+// WordmarkHeight reports how many rows the wordmark occupies at the given
+// terminal width. Zero width yields zero rows so callers can subtract
 // safely on degenerate sizes.
 func WordmarkHeight(width int) int {
 	if width <= 0 {
@@ -46,24 +46,6 @@ func WordmarkHeight(width int) int {
 		return 1
 	}
 	return len(sprawlWordmark)
-}
-
-// RenderWordmark returns the SPRAWL wordmark padded to the given terminal
-// width. Wide (>=wordmarkNarrowThreshold) returns the 3-line box-drawing
-// glyphs with a cyan→purple gradient; narrow returns a single-line
-// gradient "SPRAWL". Width 0 returns the empty string.
-func RenderWordmark(width int) string {
-	if width <= 0 {
-		return ""
-	}
-	if width < wordmarkNarrowThreshold {
-		return padVisible(gradientLine("SPRAWL"), width)
-	}
-	lines := make([]string, len(sprawlWordmark))
-	for i, glyph := range sprawlWordmark {
-		lines[i] = padVisible(gradientLine(glyph), width)
-	}
-	return strings.Join(lines, "\n")
 }
 
 // gradientLine renders s with a left→right cyan→purple hex color lerp across
