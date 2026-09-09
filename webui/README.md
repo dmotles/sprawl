@@ -43,11 +43,15 @@ eye voids that result. Status colours are reserved and never reused as a series.
 ## No baked-in endpoint
 
 The bundle must contain no absolute API URL, so one image runs against any
-deployment. `npm run build && npm run check:endpoints` enforces it; the check
-also runs inside the image build, so a violation fails the Docker build. It
-fails loudly on a missing or JS-less `dist/` rather than reporting a vacuous
-pass. Watched failing: baking `https://api.example.invalid/api` into a rendered
-string made it exit 1 naming the URL and the file; the clean tree exits 0.
+deployment. `npm run build` chains `check:endpoints`, so every build — local
+and in the image — enforces it. The scan covers `http(s)://`, `ws(s)://` and
+protocol-relative `//host/…` forms, over a copy with `\/` unescaped, and fails
+loudly on a missing or JS-less `dist/` rather than reporting a vacuous pass.
+Watched failing on all three shapes (`//api.example.invalid/api`,
+`wss://tail.example.invalid/ws`, a JSON-escaped `https://json.example.invalid/api`):
+each exits 1 naming the URL and the file; the clean tree exits 0. The
+protocol-relative arm exists because review watched the earlier http(s)-only
+pattern report OK on a bundle that contained `//api.example.invalid/api`.
 
 ## Local development
 
@@ -67,7 +71,11 @@ npm run build   # -> dist/ (gitignored; built inside the image)
 `nginx-unprivileged`, reverse-proxying `/api` to the read API. The upstream is
 injected at run time via `SPRAWL_UIAPI_UPSTREAM` (nginx-unprivileged's envsubst
 entrypoint renders `nginx.conf.template`) — nothing about a deployment is baked
-into the image.
+into the image, and there is deliberately no default, so a deployment that
+forgets to inject it fails to start instead of 502-ing at a user. `envsubst` is
+pinned to `SPRAWL_*` via `NGINX_ENVSUBST_FILTER`; without it the entrypoint
+substitutes every env var, and an env var named `host` blanks nginx's own
+`$host` (watched: `proxy_set_header Host SHOULD_NOT_LEAK`).
 
 That proxy is **architecture, not a dev convenience**: per QUM-1350 the read API
 is never exposed directly, so this container is the only route a browser has to

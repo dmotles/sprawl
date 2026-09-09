@@ -2,15 +2,15 @@
 #
 # Slice A owns this file and adds postgres + the seed job + the `uiapi` service.
 # Slice B contributes ONLY the `web` service below; expect this file to be
-# rebased onto slice A's version.
+# rebased onto slice A's version. At that rebase `web` needs
+# `depends_on: [uiapi]`: nginx resolves a literal proxy_pass hostname at config
+# load and exits if it is unresolvable, so a cold start without uiapi cannot
+# come up. It is not declared here because slice B's file has no uiapi service.
 services:
   web:
     build:
       context: ../..
       dockerfile: deploy/webui/Dockerfile.web
-      # Deploy target is linux/amd64 (QUM-1350); dev hosts may be arm64.
-      platforms:
-        - linux/amd64
     ports:
       - "8080:8080"
     environment:

@@ -46,8 +46,11 @@ describe("design tokens", () => {
     expect(series.filter((c) => status.includes(c))).toEqual([]);
   });
 
-  it("uses no raw hex outside the token file", () => {
+  // Hex is not the only way to write a colour: the first version of this
+  // assertion greped for `#hex` alone and stayed green with a literal
+  // `rgba(0, 0, 0, 0.6)` already in app.css.
+  it("uses no raw colour outside the token file", () => {
     const stripped = app.replace(/\/\*[\s\S]*?\*\//g, "");
-    expect(stripped).not.toMatch(/#[0-9a-fA-F]{3,8}\b/);
+    expect(stripped).not.toMatch(/#[0-9a-fA-F]{3,8}\b|(?:rgba?|hsla?|color-mix)\(/);
   });
 });

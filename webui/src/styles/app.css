@@ -336,7 +336,7 @@ a {
     z-index: 3;
     border: 0;
     padding: 0;
-    background: rgba(0, 0, 0, 0.6);
+    background: var(--scrim);
   }
 
   .shell__content {

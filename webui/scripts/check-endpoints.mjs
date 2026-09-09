@@ -5,12 +5,17 @@
 // one image runs against any deployment. A baked-in host would work in dev and
 // silently point at the wrong place — or at nothing — everywhere else.
 //
-// Scope, stated because it bounds what a pass means: this greps for absolute
-// http(s) URLs in dist/ and allows two classes that are NOT endpoints —
-// XML/SVG namespace URIs, and the URL-parsing bases and doc links that React
-// and react-router carry in their own source. Anything else is a failure.
-// A dist/ that does not exist, or contains no JS, is also a failure: an empty
-// scan must never read as a clean one.
+// Scope, stated because it bounds what a pass means: this greps dist/ for
+// absolute http(s)/ws(s) URLs AND for protocol-relative `//host/…` endpoints,
+// over a copy with `\/` unescaped so a JSON-encoded `https:\/\/host` cannot
+// hide. It allows two classes that are NOT endpoints — XML/SVG namespace URIs,
+// and the URL-parsing bases and doc links that React and react-router carry in
+// their own source. Anything else is a failure. A dist/ that does not exist, or
+// contains no JS, is also a failure: an empty scan must never read as a clean
+// one.
+//
+// The protocol-relative arm exists because a reviewer watched the http(s)-only
+// pattern report OK on a bundle containing `//api.example.invalid/api`.
 import { readdirSync, readFileSync, statSync } from "node:fs";
 import { join } from "node:path";
 
@@ -43,13 +48,25 @@ if (!files.some((f) => f.endsWith(".js"))) {
   process.exit(1);
 }
 
+const ABSOLUTE = /\b(?:https?|wss?):\/\/[^"'`\s)]*/g;
+// `//host.tld/…` with no scheme. The lookbehind rejects a preceding `:` or `/`
+// so a scheme'd URL is only reported once, by ABSOLUTE, and stays subject to
+// the allowlist above (`//www.w3.org/…` alone is not allowlisted). The host
+// must be dotted, which keeps `//# sourceMappingURL` and bare comment slashes
+// out.
+const PROTOCOL_RELATIVE = /(?<![:/])\/\/[a-z0-9-]+(?:\.[a-z0-9-]+)+(?::\d+)?[^"'`\s)]*/gi;
+
 const offenders = new Map();
 for (const file of files) {
-  const text = readFileSync(file, "utf8");
-  for (const url of text.match(/https?:\/\/[^"'`\s)]*/g) ?? []) {
-    const bare = url.replace(/[.,;]+$/, "");
-    if (ALLOW.some((re) => re.test(bare))) continue;
-    offenders.set(bare, file);
+  // Unescape `\/` so a JSON- or JS-string-escaped URL is scanned in its plain
+  // form. Done on a copy used only for matching.
+  const text = readFileSync(file, "utf8").replaceAll("\\/", "/");
+  for (const re of [ABSOLUTE, PROTOCOL_RELATIVE]) {
+    for (const url of text.match(re) ?? []) {
+      const bare = url.replace(/[.,;]+$/, "");
+      if (ALLOW.some((allow) => allow.test(bare))) continue;
+      offenders.set(bare, file);
+    }
   }
 }
 

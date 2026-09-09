@@ -12,8 +12,9 @@ server {
     # Hashed asset filenames are immutable; index.html must never be cached or
     # a deploy leaves clients pinned to a stale bundle.
     location /assets/ {
-        expires 1y;
-        add_header Cache-Control "public, immutable";
+        # add_header alone, not `expires`: the two each emit a Cache-Control
+        # header and the response would carry both.
+        add_header Cache-Control "public, max-age=31536000, immutable" always;
     }
 
     location = /index.html {
@@ -22,7 +23,9 @@ server {
 
     # Same-origin API. The trailing slash on neither side is deliberate: the
     # upstream serves the /api prefix itself, so the path passes through intact.
-    location /api {
+    # `~ ^/api(/|$)` rather than the prefix `location /api`, which would also
+    # capture SPA routes like /apikeys.
+    location ~ ^/api(/|$) {
         proxy_pass ${SPRAWL_UIAPI_UPSTREAM};
         proxy_http_version 1.1;
         proxy_set_header Host $host;

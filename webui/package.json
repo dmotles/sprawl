@@ -5,7 +5,7 @@
   "type": "module",
   "description": "Read-only Sprawl hub web UI (QUM-1349): dark-mode SPA over the same-origin /api read API.",
   "scripts": {
-    "build": "tsc -b && vite build",
+    "build": "tsc -b && vite build && npm run check:endpoints",
     "dev": "vite",
     "test": "vitest run",
     "check:endpoints": "node scripts/check-endpoints.mjs"

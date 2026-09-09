@@ -20,14 +20,17 @@ WORKDIR /src
 COPY webui/package.json webui/package-lock.json ./
 RUN npm ci
 COPY webui/ ./
-RUN npm run build && node scripts/check-endpoints.mjs
+RUN npm run build  # chains check-endpoints; see webui/package.json
 
 FROM nginxinc/nginx-unprivileged:1.29-alpine
 COPY --from=build /src/dist /usr/share/nginx/html
 # nginx-unprivileged runs 20-envsubst-on-templates.sh over /etc/nginx/templates,
 # so ${SPRAWL_UIAPI_UPSTREAM} is substituted at container start.
 COPY deploy/webui/nginx.conf.template /etc/nginx/templates/default.conf.template
-ENV SPRAWL_UIAPI_UPSTREAM=http://uiapi:8081
+# No default for SPRAWL_UIAPI_UPSTREAM on purpose: a deployment that forgets to
+# inject it should fail to start (empty proxy_pass -> nginx refuses the config)
+# rather than come up proxying to a hostname that only exists in compose and
+# 502 at a user. Nothing about a deployment is baked in.
 # Restrict envsubst to SPRAWL_* names. The entrypoint otherwise substitutes
 # EVERY defined env var, so a deployment that happened to set `host` or `uri`
 # would silently blank the nginx runtime variables of the same name in the
