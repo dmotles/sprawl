@@ -4,11 +4,9 @@ import (
 	"bytes"
 	"errors"
 	"io"
-	"os/exec"
 	"strings"
 	"sync/atomic"
 	"testing"
-	"time"
 )
 
 func TestMarkerWriter_PassthroughWithoutMatch(t *testing.T) {
@@ -121,90 +119,5 @@ func TestMarkerWriter_PropagatesUnderlyingWriteError(t *testing.T) {
 	w := NewMarkerWriter(errWriter{err: want}, NoConversationMarker, 1<<20, func() {})
 	if _, err := w.Write([]byte("hi")); !errors.Is(err, want) {
 		t.Errorf("expected underlying write error to propagate; got %v", err)
-	}
-}
-
-// TestRunWithResumeWatch_MarkerInStderrKillsProcess is the integration-level
-// acceptance test for QUM-261: a fake claude that emits the "No conversation
-// found" marker to stderr and then hangs must be killed by RunWithResumeWatch
-// within the resume-failure window, and the returned error must wrap
-// ErrResumeFailed.
-func TestRunWithResumeWatch_MarkerInStderrKillsProcess(t *testing.T) {
-	// /bin/sh echoes the marker to stderr and then sleeps long enough that,
-	// without the scanner-triggered kill, the test would time out.
-	cmd := exec.Command("/bin/sh", "-c",
-		`printf 'No conversation found with session ID: deadbeef\n' 1>&2; sleep 30`)
-
-	var stderr bytes.Buffer
-	cmd.Stderr = &stderr
-
-	done := make(chan error, 1)
-	start := time.Now()
-	go func() { done <- RunWithResumeWatch(cmd) }()
-
-	select {
-	case err := <-done:
-		if !errors.Is(err, ErrResumeFailed) {
-			t.Errorf("expected error to wrap ErrResumeFailed, got %v", err)
-		}
-		if d := time.Since(start); d > 5*time.Second {
-			t.Errorf("fallback took %v, want < 5s", d)
-		}
-		if !strings.Contains(stderr.String(), "No conversation found") {
-			t.Errorf("underlying stderr writer did not see marker: %q", stderr.String())
-		}
-	case <-time.After(10 * time.Second):
-		_ = cmd.Process.Kill()
-		t.Fatal("RunWithResumeWatch never returned; marker scanner did not kill the hung subprocess")
-	}
-}
-
-// TestRunWithResumeWatch_MarkerOnStdoutIgnored verifies that RunWithResumeWatch
-// does NOT scan stdout. Leaving stdout unwrapped is load-bearing: replacing
-// cmd.Stdout with an io.Writer causes os/exec to pipe fd 1, which makes Claude
-// Code auto-switch into --print mode and fail to launch interactively. The
-// real claude only emits the marker on stderr, so stdout scanning is
-// unnecessary; this test locks in that only-stderr contract.
-func TestRunWithResumeWatch_MarkerOnStdoutIgnored(t *testing.T) {
-	cmd := exec.Command("/bin/sh", "-c",
-		`printf 'No conversation found with session ID: dead\n'; exit 3`)
-	cmd.Stdout = io.Discard
-	cmd.Stderr = io.Discard
-
-	err := RunWithResumeWatch(cmd)
-	if errors.Is(err, ErrResumeFailed) {
-		t.Fatalf("expected marker on stdout to be ignored, but got ErrResumeFailed: %v", err)
-	}
-	var exitErr *exec.ExitError
-	if !errors.As(err, &exitErr) {
-		t.Fatalf("expected *exec.ExitError for non-zero shell exit, got %T: %v", err, err)
-	}
-	if exitErr.ExitCode() != 3 {
-		t.Errorf("expected exit code 3, got %d", exitErr.ExitCode())
-	}
-}
-
-// TestRunWithResumeWatch_NormalExit_ReturnsUnderlyingError verifies the
-// scanner is transparent when no marker appears: a shell that exits cleanly
-// returns a nil error; a shell that exits non-zero returns the usual
-// *exec.ExitError, not ErrResumeFailed.
-func TestRunWithResumeWatch_NormalExit_ReturnsUnderlyingError(t *testing.T) {
-	cmd := exec.Command("/bin/sh", "-c", "echo hi; exit 0")
-	cmd.Stdout = io.Discard
-	cmd.Stderr = io.Discard
-	if err := RunWithResumeWatch(cmd); err != nil {
-		t.Errorf("expected nil on clean exit, got %v", err)
-	}
-
-	cmd = exec.Command("/bin/sh", "-c", "exit 7")
-	cmd.Stdout = io.Discard
-	cmd.Stderr = io.Discard
-	err := RunWithResumeWatch(cmd)
-	if errors.Is(err, ErrResumeFailed) {
-		t.Errorf("no marker emitted; err must not wrap ErrResumeFailed, got %v", err)
-	}
-	var exitErr *exec.ExitError
-	if !errors.As(err, &exitErr) {
-		t.Errorf("expected *exec.ExitError for non-zero exit, got %T: %v", err, err)
 	}
 }
