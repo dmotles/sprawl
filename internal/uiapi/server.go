@@ -39,6 +39,8 @@ type Config struct {
 	Inbox QuestionReader
 	// Workflows backs /api/workflows. Required.
 	Workflows WorkflowReader
+	// Fleet backs /api/fleet. Required.
+	Fleet FleetReader
 	// Health backs /healthz's dependency check. Optional: nil means the probe
 	// reports liveness only, which is what a request arriving at all proves.
 	Health Pinger
@@ -73,6 +75,10 @@ func NewMux(cfg Config) *http.ServeMux {
 		func(ctx context.Context, o ListOptions) ([]Workflow, error) {
 			return cfg.Workflows.ListWorkflows(ctx, o)
 		}))
+	mux.HandleFunc("GET /api/fleet", handleList("fleet", logger,
+		func(ctx context.Context, o ListOptions) ([]FleetMember, error) {
+			return cfg.Fleet.ListFleet(ctx, o)
+		}))
 	return mux
 }
 
@@ -94,6 +100,7 @@ func Serve(ctx context.Context, cfg Config) error {
 		{"Goals", cfg.Goals == nil},
 		{"Inbox", cfg.Inbox == nil},
 		{"Workflows", cfg.Workflows == nil},
+		{"Fleet", cfg.Fleet == nil},
 	} {
 		if req.nil {
 			return fmt.Errorf("uiapi: Config.%s is nil, so its endpoint would fail on the first request", req.name)

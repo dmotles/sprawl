@@ -41,6 +41,7 @@ func fullConfig() Config {
 		Goals:     &fakeGoals{},
 		Inbox:     &fakeQuestions{},
 		Workflows: &fakeWorkflows{},
+		Fleet:     &fakeFleet{},
 	}
 }
 
@@ -196,7 +197,7 @@ func TestHandleHealthz_DoesNotLeakTheConnectionError(t *testing.T) {
 // TestNewMux_RejectsNonGET pins the method patterns. Registered as "GET /path",
 // so a POST is a 405 from the mux itself and no handler runs.
 func TestNewMux_RejectsNonGET(t *testing.T) {
-	for _, path := range []string{"/healthz", "/api/events", "/api/goals", "/api/inbox", "/api/workflows"} {
+	for _, path := range []string{"/healthz", "/api/events", "/api/goals", "/api/inbox", "/api/workflows", "/api/fleet"} {
 		rec := httptest.NewRecorder()
 		NewMux(fullConfig()).ServeHTTP(rec, httptest.NewRequest(http.MethodPost, path, nil))
 		if rec.Code != http.StatusMethodNotAllowed {
@@ -219,6 +220,7 @@ func TestServe_RefusesANilReader(t *testing.T) {
 		{"no goals reader", func(c *Config) { c.Goals = nil }, "Config.Goals is nil"},
 		{"no inbox reader", func(c *Config) { c.Inbox = nil }, "Config.Inbox is nil"},
 		{"no workflows reader", func(c *Config) { c.Workflows = nil }, "Config.Workflows is nil"},
+		{"no fleet reader", func(c *Config) { c.Fleet = nil }, "Config.Fleet is nil"},
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
