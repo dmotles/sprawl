@@ -62,6 +62,13 @@ describe("projectLabel", () => {
     expect(projectLabel("")).toBe("—");
   });
 
+  it("renders an em dash when the endpoint omitted the field entirely", () => {
+    // The parse boundary: an endpoint that does not send project_name must
+    // produce the honest dash, not a blank cell React renders as nothing.
+    expect(projectLabel(undefined)).toBe("—");
+    expect(projectLabel(null)).toBe("—");
+  });
+
   it("passes a derived label through unchanged", () => {
     expect(projectLabel("sprawl")).toBe("sprawl");
   });
@@ -70,5 +77,10 @@ describe("projectLabel", () => {
 describe("shortId", () => {
   it("keeps the first uuid segment", () => {
     expect(shortId("11111111-2222-4333-8444-555555555555")).toBe("11111111");
+  });
+
+  it("renders an em dash for a missing id rather than an empty cell", () => {
+    expect(shortId("")).toBe("—");
+    expect(shortId(undefined)).toBe("—");
   });
 });

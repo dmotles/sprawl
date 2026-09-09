@@ -41,6 +41,20 @@ describe("LedgerView", () => {
     expect(rows[1]).toHaveTextContent("unknown type");
   });
 
+  it("renders an em dash when the API omitted the project label", async () => {
+    // The parse boundary, not a hypothetical: an /api/events that predates the
+    // project_name field would otherwise render a blank Project cell.
+    const { project_name: _dropped, ...withoutProject } = makeEvent({ seq: 5 });
+    renderWithApi(
+      <LedgerView />,
+      fakeClient({
+        listEvents: async () => [withoutProject as ReturnType<typeof makeEvent>],
+      }),
+    );
+    const rows = await screen.findAllByRole("row");
+    expect(rows[1]).toHaveTextContent("—");
+  });
+
   it("shows an empty state when the ledger is empty", async () => {
     renderWithApi(<LedgerView />, fakeClient({ listEvents: async () => [] }));
     expect(await screen.findByText("No events")).toBeInTheDocument();

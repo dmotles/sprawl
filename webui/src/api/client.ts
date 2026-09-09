@@ -33,11 +33,12 @@ export interface ListOpts {
 
 export interface ApiClient {
   listGoals(opts?: ListOpts): Promise<Goal[]>;
-  listWorkflows(opts?: ListOpts & { state?: "in_flight" | "settled" | "all" }): Promise<Workflow[]>;
+  listWorkflows(opts?: ListOpts): Promise<Workflow[]>;
   listFleet(opts?: ListOpts): Promise<FleetAgent[]>;
-  listEvents(
-    opts?: ListOpts & { workflow_instance_id?: string; before_seq?: number },
-  ): Promise<EventRow[]>;
+  // Only the options the API actually parses are typed. A `before_seq` the
+  // server silently drops would hand the first caller to add a filter a full
+  // unfiltered page back, with no error to notice.
+  listEvents(opts?: ListOpts): Promise<EventRow[]>;
   getUsage(opts?: { bucket?: "hour" | "day"; project_id?: string }): Promise<Usage>;
   listInbox(opts?: ListOpts): Promise<InboxQuestion[]>;
 }

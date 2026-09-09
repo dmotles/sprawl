@@ -9,11 +9,15 @@ import { formatTime, formatUsd } from "../format";
  * no scales beyond a percentage of the maximum.
  */
 export function BarSeries({ points }: { points: { bucket: string; cost_usd: number }[] }) {
-  const peak = Math.max(...points.map((point) => point.cost_usd), 0);
+  // reduce, not Math.max(...spread): a spread puts the whole series on the
+  // stack, and nothing bounds how many buckets the API returns.
+  const peak = points.reduce((max, point) => Math.max(max, point.cost_usd), 0);
   return (
-    <div className="bars">
+    /* The bars are a list so a screen reader announces how many readings the
+       series holds, rather than N anonymous images. */
+    <div className="bars" role="list" aria-label="Spend per bucket">
       {points.map((point) => (
-        <div className="bars__slot" key={point.bucket}>
+        <div className="bars__slot" role="listitem" key={point.bucket}>
           <div
             className="bars__bar"
             role="img"

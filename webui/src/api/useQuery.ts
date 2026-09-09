@@ -16,6 +16,12 @@ export type QueryState<T> =
  * inline lambda at the call site re-fire the effect on every render, and the
  * resulting loop exhausts the heap rather than failing visibly. Measured: it
  * OOM-killed the vitest worker.
+ *
+ * There is no AbortController: a superseded request runs to completion and its
+ * answer is discarded by the generation guard. Consequences, both accepted for
+ * reads this small — under StrictMode every view issues its mount request
+ * twice in `npm run dev` (so a doubled dev API log is expected, not a broken
+ * guard), and a slow superseded read still occupies a connection.
  */
 export function useQuery<T>(
   run: () => Promise<T>,

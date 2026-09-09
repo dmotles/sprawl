@@ -49,8 +49,11 @@ describe("createApiClient", () => {
   ] as const)("%s reads %s and unwraps its named key", async (method, path, body) => {
     const { calls, fetchImpl } = stubFetch({ jsonBody: body });
     const client = createApiClient(fetchImpl);
-    await client[method]();
+    const got = await client[method]();
     expect(calls[0]).toBe(path);
+    // The unwrap is the other half of the claim: a client that returned the
+    // whole envelope would still pass a URL-only assertion.
+    expect(got).toEqual(method === "getUsage" ? body : []);
   });
 
   it("passes project_id through on a list endpoint", async () => {

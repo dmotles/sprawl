@@ -54,12 +54,19 @@ export function formatCount(value: number | null | undefined): string {
  * The server-derived project label. It is the last path segment of the repo
  * remote — the raw remote URL never reaches the browser — and it can be empty
  * when a remote has no repo path.
+ *
+ * Absent is accepted as well as empty, because this is the JSON parse boundary:
+ * an endpoint that omits the field entirely would otherwise render an *empty*
+ * cell, which is exactly the silent blank the em dash exists to prevent.
  */
-export function projectLabel(name: string): string {
-  return name === "" ? UNKNOWN : name;
+export function projectLabel(name: string | null | undefined): string {
+  return name ? name : UNKNOWN;
 }
 
-/** First segment of a uuid — enough to correlate, short enough to scan. */
-export function shortId(id: string): string {
-  return id.split("-")[0];
+/**
+ * First segment of a uuid — enough to correlate, short enough to scan. Absent
+ * or empty renders the em dash, for the same boundary reason as `projectLabel`.
+ */
+export function shortId(id: string | null | undefined): string {
+  return id ? id.split("-")[0] : UNKNOWN;
 }
