@@ -28,4 +28,9 @@ COPY --from=build /src/dist /usr/share/nginx/html
 # so ${SPRAWL_UIAPI_UPSTREAM} is substituted at container start.
 COPY deploy/webui/nginx.conf.template /etc/nginx/templates/default.conf.template
 ENV SPRAWL_UIAPI_UPSTREAM=http://uiapi:8081
+# Restrict envsubst to SPRAWL_* names. The entrypoint otherwise substitutes
+# EVERY defined env var, so a deployment that happened to set `host` or `uri`
+# would silently blank the nginx runtime variables of the same name in the
+# rendered config. Narrowing the filter removes that class outright.
+ENV NGINX_ENVSUBST_FILTER=^SPRAWL_
 EXPOSE 8080
