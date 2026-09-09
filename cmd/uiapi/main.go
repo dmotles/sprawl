@@ -132,6 +132,7 @@ func run(ctx context.Context, args []string, getenv func(string) string, w io.Wr
 		Inbox:     uiapi.PgQuestionReader{Pool: pool},
 		Workflows: uiapi.PgWorkflowReader{Pool: pool},
 		Fleet:     uiapi.PgFleetReader{Pool: pool},
+		Usage:     uiapi.PgUsageReader{Pool: pool},
 		Health:    pool,
 	})
 }

@@ -51,6 +51,8 @@ func (r *rowsStub) Scan(dest ...any) error {
 			*d = row[i].(bool)
 		case *int:
 			*d = row[i].(int)
+		case *float64:
+			*d = row[i].(float64)
 		default:
 			return errors.New("rowsStub: unhandled destination type")
 		}

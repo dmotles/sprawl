@@ -41,6 +41,8 @@ type Config struct {
 	Workflows WorkflowReader
 	// Fleet backs /api/fleet. Required.
 	Fleet FleetReader
+	// Usage backs /api/usage. Required.
+	Usage UsageReader
 	// Health backs /healthz's dependency check. Optional: nil means the probe
 	// reports liveness only, which is what a request arriving at all proves.
 	Health Pinger
@@ -79,6 +81,10 @@ func NewMux(cfg Config) *http.ServeMux {
 		func(ctx context.Context, o ListOptions) ([]FleetMember, error) {
 			return cfg.Fleet.ListFleet(ctx, o)
 		}))
+	mux.HandleFunc("GET /api/usage", handleList("usage", logger,
+		func(ctx context.Context, o ListOptions) ([]UsageBucket, error) {
+			return cfg.Usage.ListUsage(ctx, o)
+		}))
 	return mux
 }
 
@@ -101,6 +107,7 @@ func Serve(ctx context.Context, cfg Config) error {
 		{"Inbox", cfg.Inbox == nil},
 		{"Workflows", cfg.Workflows == nil},
 		{"Fleet", cfg.Fleet == nil},
+		{"Usage", cfg.Usage == nil},
 	} {
 		if req.nil {
 			return fmt.Errorf("uiapi: Config.%s is nil, so its endpoint would fail on the first request", req.name)
@@ -236,6 +243,17 @@ func parseListOptions(q url.Values) (ListOptions, error) {
 		return ListOptions{}, err
 	}
 	opts := ListOptions{Limit: limit}
+	// An unknown bucket is a 400 rather than a fallback to the default, for the
+	// same reason a bad ?limit= is: ?bucket=week silently answered by the day
+	// gives the caller a chart that is not the one they asked for and does not
+	// say so. It also keeps an arbitrary string out of date_trunc.
+	switch raw := q.Get("bucket"); raw {
+	case "":
+	case BucketHour, BucketDay:
+		opts.Bucket = raw
+	default:
+		return ListOptions{}, fmt.Errorf("bucket must be %q or %q, got %q", BucketHour, BucketDay, raw)
+	}
 	if raw := q.Get("project_id"); raw != "" {
 		id, err := uuid.Parse(raw)
 		if err != nil {

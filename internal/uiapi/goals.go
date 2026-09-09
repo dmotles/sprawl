@@ -18,6 +18,11 @@ import (
 type ListOptions struct {
 	Limit     int
 	ProjectID *uuid.UUID
+	// Bucket is the time-bucket width, read only by /api/usage. Empty means
+	// DefaultBucket. It lives here rather than in a usage-specific options type
+	// so every endpoint keeps one parser and one validation path — the drift
+	// that duplication produces is the whole reason handleList is generic.
+	Bucket string
 }
 
 // Goal is one outstanding piece of work.
