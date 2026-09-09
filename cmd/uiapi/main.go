@@ -18,6 +18,7 @@ package main
 
 import (
 	"context"
+	"errors"
 	"flag"
 	"fmt"
 	"io"
@@ -49,6 +50,11 @@ type closerFunc func()
 
 func (f closerFunc) Close() error { f(); return nil }
 
+// openPool deliberately takes no getenv. libpq resolves PG* from the AMBIENT
+// process environment inside pgxpool, so the connection settings cannot be
+// threaded through run's injected getenv — run validates os.Getenv's view and
+// the pool reads the same one. A test that stubs getenv therefore proves things
+// about the refusal, never about the connection.
 func openPool(ctx context.Context) (uiapi.Pool, io.Closer, error) {
 	pool, err := uiapi.OpenPool(ctx)
 	if err != nil {
@@ -81,6 +87,13 @@ func run(ctx context.Context, args []string, getenv func(string) string, w io.Wr
 	addr := fs.String("addr", uiapi.DefaultAddr, "listen address")
 	grace := fs.Duration("grace", uiapi.DefaultGrace, "graceful shutdown drain window")
 	if err := fs.Parse(args); err != nil {
+		// -h/--help is a request that was SERVED, not a failure: Parse has
+		// already written the usage to w. Returning the sentinel would make
+		// main1 print `flag: help requested` and exit 1 at an operator who
+		// followed the documented `exec uiapi /uiapi --help`.
+		if errors.Is(err, flag.ErrHelp) {
+			return nil
+		}
 		return err
 	}
 

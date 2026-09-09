@@ -38,6 +38,12 @@ COPY --from=build /out/uiapi /uiapi
 # The frontend reverse-proxies /api to it over the compose network, which is the
 # only route a browser has (QUM-1350 D5), so nothing here maps a port.
 EXPOSE 8080
-# /healthz is the liveness probe. Configuration is injected at deploy as
-# discrete PG* variables with PGPASSWORD as its own secret; nothing is baked in.
+# /healthz is the liveness endpoint, and it must be probed over HTTP — a k8s
+# `httpGet`, not an `exec`, and no compose `healthcheck:` either. This image is
+# distroless-static: it has no shell, no wget and no curl, so an exec probe
+# cannot run here by construction. Deployment (QUM-1350) inherits that
+# constraint; the endpoint exists, the means of poking it from inside does not.
+#
+# Configuration is injected at deploy as discrete PG* variables with PGPASSWORD
+# as its own secret; nothing is baked in.
 ENTRYPOINT ["/uiapi"]

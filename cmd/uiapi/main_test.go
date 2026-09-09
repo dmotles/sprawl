@@ -3,6 +3,7 @@ package main
 import (
 	"context"
 	"errors"
+	"flag"
 	"io"
 	"strings"
 	"testing"
@@ -109,25 +110,100 @@ func TestRun_DoesNotRequireAPasswordOrSSLMode(t *testing.T) {
 	}
 }
 
-// TestRun_NeverPrintsThePassword. main1 writes the error to stderr, and the
-// container's stderr is shipped to a log aggregator.
+// TestRun_NeverPrintsThePassword. The container's stderr is shipped to a log
+// aggregator, so a PGPASSWORD that reaches it is a credential in a log index.
+//
+// It goes through main1, not run: run RETURNS the error and main1 is what
+// prints it, so a test calling run directly on the connection-failure path
+// asserts against an empty buffer and can never fail. Each case therefore
+// carries its own liveness check — a `want` string that MUST be present — so
+// the absence of the password is evidence about the output rather than evidence
+// that there was no output. Both cases are run at debug level, so a
+// config-dumping log line would be captured too.
 func TestRun_NeverPrintsThePassword(t *testing.T) {
-	withSeams(t, func(context.Context) (uiapi.Pool, io.Closer, error) {
-		return nil, nil, errors.New("uiapi: the read database is unreachable")
-	}, okVerify, func(context.Context, uiapi.Config) error { return nil })
+	const password = "s3cr3t-do-not-log"
+
+	cases := []struct {
+		name   string
+		open   func(context.Context) (uiapi.Pool, io.Closer, error)
+		serve  func(context.Context, uiapi.Config) error
+		expect string // proof this case produced output at all
+	}{
+		{
+			name: "the connection fails",
+			open: func(context.Context) (uiapi.Pool, io.Closer, error) {
+				return nil, nil, errors.New("uiapi: the read database is unreachable")
+			},
+			serve:  func(context.Context, uiapi.Config) error { return nil },
+			expect: "unreachable",
+		},
+		{
+			// Reaches the logger, which the case above cannot: openPoolFn
+			// fails before a single line is logged.
+			name:   "the server fails after logging",
+			open:   okOpen,
+			serve:  func(context.Context, uiapi.Config) error { return errors.New("listen: address already in use") },
+			expect: "read database ready",
+		},
+	}
+
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			withSeams(t, tc.open, okVerify, tc.serve)
+
+			var out strings.Builder
+			env := fullEnv()
+			env["PGPASSWORD"] = password
+			env[EnvLogLevel] = "debug"
+
+			if err := main1(nil, envMap(env), &out); err == nil {
+				t.Fatal("expected the seeded failure")
+			}
+			got := out.String()
+			if !strings.Contains(got, tc.expect) {
+				t.Fatalf("output %q does not contain %q — this case wrote nothing on the path it claims to cover, so the password check below would pass vacuously", got, tc.expect)
+			}
+			if strings.Contains(got, password) {
+				t.Errorf("the password reached the process's output: %s", got)
+			}
+		})
+	}
+}
+
+// TestRun_HelpExitsCleanly. The compose header documents `exec uiapi /uiapi
+// --help` as the sanctioned way to poke a service that publishes no port, and
+// flag.ContinueOnError reports -h as the sentinel flag.ErrHelp — returning it
+// would make an operator following the documentation get exit 1 and a stray
+// `flag: help requested` line.
+func TestRun_HelpExitsCleanly(t *testing.T) {
+	withSeams(t, okOpen, okVerify, func(context.Context, uiapi.Config) error {
+		t.Error("--help served traffic")
+		return nil
+	})
 
 	var out strings.Builder
-	env := fullEnv()
-	env["PGPASSWORD"] = "s3cr3t-do-not-log"
-	// The log level is turned all the way up, so a debug-level config dump
-	// would be captured too.
-	env[EnvLogLevel] = "debug"
-
-	if err := run(context.Background(), nil, envMap(env), &out); err == nil {
-		t.Fatal("expected the seeded connection failure")
+	if err := run(context.Background(), []string{"--help"}, envMap(nil), &out); err != nil {
+		t.Fatalf("run(--help) = %v, want nil so the process exits 0", err)
 	}
-	if strings.Contains(out.String(), "s3cr3t-do-not-log") {
-		t.Errorf("the password reached the process's output: %s", out.String())
+	if !strings.Contains(out.String(), "-addr") {
+		t.Errorf("usage %q does not document -addr", out.String())
+	}
+}
+
+// TestRun_RejectsAnUnknownFlag is the negative control for the case above: a
+// run() that swallowed every parse error would pass it.
+func TestRun_RejectsAnUnknownFlag(t *testing.T) {
+	withSeams(t, okOpen, okVerify, func(context.Context, uiapi.Config) error {
+		t.Error("served traffic despite an unparseable command line")
+		return nil
+	})
+
+	err := run(context.Background(), []string{"--nonsense"}, envMap(fullEnv()), io.Discard)
+	if err == nil {
+		t.Fatal("run() accepted an unknown flag — a typo in a deployment manifest would boot a differently-configured process instead of failing")
+	}
+	if errors.Is(err, flag.ErrHelp) {
+		t.Errorf("an unknown flag was reported as a help request (%v), so it would exit 0", err)
 	}
 }
 

@@ -137,6 +137,14 @@ $$;
 -- Only this schema's grants go — including the default privileges, which
 -- otherwise outlive the rollback and silently re-grant SELECT on the next table
 -- created here.
+--
+-- `ON ALL TABLES` appears here despite the Up leg spending a paragraph
+-- rejecting it, and the two are not in tension: REVOKE is the direction where
+-- "whatever happens to exist" is exactly the right scope. Missing a table when
+-- granting widens nothing and merely breaks a read; missing one when revoking
+-- leaves a privilege behind after a rollback claimed to remove it. This
+-- statement also touches sprawl_ro alone, so a table the enumeration never
+-- named cannot be affected in any way that matters.
 -- +goose StatementBegin
 DO $$
 DECLARE

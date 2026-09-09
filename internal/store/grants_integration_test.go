@@ -127,6 +127,13 @@ func assertRefusedOnAs(t *testing.T, role, verb, object string, err error) {
 // query across ten tables. The catalog is the only instrument that answers
 // "what CAN this role do" — the behavioural tests below cannot see a
 // COLUMN-level grant.
+//
+// One thing it does NOT see, so no caller should claim it does: a privilege
+// granted to PUBLIC. Every role inherits those, no `REVOKE ... FROM sprawl_ro`
+// undoes one, and this query filters on the grantee by name — so a future
+// migration issuing `GRANT INSERT ON events TO PUBLIC` would leave both this
+// instrument and the behavioural test green while the read role can write.
+// Pre-existing and shared with the appRole tests, not introduced by 00006.
 func tablePrivileges(t *testing.T, pool *pgxpool.Pool, role, table string) []string {
 	t.Helper()
 	rows, err := pool.Query(context.Background(),
