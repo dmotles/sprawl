@@ -29,6 +29,12 @@ const (
 // authoritative would be wrong in the expensive direction — it invites "we only
 // spent this much" from data that cannot support the claim.
 //
+// # The OLDEST bucket in a response may be partial
+//
+// ?limit= bounds ROWS, and a bucket contributes one row per project, so a
+// response cut by the limit can end mid-bucket. Read the oldest bucket of a
+// full page as a floor rather than a total; narrow the range to see it whole.
+//
 // # CostUSD comes from run_finished, never from turn_finished
 //
 // This is the QUM-1247 defect and it is not a style preference. The CLI reports
@@ -82,6 +88,16 @@ type PgUsageReader struct{ Pool Pool }
 // (spilled). Either kind of join drops one of those, and the row it drops is
 // real activity. COALESCE picks whichever side is present.
 //
+// ORDER BY 1 DESC, 2 — the project id is a TIE-BREAK, not decoration. One bucket
+// yields one row per project, so ordering by the bucket alone leaves row order
+// inside a bucket up to the planner: two identical requests can return different
+// rows, and a LIMIT that cuts inside a bucket can cut differently each time.
+//
+// The truncation itself remains: LIMIT counts ROWS, not buckets. That is
+// documented on UsageBucket rather than papered over — making the limit count
+// buckets needs a second aggregation, which is not worth it until someone has a
+// chart wide enough to notice.
+//
 // $2 is the date_trunc field, passed as a bound parameter and validated against
 // a closed set in Go before it gets here — never interpolated.
 //
@@ -129,7 +145,7 @@ const listUsageSQL = `
 	  FULL OUTER JOIN tokens tk
 	    ON tk.bucket = sp.bucket AND tk.project_id = sp.project_id
 	  LEFT JOIN projects p ON p.id = COALESCE(sp.project_id, tk.project_id)
-	 ORDER BY 1 DESC
+	 ORDER BY 1 DESC, 2
 	 LIMIT $3`
 
 // ListUsage returns usage buckets, most recent first.

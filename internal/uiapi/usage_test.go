@@ -259,3 +259,18 @@ func section(t *testing.T, sql, from, to string) string {
 	}
 	return rest[:j]
 }
+
+// One bucket yields one row per project, so the bucket alone does not order the
+// result: without a tie-break, row order inside a bucket is the planner's choice
+// and two identical requests can disagree. Pinned as an assertion because
+// `ORDER BY 1 DESC` looks complete, and the missing half only shows up on a
+// second project.
+func TestPgUsageReader_OrdersDeterministicallyWithinABucket(t *testing.T) {
+	pool := &queryPool{rows: &rowsStub{}}
+	if _, err := (PgUsageReader{Pool: pool}).ListUsage(context.Background(), ListOptions{Limit: 10}); err != nil {
+		t.Fatalf("ListUsage: %v", err)
+	}
+	if !strings.Contains(pool.gotSQL, "ORDER BY 1 DESC, 2") {
+		t.Errorf("usage rows are ordered by the bucket alone, so rows within one bucket come back in planner order:\n%s", pool.gotSQL)
+	}
+}

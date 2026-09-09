@@ -12,6 +12,8 @@ import (
 	"strings"
 	"testing"
 	"time"
+
+	"github.com/google/uuid"
 )
 
 // fakeEvents is an EventReader that records what it was asked for.
@@ -300,4 +302,94 @@ func waitFor(t *testing.T, cond func() bool) {
 
 func textLogger(w io.Writer) *slog.Logger {
 	return slog.New(slog.NewTextHandler(w, nil))
+}
+
+// A filter an endpoint does not implement must be REFUSED, not accepted and
+// dropped. parseListOptions is shared by all six endpoints, so before this gate
+// existed `GET /api/goals?workflow_instance_id=<id>` parsed the id, handed it to
+// a reader that has no use for it, and returned 200 with EVERY instance's goals
+// — a filtered-looking answer to a question that was never applied. That is the
+// same defect the function's own doc comment forbids for a malformed
+// project_id, arriving through the other door.
+//
+// The reader must also not be called: a 200 is the visible symptom, but the
+// query running at all means the refusal came too late to be a refusal.
+func TestParseListOptions_RefusesAFilterTheEndpointDoesNotImplement(t *testing.T) {
+	id := uuid.New()
+	for _, tc := range []struct {
+		name     string
+		path     string
+		endpoint string
+	}{
+		{"goals does not paginate by instance", "/api/goals?workflow_instance_id=" + id.String(), "goals"},
+		{"the inbox has no keyset cursor", "/api/inbox?before_seq=5", "questions"},
+		{"the fleet is not bucketed", "/api/fleet?bucket=hour", "fleet"},
+		{"usage is not filtered by instance", "/api/usage?workflow_instance_id=" + id.String(), "usage"},
+		{"events are not bucketed", "/api/events?bucket=day", "events"},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			cfg := fullConfig()
+			goals := &fakeGoals{gotOpts: ListOptions{Limit: -1}}
+			inbox := &fakeQuestions{gotOpts: ListOptions{Limit: -1}}
+			fleet := &fakeFleet{gotOpts: ListOptions{Limit: -1}}
+			usage := &fakeUsage{gotOpts: ListOptions{Limit: -1}}
+			events := &fakeEvents{gotOpts: ListOptions{Limit: -1}}
+			cfg.Goals, cfg.Inbox, cfg.Fleet, cfg.Usage, cfg.Events = goals, inbox, fleet, usage, events
+
+			rec := get(t, cfg, tc.path)
+			if rec.Code != http.StatusBadRequest {
+				t.Fatalf("GET %s = %d, want 400: %s", tc.path, rec.Code, strings.TrimSpace(rec.Body.String()))
+			}
+			for name, got := range map[string]ListOptions{
+				"goals": goals.gotOpts, "inbox": inbox.gotOpts, "fleet": fleet.gotOpts,
+				"usage": usage.gotOpts, "events": events.gotOpts,
+			} {
+				if got.Limit != -1 {
+					t.Errorf("the %s reader ran despite an unsupported filter: %+v", name, got)
+				}
+			}
+		})
+	}
+}
+
+// The negative control for the gate above, and the half that keeps it honest: a
+// filter an endpoint DOES implement must still reach the reader. A refusal that
+// fires on everything is not a narrower contract, it is a broken API.
+func TestParseListOptions_StillAcceptsEveryFilterAnEndpointImplements(t *testing.T) {
+	id := uuid.New()
+	for _, tc := range []struct {
+		name string
+		path string
+		want func(ListOptions) bool
+	}{
+		{"events filter by project", "/api/events?project_id=" + id.String(), func(o ListOptions) bool { return o.ProjectID != nil }},
+		{"events filter by instance", "/api/events?workflow_instance_id=" + id.String(), func(o ListOptions) bool { return o.WorkflowInstanceID != nil }},
+		{"events paginate by seq", "/api/events?before_seq=9", func(o ListOptions) bool { return o.BeforeSeq != nil }},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			reader := &fakeEvents{}
+			cfg := fullConfig()
+			cfg.Events = reader
+			rec := get(t, cfg, tc.path)
+			if rec.Code != http.StatusOK {
+				t.Fatalf("GET %s = %d, want 200: %s", tc.path, rec.Code, strings.TrimSpace(rec.Body.String()))
+			}
+			if !tc.want(reader.gotOpts) {
+				t.Errorf("the filter did not reach the reader: %+v", reader.gotOpts)
+			}
+		})
+	}
+}
+
+// Usage is the one endpoint that takes a bucket, and it must keep taking it.
+func TestParseListOptions_UsageStillAcceptsItsBucket(t *testing.T) {
+	reader := &fakeUsage{}
+	cfg := fullConfig()
+	cfg.Usage = reader
+	if rec := get(t, cfg, "/api/usage?bucket=hour"); rec.Code != http.StatusOK {
+		t.Fatalf("status = %d, want 200: %s", rec.Code, rec.Body)
+	}
+	if reader.gotOpts.Bucket != BucketHour {
+		t.Errorf("bucket = %q, want %q", reader.gotOpts.Bucket, BucketHour)
+	}
 }

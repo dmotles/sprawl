@@ -270,7 +270,7 @@ func TestParseListOptions_OffersOnlyIndexedFilters(t *testing.T) {
 	for _, unindexed := range []string{"type", "since", "until", "before", "after", "owner_agent_id"} {
 		q.Set(unindexed, "anything")
 	}
-	opts, err := parseListOptions(q)
+	opts, err := parseListOptions(q, eventFilters)
 	if err != nil {
 		t.Fatalf("parseListOptions: %v", err)
 	}
@@ -296,7 +296,7 @@ func TestParseListOptions_ValidatesTheKeysetCursor(t *testing.T) {
 		{name: "non-numeric is refused", raw: "head", wantErr: "must be an integer"},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
-			opts, err := parseListOptions(url.Values{"before_seq": {tc.raw}})
+			opts, err := parseListOptions(url.Values{"before_seq": {tc.raw}}, eventFilters)
 			if tc.wantErr != "" {
 				if err == nil {
 					t.Fatalf("before_seq=%q was accepted as %v — seq starts at 1, so this cursor can never match and an empty page reads as \"no events\" rather than \"bad cursor\"", tc.raw, opts.BeforeSeq)
@@ -317,7 +317,7 @@ func TestParseListOptions_ValidatesTheKeysetCursor(t *testing.T) {
 }
 
 func TestParseListOptions_RejectsAMalformedWorkflowInstanceID(t *testing.T) {
-	_, err := parseListOptions(url.Values{"workflow_instance_id": {"not-a-uuid"}})
+	_, err := parseListOptions(url.Values{"workflow_instance_id": {"not-a-uuid"}}, eventFilters)
 	if err == nil {
 		t.Fatal("a malformed workflow_instance_id was accepted — a dropped filter answers a question about one instance with every instance's events")
 	}

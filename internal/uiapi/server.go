@@ -8,7 +8,9 @@ import (
 	"log/slog"
 	"net/http"
 	"net/url"
+	"slices"
 	"strconv"
+	"strings"
 	"time"
 
 	"github.com/google/uuid"
@@ -63,26 +65,26 @@ func NewMux(cfg Config) *http.ServeMux {
 	}
 	mux := http.NewServeMux()
 	mux.HandleFunc("GET /healthz", handleHealthz(cfg.Health))
-	mux.HandleFunc("GET /api/events", handleList("events", logger,
+	mux.HandleFunc("GET /api/events", handleList("events", logger, eventFilters,
 		func(ctx context.Context, o ListOptions) ([]Event, error) { return cfg.Events.ListEvents(ctx, o) }))
 	// The reader is called through a closure rather than passed as the method
 	// value `cfg.Goals.ListGoals`: a method value on a nil interface panics
 	// where it is TAKEN, so the latter would crash router construction with a
 	// bare nil-dereference. Wrapped, a missing reader behaves like every other
 	// endpoint's — it fails on a request, after Serve's guard has had its say.
-	mux.HandleFunc("GET /api/goals", handleList("goals", logger,
+	mux.HandleFunc("GET /api/goals", handleList("goals", logger, projectFilterOnly,
 		func(ctx context.Context, o ListOptions) ([]Goal, error) { return cfg.Goals.ListGoals(ctx, o) }))
-	mux.HandleFunc("GET /api/inbox", handleList("questions", logger,
+	mux.HandleFunc("GET /api/inbox", handleList("questions", logger, projectFilterOnly,
 		func(ctx context.Context, o ListOptions) ([]Question, error) { return cfg.Inbox.ListQuestions(ctx, o) }))
-	mux.HandleFunc("GET /api/workflows", handleList("workflows", logger,
+	mux.HandleFunc("GET /api/workflows", handleList("workflows", logger, projectFilterOnly,
 		func(ctx context.Context, o ListOptions) ([]Workflow, error) {
 			return cfg.Workflows.ListWorkflows(ctx, o)
 		}))
-	mux.HandleFunc("GET /api/fleet", handleList("fleet", logger,
+	mux.HandleFunc("GET /api/fleet", handleList("fleet", logger, projectFilterOnly,
 		func(ctx context.Context, o ListOptions) ([]FleetMember, error) {
 			return cfg.Fleet.ListFleet(ctx, o)
 		}))
-	mux.HandleFunc("GET /api/usage", handleList("usage", logger,
+	mux.HandleFunc("GET /api/usage", handleList("usage", logger, usageFilters,
 		func(ctx context.Context, o ListOptions) ([]UsageBucket, error) {
 			return cfg.Usage.ListUsage(ctx, o)
 		}))
@@ -193,9 +195,9 @@ func handleHealthz(health Pinger) http.HandlerFunc {
 //
 // `key` is the response envelope's single field. Responses are objects rather
 // than bare arrays so a field can be added later without breaking a consumer.
-func handleList[T any](key string, logger *slog.Logger, load func(context.Context, ListOptions) ([]T, error)) http.HandlerFunc {
+func handleList[T any](key string, logger *slog.Logger, filters []string, load func(context.Context, ListOptions) ([]T, error)) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
-		opts, err := parseListOptions(r.URL.Query())
+		opts, err := parseListOptions(r.URL.Query(), filters)
 		if err != nil {
 			writeJSON(w, http.StatusBadRequest, map[string]string{"error": err.Error()})
 			return
@@ -212,15 +214,50 @@ func handleList[T any](key string, logger *slog.Logger, load func(context.Contex
 	}
 }
 
-// parseListOptions validates ?limit= and ?project_id=.
+// The filters each endpoint implements. Passed to handleList at registration,
+// because ListOptions is shared by all six readers and the struct alone cannot
+// say which of its fields a given reader reads.
+//
+// ?limit= is universal and so appears in none of them.
+var (
+	// eventFilters: the ledger is the only endpoint with a keyset cursor and
+	// the only one that can narrow to a single workflow instance.
+	eventFilters = []string{"project_id", "workflow_instance_id", "before_seq"}
+	// usageFilters: usage is the only bucketed endpoint.
+	usageFilters = []string{"project_id", "bucket"}
+	// projectFilterOnly: the four aggregate views. Each is a GROUP BY over the
+	// whole log; none paginates and none is bucketed.
+	projectFilterOnly = []string{"project_id"}
+)
+
+// parseListOptions validates ?limit= and whichever of the filters in `supported`
+// the request carries.
 //
 // An unparseable project_id is a 400 rather than an ignored filter: silently
 // dropping it would answer a question about one project with every project's
 // data, which is the most misleading thing this API could do.
-func parseListOptions(q url.Values) (ListOptions, error) {
+//
+// A filter this endpoint does not IMPLEMENT is refused for the same reason, and
+// it is the same defect arriving through the other door. Every endpoint shares
+// this parser, so before the `supported` gate existed
+// `GET /api/goals?workflow_instance_id=<id>` parsed the id, handed it to a
+// reader with no use for it, and returned 200 carrying every instance's goals —
+// a filtered-LOOKING answer to a filter that was never applied. A drill-down URL
+// built by a UI would have been indistinguishable from "this instance owns
+// everything". Refusing is the honest response to "I cannot answer that".
+func parseListOptions(q url.Values, supported []string) (ListOptions, error) {
 	limit, err := parseLimit(q.Get("limit"))
 	if err != nil {
 		return ListOptions{}, err
+	}
+	// Checked against what the REQUEST carries, not against what parsed: a
+	// filter must be refused whether or not its value happens to be well formed.
+	for _, param := range []string{"project_id", "workflow_instance_id", "before_seq", "bucket"} {
+		if q.Get(param) == "" || slices.Contains(supported, param) {
+			continue
+		}
+		return ListOptions{}, fmt.Errorf("%s is not a filter this endpoint supports (it accepts: limit, %s)",
+			param, strings.Join(supported, ", "))
 	}
 	opts := ListOptions{Limit: limit}
 	// An unknown bucket is a 400 rather than a fallback to the default, for the
