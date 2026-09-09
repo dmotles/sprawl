@@ -179,10 +179,6 @@ scratch/
 # `*.log` — last matching pattern wins.
 !docs/research/m13-phase1-evidence/ec6-live-handoff-stderr.log
 
-# QUM-871 spike client evidence logs — timestamped run output; may reference the
-# live FQDN, so gitignored. The dir is kept via .gitkeep.
-deploy/hub/spike/logs/*
-!deploy/hub/spike/logs/.gitkeep
 # Operator runbooks that may reference corporate specifics — gitignored.
 # Committed docs are the sanitized README.md; *.local.md stays out of the tree.
 deploy/hub/**/*.local.md

@@ -318,8 +318,7 @@ proto-check:
 	@# absent, skip with a loud notice rather than hard-breaking every commit
 	@# (install buf to re-enable: https://buf.build/docs/installation).
 	@# buf breaking additionally needs a baseline carrying the root buf.yaml so
-	@# module scoping matches (else buf's config-less default scan of the baseline
-	@# reaches into deploy/hub/spike). Until this slice lands on main there is no
+	@# module scoping matches. Until this slice lands on main there is no
 	@# product-proto baseline, so that step self-skips; it self-heals on merge.
 	@set -e; \
 	if ! command -v $(BUF) >/dev/null 2>&1; then \

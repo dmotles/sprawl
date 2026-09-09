@@ -43,10 +43,10 @@ tag (see docs 03 / 08 Open Questions).
 
 **First-landing bootstrap.** The `proto-check` make target skips `buf breaking`
 until `main` carries a root `buf.yaml` (i.e. until this slice merges). Reason:
-without a root `buf.yaml` on the baseline, buf's default whole-tree scan of
-`main` reaches into the throwaway transport spike (`deploy/hub/spike/`) and
-mis-reports its proto as "deleted". There is genuinely no product-proto baseline
-to break against before this lands, so the skip is correct — and it self-heals
+without a root `buf.yaml` on the baseline, buf falls back to a config-less
+whole-tree scan of `main`, whose module scoping does not match this module's.
+There is genuinely no product-proto baseline to break against before this
+lands, so the skip is correct — and it self-heals
 the moment `buf.yaml` exists on `main`, after which every subsequent change is
 gated for real.
 

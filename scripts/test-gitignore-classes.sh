@@ -110,7 +110,6 @@ KEEPS=(
   cmd/logs.go
   internal/memory/sessionlog.go
   docs/designs/hub/13-implementation-plan.md
-  deploy/hub/spike/logs/.gitkeep
   deploy/hub/infra/terraform/azure/.terraform.lock.hcl
   # Real, and specifically at risk: merged onto the integration branch at the
   # same time as `findings/`. Pins that the QUM-991 decision dir is unaffected.
@@ -345,7 +344,7 @@ done
 # exactly the false-green this floor exists to prevent.
 [ "${#GUARDED_PATTERNS[@]}" -eq 6  ] || { echo "CORPUS DRIFT: ${#GUARDED_PATTERNS[@]} patterns, expected 6" >&2; exit 1; }
 [ "${#HAZARDS[@]}"          -eq 15 ] || { echo "CORPUS DRIFT: ${#HAZARDS[@]} hazards, expected 15" >&2; exit 1; }
-[ "${#KEEPS[@]}"            -eq 11 ] || { echo "CORPUS DRIFT: ${#KEEPS[@]} keeps, expected 11" >&2; exit 1; }
+[ "${#KEEPS[@]}"            -eq 10 ] || { echo "CORPUS DRIFT: ${#KEEPS[@]} keeps, expected 10" >&2; exit 1; }
 [ "${#PRECISION_FIXTURES[@]}" -eq 3 ] || { echo "CORPUS DRIFT: ${#PRECISION_FIXTURES[@]} precision fixtures, expected 3" >&2; exit 1; }
 # Membership, not just counts: [6] iterates PRECISION_FIXTURES but stage_against
 # only materialises HAZARDS + KEEPS, so a precision fixture missing from KEEPS is
@@ -413,7 +412,7 @@ else
 fi
 
 echo "=== $ASSERTIONS assertions, $FAILURES failures ==="
-# 71 = [0] 8 + [1] 27 + [2] 16 + [3] 2 + [4] 2 + [5] 7 + [6] 5 + [7] 4. Hand-computed.
-[ "$ASSERTIONS" -eq 71 ] || { echo "FLOOR BREACH: $ASSERTIONS assertions ran, expected 71" >&2; exit 1; }
+# 70 = [0] 8 + [1] 26 + [2] 16 + [3] 2 + [4] 2 + [5] 7 + [6] 5 + [7] 4. Hand-computed.
+[ "$ASSERTIONS" -eq 70 ] || { echo "FLOOR BREACH: $ASSERTIONS assertions ran, expected 70" >&2; exit 1; }
 [ "$FAILURES" -eq 0 ] || exit 1
 echo "gitignore-classes: OK"
