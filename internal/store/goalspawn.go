@@ -172,6 +172,18 @@ func (h *GoalSpawnHandler) Handle(ctx context.Context, ev DispatchedEvent) error
 			// pinning the answer would therefore make every engine-spawned agent
 			// immune to a later card edit — the exact property QUM-1251 exists to
 			// provide. Left empty, the card wins at launch time.
+			//
+			// This guidance lives here rather than in the seed's json_schema:
+			// spawn_requested@1 is already published, and a published
+			// (name,version) row is immutable, so editing the seed breaks
+			// `sprawl store migrate` (QUM-1252). Verbatim:
+			//
+			//   An OPERATOR OVERRIDE of the launch model, not a record of the
+			//   resolved one. It lands on AgentState.Model, which outranks the
+			//   agent type's card — so a spawner that filled this in with the
+			//   card's own answer would pin that answer and make the agent
+			//   immune to later card edits. The engine leaves it empty on
+			//   purpose (QUM-1337); the card resolves the model at launch.
 		},
 	}); err != nil {
 		return fmt.Errorf("store: requesting a %s for goal_opened %s: %w", spec.agentType, ev.ID, err)

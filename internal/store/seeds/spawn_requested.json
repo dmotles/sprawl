@@ -15,7 +15,7 @@
       "parent": {"type": "string"},
       "branch": {"type": "string"},
       "prompt": {"type": "string"},
-      "model": {"type": "string", "description": "An OPERATOR OVERRIDE of the launch model, not a record of the resolved one. It lands on AgentState.Model, which outranks the agent type's card — so a spawner that filled this in with the card's own answer would pin that answer and make the agent immune to later card edits. The engine leaves it empty on purpose (QUM-1337); the card resolves the model at launch."},
+      "model": {"type": "string"},
       "subagent": {"type": "boolean"},
       "host_affinity": {"type": "string"}
     }
