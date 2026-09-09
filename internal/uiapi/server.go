@@ -63,7 +63,8 @@ func NewMux(cfg Config) *http.ServeMux {
 	}
 	mux := http.NewServeMux()
 	mux.HandleFunc("GET /healthz", handleHealthz(cfg.Health))
-	mux.HandleFunc("GET /api/events", handleEvents(cfg.Events, logger))
+	mux.HandleFunc("GET /api/events", handleList("events", logger,
+		func(ctx context.Context, o ListOptions) ([]Event, error) { return cfg.Events.ListEvents(ctx, o) }))
 	// The reader is called through a closure rather than passed as the method
 	// value `cfg.Goals.ListGoals`: a method value on a nil interface panics
 	// where it is TAKEN, so the latter would crash router construction with a
@@ -182,27 +183,6 @@ func handleHealthz(health Pinger) http.HandlerFunc {
 	}
 }
 
-// handleEvents serves the raw ledger, newest first.
-func handleEvents(reader EventReader, logger *slog.Logger) http.HandlerFunc {
-	return func(w http.ResponseWriter, r *http.Request) {
-		limit, err := parseLimit(r.URL.Query().Get("limit"))
-		if err != nil {
-			writeJSON(w, http.StatusBadRequest, map[string]string{"error": err.Error()})
-			return
-		}
-		events, err := reader.ListEvents(r.Context(), limit)
-		if err != nil {
-			// The error is LOGGED and not returned: it can name a table, a
-			// column or a role, and this surface is browser-reachable with no
-			// auth in v1.
-			logger.Error("listing events failed", "component", "uiapi", "error", err)
-			writeJSON(w, http.StatusInternalServerError, map[string]string{"error": "reading the event log failed"})
-			return
-		}
-		writeJSON(w, http.StatusOK, map[string]any{"events": events})
-	}
-}
-
 // handleList is the shape every list endpoint shares: validate the query,
 // call one reader, wrap the result in a named key.
 //
@@ -254,12 +234,35 @@ func parseListOptions(q url.Values) (ListOptions, error) {
 	default:
 		return ListOptions{}, fmt.Errorf("bucket must be %q or %q, got %q", BucketHour, BucketDay, raw)
 	}
-	if raw := q.Get("project_id"); raw != "" {
+	for _, f := range []struct {
+		param string
+		dest  **uuid.UUID
+	}{
+		{"project_id", &opts.ProjectID},
+		{"workflow_instance_id", &opts.WorkflowInstanceID},
+	} {
+		raw := q.Get(f.param)
+		if raw == "" {
+			continue
+		}
 		id, err := uuid.Parse(raw)
 		if err != nil {
-			return ListOptions{}, fmt.Errorf("project_id must be a uuid, got %q", raw)
+			return ListOptions{}, fmt.Errorf("%s must be a uuid, got %q", f.param, raw)
 		}
-		opts.ProjectID = &id
+		*f.dest = &id
+	}
+	if raw := q.Get("before_seq"); raw != "" {
+		n, err := strconv.ParseInt(raw, 10, 64)
+		if err != nil {
+			return ListOptions{}, fmt.Errorf("before_seq must be an integer, got %q", raw)
+		}
+		// seq is a GENERATED ALWAYS AS IDENTITY starting at 1, so anything at or
+		// below zero can never match. Refused rather than served as an empty
+		// page, which reads as "no events" instead of "bad cursor".
+		if n < 1 {
+			return ListOptions{}, fmt.Errorf("before_seq must be at least 1, got %d", n)
+		}
+		opts.BeforeSeq = &n
 	}
 	return opts, nil
 }

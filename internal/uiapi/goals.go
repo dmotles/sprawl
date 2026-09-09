@@ -18,6 +18,11 @@ import (
 type ListOptions struct {
 	Limit     int
 	ProjectID *uuid.UUID
+	// WorkflowInstanceID filters to one instance, read only by /api/events.
+	WorkflowInstanceID *uuid.UUID
+	// BeforeSeq is the keyset pagination cursor, read only by /api/events:
+	// strictly-less-than, so passing the last seq of a page yields the next one.
+	BeforeSeq *int64
 	// Bucket is the time-bucket width, read only by /api/usage. Empty means
 	// DefaultBucket. It lives here rather than in a usage-specific options type
 	// so every endpoint keeps one parser and one validation path — the drift

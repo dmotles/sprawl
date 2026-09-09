@@ -37,32 +37,51 @@ type Event struct {
 // EventReader reads the ledger. Handlers depend on this, never on a pool — see
 // the package comment's write-seam note.
 type EventReader interface {
-	// ListEvents returns the most recent events, newest first. limit is
+	// ListEvents returns the most recent matching events, newest first. opts is
 	// assumed already validated by the caller.
-	ListEvents(ctx context.Context, limit int) ([]Event, error)
+	ListEvents(ctx context.Context, opts ListOptions) ([]Event, error)
 }
 
 // PgEventReader is the Postgres implementation of EventReader.
 type PgEventReader struct{ Pool Pool }
 
-// ListEvents returns the newest `limit` events in seq order.
+// Every filter here is on an INDEXED column, and that is the whole design
+// constraint. The indexed paths are (project_id, seq), (workflow_instance_id,
+// seq), and seq itself; `at`, `schema_id`, `owner_agent_id` and the payload have
+// no index. So there is deliberately no ?type= and no time-range filter: either
+// one turns a browser-reachable endpoint into a sequential scan of the whole
+// ledger, and adding an index to enable a filter nobody has measured a need for
+// is the wrong order to do that in.
 //
-// Newest-first because that is what a ledger browser opens on. seq rather than
-// `at` is the ordering key: seq is the log's total order and is indexed, while
-// `at` has no index at all and is a wall clock two appenders can disagree
-// about.
+// ?before_seq= is keyset pagination rather than OFFSET. OFFSET makes page N cost
+// N pages of work, and on an append-only log it also SHIFTS: rows arrive at the
+// head between requests, so paging by offset shows the reader rows they have
+// already seen and skips ones they have not. `seq < $3` cannot drift, because
+// seq is immutable once assigned.
 //
 // LEFT JOIN, not an inner join: an event whose schema row is missing is a
 // serious problem, and an inner join would make it vanish from the ledger
 // browser — the one view whose job is to show everything. It surfaces with an
 // empty type instead.
-func (r PgEventReader) ListEvents(ctx context.Context, limit int) ([]Event, error) {
-	rows, err := r.Pool.Query(ctx,
-		`SELECT e.seq, e.id, COALESCE(s.name, ''), e.at, e.project_id, e.workflow_instance_id, e.payload
-		 FROM events e
-		 LEFT JOIN event_type_schemas s ON s.id = e.schema_id
-		 ORDER BY e.seq DESC
-		 LIMIT $1`, limit)
+const listEventsSQL = `
+	SELECT e.seq, e.id, COALESCE(s.name, ''), e.at, e.project_id, e.workflow_instance_id, e.payload
+	  FROM events e
+	  LEFT JOIN event_type_schemas s ON s.id = e.schema_id
+	 WHERE ($1::uuid IS NULL OR e.project_id = $1::uuid)
+	   AND ($2::uuid IS NULL OR e.workflow_instance_id = $2::uuid)
+	   AND ($3::bigint IS NULL OR e.seq < $3::bigint)
+	 ORDER BY e.seq DESC
+	 LIMIT $4`
+
+// ListEvents returns the newest matching events in seq order.
+//
+// Newest-first because that is what a ledger browser opens on. seq rather than
+// `at` is the ordering key: seq is the log's total order and is indexed, while
+// `at` has no index at all and is a wall clock two appenders can disagree
+// about.
+func (r PgEventReader) ListEvents(ctx context.Context, opts ListOptions) ([]Event, error) {
+	rows, err := r.Pool.Query(ctx, listEventsSQL,
+		opts.ProjectID, opts.WorkflowInstanceID, opts.BeforeSeq, opts.Limit)
 	if err != nil {
 		return nil, fmt.Errorf("uiapi: querying events: %w", err)
 	}

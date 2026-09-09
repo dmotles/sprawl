@@ -16,13 +16,13 @@ import (
 
 // fakeEvents is an EventReader that records what it was asked for.
 type fakeEvents struct {
-	gotLimit int
-	events   []Event
-	err      error
+	gotOpts ListOptions
+	events  []Event
+	err     error
 }
 
-func (f *fakeEvents) ListEvents(_ context.Context, limit int) ([]Event, error) {
-	f.gotLimit = limit
+func (f *fakeEvents) ListEvents(_ context.Context, opts ListOptions) ([]Event, error) {
+	f.gotOpts = opts
 	return f.events, f.err
 }
 
@@ -101,8 +101,8 @@ func TestHandleEvents_PassesTheValidatedLimitThrough(t *testing.T) {
 	if got := get(t, Config{Events: reader}, "/api/events?limit=7").Code; got != http.StatusOK {
 		t.Fatalf("status = %d, want 200", got)
 	}
-	if reader.gotLimit != 7 {
-		t.Errorf("reader was asked for limit %d, want 7 — ?limit= is parsed but not honoured", reader.gotLimit)
+	if reader.gotOpts.Limit != 7 {
+		t.Errorf("reader was asked for limit %d, want 7 — ?limit= is parsed but not honoured", reader.gotOpts.Limit)
 	}
 }
 
@@ -120,13 +120,13 @@ func TestHandleEvents_EmptyLedgerEncodesAsAnArray(t *testing.T) {
 // the status, and that the rejection happened BEFORE the query. A handler that
 // queried first and rejected after would pass a status-only assertion.
 func TestHandleEvents_BadLimitIs400AndNeverReachesTheDatabase(t *testing.T) {
-	reader := &fakeEvents{gotLimit: -1}
+	reader := &fakeEvents{gotOpts: ListOptions{Limit: -1}}
 	rec := get(t, Config{Events: reader}, "/api/events?limit=nine")
 	if rec.Code != http.StatusBadRequest {
 		t.Errorf("status = %d, want 400", rec.Code)
 	}
-	if reader.gotLimit != -1 {
-		t.Errorf("the reader was called with limit %d despite an invalid ?limit= — validation must gate the query", reader.gotLimit)
+	if reader.gotOpts.Limit != -1 {
+		t.Errorf("the reader was called with limit %d despite an invalid ?limit= — validation must gate the query", reader.gotOpts.Limit)
 	}
 }
 
