@@ -1,14 +1,12 @@
-// Package rootinit holds the mode-agnostic pre-launch (Phase A) and
-// post-launch (Phase D) housekeeping for the root weave agent. Both the
-// tmux-based root loop (`cmd/rootloop.go`) and the TUI session
-// (`cmd/enter.go`) call into this package so that memory/handoff behavior
-// stays consistent across launch modes.
+// Package rootinit holds the pre-launch (Phase A) and post-launch (Phase D)
+// housekeeping for the root weave agent. The TUI session (`cmd/enter.go`)
+// calls into this package so that memory/handoff behavior stays in one place.
 package rootinit
 
 import "fmt"
 
 // RootTools is the set of tools available to the root agent. It is the
-// single source of truth for both the tmux root loop and the TUI session.
+// single source of truth for the TUI session.
 var RootTools = []string{
 	"Bash", "Read", "Glob", "Grep", "WebSearch", "WebFetch",
 	"Agent", "Task", "TaskOutput", "TaskStop", "ToolSearch",

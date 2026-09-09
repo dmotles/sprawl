@@ -46,9 +46,6 @@ type WeaveLock struct {
 	released atomic.Bool
 }
 
-// Path returns the absolute path of the lock file.
-func (l *WeaveLock) Path() string { return l.path }
-
 // AcquireWeaveLock tries to obtain a non-blocking exclusive flock on
 // `<sprawlRoot>/.sprawl/memory/weave.lock`. On success it writes the
 // current process PID to the file and returns the held lock. On

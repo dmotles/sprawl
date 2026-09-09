@@ -21,10 +21,8 @@ import (
 type Deps struct {
 	// LogPrefix is prepended to status/warning lines emitted by Prepare,
 	// FinalizeHandoff, and the spinner. Kept injectable so callers can make
-	// messages mode-specific — e.g. the tmux root loop uses "[root-loop]"
-	// while `sprawl enter` uses "[enter]" so users don't see a bogus
-	// root-loop label after the TUI exits. DefaultDeps sets it to
-	// "[root-loop]" for backwards compatibility.
+	// messages mode-specific — `sprawl enter` sets it to "[enter]".
+	// DefaultDeps sets it to "[root-loop]" for backwards compatibility.
 	LogPrefix string
 
 	Getenv                    func(string) string

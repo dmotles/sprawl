@@ -100,8 +100,8 @@ func AllocateName(stateDir string, agentType string) (string, error) {
 // so the pinned name skips AllocateName — which was the only thing checking the
 // name is both well-formed and free. Both checks move here rather than being
 // assumed: the name arrives from an event payload and ends up as a filesystem
-// path and a tmux session name, and reusing a live agent's name overwrites its
-// state file and hands its worktree to a second process.
+// path, and reusing a live agent's name overwrites its state file and hands
+// its worktree to a second process.
 func ReserveName(stateDir, name string) error {
 	if err := ValidateName(name); err != nil {
 		return err

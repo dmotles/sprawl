@@ -583,9 +583,9 @@ func TestPrepareSpawnAs_RefusesANameAlreadyTaken(t *testing.T) {
 	}
 }
 
-// TestPrepareSpawnAs_RefusesAnUnsafeName. The pinned name reaches the filesystem
-// and a tmux session name, and it arrives from an event payload rather than from
-// a validated pool — so it is a boundary, and agent.ValidateName has to run.
+// TestPrepareSpawnAs_RefusesAnUnsafeName. The pinned name reaches the
+// filesystem, and it arrives from an event payload rather than from a
+// validated pool — so it is a boundary, and agent.ValidateName has to run.
 func TestPrepareSpawnAs_RefusesAnUnsafeName(t *testing.T) {
 	tmpDir := t.TempDir()
 	deps, _ := newBaseRefSpawnDeps(t, tmpDir)

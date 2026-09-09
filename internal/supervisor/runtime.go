@@ -443,7 +443,7 @@ func (r *AgentRuntime) Subscribe(buffer int) (<-chan RuntimeEvent, func()) {
 
 // Start attaches a backend session using the runtime's internal starter.
 // Production wiring does not call this yet; QUM-351 needs it only so child
-// runtimes can be exercised in tests without tmux or a child sprawl process.
+// runtimes can be exercised in tests without a child sprawl process.
 func (r *AgentRuntime) Start() error {
 	r.mu.RLock()
 	spec := RuntimeStartSpec{

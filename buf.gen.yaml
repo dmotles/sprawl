@@ -13,7 +13,4 @@ plugins:
   # `buf.gen.web.yaml` template (make proto-gen-web), because protoc-gen-es /
   # protoc-gen-connect-es are npm tools that are not guaranteed on PATH. Keeping
   # them out of the default template means `buf generate` / `make validate`
-  # never hard-depend on a node toolchain. A committed stub lives under
-  # web/gen/ (see web/gen/hub/v1/hub_pb.stub.ts) as the SPA seam until the real
-  # SPA lands. TODO(hub-spa): move TS generation into the default flow once the
-  # frontend build owns the node toolchain.
+  # never hard-depend on a node toolchain.

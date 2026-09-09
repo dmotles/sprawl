@@ -208,7 +208,7 @@ func makeRestartFunc(
 
 		// Phase D: run post-session housekeeping (consolidation when a handoff
 		// signal is present, otherwise a noop). Errors are logged and do not
-		// block the restart — matches cmd/rootloop.go's tmux-mode behavior.
+		// block the restart.
 		if finalize != nil {
 			if err := finalize(context.Background(), sprawlRoot, logW, consolidationCh); err != nil {
 				fmt.Fprintf(logW, "[enter] finalize handoff failed: %v\n", err)

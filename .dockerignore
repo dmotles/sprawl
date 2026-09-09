@@ -27,7 +27,8 @@ hubd
 # scripts/test-lint-pin.sh A9d.
 .golangci-cache/
 
-# Node / SPA build inputs (the embedded SPA seam is empty this slice).
+# Node / SPA build inputs (the built SPA is committed under cmd/hubd/web/dist
+# and embedded from there; node_modules is never needed in the build context).
 **/node_modules/
 
 # Editor/OS cruft.

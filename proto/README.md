@@ -56,6 +56,6 @@ gated for real.
   (`make proto-gen`). Generated code is committed.
 - TypeScript (connect-es) → `web/gen/` via the opt-in `buf.gen.web.yaml`
   (`make proto-gen-web`), which needs the npm `protoc-gen-es` /
-  `protoc-gen-connect-es` tools on PATH. Until the SPA lands, a committed stub
-  (`web/gen/hub/v1/hub_pb.stub.ts`) holds the seam so `make validate` never
-  depends on a node toolchain.
+  `protoc-gen-connect-es` tools on PATH. The generated TS is committed, so
+  `make validate` never depends on a node toolchain (QUM-878 replaced the
+  former `hub_pb.stub.ts` seam).

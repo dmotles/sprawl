@@ -2,8 +2,7 @@
 package claude
 
 // LaunchOpts holds all CLI argument fields for launching a Claude Code instance
-// in stream-json subprocess mode (the only launch mode left after the tmux
-// teardown).
+// in stream-json subprocess mode, which is the only launch mode.
 type LaunchOpts struct {
 	SystemPrompt     string
 	SystemPromptFile string

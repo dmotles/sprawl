@@ -86,8 +86,3 @@ func (r *StderrRedirect) Restore() error {
 	r.restored = true
 	return firstErr
 }
-
-// LogPath returns the path of the log file that stderr is being redirected to.
-func (r *StderrRedirect) LogPath() string {
-	return r.path
-}

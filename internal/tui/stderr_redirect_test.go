@@ -178,23 +178,6 @@ func TestRedirectStderr_CreatesParentDirs(t *testing.T) {
 	}
 }
 
-func TestRedirectStderr_LogPath(t *testing.T) {
-	tmp := t.TempDir()
-	logPath := filepath.Join(tmp, "out.log")
-
-	r, err := RedirectStderr(logPath)
-	if err != nil {
-		t.Fatalf("RedirectStderr: %v", err)
-	}
-	defer func() {
-		_ = r.Restore()
-	}()
-
-	if got := r.LogPath(); got != logPath {
-		t.Errorf("LogPath() = %q, want %q", got, logPath)
-	}
-}
-
 func TestRedirectStderr_InvalidPath(t *testing.T) {
 	if os.Geteuid() == 0 {
 		t.Skip("running as root — filesystem permissions are bypassed, cannot verify error path")
