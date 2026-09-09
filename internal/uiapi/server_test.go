@@ -31,6 +31,18 @@ type fakePinger struct{ err error }
 
 func (f fakePinger) Ping(context.Context) error { return f.err }
 
+// fullConfig is a Config with every reader Serve requires present and inert.
+// Tests that care about one endpoint override that one field. It exists so that
+// adding a reader to Config does not silently turn unrelated Serve tests red on
+// the nil-reader guard, which says nothing about what they are testing.
+func fullConfig() Config {
+	return Config{
+		Events: &fakeEvents{},
+		Goals:  &fakeGoals{},
+		Inbox:  &fakeQuestions{},
+	}
+}
+
 func get(t *testing.T, cfg Config, target string) *httptest.ResponseRecorder {
 	t.Helper()
 	rec := httptest.NewRecorder()
@@ -183,9 +195,9 @@ func TestHandleHealthz_DoesNotLeakTheConnectionError(t *testing.T) {
 // TestNewMux_RejectsNonGET pins the method patterns. Registered as "GET /path",
 // so a POST is a 405 from the mux itself and no handler runs.
 func TestNewMux_RejectsNonGET(t *testing.T) {
-	for _, path := range []string{"/healthz", "/api/events", "/api/goals"} {
+	for _, path := range []string{"/healthz", "/api/events", "/api/goals", "/api/inbox"} {
 		rec := httptest.NewRecorder()
-		NewMux(Config{Events: &fakeEvents{}}).ServeHTTP(rec, httptest.NewRequest(http.MethodPost, path, nil))
+		NewMux(fullConfig()).ServeHTTP(rec, httptest.NewRequest(http.MethodPost, path, nil))
 		if rec.Code != http.StatusMethodNotAllowed {
 			t.Errorf("POST %s = %d, want 405 — the read API answers reads only", path, rec.Code)
 		}
@@ -199,15 +211,17 @@ func TestNewMux_RejectsNonGET(t *testing.T) {
 func TestServe_RefusesANilReader(t *testing.T) {
 	cases := []struct {
 		name string
-		cfg  Config
+		drop func(*Config)
 		want string
 	}{
-		{"no events reader", Config{Goals: &fakeGoals{}}, "Config.Events is nil"},
-		{"no goals reader", Config{Events: &fakeEvents{}}, "Config.Goals is nil"},
+		{"no events reader", func(c *Config) { c.Events = nil }, "Config.Events is nil"},
+		{"no goals reader", func(c *Config) { c.Goals = nil }, "Config.Goals is nil"},
+		{"no inbox reader", func(c *Config) { c.Inbox = nil }, "Config.Inbox is nil"},
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
-			cfg := tc.cfg
+			cfg := fullConfig()
+			tc.drop(&cfg)
 			// Port 0 on loopback: the guard must fire before anything binds,
 			// so this must return rather than serve.
 			cfg.Addr, cfg.Logger = "127.0.0.1:0", textLogger(io.Discard)
@@ -239,7 +253,9 @@ func TestServe_DrainsOnContextCancellation(t *testing.T) {
 	ctx, cancel := context.WithCancel(context.Background())
 	done := make(chan error, 1)
 	go func() {
-		done <- Serve(ctx, Config{Addr: addr, Events: &fakeEvents{}, Goals: &fakeGoals{}, Logger: textLogger(io.Discard)})
+		cfg := fullConfig()
+		cfg.Addr, cfg.Logger = addr, textLogger(io.Discard)
+		done <- Serve(ctx, cfg)
 	}()
 
 	// Wait for the listener to be up, so cancellation exercises the drain path
