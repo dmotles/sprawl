@@ -12,8 +12,6 @@ import (
 	"strings"
 	"sync"
 	"time"
-
-	"github.com/dmotles/sprawl/internal/state"
 )
 
 // NowFunc is the time source used by the messages package. Override in tests for determinism.
@@ -230,11 +228,6 @@ func Inbox(sprawlRoot, agent string) ([]*Message, error) {
 	return List(sprawlRoot, agent, "all")
 }
 
-// Sent returns all messages in the agent's sent/ outbox, sorted by timestamp ascending.
-func Sent(sprawlRoot, agent string) ([]*Message, error) {
-	return List(sprawlRoot, agent, "sent")
-}
-
 // ResolvePrefix finds a full message ID from a prefix by scanning new/, cur/, archive/, sent/ directories.
 // It first attempts to match by ShortID (exact match inside message JSON), then falls back to
 // filename-based prefix matching for long IDs. Returns the full ID if exactly one match found.
@@ -326,22 +319,6 @@ func MarkRead(sprawlRoot, agent, msgID string) error {
 
 	if err := os.Rename(srcPath, dstPath); err != nil {
 		return fmt.Errorf("marking message as read: %w", err)
-	}
-	return nil
-}
-
-// MarkUnread moves a message from cur/ to new/.
-func MarkUnread(sprawlRoot, agent, msgID string) error {
-	agentDir := filepath.Join(MessagesDir(sprawlRoot), agent)
-	srcPath := filepath.Join(agentDir, "cur", msgID+".json")
-	dstPath := filepath.Join(agentDir, "new", msgID+".json")
-
-	if err := os.MkdirAll(filepath.Join(agentDir, "new"), 0o755); err != nil { //nolint:gosec // G301: world-readable message dirs are intentional
-		return fmt.Errorf("creating new directory: %w", err)
-	}
-
-	if err := os.Rename(srcPath, dstPath); err != nil {
-		return fmt.Errorf("marking message as unread: %w", err)
 	}
 	return nil
 }
@@ -544,36 +521,6 @@ func List(sprawlRoot, agent, filter string) ([]*Message, error) {
 		out = append(out, m)
 	}
 	return out, nil
-}
-
-// Broadcast sends a message to all active agents (excluding the sender).
-// Returns the number of recipients.
-func Broadcast(sprawlRoot, sender, subject, body string) (int, error) {
-	if sender == "" {
-		return 0, fmt.Errorf("sender must not be empty")
-	}
-
-	agents, err := state.ListAgents(sprawlRoot)
-	if err != nil {
-		return 0, fmt.Errorf("listing agents: %w", err)
-	}
-
-	count := 0
-	var errs []string
-	for _, agent := range agents {
-		if agent.Status != "active" || agent.Name == sender {
-			continue
-		}
-		if _, err := Send(sprawlRoot, sender, agent.Name, subject, body); err != nil {
-			errs = append(errs, fmt.Sprintf("%s: %v", agent.Name, err))
-			continue
-		}
-		count++
-	}
-	if len(errs) > 0 {
-		return count, fmt.Errorf("partial broadcast failure (%d/%d succeeded): %s", count, count+len(errs), strings.Join(errs, "; "))
-	}
-	return count, nil
 }
 
 // collectExistingShortIDs scans new/, cur/, archive/ directories under agentDir
