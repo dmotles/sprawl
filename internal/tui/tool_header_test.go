@@ -273,18 +273,6 @@ func TestFormatToolDisplayName(t *testing.T) {
 	}
 }
 
-// QUM-419: RenderKVPairs renders the trailing `(k1=v1, k2=v2)` segment.
-func TestRenderKVPairs(t *testing.T) {
-	if got := RenderKVPairs(nil); got != "" {
-		t.Errorf("RenderKVPairs(nil) = %q, want empty", got)
-	}
-	got := RenderKVPairs([]KVPair{{Key: "a", Value: "1"}, {Key: "b", Value: "two"}})
-	want := "(a=1, b=two)"
-	if got != want {
-		t.Errorf("RenderKVPairs(...) = %q, want %q", got, want)
-	}
-}
-
 // QUM-419: scalarString must not crash on nil/array/object values — the
 // generic + MCP formatters defensively skip non-scalars.
 func TestScalarString_NonScalarReturnsEmpty(t *testing.T) {

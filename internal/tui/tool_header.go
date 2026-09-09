@@ -17,15 +17,10 @@ type KVPair struct {
 }
 
 // toolHeaderFormatter takes a parsed input map and returns the main argument
-// string plus an ordered list of secondary k=v pairs. The renderer applies
-// width-budgeting on top: if rendering kvPairs would shrink mainArg below
-// MinMainArgCells, the pairs are dropped.
+// string plus an ordered list of secondary k=v pairs. Since QUM-796 the
+// renderer shows only the main argument; the pairs are still computed but not
+// displayed (see ToolCallSpec.HeaderParams).
 type toolHeaderFormatter func(input map[string]any) (string, []KVPair)
-
-// MinMainArgCells is the threshold from the Crush implementation
-// (crush/internal/ui/chat/tools.go toolParamList): kvPairs are dropped if
-// rendering them would leave fewer than this many cells for the main arg.
-const MinMainArgCells = 30
 
 // toolFormatters is the registry of per-tool header formatters. Tools not in
 // the map fall through to the generic formatter (formatGeneric).
@@ -390,18 +385,4 @@ func scalarString(v any) string {
 		return strconv.FormatFloat(x, 'g', -1, 64)
 	}
 	return ""
-}
-
-// RenderKVPairs joins kv into the "(k1=v1, k2=v2)" suffix the renderer
-// appends after the main argument. Returns "" when kv is empty so callers
-// can cheaply skip an empty suffix.
-func RenderKVPairs(kv []KVPair) string {
-	if len(kv) == 0 {
-		return ""
-	}
-	parts := make([]string, 0, len(kv))
-	for _, p := range kv {
-		parts = append(parts, p.Key+"="+p.Value)
-	}
-	return "(" + strings.Join(parts, ", ") + ")"
 }

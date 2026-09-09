@@ -471,9 +471,10 @@ type ToolCallMsg struct {
 	// for Read/Edit/Write, the pattern for Grep/Glob. Pre-computed by the
 	// protocol mapping layer so the renderer stays JSON-free.
 	HeaderArg string
-	// HeaderParams is the ordered list of secondary k=v pairs rendered after
-	// HeaderArg on the compact header line (QUM-419). Dropped by the renderer
-	// when including them would shrink the main arg below MinMainArgCells.
+	// HeaderParams is the ordered list of secondary k=v pairs the per-tool
+	// formatters produce (QUM-419). QUM-796 stopped rendering them; the field
+	// survives only as a sentinel distinguishing "no arguments at all" from
+	// "arguments the header does not show" (items.go renderBox).
 	HeaderParams []KVPair
 	// ParentToolUseID is the wire-level parent_tool_use_id from the assistant
 	// envelope (protocol.AssistantMessage.ParentToolUseID). Non-empty when the
