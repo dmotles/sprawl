@@ -411,17 +411,17 @@ If you wrap stdout to scan or tee, the child sees a pipe and its behavior change
 ### Guidance
 
 1. **Default to `os.Stdout` / `os.Stderr` directly** for any interactive or potentially-TTY-sensitive child. This is the only way the child keeps a real terminal on its stdio.
-2. **If you must intercept output, wrap stderr, not stdout.** Most tools only TTY-check stdout. Error/log scanning on stderr is typically safe. (`RunWithResumeWatch` in `internal/claude/resumewatch.go` does exactly this — it wraps stderr with a marker scanner and leaves stdout untouched.)
+2. **If you must intercept output, wrap stderr, not stdout.** Most tools only TTY-check stdout. Error/log scanning on stderr is typically safe. (`internal/claude.NewMarkerWriter` exists for exactly this — its caller in `internal/backend/claude/adapter.go` wraps the subprocess's stderr with a marker scanner and leaves stdout untouched. The `RunWithResumeWatch` wrapper that originally carried this pattern was deleted as dead code in QUM-1345; the HAZARD comment moved onto `NewMarkerWriter`.)
 3. **If you must capture or intercept stdout of a TTY-sensitive child, use a PTY.** [`github.com/creack/pty`](https://github.com/creack/pty) lets you allocate a pseudo-terminal; pass the PTY's slave end as `cmd.Stdout` (still an `*os.File`, so os/exec doesn't pipe it) and read from the master end. The child sees a TTY, you still get the bytes.
 4. **Never pass `io.MultiWriter(os.Stdout, …)` to a TTY-sensitive child** thinking it "just tees to the terminal". It silently downgrades the child's fd 1 to a pipe.
 
 ### Concrete example — QUM-261
 
-`RunWithResumeWatch` originally wrapped `cmd.Stdout` with a markerWriter to scan for a "no conversation" string. Go's `os/exec` promoted the writer to an anonymous pipe. Claude Code saw a non-TTY stdout, auto-flipped to `--print` mode, and `sprawl init` bricked: Claude exited immediately on EOF without ever showing the interactive onboarding screen.
+`RunWithResumeWatch` (since deleted — QUM-1345) originally wrapped `cmd.Stdout` with a markerWriter to scan for a "no conversation" string. Go's `os/exec` promoted the writer to an anonymous pipe. Claude Code saw a non-TTY stdout, auto-flipped to `--print` mode, and `sprawl init` bricked: Claude exited immediately on EOF without ever showing the interactive onboarding screen.
 
 Fix (commit `7c801f5`): move the marker scanner to stderr, leave `cmd.Stdout` as the inherited `os.Stdout`. The marker string is stderr-only anyway, so stdout scanning was wrong from the start — the TTY regression just made it loud.
 
-Follow-up documentation: QUM-308 (this section) and the hazard comment in `internal/claude/resumewatch.go`.
+Follow-up documentation: QUM-308 (this section) and the hazard comment on `NewMarkerWriter` in `internal/claude/resumewatch.go`.
 
 ---
 

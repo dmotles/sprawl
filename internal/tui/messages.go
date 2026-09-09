@@ -91,8 +91,9 @@ type MessageEntry struct {
 	// HeaderArg is the per-tool main argument inlined on the compact header
 	// line (QUM-419). MessageToolCall only.
 	HeaderArg string
-	// HeaderParams is the ordered list of secondary k=v pairs displayed
-	// after HeaderArg (QUM-419). MessageToolCall only.
+	// HeaderParams is the ordered list of secondary k=v pairs computed for
+	// the compact header line (QUM-419). MessageToolCall only. QUM-796
+	// stopped rendering them; see ToolCallMsg.HeaderParams below.
 	HeaderParams []KVPair
 }
 

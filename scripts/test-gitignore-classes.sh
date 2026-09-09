@@ -377,7 +377,7 @@ done
 # excludes the `logs` directory itself, so `!.sprawl/logs/ledger-spill/*` is
 # inert. That was the hazard the first draft of this comment claimed, and it was
 # wrong. What this section actually guards is the `.sprawl/*` line itself being
-# narrowed or removed — the control below deletes it and both assertions fire.
+# narrowed or removed — the control below deletes it and all three assertions fire.
 # The complementary risk, the spill MOVING out of .sprawl/, is guarded on the Go
 # side by TestSpillDir_IsUnderTheGitignoredSprawlTree.
 #
@@ -402,9 +402,9 @@ done
 
 # POSITIVE CONTROL for the instrument: a path that must NOT be ignored. Without
 # it, a check-ignore that reported everything as ignored — a broken invocation, a
-# wrong -C, a typo in the flag — would satisfy both assertions above in silence.
+# wrong -C, a typo in the flag — would satisfy all three assertions above in silence.
 if git -C "$REPO_ROOT" check-ignore -q -- 'docs/designs/v2-log-centric-rearchitecture.md'; then
-  fail "control: a tracked design doc is reported as ignored — check-ignore is answering yes to everything, so the two assertions above prove nothing"
+  fail "control: a tracked design doc is reported as ignored — check-ignore is answering yes to everything, so the three assertions above prove nothing"
 else
   ok "control: a tracked design doc is NOT ignored (check-ignore discriminates, so the assertions above have teeth)"
 fi
