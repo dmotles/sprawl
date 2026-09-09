@@ -864,15 +864,15 @@ test-hub-bootstrap:
 test-hub-e2e:
 	go test -tags hub_e2e -count=1 -v ./internal/hub/e2e/
 
-# QUM-1249 (M1a) event-log store and QUM-1252 (M3a) workflow-engine Postgres
-# integration suites — both behind the store_pg tag. Docker-dependent,
+# QUM-1249 (M1a) event-log store, QUM-1252 (M3a) workflow-engine and QUM-1349
+# uiapi-pool Postgres integration suites — all behind the store_pg tag. Docker-dependent,
 # so it is NOT in `validate` — validate stays Docker-free. `-count=1` is
 # load-bearing: a Docker-down run t.Skip's, Go caches that as a passing package,
 # and without the bypass the skip replays as green once Docker is back.
 # For the exit-77-on-no-Docker contract, run it through its matrix row instead:
 # `make test-e2e-matrix-store-pg-integration`.
 test-store-pg:
-	go test -tags store_pg -count=1 -v ./internal/store/ ./internal/engine/
+	go test -tags store_pg -count=1 -v ./internal/store/ ./internal/engine/ ./internal/uiapi/
 
 # QUM-616 matrix-driven e2e harness foundation. Wave 1 — runs alongside
 # the per-test test-*-e2e targets. See scripts/e2e-matrix.sh.

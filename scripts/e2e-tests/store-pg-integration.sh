@@ -2,9 +2,10 @@
 # scripts/e2e-tests/store-pg-integration.sh — Postgres integration row for every
 # suite behind the `store_pg` build tag.
 #
-# Two packages, listed in STORE_PG_PACKAGES below:
+# Three packages, listed in STORE_PG_PACKAGES below:
 #   internal/store  — QUM-1249 (M1a) event log
 #   internal/engine — QUM-1252 (M3a) workflow engine step runner
+#   internal/uiapi  — QUM-1349 read-API pool bounds (statement_timeout, MaxConns)
 # Add a package to that array (and bump MIN_ASSERTIONS) when a new store_pg
 # suite lands; there is deliberately one row for the tag, not one per package,
 # because they share a single Postgres container configuration.
@@ -41,21 +42,21 @@
 # counted here: this row cannot see them, and a floor must never be derived from
 # a number the harness did not observe.
 #
-# The gate is per-package rather than one `go test` over both, so a package that
-# vanishes from the loop drops the count below the floor instead of being
-# absorbed by the other one's pass. Bump this when adding a package below.
-MIN_ASSERTIONS=2
+# The gate is per-package rather than one `go test` over all of them, so a
+# package that vanishes from the loop drops the count below the floor instead of
+# being absorbed by the others' passes. Bump this when adding a package below.
+MIN_ASSERTIONS=3
 
 # Packages carrying store_pg-tagged suites. Each runs as its own test binary and
 # therefore stands up its own container.
-STORE_PG_PACKAGES=(internal/store internal/engine)
+STORE_PG_PACKAGES=(internal/store internal/engine internal/uiapi)
 
 test_metadata() {
     echo ""
 }
 
 test_run() {
-    echo "== store-pg-integration: event-log schema, append-only grants, appender, engine step atomicity =="
+    echo "== store-pg-integration: event-log schema, append-only grants, appender, engine step atomicity, read-API pool bounds =="
 
     if ! command -v docker >/dev/null 2>&1; then
         e2e_skip_row "docker not found on PATH — the event-log integration suite needs a Postgres container"
