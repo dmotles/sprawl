@@ -25,11 +25,15 @@ const (
 // its shape varies per event type, and round-tripping it through Go would
 // reorder keys and mangle numeric precision for no gain.
 type Event struct {
-	Seq                int64           `json:"seq"`
-	ID                 uuid.UUID       `json:"id"`
-	Type               string          `json:"type"`
-	At                 time.Time       `json:"at"`
-	ProjectID          uuid.UUID       `json:"project_id"`
+	Seq       int64     `json:"seq"`
+	ID        uuid.UUID `json:"id"`
+	Type      string    `json:"type"`
+	At        time.Time `json:"at"`
+	ProjectID uuid.UUID `json:"project_id"`
+	// ProjectName is the remote's final segment, never the remote itself — see
+	// ProjectName(). The ledger shows every project at once, so a row carrying
+	// only a uuid is unattributable to a reader.
+	ProjectName        string          `json:"project_name"`
 	WorkflowInstanceID uuid.UUID       `json:"workflow_instance_id"`
 	Payload            json.RawMessage `json:"payload"`
 }
@@ -64,9 +68,11 @@ type PgEventReader struct{ Pool Pool }
 // browser — the one view whose job is to show everything. It surfaces with an
 // empty type instead.
 const listEventsSQL = `
-	SELECT e.seq, e.id, COALESCE(s.name, ''), e.at, e.project_id, e.workflow_instance_id, e.payload
+	SELECT e.seq, e.id, COALESCE(s.name, ''), e.at, e.project_id, e.workflow_instance_id, e.payload,
+	       COALESCE(p.remote_url, '')
 	  FROM events e
 	  LEFT JOIN event_type_schemas s ON s.id = e.schema_id
+	  LEFT JOIN projects p ON p.id = e.project_id
 	 WHERE ($1::uuid IS NULL OR e.project_id = $1::uuid)
 	   AND ($2::uuid IS NULL OR e.workflow_instance_id = $2::uuid)
 	   AND ($3::bigint IS NULL OR e.seq < $3::bigint)
@@ -92,9 +98,14 @@ func (r PgEventReader) ListEvents(ctx context.Context, opts ListOptions) ([]Even
 	out := []Event{}
 	for rows.Next() {
 		var e Event
-		if err := rows.Scan(&e.Seq, &e.ID, &e.Type, &e.At, &e.ProjectID, &e.WorkflowInstanceID, &e.Payload); err != nil {
+		// remoteURL is scanned into a local and reduced immediately: Event has
+		// no field for it, so nothing downstream can serialise a remote that
+		// may carry credentials or an employer's internal host.
+		var remoteURL string
+		if err := rows.Scan(&e.Seq, &e.ID, &e.Type, &e.At, &e.ProjectID, &e.WorkflowInstanceID, &e.Payload, &remoteURL); err != nil {
 			return nil, fmt.Errorf("uiapi: scanning event: %w", err)
 		}
+		e.ProjectName = ProjectName(remoteURL)
 		out = append(out, e)
 	}
 	if err := rows.Err(); err != nil {

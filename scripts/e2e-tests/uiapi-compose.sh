@@ -39,12 +39,38 @@
 # `duplicate key ... (goal_opened, 1) already exists` — which is how this
 # comment stopped being a guess.)
 #
-# `web` (slice B's frontend, zone's file) is deliberately NOT brought up. It is
-# not a dependency of the API, and building it would make this row fail for
-# reasons in someone else's slice. The override file publishes a port on uiapi
-# for the duration of the row instead of going through nginx.
+# WHY `web` IS BROUGHT UP (QA F2, and a correction).
+# This header used to argue that `web` was deliberately NOT started, because it
+# "is not a dependency of the API" and building it "would make this row fail for
+# reasons in someone else's slice". That reasoning is exactly what let the worst
+# defect of the slice ship: Contract Amendment #3 reshaped the /api/fleet and
+# /api/usage envelopes after the UI was written, the UI kept reading the old
+# keys, and BOTH sides were green — the Go suite against a pgx.Rows fake, the
+# webui suite against hand-written fakes carrying the superseded shapes. Nothing
+# compared the two, so the browser got `undefined`, FleetView threw during
+# render, and with no error boundary React unmounted the whole application. Two
+# of the six required views were a blank page and every gate said PASS.
 #
-# Needs Docker, `docker compose`, curl, jq and python3. No claude and no tmux.
+# A row that stops at the API cannot see that class of defect, and neither can
+# any number of unit tests on either side: the contract is the thing under test,
+# and it only exists where the two meet. So the row now drives a REAL BROWSER
+# against nginx and asserts each view renders a string that can only have come
+# from the seed. "It would fail for reasons in someone else's slice" was the
+# argument against; that a cross-slice break has nowhere else to be caught is
+# the argument for, and it is the stronger one.
+#
+# The browser is the host chromium driven with --dump-dom, not a new npm
+# dependency: the assertion needs a rendered DOM, not a test framework, and
+# adding playwright to slice B'"'"'s package.json to get one would be a large,
+# permanent cost for a single gate.
+#
+# The override publishes a loopback port on BOTH uiapi (so the API assertions
+# stay direct, and an API failure is not misreported as a proxy failure) and web
+# (ports: !override, because the tracked file binds a fixed 8080 that would
+# collide between concurrent agents).
+#
+# Needs Docker, `docker compose`, curl, jq, python3 and chromium. No claude and
+# no tmux.
 
 # QUM-1029: the number of assertions a COMPLETE, PASSING run makes. Counted by
 # hand from the symmetric pass/fail gates in test_run below and listed so a
@@ -65,15 +91,29 @@
 #   A13 POST /api/events is a 405
 #   A14 no 5xx body carries the database's error text
 #
+# Then the browser half (QA F2) — each renders THROUGH nginx, in chromium,
+# against the live stack, and each needle can only have come from the seed:
+#
+#   A15 /api/events carries project_name through the proxy   <- the QA F3 gate
+#   A16 /goals renders the seeded goal type
+#   A17 /workflows renders BOTH derived states
+#   A18 /fleet renders the seeded agent
+#   A19 /ledger renders the seeded event type
+#   A20 /usage renders the run-total spend                   <- QUM-1247, in the UI
+#   A21 /inbox renders the seeded question text
+#
 # Update this number in the same commit as any change to that list. It does not
 # self-adjust, and a floor above what a passing run asserts turns an honest run
 # red.
-MIN_ASSERTIONS=14
+MIN_ASSERTIONS=21
 
 # Deadline for the API to answer /healthz, covering `docker compose up --build`
 # on a cold cache (the Go build plus a Postgres first-boot). Generous on purpose:
 # a timeout here is a row failure, and a flaky one is worse than a slow one.
 UIAPI_READY_TIMEOUT=${SPRAWL_E2E_UIAPI_READY_TIMEOUT:-300}
+
+# Deadline for a single view to render its seeded data in the browser.
+UIAPI_RENDER_TIMEOUT=${SPRAWL_E2E_UIAPI_RENDER_TIMEOUT:-60}
 
 test_metadata() {
     echo "needs_jq=1"
@@ -116,6 +156,60 @@ uiapi_json() {
     printf '%s' "$UIAPI_BODY" | jq -r "$2" 2>/dev/null || true
 }
 
+# uiapi_render PATH publishes the rendered DOM as UIAPI_DOM.
+#
+# --dump-dom prints the DOM *after* scripts have run, which is the whole point:
+# these views are a client-side SPA, so curl through nginx returns an empty
+# shell and would assert nothing about whether the view works. Verified before
+# this was written: a page whose text is set by JS dumps as the JS-set value.
+#
+# A global, not stdout, for the reason recorded on uiapi_get: a `dom=$(...)`
+# call site runs in a subshell.
+#
+# --user-data-dir keeps the profile inside this row's tmpdir so concurrent rows
+# (and the operator's own browser) do not share state. --no-sandbox is required
+# to run as root in CI containers.
+UIAPI_DOM=""
+uiapi_render() {
+    UIAPI_DOM=$(timeout 90 chromium --headless --no-sandbox --disable-gpu \
+        --disable-dev-shm-usage --dump-dom --virtual-time-budget=15000 \
+        --user-data-dir="$UIAPI_TMPDIR/chrome" \
+        "http://127.0.0.1:$WEB_PORT$1" 2>/dev/null || true)
+}
+
+# uiapi_view_renders PATH NEEDLE [NEEDLE...] — 0 when every needle is present in
+# the rendered DOM, 1 otherwise. Retries until UIAPI_RENDER_TIMEOUT, because a
+# first paint has to fetch its data over the network and a fixed budget that is
+# generous enough never to flake is also generous enough to make the row slow.
+#
+# On failure it prints the DOM's size and its <main> text, which is what
+# distinguishes the two failures that matter: a SHELL-ONLY dump (React threw and
+# unmounted the application — the F1 signature, ~450 bytes with no nav) from a
+# rendered view that is missing the data.
+uiapi_view_renders() {
+    local path="$1"; shift
+    local waited=0 needle missing
+    while :; do
+        uiapi_render "$path"
+        missing=""
+        for needle in "$@"; do
+            case "$UIAPI_DOM" in
+                *"$needle"*) ;;
+                *) missing="$needle" ;;
+            esac
+        done
+        [ -z "$missing" ] && return 0
+        [ "$waited" -ge "$UIAPI_RENDER_TIMEOUT" ] && break
+        sleep 3
+        waited=$((waited + 3))
+    done
+    echo "  (GET $path rendered ${#UIAPI_DOM} bytes without $missing)" >&2
+    echo "  (a dump of only a few hundred bytes with no nav means React threw and unmounted the app)" >&2
+    printf '%s' "$UIAPI_DOM" | tr -d '\n' | grep -o '<main.*</main>' | head -c 600 >&2 || true
+    echo >&2
+    return 1
+}
+
 uiapi_psql() {
     uiapi_compose exec -T -e PGPASSWORD=sprawl_dev_password db \
         psql -v ON_ERROR_STOP=1 -U sprawl_owner -d sprawl -qtAX "$@"
@@ -124,7 +218,7 @@ uiapi_psql() {
 uiapi_teardown() {
     if [ -n "${UIAPI_PROJECT:-}" ]; then
         echo "== tearing down $UIAPI_PROJECT =="
-        uiapi_compose logs --no-color --tail 40 uiapi 2>/dev/null || true
+        uiapi_compose logs --no-color --tail 40 uiapi web 2>/dev/null || true
         uiapi_compose down -v --remove-orphans >/dev/null 2>&1 || true
     fi
     # Belt and braces on the destructive-var rule: assert the path is ours and
@@ -238,6 +332,13 @@ test_run() {
             e2e_skip_row "$tool not found on PATH — this row stands up the compose stack and queries it over HTTP"
         fi
     done
+    # chromium is a hard precondition, not an optional extra: without it the
+    # browser half is exactly the coverage whose absence let QA F1 ship, and a
+    # row that quietly drops it would report a green that means less than it did
+    # before. Skipping the whole row (77) is the honest outcome.
+    if ! command -v chromium >/dev/null 2>&1; then
+        e2e_skip_row "chromium not found on PATH — this row renders each view in a real browser, and the API half alone cannot see a UI/API contract break"
+    fi
     if ! docker info >/dev/null 2>&1; then
         e2e_skip_row "docker is installed but the daemon is unreachable — cannot start the compose stack"
     fi
@@ -255,8 +356,9 @@ test_run() {
     # hard-coded one collides with a co-tenant row and fails for a reason that
     # has nothing to do with the API.
     UIAPI_PORT=$(python3 -c 'import socket; s=socket.socket(); s.bind(("127.0.0.1",0)); print(s.getsockname()[1]); s.close()')
-    if [ -z "$UIAPI_PORT" ]; then
-        fail "could not reserve a local port"
+    WEB_PORT=$(python3 -c 'import socket; s=socket.socket(); s.bind(("127.0.0.1",0)); print(s.getsockname()[1]); s.close()')
+    if [ -z "$UIAPI_PORT" ] || [ -z "$WEB_PORT" ] || [ "$UIAPI_PORT" = "$WEB_PORT" ]; then
+        fail "could not reserve two distinct local ports"
         e2e_print_results
         return
     fi
@@ -269,10 +371,17 @@ services:
   uiapi:
     ports:
       - "127.0.0.1:$UIAPI_PORT:8080"
+  # !override, not an append: the tracked file binds a FIXED 8080 on all
+  # interfaces, which collides between concurrent agents on one host and would
+  # publish this fixture off-box. Compose merges port lists by appending unless
+  # told otherwise, so without the tag both bindings survive.
+  web:
+    ports: !override
+      - "127.0.0.1:$WEB_PORT:8080"
 YAML
 
-    echo "-- bringing up db, migrate, grant, uiapi on port $UIAPI_PORT (project $UIAPI_PROJECT)"
-    if ! uiapi_compose up -d --build db migrate grant uiapi >"$UIAPI_TMPDIR/up.log" 2>&1; then
+    echo "-- bringing up db, migrate, grant, uiapi (:$UIAPI_PORT) and web (:$WEB_PORT) in project $UIAPI_PROJECT"
+    if ! uiapi_compose up -d --build db migrate grant uiapi web >"$UIAPI_TMPDIR/up.log" 2>&1; then
         echo "---- compose up output ----"
         tail -60 "$UIAPI_TMPDIR/up.log"
         fail "compose up failed — the stack never started, so nothing below was measured"
@@ -453,6 +562,92 @@ YAML
         pass "no response body carried a role name, table name or driver error across 9 endpoints and error paths"
     else
         fail "$leaked response body/bodies leaked database detail on an unauthenticated surface"
+    fi
+
+    # ------------------------------------------------------------------
+    # The browser half. Everything above proves the API; nothing above can
+    # prove the API and the UI agree, which is the defect class QA F2 found.
+    # ------------------------------------------------------------------
+
+    # Wait for nginx before blaming a view for a stack that is not up yet.
+    local web_waited=0 web_up=0 web_status
+    while [ "$web_waited" -lt "$UIAPI_READY_TIMEOUT" ]; do
+        web_status=$(curl -sS -m 10 -o /dev/null -w '%{http_code}' \
+            "http://127.0.0.1:$WEB_PORT/goals" 2>/dev/null || echo 000)
+        if [ "$web_status" = "200" ]; then
+            web_up=1
+            break
+        fi
+        sleep 2
+        web_waited=$((web_waited + 2))
+    done
+    if [ "$web_up" != "1" ]; then
+        fail "nginx never served the SPA within ${UIAPI_READY_TIMEOUT}s (last status $web_status) — the browser assertions below were NOT measured"
+        e2e_print_results
+        return
+    fi
+
+    # A15. The proxy path, and QA F3: a ledger row that names only a uuid is
+    # unattributable, and the ledger deliberately shows every project at once.
+    # Asserted through nginx rather than against uiapi directly, so it also
+    # proves /api survives the reverse proxy the browser is required to use.
+    #
+    # The assertion is over the SET of names, not over the newest row: the
+    # ledger is deliberately all-projects and newest-first, so row 0 belongs to
+    # whichever project wrote last. (Measured — the first version of this gate
+    # asserted [0] and failed with 'widget', which was the correct answer to the
+    # wrong question.) Requiring both names also makes it a real attribution
+    # check: a hard-coded label would give one name for every row.
+    local proxied_names
+    proxied_names=$(curl -sS -m 20 "http://127.0.0.1:$WEB_PORT/api/events?limit=50" 2>/dev/null |
+        jq -r '[.events[].project_name] | unique | join(",")' 2>/dev/null || true)
+    if [ "$proxied_names" = "sprawl,widget" ]; then
+        pass "/api/events names both projects through nginx (sprawl,widget) — a ledger row is attributable"
+    else
+        fail "/api/events through nginx gave project_name set [$proxied_names], want 'sprawl,widget' — the ledger's PROJECT column renders an em dash without it"
+    fi
+
+    # A16-A21. Each needle can only have come from the seed, so none of them can
+    # be satisfied by the static shell nginx serves before React runs.
+    if uiapi_view_renders /goals "ship-slice-c"; then
+        pass "/goals renders the seeded goal type in a real browser"
+    else
+        fail "/goals did not render the seeded goal type"
+    fi
+
+    # Both states, because a workflows view that hard-coded either one would
+    # pass a single-needle assertion while deriving nothing.
+    if uiapi_view_renders /workflows "in flight" "settled"; then
+        pass "/workflows renders BOTH derived states (in flight and settled)"
+    else
+        fail "/workflows did not render both derived states"
+    fi
+
+    if uiapi_view_renders /fleet "ratz"; then
+        pass "/fleet renders the seeded agent name in a real browser"
+    else
+        fail "/fleet did not render the seeded agent — the envelope key or the row type does not match what the API serves"
+    fi
+
+    if uiapi_view_renders /ledger "run_finished" "sprawl"; then
+        pass "/ledger renders the seeded event type and its project name"
+    else
+        fail "/ledger did not render the seeded event type and project name"
+    fi
+
+    # The QUM-1247 value, all the way to the pixel: 0.30 is the run total and
+    # 0.40 is the per-turn sum, so a UI that renders the wrong one fails here on
+    # the NUMBER rather than on a shape.
+    if uiapi_view_renders /usage '$0.30'; then
+        pass "/usage renders \$0.30, the run_finished session total (not \$0.40, the cumulative turn sum)"
+    else
+        fail "/usage did not render \$0.30 — either the view is blank or it is billing the turn sum"
+    fi
+
+    if uiapi_view_renders /inbox "Is the contract final?"; then
+        pass "/inbox renders the seeded question text in a real browser"
+    else
+        fail "/inbox did not render the seeded question"
     fi
 
     e2e_print_results

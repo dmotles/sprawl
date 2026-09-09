@@ -91,8 +91,16 @@ func (p *queryPool) QueryRow(context.Context, string, ...any) pgx.Row {
 }
 func (p *queryPool) Ping(context.Context) error { return nil }
 
+// eventRow builds a scan row in listEventsSQL's column order. The trailing
+// remote_url is what the reader reduces to Event.ProjectName; tests that do not
+// care about project identity get a placeholder rather than an empty string, so
+// an accidental "" assertion cannot pass by coincidence.
 func eventRow(seq int64, typeName string, payload string) []any {
-	return []any{seq, uuid.New(), typeName, time.Now().UTC(), uuid.New(), uuid.New(), json.RawMessage(payload)}
+	return eventRowFor(seq, typeName, payload, "git@example.invalid:acme/placeholder.git")
+}
+
+func eventRowFor(seq int64, typeName, payload, remoteURL string) []any {
+	return []any{seq, uuid.New(), typeName, time.Now().UTC(), uuid.New(), uuid.New(), json.RawMessage(payload), remoteURL}
 }
 
 // TestListEvents_ScansAndPreservesOrder covers the happy path and, critically,
@@ -323,5 +331,38 @@ func TestParseListOptions_RejectsAMalformedWorkflowInstanceID(t *testing.T) {
 	}
 	if !strings.Contains(err.Error(), "workflow_instance_id") {
 		t.Errorf("error = %q, want it to name the parameter that was wrong", err)
+	}
+}
+
+// TestListEvents_CarriesProjectIdentity is QA's F3 (QUM-1349): the ledger's
+// PROJECT column rendered a permanent "—" because Event had no name for the
+// project, only its uuid. The all-projects decision means a ledger row is
+// ambiguous without it — the whole point of showing every project at once is
+// being able to tell them apart.
+//
+// It asserts the reduced NAME, never the remote URL: a remote can carry
+// credentials and an employer's internal host, and this response is
+// browser-reachable with no auth.
+func TestListEvents_CarriesProjectIdentity(t *testing.T) {
+	rows := &rowsStub{rows: [][]any{
+		eventRowFor(1, "goal_opened", `{}`, "git@github.com:dmotles/sprawl.git"),
+	}}
+
+	got, err := PgEventReader{Pool: &queryPool{rows: rows}}.ListEvents(context.Background(), ListOptions{Limit: 1})
+	if err != nil {
+		t.Fatalf("ListEvents: %v", err)
+	}
+	if got[0].ProjectName != "sprawl" {
+		t.Errorf("project_name = %q, want %q — the ledger shows every project at once, so a row without a name is unattributable", got[0].ProjectName, "sprawl")
+	}
+	// Negative control: the raw remote must not survive anywhere in the row.
+	blob, err := json.Marshal(got[0])
+	if err != nil {
+		t.Fatalf("marshal: %v", err)
+	}
+	for _, secret := range []string{"github.com", "git@", ".git"} {
+		if strings.Contains(string(blob), secret) {
+			t.Errorf("the marshalled event carries %q: %s", secret, blob)
+		}
 	}
 }
