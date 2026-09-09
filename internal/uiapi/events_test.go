@@ -47,6 +47,10 @@ func (r *rowsStub) Scan(dest ...any) error {
 			*d = row[i].(time.Time)
 		case *json.RawMessage:
 			*d = row[i].(json.RawMessage)
+		case *bool:
+			*d = row[i].(bool)
+		case *int:
+			*d = row[i].(int)
 		default:
 			return errors.New("rowsStub: unhandled destination type")
 		}

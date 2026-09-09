@@ -128,6 +128,7 @@ func run(ctx context.Context, args []string, getenv func(string) string, w io.Wr
 		Grace:  *grace,
 		Logger: logger,
 		Events: uiapi.PgEventReader{Pool: pool},
+		Goals:  uiapi.PgGoalReader{Pool: pool},
 		Health: pool,
 	})
 }

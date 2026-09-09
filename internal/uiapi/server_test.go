@@ -183,7 +183,7 @@ func TestHandleHealthz_DoesNotLeakTheConnectionError(t *testing.T) {
 // TestNewMux_RejectsNonGET pins the method patterns. Registered as "GET /path",
 // so a POST is a 405 from the mux itself and no handler runs.
 func TestNewMux_RejectsNonGET(t *testing.T) {
-	for _, path := range []string{"/healthz", "/api/events"} {
+	for _, path := range []string{"/healthz", "/api/events", "/api/goals"} {
 		rec := httptest.NewRecorder()
 		NewMux(Config{Events: &fakeEvents{}}).ServeHTTP(rec, httptest.NewRequest(http.MethodPost, path, nil))
 		if rec.Code != http.StatusMethodNotAllowed {
@@ -192,15 +192,33 @@ func TestNewMux_RejectsNonGET(t *testing.T) {
 	}
 }
 
-// TestServe_RefusesANilReader: Config.Events is the one required field, and a
-// nil one would panic on the first request instead of failing at boot.
+// TestServe_RefusesANilReader: a reader NewMux wires up but the deployment did
+// not supply must be a boot failure that names the field, not a 500 on
+// whichever view the operator happens to open first. Every reader added to
+// Config belongs in this table.
 func TestServe_RefusesANilReader(t *testing.T) {
-	err := Serve(context.Background(), Config{Addr: "127.0.0.1:0"})
-	if err == nil {
-		t.Fatal("Serve accepted a nil Config.Events — it would have bound a socket and panicked on the first request")
+	cases := []struct {
+		name string
+		cfg  Config
+		want string
+	}{
+		{"no events reader", Config{Goals: &fakeGoals{}}, "Config.Events is nil"},
+		{"no goals reader", Config{Events: &fakeEvents{}}, "Config.Goals is nil"},
 	}
-	if !strings.Contains(err.Error(), "Events") {
-		t.Errorf("error = %q, want it to name the field that was nil", err)
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			cfg := tc.cfg
+			// Port 0 on loopback: the guard must fire before anything binds,
+			// so this must return rather than serve.
+			cfg.Addr, cfg.Logger = "127.0.0.1:0", textLogger(io.Discard)
+			err := Serve(context.Background(), cfg)
+			if err == nil {
+				t.Fatal("Serve accepted a nil reader — it would have bound a socket and failed on the first request")
+			}
+			if !strings.Contains(err.Error(), tc.want) {
+				t.Errorf("error = %q, want it to name the field that was nil (%q)", err, tc.want)
+			}
+		})
 	}
 }
 
@@ -221,7 +239,7 @@ func TestServe_DrainsOnContextCancellation(t *testing.T) {
 	ctx, cancel := context.WithCancel(context.Background())
 	done := make(chan error, 1)
 	go func() {
-		done <- Serve(ctx, Config{Addr: addr, Events: &fakeEvents{}, Logger: textLogger(io.Discard)})
+		done <- Serve(ctx, Config{Addr: addr, Events: &fakeEvents{}, Goals: &fakeGoals{}, Logger: textLogger(io.Discard)})
 	}()
 
 	// Wait for the listener to be up, so cancellation exercises the drain path

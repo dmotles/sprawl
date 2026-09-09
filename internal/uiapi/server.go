@@ -7,8 +7,11 @@ import (
 	"fmt"
 	"log/slog"
 	"net/http"
+	"net/url"
 	"strconv"
 	"time"
+
+	"github.com/google/uuid"
 )
 
 // Defaults for the listener. Addr is :8080 to match hubd's container
@@ -30,6 +33,8 @@ type Config struct {
 
 	// Events backs /api/events. Required.
 	Events EventReader
+	// Goals backs /api/goals. Required.
+	Goals GoalReader
 	// Health backs /healthz's dependency check. Optional: nil means the probe
 	// reports liveness only, which is what a request arriving at all proves.
 	Health Pinger
@@ -51,6 +56,13 @@ func NewMux(cfg Config) *http.ServeMux {
 	mux := http.NewServeMux()
 	mux.HandleFunc("GET /healthz", handleHealthz(cfg.Health))
 	mux.HandleFunc("GET /api/events", handleEvents(cfg.Events, logger))
+	// The reader is called through a closure rather than passed as the method
+	// value `cfg.Goals.ListGoals`: a method value on a nil interface panics
+	// where it is TAKEN, so the latter would crash router construction with a
+	// bare nil-dereference. Wrapped, a missing reader behaves like every other
+	// endpoint's — it fails on a request, after Serve's guard has had its say.
+	mux.HandleFunc("GET /api/goals", handleList("goals", logger,
+		func(ctx context.Context, o ListOptions) ([]Goal, error) { return cfg.Goals.ListGoals(ctx, o) }))
 	return mux
 }
 
@@ -60,8 +72,20 @@ func NewMux(cfg Config) *http.ServeMux {
 // SIGTERM during every rolling deploy, and the browser shows an error for a
 // deployment that went fine.
 func Serve(ctx context.Context, cfg Config) error {
-	if cfg.Events == nil {
-		return errors.New("uiapi: Config.Events is nil, so /api/events would panic on the first request")
+	// Every reader NewMux wires up must be named here. A nil one is a
+	// misconfigured deployment, and it should be a boot failure that says which
+	// field is missing rather than a 500 on whichever view an operator opens
+	// first.
+	for _, req := range []struct {
+		name string
+		nil  bool
+	}{
+		{"Events", cfg.Events == nil},
+		{"Goals", cfg.Goals == nil},
+	} {
+		if req.nil {
+			return fmt.Errorf("uiapi: Config.%s is nil, so its endpoint would fail on the first request", req.name)
+		}
 	}
 	addr := cfg.Addr
 	if addr == "" {
@@ -151,6 +175,56 @@ func handleEvents(reader EventReader, logger *slog.Logger) http.HandlerFunc {
 		}
 		writeJSON(w, http.StatusOK, map[string]any{"events": events})
 	}
+}
+
+// handleList is the shape every list endpoint shares: validate the query,
+// call one reader, wrap the result in a named key.
+//
+// Generic because the alternative is six near-identical handlers, and the
+// failure mode of that duplication is not verbosity but drift — the fifth copy
+// quietly returns the database's error text, or defaults a bad limit instead of
+// rejecting it, and nothing in the type system notices.
+//
+// `key` is the response envelope's single field. Responses are objects rather
+// than bare arrays so a field can be added later without breaking a consumer.
+func handleList[T any](key string, logger *slog.Logger, load func(context.Context, ListOptions) ([]T, error)) http.HandlerFunc {
+	return func(w http.ResponseWriter, r *http.Request) {
+		opts, err := parseListOptions(r.URL.Query())
+		if err != nil {
+			writeJSON(w, http.StatusBadRequest, map[string]string{"error": err.Error()})
+			return
+		}
+		items, err := load(r.Context(), opts)
+		if err != nil {
+			// LOGGED, not returned: it can name a table, a column or a role,
+			// and this surface is browser-reachable with no auth in v1.
+			logger.Error("read failed", "component", "uiapi", "collection", key, "error", err)
+			writeJSON(w, http.StatusInternalServerError, map[string]string{"error": "reading " + key + " failed"})
+			return
+		}
+		writeJSON(w, http.StatusOK, map[string]any{key: items})
+	}
+}
+
+// parseListOptions validates ?limit= and ?project_id=.
+//
+// An unparseable project_id is a 400 rather than an ignored filter: silently
+// dropping it would answer a question about one project with every project's
+// data, which is the most misleading thing this API could do.
+func parseListOptions(q url.Values) (ListOptions, error) {
+	limit, err := parseLimit(q.Get("limit"))
+	if err != nil {
+		return ListOptions{}, err
+	}
+	opts := ListOptions{Limit: limit}
+	if raw := q.Get("project_id"); raw != "" {
+		id, err := uuid.Parse(raw)
+		if err != nil {
+			return ListOptions{}, fmt.Errorf("project_id must be a uuid, got %q", raw)
+		}
+		opts.ProjectID = &id
+	}
+	return opts, nil
 }
 
 // parseLimit validates ?limit=.
