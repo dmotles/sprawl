@@ -21,6 +21,13 @@ sprawl-matrix-*
 web/node_modules/
 web/*.tsbuildinfo
 
+# Read-only hub UI (QUM-1349). Unlike web/ above, webui/'s dist is NOT committed:
+# it is built inside its own container image (deploy/webui/Dockerfile.web) and is
+# never embedded in a Go binary, so `make validate` stays node-free without it.
+webui/node_modules/
+webui/dist/
+webui/*.tsbuildinfo
+
 # Sprawl runtime state (config.yaml is tracked, everything else is ignored)
 .sprawl/*
 !.sprawl/config.yaml

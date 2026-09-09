@@ -1,0 +1,37 @@
+# nginx config for the read-only hub UI container (QUM-1349).
+# Rendered at container start by nginx-unprivileged's envsubst entrypoint;
+# ${SPRAWL_UIAPI_UPSTREAM} is the only injected value.
+
+server {
+    listen 8080;
+    server_name _;
+
+    root /usr/share/nginx/html;
+    index index.html;
+
+    # Hashed asset filenames are immutable; index.html must never be cached or
+    # a deploy leaves clients pinned to a stale bundle.
+    location /assets/ {
+        expires 1y;
+        add_header Cache-Control "public, immutable";
+    }
+
+    location = /index.html {
+        add_header Cache-Control "no-store";
+    }
+
+    # Same-origin API. The trailing slash on neither side is deliberate: the
+    # upstream serves the /api prefix itself, so the path passes through intact.
+    location /api {
+        proxy_pass ${SPRAWL_UIAPI_UPSTREAM};
+        proxy_http_version 1.1;
+        proxy_set_header Host $host;
+        proxy_set_header X-Forwarded-For $proxy_add_x_forwarded_for;
+        proxy_set_header X-Forwarded-Proto $scheme;
+    }
+
+    # Client-side routing: every non-file path renders the SPA shell.
+    location / {
+        try_files $uri $uri/ /index.html;
+    }
+}

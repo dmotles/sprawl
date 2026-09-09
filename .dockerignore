@@ -31,6 +31,11 @@ hubd
 # and embedded from there; node_modules is never needed in the build context).
 **/node_modules/
 
+# webui/'s dist is produced inside deploy/webui/Dockerfile.web's build stage. A
+# developer's local dist/ entering the context would make the image depend on
+# their working tree instead of on the committed source.
+webui/dist/
+
 # Editor/OS cruft.
 *.swp
 .DS_Store

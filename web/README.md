@@ -1,5 +1,16 @@
 # hub SPA (`web/`)
 
+> **Frozen.** This is the hub *wire-log* SPA and it is not where new UI work
+> goes. It stays because it is load-bearing — hubd `go:embed`s its `dist` and a
+> green e2e exercises it — but it is feature-complete as described below and
+> nothing new is planned for it.
+>
+> **New hub UI work belongs in [`webui/`](../webui/README.md)** (QUM-1349): the
+> read-only view over the event-log Postgres, dark mode, responsive, served by
+> its own container over a same-origin REST `/api`. Different app, different
+> database, no shared code — same React + Vite + TypeScript stack, so the
+> toolchain here transfers.
+
 The hub's browser single-page app. **Minimal by design**: a login form plus an
 authenticated shell with two views — **Instances** (lists instances via
 `ListInstances`, QUM-878 / Hub P0-4) and **Tokens** (host-token administration

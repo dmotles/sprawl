@@ -1,0 +1,19 @@
+# Local dev stack for the read-only hub UI (QUM-1349).
+#
+# Slice A owns this file and adds postgres + the seed job + the `uiapi` service.
+# Slice B contributes ONLY the `web` service below; expect this file to be
+# rebased onto slice A's version.
+services:
+  web:
+    build:
+      context: ../..
+      dockerfile: deploy/webui/Dockerfile.web
+      # Deploy target is linux/amd64 (QUM-1350); dev hosts may be arm64.
+      platforms:
+        - linux/amd64
+    ports:
+      - "8080:8080"
+    environment:
+      # Same-origin: the browser only ever talks to this container, which
+      # proxies /api onward. Nothing is baked into the bundle.
+      SPRAWL_UIAPI_UPSTREAM: http://uiapi:8081

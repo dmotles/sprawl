@@ -1,0 +1,31 @@
+# Read-only hub UI (QUM-1349). Multi-stage: node build → nginx-unprivileged
+# serving the static dist/.
+#
+# Build context is the REPO ROOT (consistent with deploy/hub/Dockerfile). The
+# deploy target is linux/amd64 (QUM-1350) while dev hosts here are arm64, so
+# build it explicitly rather than inheriting the host's arch:
+#   docker buildx build --platform linux/amd64 -f deploy/webui/Dockerfile.web .
+#
+# nginx reverse-proxying /api is ARCHITECTURE, not a dev convenience: the read
+# API is never exposed directly (QUM-1350), so this container is the only way a
+# browser reaches it. That is also what makes the SPA same-origin, which is what
+# lets the bundle carry no endpoint at all. The upstream is injected at run time
+# via SPRAWL_UIAPI_UPSTREAM — nothing about a deployment is baked in.
+#
+# --platform=$BUILDPLATFORM keeps the node stage native (no QEMU for the slow
+# part); its output is platform-independent JS, and only the runtime stage below
+# is built for the target arch.
+FROM --platform=$BUILDPLATFORM node:24-alpine AS build
+WORKDIR /src
+COPY webui/package.json webui/package-lock.json ./
+RUN npm ci
+COPY webui/ ./
+RUN npm run build && node scripts/check-endpoints.mjs
+
+FROM nginxinc/nginx-unprivileged:1.29-alpine
+COPY --from=build /src/dist /usr/share/nginx/html
+# nginx-unprivileged runs 20-envsubst-on-templates.sh over /etc/nginx/templates,
+# so ${SPRAWL_UIAPI_UPSTREAM} is substituted at container start.
+COPY deploy/webui/nginx.conf.template /etc/nginx/templates/default.conf.template
+ENV SPRAWL_UIAPI_UPSTREAM=http://uiapi:8081
+EXPOSE 8080
