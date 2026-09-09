@@ -4,11 +4,18 @@ import userEvent from "@testing-library/user-event";
 import { MemoryRouter } from "react-router-dom";
 import { App } from "./App";
 import { VIEWS } from "./views";
+import { ApiProvider } from "./api/ApiProvider";
+import { emptyClient } from "../test/fakes";
 
+// The shell's own behaviour is what these tests are about, so every view gets
+// a client that answers "nothing yet". Each view's own test file owns the
+// loading/error/data branches.
 function renderAt(path: string) {
   return render(
     <MemoryRouter initialEntries={[path]}>
-      <App />
+      <ApiProvider client={emptyClient()}>
+        <App />
+      </ApiProvider>
     </MemoryRouter>,
   );
 }
@@ -40,25 +47,19 @@ describe("App shell", () => {
       expect(screen.getByRole("heading", { level: 1, name: label })).toBeInTheDocument();
       // The topbar title tracks the route, so the shell and the router agree.
       expect(screen.getByText(label, { selector: ".topbar__title" })).toBeInTheDocument();
-      expect(screen.getAllByText(/^No /).length).toBeGreaterThan(0);
+      expect(screen.getAllByText(/^No |^Loading/).length).toBeGreaterThan(0);
     },
   );
 
   it("navigates between views and marks the active link", async () => {
     const user = userEvent.setup();
     renderAt("/goals");
-    expect(screen.getByRole("link", { name: /Goals/ })).toHaveAttribute(
-      "aria-current",
-      "page",
-    );
+    expect(screen.getByRole("link", { name: /Goals/ })).toHaveAttribute("aria-current", "page");
 
     await user.click(screen.getByRole("link", { name: /Inbox/ }));
 
     expect(screen.getByRole("heading", { level: 1, name: "Inbox" })).toBeInTheDocument();
-    expect(screen.getByRole("link", { name: /Inbox/ })).toHaveAttribute(
-      "aria-current",
-      "page",
-    );
+    expect(screen.getByRole("link", { name: /Inbox/ })).toHaveAttribute("aria-current", "page");
     expect(screen.getByRole("link", { name: /Goals/ })).not.toHaveAttribute("aria-current");
   });
 

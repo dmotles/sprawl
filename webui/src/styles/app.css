@@ -307,6 +307,96 @@ a {
 
 /* --- responsive: phone / small tablet ----------------------------------- */
 
+/* --- async states ------------------------------------------------------- */
+
+.async--loading {
+  padding: var(--space-8) var(--space-4);
+  text-align: center;
+  color: var(--text-muted);
+  font-size: var(--text-sm);
+}
+
+.async--error {
+  display: flex;
+  flex-direction: column;
+  align-items: flex-start;
+  gap: var(--space-2);
+  padding: var(--space-5);
+  border-left: 2px solid var(--status-critical);
+  background: var(--surface-2);
+  border-radius: var(--radius-sm);
+}
+
+.async__title {
+  font-weight: 600;
+  color: var(--text-primary);
+}
+
+.async__detail {
+  color: var(--text-secondary);
+  font-size: var(--text-sm);
+}
+
+.button {
+  padding: var(--space-2) var(--space-4);
+  border: 1px solid var(--border);
+  border-radius: var(--radius-sm);
+  background: var(--surface-3);
+  color: var(--text-primary);
+  font: inherit;
+  font-size: var(--text-sm);
+  cursor: pointer;
+}
+
+.button:hover {
+  background: var(--surface-1);
+}
+
+/* --- table -------------------------------------------------------------- */
+
+.table {
+  width: 100%;
+  border-collapse: collapse;
+  font-size: var(--text-sm);
+}
+
+.table th,
+.table td {
+  padding: var(--space-2) var(--space-3);
+  text-align: left;
+  border-bottom: 1px solid var(--border);
+  white-space: nowrap;
+}
+
+.table th {
+  color: var(--text-muted);
+  font-weight: 500;
+  font-size: var(--text-xs);
+  text-transform: uppercase;
+  letter-spacing: 0.06em;
+}
+
+.table tbody tr:last-child td {
+  border-bottom: 0;
+}
+
+.table__num,
+.table__id {
+  font-variant-numeric: tabular-nums;
+  font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
+  color: var(--text-secondary);
+}
+
+.table__unknown {
+  color: var(--status-warning);
+}
+
+/* A table is the one thing that cannot reflow at phone width; scroll it
+   horizontally inside its card rather than truncating columns. */
+.card:has(> .table) {
+  overflow-x: auto;
+}
+
 @media (max-width: 720px) {
   .shell {
     grid-template-columns: 1fr;
@@ -355,4 +445,76 @@ a {
   .tile__value {
     font-size: var(--text-2xl);
   }
+}
+
+/* --- bar series --------------------------------------------------------- */
+
+/* Bars sit on the plot's baseline with a 2px surface gap between them and
+   4px rounded data-ends (per /dataviz § marks-and-anatomy). */
+.bars {
+  display: flex;
+  align-items: flex-end;
+  gap: 2px;
+  height: 100%;
+  min-height: 220px;
+  padding: var(--space-3) var(--space-2) 0;
+  box-sizing: border-box;
+}
+
+.bars__slot {
+  flex: 1 1 0;
+  display: flex;
+  align-items: flex-end;
+  height: 100%;
+  min-width: 3px;
+}
+
+.bars__bar {
+  width: 100%;
+  background: var(--series-1);
+  border-radius: var(--radius-sm) var(--radius-sm) 0 0;
+}
+
+/* --- badge -------------------------------------------------------------- */
+
+.badge {
+  margin-left: var(--space-2);
+  padding: 1px var(--space-2);
+  border: 1px solid var(--border);
+  border-radius: var(--radius-sm);
+  background: var(--surface-2);
+  color: var(--text-muted);
+  font-size: var(--text-xs);
+  text-transform: uppercase;
+  letter-spacing: 0.04em;
+}
+
+/* --- inbox questions ---------------------------------------------------- */
+
+.questions {
+  list-style: none;
+  margin: 0;
+  padding: 0;
+  display: grid;
+  gap: var(--space-4);
+}
+
+.question__text {
+  margin: 0;
+  font-size: var(--text-md);
+}
+
+.question__context {
+  margin: var(--space-2) 0 0;
+  color: var(--text-secondary);
+  font-size: var(--text-sm);
+}
+
+.question__meta {
+  display: flex;
+  flex-wrap: wrap;
+  gap: var(--space-2);
+  margin: var(--space-3) 0 0;
+  color: var(--text-muted);
+  font-size: var(--text-xs);
 }

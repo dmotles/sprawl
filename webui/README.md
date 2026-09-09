@@ -58,7 +58,7 @@ pattern report OK on a bundle that contained `//api.example.invalid/api`.
 ```sh
 cd webui
 npm install
-npm run dev     # http://localhost:5173, proxying /api to 127.0.0.1:8081
+npm run dev     # http://localhost:5173, proxying /api to 127.0.0.1:8080
 npm test        # vitest component suite
 npm run build   # -> dist/ (gitignored; built inside the image)
 ```
