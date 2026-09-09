@@ -21,6 +21,13 @@ function renderAt(path: string) {
 }
 
 describe("App shell", () => {
+  // The crash test stubs console.error; without this, the stub outlives it and
+  // silences every later test in the file. It is the last test today, which is
+  // an ordering accident and not a guarantee.
+  afterEach(() => {
+    vi.restoreAllMocks();
+  });
+
   it("links to all six views from the nav", () => {
     renderAt("/goals");
     const nav = screen.getByRole("navigation", { name: "Views" });
