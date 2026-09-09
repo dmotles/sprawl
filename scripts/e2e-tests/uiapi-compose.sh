@@ -117,6 +117,16 @@ UIAPI_READY_TIMEOUT=${SPRAWL_E2E_UIAPI_READY_TIMEOUT:-300}
 # Deadline for a single view to render its seeded data in the browser.
 UIAPI_RENDER_TIMEOUT=${SPRAWL_E2E_UIAPI_RENDER_TIMEOUT:-60}
 
+# The browser binary. `chromium` by default; overridable because a full Chrome
+# build can wedge on a host where a headless one is fine — measured on this host
+# 2026-09-09, when every `chromium --dump-dom` (including `data:text/html,<p>hi`,
+# a fresh profile, an isolated HOME, --no-zygote and --single-process) blocked in
+# futex_do_wait until its 300s timeout, while playwright's headless_shell
+# rendered the same page, JS included, in under a second. The override is an
+# escape hatch for that, not a way to skip the browser half: an unset or
+# unusable value still fails the precondition and skips the whole row.
+UIAPI_CHROMIUM=${SPRAWL_E2E_CHROMIUM:-chromium}
+
 test_metadata() {
     echo "needs_jq=1"
 }
@@ -173,7 +183,7 @@ uiapi_json() {
 # to run as root in CI containers.
 UIAPI_DOM=""
 uiapi_render() {
-    UIAPI_DOM=$(timeout 90 chromium --headless --no-sandbox --disable-gpu \
+    UIAPI_DOM=$(timeout 90 "$UIAPI_CHROMIUM" --headless --no-sandbox --disable-gpu \
         --disable-dev-shm-usage --dump-dom --virtual-time-budget=15000 \
         --user-data-dir="$UIAPI_TMPDIR/chrome" \
         "http://127.0.0.1:$WEB_PORT$1" 2>/dev/null || true)
@@ -344,7 +354,7 @@ test_run() {
     # browser half is exactly the coverage whose absence let QA F1 ship, and a
     # row that quietly drops it would report a green that means less than it did
     # before. Skipping the whole row (77) is the honest outcome.
-    if ! command -v chromium >/dev/null 2>&1; then
+    if ! command -v "$UIAPI_CHROMIUM" >/dev/null 2>&1; then
         e2e_skip_row "chromium not found on PATH — this row renders each view in a real browser, and the API half alone cannot see a UI/API contract break. NOTE: this skips the WHOLE row, so its 14 API assertions are dropped too and NOTHING here is discharged"
     fi
     if ! docker info >/dev/null 2>&1; then
