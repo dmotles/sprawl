@@ -124,13 +124,14 @@ func run(ctx context.Context, args []string, getenv func(string) string, w io.Wr
 	logger.Info("read database ready", "component", "uiapi", "migrated_by", "sprawl store migrate")
 
 	return serveFn(ctx, uiapi.Config{
-		Addr:   *addr,
-		Grace:  *grace,
-		Logger: logger,
-		Events: uiapi.PgEventReader{Pool: pool},
-		Goals:  uiapi.PgGoalReader{Pool: pool},
-		Inbox:  uiapi.PgQuestionReader{Pool: pool},
-		Health: pool,
+		Addr:      *addr,
+		Grace:     *grace,
+		Logger:    logger,
+		Events:    uiapi.PgEventReader{Pool: pool},
+		Goals:     uiapi.PgGoalReader{Pool: pool},
+		Inbox:     uiapi.PgQuestionReader{Pool: pool},
+		Workflows: uiapi.PgWorkflowReader{Pool: pool},
+		Health:    pool,
 	})
 }
 

@@ -37,9 +37,10 @@ func (f fakePinger) Ping(context.Context) error { return f.err }
 // the nil-reader guard, which says nothing about what they are testing.
 func fullConfig() Config {
 	return Config{
-		Events: &fakeEvents{},
-		Goals:  &fakeGoals{},
-		Inbox:  &fakeQuestions{},
+		Events:    &fakeEvents{},
+		Goals:     &fakeGoals{},
+		Inbox:     &fakeQuestions{},
+		Workflows: &fakeWorkflows{},
 	}
 }
 
@@ -195,7 +196,7 @@ func TestHandleHealthz_DoesNotLeakTheConnectionError(t *testing.T) {
 // TestNewMux_RejectsNonGET pins the method patterns. Registered as "GET /path",
 // so a POST is a 405 from the mux itself and no handler runs.
 func TestNewMux_RejectsNonGET(t *testing.T) {
-	for _, path := range []string{"/healthz", "/api/events", "/api/goals", "/api/inbox"} {
+	for _, path := range []string{"/healthz", "/api/events", "/api/goals", "/api/inbox", "/api/workflows"} {
 		rec := httptest.NewRecorder()
 		NewMux(fullConfig()).ServeHTTP(rec, httptest.NewRequest(http.MethodPost, path, nil))
 		if rec.Code != http.StatusMethodNotAllowed {
@@ -217,6 +218,7 @@ func TestServe_RefusesANilReader(t *testing.T) {
 		{"no events reader", func(c *Config) { c.Events = nil }, "Config.Events is nil"},
 		{"no goals reader", func(c *Config) { c.Goals = nil }, "Config.Goals is nil"},
 		{"no inbox reader", func(c *Config) { c.Inbox = nil }, "Config.Inbox is nil"},
+		{"no workflows reader", func(c *Config) { c.Workflows = nil }, "Config.Workflows is nil"},
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
