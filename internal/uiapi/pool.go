@@ -39,22 +39,57 @@ func MissingPGEnv(getenv func(string) string) []string {
 	return missing
 }
 
-// OpenPool connects using the ambient PG* environment and proves the connection
-// works before returning.
+// StatementTimeout and MaxConns bound what this API can cost the database.
+//
+// The read API is unauthenticated by design and it reads the SAME cluster the
+// sprawl runtime's event log depends on, while /api/usage, /api/fleet and
+// /api/workflows are GROUP BYs over the whole events table — LIMIT bounds the
+// rows returned, not the rows grouped. So an unbounded query pins a backend for
+// as long as the scan takes, and pgx's default MaxConns of max(4, NumCPU) lets a
+// few open browser tabs hold that many at once. The failure that matters is not
+// a slow UI; it is the system of record degrading because someone left a tab
+// open. Both bounds are therefore deliberately mean: a read-only dashboard that
+// cannot answer within ten seconds should report an error, not queue.
+const (
+	StatementTimeout = "10s"
+	MaxConns         = int32(4)
+)
+
+// poolConfig resolves the PG* environment into a pool configuration carrying
+// those bounds.
 //
 // The empty connection string is not an oversight: it makes pgx resolve every
 // setting from the environment, which is the whole point of the discrete-vars
 // shape. Nothing here reads PGPASSWORD itself.
+func poolConfig() (*pgxpool.Config, error) {
+	cfg, err := pgxpool.ParseConfig("")
+	if err != nil {
+		// The error is not wrapped: pgx echoes the resolved connection string
+		// on a parse failure, and that string carries PGPASSWORD.
+		return nil, fmt.Errorf("uiapi: the PG* connection settings could not be parsed")
+	}
+	// A startup RuntimeParam rather than a per-query SET: it applies to every
+	// connection the pool ever opens, including ones opened after a restart of
+	// the database, and no future query can forget it.
+	cfg.ConnConfig.RuntimeParams["statement_timeout"] = StatementTimeout
+	cfg.MaxConns = MaxConns
+	return cfg, nil
+}
+
+// OpenPool connects using the ambient PG* environment and proves the connection
+// works before returning.
 //
-// pgxpool.New is lazy — it parses and acquires nothing — so without the Ping a
+// pgxpool.NewWithConfig is lazy — it acquires nothing — so without the Ping a
 // completely unreachable database produces a process that boots cleanly,
 // reports healthy, and fails on the first request. Boot is where a bad
 // connection should be discovered.
 func OpenPool(ctx context.Context) (*pgxpool.Pool, error) {
-	pool, err := pgxpool.New(ctx, "")
+	cfg, err := poolConfig()
 	if err != nil {
-		// The error is not wrapped: pgx echoes the resolved connection string
-		// on a parse failure, and that string carries PGPASSWORD.
+		return nil, err
+	}
+	pool, err := pgxpool.NewWithConfig(ctx, cfg)
+	if err != nil {
 		return nil, fmt.Errorf("uiapi: the PG* connection settings could not be parsed")
 	}
 	if err := pool.Ping(ctx); err != nil {
