@@ -380,15 +380,23 @@ done
 # narrowed or removed — the control below deletes it and both assertions fire.
 # The complementary risk, the spill MOVING out of .sprawl/, is guarded on the Go
 # side by TestSpillDir_IsUnderTheGitignoredSprawlTree.
-echo "=== [7] QUM-1249 event-log spill: .sprawl/logs/ledger-spill must be ignored"
+#
+# QUM-1345 adds the incident-capture path to the same section for the same
+# reason. Three machine-generated pane captures under
+# .sprawl/incidents/qum-698-eyeball/ were tracked in git for three months —
+# `.sprawl/*` never ignored them because gitignore does not affect files that
+# are ALREADY tracked. Deleting them restores the invariant; this assertion is
+# what stops the next capture from being added back.
+echo "=== [7] .sprawl/* coverage: spilled events and incident captures must be ignored"
 for p in \
   '.sprawl/logs/ledger-spill/2026-08-19.ndjson' \
-  '.sprawl/logs/ledger-spill/dead-letter/2026-08-19.ndjson'
+  '.sprawl/logs/ledger-spill/dead-letter/2026-08-19.ndjson' \
+  '.sprawl/incidents/qum-698-eyeball/pane-capture.ansi'
 do
   if git -C "$REPO_ROOT" check-ignore -q -- "$p"; then
-    ok "check-ignore: $p is ignored (spilled event payloads never enter a public repo)"
+    ok "check-ignore: $p is ignored (machine-generated payloads never enter a public repo)"
   else
-    fail "check-ignore: $p is NOT ignored — spilled event payloads are stageable into a PUBLIC repo"
+    fail "check-ignore: $p is NOT ignored — machine-generated payloads are stageable into a PUBLIC repo"
   fi
 done
 
@@ -412,7 +420,7 @@ else
 fi
 
 echo "=== $ASSERTIONS assertions, $FAILURES failures ==="
-# 70 = [0] 8 + [1] 26 + [2] 16 + [3] 2 + [4] 2 + [5] 7 + [6] 5 + [7] 4. Hand-computed.
-[ "$ASSERTIONS" -eq 70 ] || { echo "FLOOR BREACH: $ASSERTIONS assertions ran, expected 70" >&2; exit 1; }
+# 71 = [0] 8 + [1] 26 + [2] 16 + [3] 2 + [4] 2 + [5] 7 + [6] 5 + [7] 5. Hand-computed.
+[ "$ASSERTIONS" -eq 71 ] || { echo "FLOOR BREACH: $ASSERTIONS assertions ran, expected 71" >&2; exit 1; }
 [ "$FAILURES" -eq 0 ] || exit 1
 echo "gitignore-classes: OK"
