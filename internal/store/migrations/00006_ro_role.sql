@@ -57,23 +57,33 @@ $$;
 -- unreadable, and the symptom is a 42501 from a handler rather than anything
 -- resembling a missing grant.
 --
--- It is scoped FOR ROLE <schema owner>, and that clause is the whole point.
--- Default privileges attach to a GRANTOR, not to a schema: unqualified, the
--- grantor is whoever ran the migration. When that is an admin or superuser who
--- is not the schema owner — the normal shape of a production migrate — the
--- clause silently applies to tables that role creates later, i.e. none, and
--- does nothing at all for the owner's future tables. It fails by no-op, with no
--- error to notice, so the owner is resolved from the catalog rather than
--- assumed to be current_user.
+-- The FOR ROLE clause is the whole point, and getting it wrong fails by NO-OP
+-- with no error to notice. Default privileges attach to a GRANTOR, not to a
+-- schema: an entry only fires for tables that THAT role goes on to create.
+--
+-- So the clause is issued once per plausible future creator, because neither
+-- candidate is sufficient alone and each fails silently:
+--
+--   * current_user — whoever runs `sprawl store migrate`, and therefore whoever
+--     creates the tables a later migration adds. This is the common case and
+--     the one an unqualified statement would have covered anyway.
+--   * the schema owner, when it differs — a production migrate run by an admin
+--     that is not the owner leaves the owner's future tables uncovered, which
+--     is the case an unqualified statement gets wrong.
+--
+-- pg_database_owner is EXCLUDED, and it is the trap that motivated writing this
+-- as a loop. In the `public` schema of a modern Postgres, nspowner is the
+-- pseudo-role `pg_database_owner`, so resolving "the owner" from the catalogue
+-- and stopping there produces an entry granted BY a role that creates nothing.
+-- Measured, not reasoned about: with only that entry present, a table created
+-- by the migrating user immediately after `store migrate` was unreadable to
+-- sprawl_ro with `permission denied`, while `pg_default_acl` showed a
+-- perfectly healthy-looking `sprawl_ro=r/pg_database_owner` row.
 -- +goose StatementBegin
 DO $$
 DECLARE
     s text := quote_ident(current_schema());
-    owner text := (
-        SELECT quote_ident(pg_get_userbyid(nspowner))
-        FROM pg_namespace
-        WHERE nspname = current_schema()
-    );
+    grantor text;
     t text;
 BEGIN
     EXECUTE format('GRANT USAGE ON SCHEMA %s TO sprawl_ro', s);
@@ -105,7 +115,16 @@ BEGIN
         EXECUTE format('REVOKE INSERT, UPDATE, DELETE, TRUNCATE ON %s.%I FROM sprawl_ro', s, t);
     END LOOP;
 
-    EXECUTE format('ALTER DEFAULT PRIVILEGES FOR ROLE %s IN SCHEMA %s GRANT SELECT ON TABLES TO sprawl_ro', owner, s);
+    FOR grantor IN
+        SELECT DISTINCT quote_ident(r)
+        FROM unnest(ARRAY[
+            current_user::text,
+            (SELECT pg_get_userbyid(nspowner) FROM pg_namespace WHERE nspname = current_schema())
+        ]) AS r
+        WHERE r IS NOT NULL AND r <> 'pg_database_owner'
+    LOOP
+        EXECUTE format('ALTER DEFAULT PRIVILEGES FOR ROLE %s IN SCHEMA %s GRANT SELECT ON TABLES TO sprawl_ro', grantor, s);
+    END LOOP;
 END
 $$;
 -- +goose StatementEnd
@@ -122,16 +141,22 @@ $$;
 DO $$
 DECLARE
     s text := quote_ident(current_schema());
-    -- Must name the same grantor the Up used, or the revoke targets a default
-    -- privilege entry that does not exist and leaves the real one in place.
-    owner text := (
-        SELECT quote_ident(pg_get_userbyid(nspowner))
-        FROM pg_namespace
-        WHERE nspname = current_schema()
-    );
+    -- Revoked per GRANTOR, from the catalogue rather than from the Up leg's
+    -- candidate list: a revoke naming a role the Up did not grant for targets
+    -- an entry that does not exist and leaves the real one in place, so a
+    -- rolled-back schema would keep silently re-granting SELECT on every table
+    -- created in it afterwards.
+    grantor text;
 BEGIN
     IF EXISTS (SELECT 1 FROM pg_roles WHERE rolname = 'sprawl_ro') THEN
-        EXECUTE format('ALTER DEFAULT PRIVILEGES FOR ROLE %s IN SCHEMA %s REVOKE SELECT ON TABLES FROM sprawl_ro', owner, s);
+        FOR grantor IN
+            SELECT quote_ident(pg_get_userbyid(d.defaclrole))
+            FROM pg_default_acl d
+            JOIN pg_namespace n ON n.oid = d.defaclnamespace
+            WHERE n.nspname = current_schema() AND d.defaclobjtype = 'r'
+        LOOP
+            EXECUTE format('ALTER DEFAULT PRIVILEGES FOR ROLE %s IN SCHEMA %s REVOKE SELECT ON TABLES FROM sprawl_ro', grantor, s);
+        END LOOP;
         EXECUTE format('REVOKE ALL ON ALL TABLES IN SCHEMA %s FROM sprawl_ro', s);
         EXECUTE format('REVOKE USAGE ON SCHEMA %s FROM sprawl_ro', s);
     END IF;

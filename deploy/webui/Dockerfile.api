@@ -1,0 +1,43 @@
+# Read-only web UI API image (QUM-1349). Multi-stage: static build → distroless
+# nonroot, structurally the same as deploy/hub/Dockerfile.
+#
+# Build context is the REPO ROOT (single module):
+#   docker build --platform linux/amd64 -f deploy/webui/Dockerfile.api .
+#
+# --platform is not optional in practice. A native build on an arm64 dev host
+# produces an image that builds green here and fails to start on an amd64
+# deploy target, and the failure surfaces at first boot rather than at build.
+# The build stage is pinned to $BUILDPLATFORM and cross-compiles via GOARCH, so
+# the slow step still runs natively instead of under emulation.
+FROM --platform=$BUILDPLATFORM golang:1.26 AS build
+ARG TARGETOS
+ARG TARGETARCH
+WORKDIR /src
+COPY go.mod go.sum ./
+RUN go mod download
+COPY . .
+RUN CGO_ENABLED=0 GOOS=${TARGETOS:-linux} GOARCH=${TARGETARCH} \
+    go build -trimpath -ldflags="-s -w" -o /out/uiapi ./cmd/uiapi
+RUN CGO_ENABLED=0 GOOS=${TARGETOS:-linux} GOARCH=${TARGETARCH} \
+    go build -trimpath -ldflags="-s -w" -o /out/sprawl .
+
+# The `migrate` target carries the `sprawl` CLI so the compose stack can run
+# `sprawl store migrate`. It is a SEPARATE image from the API's on purpose: the
+# API image must not contain a binary that CAN migrate, because the whole point
+# of the SELECT-only role is that the browser-reachable process cannot own the
+# shared event log's schema. Two stages that each copy one binary is what makes
+# that a property of the image rather than of the entrypoint.
+FROM gcr.io/distroless/static-debian12:nonroot AS migrate
+COPY --from=build /out/sprawl /sprawl
+ENTRYPOINT ["/sprawl"]
+
+# Last stage, so a plain `docker build` with no --target produces the API.
+FROM gcr.io/distroless/static-debian12:nonroot AS api
+COPY --from=build /out/uiapi /uiapi
+# Documentation only — the API is NEVER published to a host or to the internet.
+# The frontend reverse-proxies /api to it over the compose network, which is the
+# only route a browser has (QUM-1350 D5), so nothing here maps a port.
+EXPOSE 8080
+# /healthz is the liveness probe. Configuration is injected at deploy as
+# discrete PG* variables with PGPASSWORD as its own secret; nothing is baked in.
+ENTRYPOINT ["/uiapi"]

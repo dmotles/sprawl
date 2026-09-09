@@ -356,6 +356,29 @@ hub-web:
 	PATH="$(CURDIR)/web/node_modules/.bin:$$PATH" $(BUF) generate --template buf.gen.web.yaml
 	cd web && npm run build
 
+# The read-only web UI stack (QUM-1349). Like hub-web, DELIBERATELY NOT part of
+# `make validate` — it needs a docker daemon, which validate must not.
+#
+# webui-image builds the deploy artifact and therefore hard-pins linux/amd64:
+# the deploy target is amd64, and an image built natively on an arm64 dev host
+# passes every local check and then fails to start with `exec format error`.
+# webui-up does NOT pin, because that same image cannot RUN on an arm64 host
+# without emulation — the compose file names no platform at all and so builds
+# natively, which is what a dev stack wants. Building the artifact and running
+# the stack are different jobs, so they get different targets rather than one
+# target with a flag. Slice B's `web` image follows the same split.
+WEBUI_COMPOSE := deploy/webui/compose.yaml
+
+.PHONY: webui-image webui-up webui-down
+webui-image:
+	docker build --platform linux/amd64 -f deploy/webui/Dockerfile.api -t sprawl-uiapi:dev .
+
+webui-up:
+	docker compose -f $(WEBUI_COMPOSE) up --build -d
+
+webui-down:
+	docker compose -f $(WEBUI_COMPOSE) down -v
+
 VERSION ?= $(shell git describe --tags --always 2>/dev/null || echo dev)
 COMMIT  ?= $(shell git rev-parse HEAD 2>/dev/null || echo none)
 # QUM-1287: the stamp is HEAD's COMMITTER DATE, not wall-clock build time (the

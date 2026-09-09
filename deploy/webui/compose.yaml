@@ -1,12 +1,124 @@
-# Local dev stack for the read-only hub UI (QUM-1349).
+# Local development stack for the read-only web UI (QUM-1349).
 #
-# Slice A owns this file and adds postgres + the seed job + the `uiapi` service.
-# Slice B contributes ONLY the `web` service below; expect this file to be
-# rebased onto slice A's version. At that rebase `web` needs
-# `depends_on: [uiapi]`: nginx resolves a literal proxy_pass hostname at config
-# load and exits if it is unresolvable, so a cold start without uiapi cannot
-# come up. It is not declared here because slice B's file has no uiapi service.
+#   docker compose -f deploy/webui/compose.yaml up --build
+#
+# Nothing here is cloud-specific and nothing here is a deployment artifact: it
+# exists so the API can be exercised against a real Postgres without a cluster.
+# Deployment lives in the private infra repo (QUM-1350).
+#
+# Two properties are deliberate and are the reason this file reads the way it
+# does:
+#
+#   - The API publishes NO PORT. It is never directly reachable, in dev or
+#     anywhere else; the frontend reverse-proxies /api to it over this network
+#     and that is a browser's only route (QUM-1350 D5). To poke it by hand, go
+#     through the network rather than opening a hole:
+#       docker compose -f deploy/webui/compose.yaml exec uiapi /uiapi --help
+#       docker compose -f deploy/webui/compose.yaml run --rm --entrypoint sh web \
+#         -c 'wget -qO- http://uiapi:8080/healthz'
+#   - The API RUNS NO MIGRATIONS. `migrate` is a separate one-shot service with
+#     its own image and its own admin-credentialled connection; the API waits
+#     for it to finish and then connects as a login user that only inherits
+#     sprawl_ro.
+#
+# `web` is slice B's frontend and the only service that publishes a port.
+
+name: sprawl-webui
+
 services:
+  db:
+    image: postgres:16
+    environment:
+      POSTGRES_DB: sprawl
+      POSTGRES_USER: sprawl_owner
+      # Dev-only, and it never leaves this network: no port is published.
+      POSTGRES_PASSWORD: sprawl_dev_password
+    # No `ports:`. The database is reachable from the other services and from
+    # nowhere else.
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U sprawl_owner -d sprawl"]
+      interval: 2s
+      timeout: 3s
+      retries: 30
+
+  # One-shot. Runs as the SCHEMA OWNER, which is the only identity that may
+  # create the schema — and, because ALTER DEFAULT PRIVILEGES is scoped FOR ROLE
+  # <schema owner>, the identity whose future tables the read role inherits
+  # SELECT on. Migrating as some other admin would leave that clause a no-op.
+  migrate:
+    build:
+      context: ../..
+      dockerfile: deploy/webui/Dockerfile.api
+      target: migrate
+    command: ["store", "migrate"]
+    environment:
+      SPRAWL_DB_DSN: postgres://sprawl_owner:sprawl_dev_password@db:5432/sprawl?sslmode=disable
+    depends_on:
+      db:
+        condition: service_healthy
+    restart: "no"
+
+  # Grants the NOLOGIN sprawl_ro role (created by the migration) to a LOGIN user.
+  # In deployment this step is a runbook action taken with admin credentials and
+  # a password from the secret manager; here it is inline because the password is
+  # a dev constant that never leaves this network. The migration deliberately
+  # does not create a login user — a password has no business in a tracked file.
+  grant:
+    image: postgres:16
+    entrypoint: ["psql", "-v", "ON_ERROR_STOP=1", "-c"]
+    # The DO block is single-quoted rather than dollar-quoted: compose treats
+    # `$$` as an escaped `$` during interpolation, so the usual `DO $$ ... $$`
+    # form arrives at psql mangled.
+    command:
+      - |
+        DO 'BEGIN
+          IF NOT EXISTS (SELECT 1 FROM pg_roles WHERE rolname = ''sprawl_ui_login'') THEN
+            CREATE ROLE sprawl_ui_login LOGIN PASSWORD ''sprawl_dev_password'' INHERIT;
+          END IF;
+        END';
+        GRANT sprawl_ro TO sprawl_ui_login;
+    environment:
+      PGHOST: db
+      PGDATABASE: sprawl
+      PGUSER: sprawl_owner
+      PGPASSWORD: sprawl_dev_password
+    depends_on:
+      migrate:
+        condition: service_completed_successfully
+    restart: "no"
+
+  uiapi:
+    build:
+      context: ../..
+      dockerfile: deploy/webui/Dockerfile.api
+      target: api
+    # Discrete libpq variables rather than one DSN (QUM-1350 D10), with the
+    # password its own value so rotation touches one thing. This is the SHAPE
+    # deployment uses; only the values differ.
+    environment:
+      PGHOST: db
+      PGDATABASE: sprawl
+      PGUSER: sprawl_ui_login
+      PGPASSWORD: sprawl_dev_password
+      PGSSLMODE: disable
+      SPRAWL_UIAPI_LOG_FORMAT: text
+    # No `ports:` — see the header. Adding one here would make the reverse proxy
+    # look optional, and it is the architecture.
+    depends_on:
+      grant:
+        condition: service_completed_successfully
+    restart: unless-stopped
+
+  # Slice B's frontend. It is the ONLY published port: everything else on this
+  # network is reachable through it or not at all.
+  #
+  # depends_on is not a nicety here. nginx resolves a literal proxy_pass hostname
+  # once, at config load, and exits if it does not resolve — so on a cold `up`
+  # without this, web races the API's container and dies rather than retrying.
+  #
+  # The upstream port is 8080, uiapi's DefaultAddr. Slice B wrote 8081 against an
+  # API that did not exist yet; there is no port collision to avoid, since web
+  # and uiapi are separate containers.
   web:
     build:
       context: ../..
@@ -16,4 +128,6 @@ services:
     environment:
       # Same-origin: the browser only ever talks to this container, which
       # proxies /api onward. Nothing is baked into the bundle.
-      SPRAWL_UIAPI_UPSTREAM: http://uiapi:8081
+      SPRAWL_UIAPI_UPSTREAM: http://uiapi:8080
+    depends_on:
+      - uiapi
