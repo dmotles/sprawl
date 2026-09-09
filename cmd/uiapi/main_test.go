@@ -5,6 +5,7 @@ import (
 	"errors"
 	"flag"
 	"io"
+	"log/slog"
 	"strings"
 	"testing"
 	"time"
@@ -318,5 +319,36 @@ func TestNewLogger_HonoursTheLevel(t *testing.T) {
 	}
 	if !strings.Contains(loud.String(), "probe") {
 		t.Errorf("a debug line was dropped at SPRAWL_UIAPI_LOG_LEVEL=debug: %q", loud.String())
+	}
+}
+
+// TestRun_WiresEveryReaderServeRequires closes a real gap: the seams in these
+// tests replace uiapi.Serve, so every case here passes whether or not the
+// Config it builds is one Serve would accept. A reader added to uiapi.Config
+// and to Serve's nil-reader guard, but not wired here, is a binary that fails
+// at boot with "Config.X is nil" and a green unit suite. That happened —
+// /api/inbox shipped its guard entry before its wiring.
+//
+// Rather than enumerate the field names (a list that rots the moment one is
+// added), this hands the captured Config to the real uiapi.Serve with an
+// already-cancelled context: Serve validates its readers BEFORE it binds or
+// serves, so a complete Config drains immediately and returns nil, while a
+// missing reader returns the guard's error naming the field.
+func TestRun_WiresEveryReaderServeRequires(t *testing.T) {
+	var got uiapi.Config
+	withSeams(t, okOpen, okVerify, func(_ context.Context, cfg uiapi.Config) error {
+		got = cfg
+		return nil
+	})
+
+	if err := run(context.Background(), nil, envMap(fullEnv()), io.Discard); err != nil {
+		t.Fatalf("run: %v", err)
+	}
+
+	ctx, cancel := context.WithCancel(context.Background())
+	cancel()
+	got.Addr, got.Logger = "127.0.0.1:0", slog.New(slog.NewTextHandler(io.Discard, nil))
+	if err := uiapi.Serve(ctx, got); err != nil {
+		t.Errorf("uiapi.Serve rejected the Config this command builds: %v", err)
 	}
 }
