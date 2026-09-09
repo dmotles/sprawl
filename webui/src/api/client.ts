@@ -5,7 +5,7 @@
 // absolute URL in this file would bake a deployment into the image and would
 // fail `npm run check:endpoints`.
 
-import type { EventRow, FleetAgent, Goal, InboxQuestion, Usage, Workflow } from "./types";
+import type { EventRow, FleetMember, Goal, InboxQuestion, UsageBucket, Workflow } from "./types";
 
 export type * from "./types";
 
@@ -34,12 +34,12 @@ export interface ListOpts {
 export interface ApiClient {
   listGoals(opts?: ListOpts): Promise<Goal[]>;
   listWorkflows(opts?: ListOpts): Promise<Workflow[]>;
-  listFleet(opts?: ListOpts): Promise<FleetAgent[]>;
+  listFleet(opts?: ListOpts): Promise<FleetMember[]>;
   // Only the options the API actually parses are typed. A `before_seq` the
   // server silently drops would hand the first caller to add a filter a full
   // unfiltered page back, with no error to notice.
   listEvents(opts?: ListOpts): Promise<EventRow[]>;
-  getUsage(opts?: { bucket?: "hour" | "day"; project_id?: string }): Promise<Usage>;
+  listUsage(opts?: ListOpts & { bucket?: "hour" | "day" }): Promise<UsageBucket[]>;
   listInbox(opts?: ListOpts): Promise<InboxQuestion[]>;
 }
 
@@ -90,13 +90,13 @@ export function createApiClient(fetchImpl: typeof fetch = fetch): ApiClient {
         .workflows;
     },
     async listFleet(opts = {}) {
-      return (await get<{ agents: FleetAgent[] }>(buildPath("/api/fleet", { ...opts }))).agents;
+      return (await get<{ fleet: FleetMember[] }>(buildPath("/api/fleet", { ...opts }))).fleet;
     },
     async listEvents(opts = {}) {
       return (await get<{ events: EventRow[] }>(buildPath("/api/events", { ...opts }))).events;
     },
-    async getUsage(opts = {}) {
-      return await get<Usage>(buildPath("/api/usage", { ...opts }));
+    async listUsage(opts = {}) {
+      return (await get<{ usage: UsageBucket[] }>(buildPath("/api/usage", { ...opts }))).usage;
     },
     async listInbox(opts = {}) {
       return (await get<{ questions: InboxQuestion[] }>(buildPath("/api/inbox", { ...opts })))

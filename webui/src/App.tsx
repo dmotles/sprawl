@@ -1,5 +1,6 @@
 import { useEffect, useState, useSyncExternalStore } from "react";
 import { NavLink, Navigate, Route, Routes, useLocation } from "react-router-dom";
+import { ErrorBoundary } from "./components/ErrorBoundary";
 import { VIEWS } from "./views";
 
 /** Must match the drawer breakpoint in app.css. */
@@ -91,13 +92,18 @@ export function App() {
           <span className="topbar__title">{current?.label ?? "sprawl"}</span>
         </div>
         <div className="shell__content">
-          <Routes>
-            <Route path="/" element={<Navigate to={VIEWS[0].path} replace />} />
-            {VIEWS.map((view) => (
-              <Route key={view.path} path={view.path} element={view.element} />
-            ))}
-            <Route path="*" element={<Navigate to={VIEWS[0].path} replace />} />
-          </Routes>
+          {/* Inside the shell, so a crashed view leaves the nav usable, and
+              keyed by path so navigating away clears the caught error rather
+              than pinning the message on every later route. */}
+          <ErrorBoundary key={location.pathname}>
+            <Routes>
+              <Route path="/" element={<Navigate to={VIEWS[0].path} replace />} />
+              {VIEWS.map((view) => (
+                <Route key={view.path} path={view.path} element={view.element} />
+              ))}
+              <Route path="*" element={<Navigate to={VIEWS[0].path} replace />} />
+            </Routes>
+          </ErrorBoundary>
         </div>
       </main>
     </div>

@@ -4,10 +4,10 @@ import { MemoryRouter } from "react-router-dom";
 import type {
   ApiClient,
   EventRow,
-  FleetAgent,
+  FleetMember,
   Goal,
   InboxQuestion,
-  Usage,
+  UsageBucket,
   Workflow,
 } from "../src/api/client";
 import { ApiProvider } from "../src/api/ApiProvider";
@@ -27,7 +27,7 @@ export function fakeClient(overrides: Partial<ApiClient> = {}): ApiClient {
     listWorkflows: unstubbed("listWorkflows"),
     listFleet: unstubbed("listFleet"),
     listEvents: unstubbed("listEvents"),
-    getUsage: unstubbed("getUsage"),
+    listUsage: unstubbed("listUsage"),
     listInbox: unstubbed("listInbox"),
     ...overrides,
   };
@@ -41,16 +41,7 @@ export function emptyClient(): ApiClient {
     listFleet: async () => [],
     listEvents: async () => [],
     listInbox: async () => [],
-    getUsage: async () => ({
-      totals: {
-        cost_usd: null,
-        input_tokens: null,
-        output_tokens: null,
-        turns: null,
-      },
-      series: [],
-      bucket: "hour",
-    }),
+    listUsage: async () => [],
   });
 }
 
@@ -112,14 +103,17 @@ export function makeWorkflow(over: Partial<Workflow> = {}): Workflow {
   };
 }
 
-export function makeAgent(over: Partial<FleetAgent> = {}): FleetAgent {
+export function makeAgent(over: Partial<FleetMember> = {}): FleetMember {
   return {
     agent_name: "ratz",
-    session_id: "3c0a0000-2222-4333-8444-555555555555",
+    project_id: "9b1c0000-2222-4333-8444-555555555555",
+    project_name: "sprawl",
+    turn_count: 143,
+    input_tokens: 1844290,
+    output_tokens: 120455,
+    first_seq: 12,
+    last_seq: 799,
     last_turn_at: "2026-09-09T19:28:02.004Z",
-    last_turn_seq: 799,
-    last_turn_outcome: "success",
-    turns: 143,
     ...over,
   };
 }
@@ -140,19 +134,17 @@ export function makeQuestion(over: Partial<InboxQuestion> = {}): InboxQuestion {
   };
 }
 
-export function makeUsage(over: Partial<Usage> = {}): Usage {
+export function makeUsageBucket(over: Partial<UsageBucket> = {}): UsageBucket {
   return {
-    totals: {
-      cost_usd: 41.9382,
-      input_tokens: 18442901,
-      output_tokens: 1204553,
-      turns: 1443,
-    },
-    series: [
-      { bucket: "2026-09-09T17:00:00Z", cost_usd: 12.41 },
-      { bucket: "2026-09-09T18:00:00Z", cost_usd: 29.53 },
-    ],
+    bucket_start: "2026-09-09T18:00:00Z",
     bucket: "hour",
+    project_id: "9b1c0000-2222-4333-8444-555555555555",
+    project_name: "sprawl",
+    cost_usd: 29.53,
+    sessions: 4,
+    turns: 812,
+    input_tokens: 18442901,
+    output_tokens: 1204553,
     ...over,
   };
 }

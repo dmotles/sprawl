@@ -5,7 +5,7 @@ import { MemoryRouter } from "react-router-dom";
 import { App } from "./App";
 import { VIEWS } from "./views";
 import { ApiProvider } from "./api/ApiProvider";
-import { emptyClient } from "../test/fakes";
+import { emptyClient, fakeClient } from "../test/fakes";
 
 // The shell's own behaviour is what these tests are about, so every view gets
 // a client that answers "nothing yet". Each view's own test file owns the
@@ -142,5 +142,23 @@ describe("App shell", () => {
 
     expect(shell).toHaveAttribute("data-nav-open", "false");
     expect(screen.getByRole("heading", { level: 1, name: "Goals" })).toBeInTheDocument();
+  });
+
+  it("keeps the nav usable when a view throws while rendering", async () => {
+    // The exact QUM-1349 F1 mechanism: a client handing a view something it
+    // cannot iterate. Before the boundary, React unmounted the whole tree and
+    // the browser showed an empty dark page with no way to navigate away.
+    vi.spyOn(console, "error").mockImplementation(() => {});
+    render(
+      <MemoryRouter initialEntries={["/fleet"]}>
+        <ApiProvider
+          client={fakeClient({ listFleet: async () => undefined as unknown as never[] })}
+        >
+          <App />
+        </ApiProvider>
+      </MemoryRouter>,
+    );
+    expect(await screen.findByRole("alert")).toHaveTextContent(/failed to render/i);
+    expect(screen.getByRole("navigation", { name: "Views" })).toBeInTheDocument();
   });
 });

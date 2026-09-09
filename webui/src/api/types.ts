@@ -48,22 +48,32 @@ export interface Workflow {
 }
 
 /**
- * An agent, derived from `turn_finished` events. There is deliberately no
- * `alive` boolean: turn boundaries are the only liveness signal the log holds,
- * and a long quiet turn is legitimate, so the reader judges from `last_turn_at`.
+ * An agent, derived from `turn_finished` events (`uiapi.FleetMember`). There is
+ * deliberately no `alive` boolean: turn boundaries are the only liveness signal
+ * the log holds, and a long quiet turn is legitimate, so the reader judges from
+ * `last_turn_at`.
  *
- * `host` and `working_on` are omitted from this type on purpose. The API always
- * returns them null — `turn_finished` carries no host key, and joining an agent
- * to its open contract needs payload identity fields that are not consistently
- * populated — so a column for them would be six em dashes pretending to be data.
+ * There is no `host`, no `working_on`, no `session_id` and no per-turn outcome:
+ * `turn_finished` carries none of them, and a column of em dashes pretending to
+ * be data is worse than the honest absence of the column.
+ *
+ * Rows are grouped by (`agent_name`, `project_id`), so an agent that has worked
+ * in two projects appears ONCE PER PROJECT — the project column is what makes
+ * two rows with the same name legible rather than a duplicate.
+ *
+ * `turn_count` and the token figures are LOWER BOUNDS twice over: the source
+ * type is spillable, and a turn whose payload has no `agent_name` is excluded.
  */
-export interface FleetAgent {
+export interface FleetMember {
   agent_name: string;
-  session_id: string;
+  project_id: string;
+  project_name: string;
+  turn_count: number;
+  input_tokens: number;
+  output_tokens: number;
+  first_seq: number;
+  last_seq: number;
   last_turn_at: string;
-  last_turn_seq: number;
-  last_turn_outcome: string;
-  turns: number;
 }
 
 export interface EventRow {
@@ -79,20 +89,31 @@ export interface EventRow {
 }
 
 /**
+ * One time bucket of spend, for one project (`uiapi.UsageBucket`). The endpoint
+ * serves a LIST of these and no totals object: a bucket yields one row per
+ * project, so any total is a client-side sum over the rows actually returned.
+ *
  * Spend and tokens come from DIFFERENT event types at different grain:
- * `cost_usd` is summed over `run_finished` (whose value is session-cumulative),
- * tokens over `turn_finished`. Both are `spillable`, so every number here is a
- * LOWER BOUND — spend recorded during a database outage never reaches the log.
+ * `cost_usd` from `run_finished` (the last one per session, since its value is a
+ * session total), tokens from `turn_finished`. Both are `spillable`, so every
+ * number here is a LOWER BOUND — spend recorded during a database outage never
+ * reaches the log.
+ *
+ * `?limit=` bounds ROWS, not buckets, so the OLDEST bucket of a full page can be
+ * partial. Anything summed over a page inherits that.
  */
-export interface Usage {
-  totals: {
-    cost_usd: number | null;
-    input_tokens: number | null;
-    output_tokens: number | null;
-    turns: number | null;
-  };
-  series: { bucket: string; cost_usd: number }[];
+export interface UsageBucket {
+  /** The truncated bucket start, inclusive. Rows share it across projects. */
+  bucket_start: string;
   bucket: "hour" | "day";
+  project_id: string;
+  project_name: string;
+  cost_usd: number;
+  /** Sessions that FINISHED a run in this bucket; a running one has no cost. */
+  sessions: number;
+  turns: number;
+  input_tokens: number;
+  output_tokens: number;
 }
 
 /** An unanswered user question: presence in `open_contracts` IS the state. */

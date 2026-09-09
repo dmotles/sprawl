@@ -10,15 +10,17 @@ describe("FleetView", () => {
     expect(screen.getByRole("status")).toHaveTextContent(/loading/i);
   });
 
-  it("renders a row per agent with its last turn age, outcome and turn count", async () => {
+  it("renders a row per agent with its project, turn count and token lower bounds", async () => {
     renderWithApi(
       <FleetView />,
       fakeClient({
         listFleet: async () => [
           makeAgent({
             agent_name: "ratz",
-            last_turn_outcome: "success",
-            turns: 143,
+            project_name: "sprawl",
+            turn_count: 143,
+            input_tokens: 1844290,
+            output_tokens: 120455,
           }),
         ],
       }),
@@ -26,8 +28,30 @@ describe("FleetView", () => {
     const rows = await screen.findAllByRole("row");
     expect(rows).toHaveLength(2);
     expect(rows[1]).toHaveTextContent("ratz");
-    expect(rows[1]).toHaveTextContent("success");
+    expect(rows[1]).toHaveTextContent("sprawl");
     expect(rows[1]).toHaveTextContent("143");
+    expect(rows[1]).toHaveTextContent("1,844,290");
+    expect(rows[1]).toHaveTextContent("120,455");
+  });
+
+  it("renders one row per project for an agent that worked in two", async () => {
+    // The API groups by (agent_name, project_id), so two rows share a name.
+    // Without the project column they read as an accidental duplicate. (The row
+    // key is the pair for the same reason, but that is not what this asserts —
+    // a duplicate key only warns, it does not drop the row.)
+    renderWithApi(
+      <FleetView />,
+      fakeClient({
+        listFleet: async () => [
+          makeAgent({ agent_name: "ratz", project_id: "p-1", project_name: "sprawl" }),
+          makeAgent({ agent_name: "ratz", project_id: "p-2", project_name: "atlas" }),
+        ],
+      }),
+    );
+    const rows = await screen.findAllByRole("row");
+    expect(rows).toHaveLength(3);
+    expect(rows[1]).toHaveTextContent("sprawl");
+    expect(rows[2]).toHaveTextContent("atlas");
   });
 
   it("does not claim an agent is alive or offline", async () => {
@@ -42,7 +66,10 @@ describe("FleetView", () => {
   it("does not render a host or working-on column, which the API always reports as null", async () => {
     renderWithApi(<FleetView />, fakeClient({ listFleet: async () => [makeAgent()] }));
     await screen.findAllByRole("row");
-    for (const header of ["Host", "Working on"]) {
+    // Session and Outcome went the same way as Host in the rework: the UI
+    // declared both, turn_finished carries neither, and a column the server
+    // cannot fill is a column of em dashes pretending to be data.
+    for (const header of ["Host", "Working on", "Session", "Outcome"]) {
       expect(screen.queryByRole("columnheader", { name: header })).not.toBeInTheDocument();
     }
   });

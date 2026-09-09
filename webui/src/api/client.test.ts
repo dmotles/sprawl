@@ -39,21 +39,29 @@ describe("createApiClient", () => {
     expect(calls[0]).toBe("/api/events");
   });
 
+  // The envelope key of every endpoint, transcribed from the ONE place the
+  // server decides it: `handleList(<key>, ...)` in internal/uiapi/server.go,
+  // which writes `{<key>: items}`. This table is the anchor for QA finding F2 —
+  // the client read `.agents` and `/api/fleet` sends `fleet`, and every view
+  // test stayed green because the fakes agreed with the client, not the server.
+  //
+  // Each body carries an ITEM rather than an empty array, so a wrong key yields
+  // `undefined` and the comparison fails on the value, not merely on emptiness.
   it.each([
-    ["listGoals", "/api/goals", { goals: [] }],
-    ["listWorkflows", "/api/workflows", { workflows: [] }],
-    ["listFleet", "/api/fleet", { agents: [] }],
-    ["listEvents", "/api/events", { events: [] }],
-    ["listInbox", "/api/inbox", { questions: [] }],
-    ["getUsage", "/api/usage", { totals: {}, series: [], bucket: "hour" }],
-  ] as const)("%s reads %s and unwraps its named key", async (method, path, body) => {
-    const { calls, fetchImpl } = stubFetch({ jsonBody: body });
-    const client = createApiClient(fetchImpl);
-    const got = await client[method]();
+    ["listGoals", "/api/goals", "goals"],
+    ["listWorkflows", "/api/workflows", "workflows"],
+    ["listFleet", "/api/fleet", "fleet"],
+    ["listEvents", "/api/events", "events"],
+    ["listInbox", "/api/inbox", "questions"],
+    ["listUsage", "/api/usage", "usage"],
+  ] as const)("%s reads %s and unwraps its %s key", async (method, path, key) => {
+    const item = { probe: key };
+    const { calls, fetchImpl } = stubFetch({ jsonBody: { [key]: [item] } });
+    const got = await createApiClient(fetchImpl)[method]();
     expect(calls[0]).toBe(path);
     // The unwrap is the other half of the claim: a client that returned the
     // whole envelope would still pass a URL-only assertion.
-    expect(got).toEqual(method === "getUsage" ? body : []);
+    expect(got).toEqual([item]);
   });
 
   it("passes project_id through on a list endpoint", async () => {
