@@ -89,16 +89,18 @@
 #   A11 /api/usage bills the run total, not the turn sum   <- the QUM-1247 gate
 #   A12 /api/usage ?bucket=week is a 400
 #   A13 POST /api/events is a 405
-#   A14 no 5xx body carries the database's error text
+#   A14 no response body carries the database's error text (200s and 400s too)
 #
 # Then the browser half (QA F2) — each renders THROUGH nginx, in chromium,
-# against the live stack, and each needle can only have come from the seed:
+# against the live stack. Every needle is either seeded data or a rendered
+# table cell, so none can be satisfied by static UI copy or the shell nginx
+# serves before React runs — review caught two that could, and they are fixed:
 #
 #   A15 /api/events carries project_name through the proxy   <- the QA F3 gate
 #   A16 /goals renders the seeded goal type
-#   A17 /workflows renders BOTH derived states
+#   A17 /workflows renders BOTH derived states, as table CELLS
 #   A18 /fleet renders the seeded agent
-#   A19 /ledger renders the seeded event type
+#   A19 /ledger renders the seeded event type and the OTHER project's name
 #   A20 /usage renders the run-total spend                   <- QUM-1247, in the UI
 #   A21 /inbox renders the seeded question text
 #
@@ -188,20 +190,26 @@ uiapi_render() {
 # rendered view that is missing the data.
 uiapi_view_renders() {
     local path="$1"; shift
-    local waited=0 needle missing
+    local needle missing
+    # A WALL-CLOCK deadline, not a count of sleeps: chromium itself can take up
+    # to its own `timeout 90`, so budgeting only the sleeps made
+    # UIAPI_RENDER_TIMEOUT=60 read like a 60s cap while permitting ~30 minutes
+    # per failing view, and ~3 hours across six.
+    local deadline=$((SECONDS + UIAPI_RENDER_TIMEOUT))
     while :; do
         uiapi_render "$path"
         missing=""
         for needle in "$@"; do
             case "$UIAPI_DOM" in
                 *"$needle"*) ;;
-                *) missing="$needle" ;;
+                # Accumulated, not overwritten: a view missing two needles must
+                # report both, or the operator fixes half the problem.
+                *) missing="${missing:+$missing, }$needle" ;;
             esac
         done
         [ -z "$missing" ] && return 0
-        [ "$waited" -ge "$UIAPI_RENDER_TIMEOUT" ] && break
+        [ "$SECONDS" -ge "$deadline" ] && break
         sleep 3
-        waited=$((waited + 3))
     done
     echo "  (GET $path rendered ${#UIAPI_DOM} bytes without $missing)" >&2
     echo "  (a dump of only a few hundred bytes with no nav means React threw and unmounted the app)" >&2
@@ -337,7 +345,7 @@ test_run() {
     # row that quietly drops it would report a green that means less than it did
     # before. Skipping the whole row (77) is the honest outcome.
     if ! command -v chromium >/dev/null 2>&1; then
-        e2e_skip_row "chromium not found on PATH — this row renders each view in a real browser, and the API half alone cannot see a UI/API contract break"
+        e2e_skip_row "chromium not found on PATH — this row renders each view in a real browser, and the API half alone cannot see a UI/API contract break. NOTE: this skips the WHOLE row, so its 14 API assertions are dropped too and NOTHING here is discharged"
     fi
     if ! docker info >/dev/null 2>&1; then
         e2e_skip_row "docker is installed but the daemon is unreachable — cannot start the compose stack"
@@ -607,8 +615,9 @@ YAML
         fail "/api/events through nginx gave project_name set [$proxied_names], want 'sprawl,widget' — the ledger's PROJECT column renders an em dash without it"
     fi
 
-    # A16-A21. Each needle can only have come from the seed, so none of them can
-    # be satisfied by the static shell nginx serves before React runs.
+    # A16-A21. Each needle is seeded data or a rendered cell, so none can be
+    # satisfied by the static shell nginx serves before React runs, nor by the
+    # views' own static prose.
     if uiapi_view_renders /goals "ship-slice-c"; then
         pass "/goals renders the seeded goal type in a real browser"
     else
@@ -617,7 +626,14 @@ YAML
 
     # Both states, because a workflows view that hard-coded either one would
     # pass a single-needle assertion while deriving nothing.
-    if uiapi_view_renders /workflows "in flight" "settled"; then
+    #
+    # The needles are the rendered CELLS, not the words. Review caught that
+    # WorkflowsView.tsx:17 explains "an instance counts as in flight while it
+    # has open contracts" in a <Notice> that sits OUTSIDE AsyncSection — so the
+    # bare word "in flight" is in the DOM before any data arrives, and would
+    # have been satisfied by a 500. `<td>` restricts the match to a table cell,
+    # which only a derived row can produce.
+    if uiapi_view_renders /workflows "<td>in flight</td>" "<td>settled</td>"; then
         pass "/workflows renders BOTH derived states (in flight and settled)"
     else
         fail "/workflows did not render both derived states"
@@ -629,8 +645,12 @@ YAML
         fail "/fleet did not render the seeded agent — the envelope key or the row type does not match what the API serves"
     fi
 
-    if uiapi_view_renders /ledger "run_finished" "sprawl"; then
-        pass "/ledger renders the seeded event type and its project name"
+    # "widget" is project B, and it appears nowhere in webui/src — so it can
+    # only have arrived through the API. "sprawl" would NOT do: it is also the
+    # nav wordmark (App.tsx:60), rendered on every route, so it would assert
+    # "React mounted" and pass against the em-dash bug this needle exists for.
+    if uiapi_view_renders /ledger "run_finished" "widget"; then
+        pass "/ledger renders the seeded event type and the OTHER project's name (so the PROJECT column attributes rows, not a constant)"
     else
         fail "/ledger did not render the seeded event type and project name"
     fi
