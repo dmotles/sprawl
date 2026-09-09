@@ -77,6 +77,7 @@ func TestMigrationsFS_CarriesEveryMigration(t *testing.T) {
 		"00003_m2_agent_cards_meta.sql",
 		"00004_m2_agent_card_render_opts.sql",
 		"00005_m3a_follows_event_id.sql",
+		"00006_ui_ro_role.sql",
 	}
 	for _, n := range want {
 		if _, ok := got[n]; !ok {
@@ -168,6 +169,72 @@ func TestMigrations_AppendOnlyMigrationGrantsNoMutatingPrivilegeOnEvents(t *test
 	}
 	if checked == 0 {
 		t.Fatal("found no GRANT statement naming events in 00002 — this assertion inspected nothing, so its silence is not evidence")
+	}
+}
+
+// TestMigrations_UIReadRoleGrantsOnlySelect is the hermetic backstop for
+// 00006's read-only property, and it exists for the same reason the events one
+// above does: the real assertion — the catalog query in the store_pg suite — is
+// Docker-gated and therefore absent from `make validate`, so without this a
+// commit granting the UI role INSERT passes the gate every contributor
+// actually runs.
+//
+// Two properties, both textual and neither observable behaviourally:
+//
+//   - No GRANT in the file carries a writing verb. Checked against the
+//     privilege list only (everything before ` ON `), because the REVOKE lines
+//     legitimately name all four.
+//   - The file carries an `ALTER DEFAULT PRIVILEGES ... GRANT SELECT ON TABLES`.
+//     That line is what keeps a table added by a later migration readable; drop
+//     it and the symptom is a 42501 from a handler, at which point nobody looks
+//     at a grants migration. The store_pg suite asserts its EFFECT; this
+//     asserts it was written, which is what a reviewer of a future migration
+//     will actually be told about.
+func TestMigrations_UIReadRoleGrantsOnlySelect(t *testing.T) {
+	const file = "00006_ui_ro_role.sql"
+	body, ok := readMigrations(t)[file]
+	if !ok {
+		t.Fatalf("%s is not embedded, so this assertion has nothing to read", file)
+	}
+
+	var checkedGrants int
+	var sawDefaultPrivileges bool
+	for _, line := range strings.Split(body, "\n") {
+		trimmed := strings.TrimSpace(line)
+		if strings.HasPrefix(trimmed, "--") {
+			continue
+		}
+		upper := strings.ToUpper(trimmed)
+		if strings.Contains(upper, "ALTER DEFAULT PRIVILEGES") &&
+			strings.Contains(upper, "GRANT SELECT ON TABLES") {
+			sawDefaultPrivileges = true
+		}
+		// A REVOKE names the writing verbs on purpose, and ALTER DEFAULT
+		// PRIVILEGES ... REVOKE (the Down leg) contains the word GRANT nowhere.
+		if !strings.Contains(upper, "GRANT ") || strings.Contains(upper, "REVOKE") {
+			continue
+		}
+		// USAGE ON SCHEMA is not a table privilege; it has no verb to check.
+		if strings.Contains(upper, "ON SCHEMA") {
+			continue
+		}
+		checkedGrants++
+		privs := upper
+		if i := strings.Index(upper, " ON "); i >= 0 {
+			privs = upper[:i]
+		}
+		for _, verb := range []string{"INSERT", "UPDATE", "DELETE", "TRUNCATE", "ALL"} {
+			if strings.Contains(privs, verb) {
+				t.Errorf("%s grants %s: %q — sprawl_ui_ro is SELECT-only, and it is browser-reachable", file, verb, trimmed)
+			}
+		}
+	}
+
+	if checkedGrants == 0 {
+		t.Fatalf("found no table GRANT statement in %s — this assertion inspected nothing, so its silence is not evidence", file)
+	}
+	if !sawDefaultPrivileges {
+		t.Errorf("%s has no `ALTER DEFAULT PRIVILEGES ... GRANT SELECT ON TABLES` — the per-table enumeration means a table added by a later migration is unreadable, and the symptom is a 42501 from a handler", file)
 	}
 }
 

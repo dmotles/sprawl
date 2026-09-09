@@ -18,6 +18,12 @@ import (
 // application code — see migrations/00002_m1a_app_role.sql.
 const appRole = "sprawl_app"
 
+// uiRoRole is the SELECT-only role the read-only web UI API connects as
+// (QUM-1349). A second role rather than a reuse of appRole because appRole
+// holds INSERT on `events` and this identity is browser-reachable — see
+// migrations/00006_ui_ro_role.sql.
+const uiRoRole = "sprawl_ui_ro"
+
 // asAppRole runs fn on a connection that has assumed appRole via SET ROLE.
 //
 // SET ROLE rather than a separate login: the role is NOLOGIN by design (a
@@ -43,13 +49,25 @@ const appRole = "sprawl_app"
 // run under-privileged.
 func asAppRole(t *testing.T, pool *pgxpool.Pool, fn func(ctx context.Context, conn *pgx.Conn)) {
 	t.Helper()
+	asRole(t, pool, appRole, fn)
+}
+
+// asRole is asAppRole generalised over the role name. Every caveat in
+// asAppRole's comment applies verbatim, including that SET ROLE is not a
+// containment claim.
+//
+// Parameterised rather than copied because 00006 added a second privilege-only
+// role and a second copy of this helper is a second place for the deferred
+// RESET ROLE — the subtle half — to rot out of.
+func asRole(t *testing.T, pool *pgxpool.Pool, role string, fn func(ctx context.Context, conn *pgx.Conn)) {
+	t.Helper()
 	ctx := context.Background()
 
 	// The owner must be a member of the role to assume it. In production the
 	// DBA does this; keeping it test-side means the migration never has to hand
 	// the app role to whatever user happens to run it.
-	if _, err := pool.Exec(ctx, `GRANT `+appRole+` TO CURRENT_USER`); err != nil {
-		t.Fatalf("grant %s to current_user: %v", appRole, err)
+	if _, err := pool.Exec(ctx, `GRANT `+role+` TO CURRENT_USER`); err != nil {
+		t.Fatalf("grant %s to current_user: %v", role, err)
 	}
 
 	c, err := pool.Acquire(ctx)
@@ -60,8 +78,8 @@ func asAppRole(t *testing.T, pool *pgxpool.Pool, fn func(ctx context.Context, co
 		_, _ = c.Exec(ctx, `RESET ROLE`)
 		c.Release()
 	}()
-	if _, err := c.Exec(ctx, `SET ROLE `+appRole); err != nil {
-		t.Fatalf("SET ROLE %s: %v", appRole, err)
+	if _, err := c.Exec(ctx, `SET ROLE `+role); err != nil {
+		t.Fatalf("SET ROLE %s: %v", role, err)
 	}
 	fn(ctx, c.Conn())
 }
@@ -84,15 +102,54 @@ func asAppRole(t *testing.T, pool *pgxpool.Pool, fn func(ctx context.Context, co
 // predicate is a second place for the SQLSTATE check to rot out of.
 func assertRefusedOn(t *testing.T, verb, object string, err error) {
 	t.Helper()
+	assertRefusedOnAs(t, appRole, verb, object, err)
+}
+
+// assertRefusedOnAs is assertRefusedOn generalised over the role, so the
+// SQLSTATE-not-message-text reasoning above is stated and maintained once.
+func assertRefusedOnAs(t *testing.T, role, verb, object string, err error) {
+	t.Helper()
 	if got := pgCode(err); got != sqlStateInsufficientPrivilege {
 		t.Errorf("%s on %s as %s: SQLSTATE %q (err=%v), want %s (insufficient_privilege) — a refusal with any other code is not the GRANT doing the work",
-			verb, object, appRole, got, err, sqlStateInsufficientPrivilege)
+			verb, object, role, got, err, sqlStateInsufficientPrivilege)
 		return
 	}
 	if err != nil && !strings.Contains(err.Error(), object) {
 		t.Errorf("%s refused with %s but the error does not name `%s` (%v) — the denial may be about a different object",
 			verb, sqlStateInsufficientPrivilege, object, err)
 	}
+}
+
+// tablePrivileges returns the DISTINCT table-level privileges role holds on
+// table in the current schema, sorted.
+//
+// Extracted from the two appRole catalog tests when 00006 needed the identical
+// query across ten tables. The catalog is the only instrument that answers
+// "what CAN this role do" — the behavioural tests below cannot see a
+// COLUMN-level grant.
+func tablePrivileges(t *testing.T, pool *pgxpool.Pool, role, table string) []string {
+	t.Helper()
+	rows, err := pool.Query(context.Background(),
+		`SELECT DISTINCT privilege_type FROM information_schema.role_table_grants
+		 WHERE grantee = $1 AND table_schema = current_schema() AND table_name = $2`,
+		role, table)
+	if err != nil {
+		t.Fatalf("query role_table_grants for %s on %s: %v", role, table, err)
+	}
+	defer rows.Close()
+	var privs []string
+	for rows.Next() {
+		var p string
+		if err := rows.Scan(&p); err != nil {
+			t.Fatalf("scan: %v", err)
+		}
+		privs = append(privs, p)
+	}
+	if err := rows.Err(); err != nil {
+		t.Fatalf("rows: %v", err)
+	}
+	sort.Strings(privs)
+	return privs
 }
 
 // TestEvents_AppendOnlyEnforcedByGrants is AC3: as the app role, UPDATE,
@@ -228,7 +285,7 @@ func TestEvents_AppRoleGrantCatalogIsExactlySelectInsert(t *testing.T) {
 	}
 	// The same want-0 query, so the same blind spot: controlled alongside the
 	// agent_cards pair rather than left as the only uncontrolled zero here.
-	assertColumnPrivilegesAreVisible(t, "events")
+	assertColumnPrivilegesAreVisible(t, appRole, "events")
 }
 
 // TestAgentCards_AppRoleCannotUpdate is AC1's "rows immutable" half (a): an
@@ -374,7 +431,7 @@ func TestAgentCards_AppRoleGrantCatalogIsExactlySelect(t *testing.T) {
 		t.Errorf("%s holds %d column-level writing privilege(s) on agent_cards, want 0 — a column grant defeats card immutability while the behavioural test stays green",
 			appRole, colWrites)
 	}
-	assertColumnPrivilegesAreVisible(t, "agent_cards")
+	assertColumnPrivilegesAreVisible(t, appRole, "agent_cards")
 }
 
 // assertColumnPrivilegesAreVisible is the positive control the colWrites==0
@@ -387,7 +444,7 @@ func TestAgentCards_AppRoleGrantCatalogIsExactlySelect(t *testing.T) {
 // exist". A table-level GRANT SELECT propagates to every column in that view, so
 // requiring a nonzero SELECT count proves the view, the grantee string, the
 // schema filter and the table name all resolve before a zero is believed.
-func assertColumnPrivilegesAreVisible(t *testing.T, table string) {
+func assertColumnPrivilegesAreVisible(t *testing.T, role, table string) {
 	t.Helper()
 	_, pool := newTestSchema(t)
 	var colSelects int
@@ -395,12 +452,12 @@ func assertColumnPrivilegesAreVisible(t *testing.T, table string) {
 		`SELECT count(*) FROM information_schema.column_privileges
 		 WHERE grantee = $1 AND table_schema = current_schema() AND table_name = $2
 		   AND privilege_type = 'SELECT'`,
-		appRole, table).Scan(&colSelects); err != nil {
+		role, table).Scan(&colSelects); err != nil {
 		t.Fatalf("query column_privileges control: %v", err)
 	}
 	if colSelects == 0 {
 		t.Errorf("column_privileges reports 0 SELECT grants for %s on %s — the table-level GRANT SELECT must appear here, so this query is looking at nothing and the want-0 assertions above prove nothing",
-			appRole, table)
+			role, table)
 	}
 }
 
@@ -443,5 +500,204 @@ func TestOpenContracts_AppRoleInsertsAndDeletesInOneTransaction(t *testing.T) {
 		if err := tx.Commit(ctx); err != nil {
 			t.Fatalf("commit: %v", err)
 		}
+	})
+}
+
+// TestUIRoRole_ReadsEverythingAndWritesNothing is QUM-1349's AC: as
+// sprawl_ui_ro, SELECT must succeed and INSERT, UPDATE, DELETE and TRUNCATE
+// must all be refused by Postgres itself.
+//
+// TRUNCATE is asserted alongside the other three for 00002's reason: it is a
+// SEPARATE privilege, easy to omit from a mental model built on the DML verbs,
+// and it destroys the log outright. INSERT is asserted here where the appRole
+// tests do not assert it on `events`, because that is the whole difference
+// between the two roles — appRole appends and this one must not.
+//
+// The controls, all in the same run, because a refusal on its own is worthless
+// evidence — a dead connection, a mistyped table, or a role with no grants at
+// all refuses everything:
+//
+//   - LIVE (must succeed): the role can SELECT the seeded event AND a
+//     definition table. Two tables, not one, because the enumeration in 00006
+//     grants each separately: a run that reached only `events` would leave nine
+//     missing grants looking identical to nine passing ones.
+//   - AIM/update and AIM/delete (must succeed, rolled back): the OWNER runs the
+//     identical statements and each affects exactly 1 row, ruling out a
+//     malformed statement or an absent target row. The INSERT leg names no
+//     existing row and the TRUNCATE leg names none either, so neither needs an
+//     aim control — a stale column list in the INSERT would surface as 42703,
+//     which assertRefusedOnAs FAILS on rather than passing.
+func TestUIRoRole_ReadsEverythingAndWritesNothing(t *testing.T) {
+	_, pool := newTestSchema(t)
+	f := seedFixture(t, pool)
+	eventID, _ := insertEvent(t, pool, f)
+	ctx := context.Background()
+
+	asRole(t, pool, uiRoRole, func(ctx context.Context, conn *pgx.Conn) {
+		// LIVE control, the ledger.
+		var seen uuid.UUID
+		if err := conn.QueryRow(ctx, `SELECT id FROM events WHERE id = $1`, eventID).Scan(&seen); err != nil {
+			t.Fatalf("%s cannot SELECT the seeded event — the role is not wired to this schema, so no refusal below would mean anything: %v", uiRoRole, err)
+		}
+		// LIVE control, a definition table. The views resolve an event's type
+		// name through here, and 00006 grants it on its own line.
+		var schemaName string
+		if err := conn.QueryRow(ctx, `SELECT name FROM event_type_schemas WHERE id = $1`, f.schemaID).Scan(&schemaName); err != nil {
+			t.Fatalf("%s cannot SELECT event_type_schemas — every view resolves an event's type name through it: %v", uiRoRole, err)
+		}
+
+		_, err := conn.Exec(ctx,
+			`INSERT INTO events (id, project_id, workflow_instance_id, schema_id, payload)
+			 VALUES ($1, $2, $3, $4, '{}'::jsonb)`,
+			uuid.New(), f.projectID, uuid.New(), f.schemaID)
+		assertRefusedOnAs(t, uiRoRole, "INSERT", "events", err)
+
+		_, err = conn.Exec(ctx, `UPDATE events SET payload = '{"tampered":true}'::jsonb WHERE id = $1`, eventID)
+		assertRefusedOnAs(t, uiRoRole, "UPDATE", "events", err)
+
+		_, err = conn.Exec(ctx, `DELETE FROM events WHERE id = $1`, eventID)
+		assertRefusedOnAs(t, uiRoRole, "DELETE", "events", err)
+
+		// Note what this leg's positive control showed, the same way
+		// agent_cards' does: with TRUNCATE granted the statement still fails,
+		// but with 0A000 ("cannot truncate a table referenced in a foreign key
+		// constraint") rather than 42501. So it detects the grant by the
+		// SQLSTATE changing, not by the truncation succeeding — and if that FK
+		// ever goes away, the catalog test below is what still pins TRUNCATE.
+		_, err = conn.Exec(ctx, `TRUNCATE events`)
+		assertRefusedOnAs(t, uiRoRole, "TRUNCATE", "events", err)
+
+		// open_contracts is where a read-only role is most likely to be
+		// accidentally widened, because appRole legitimately holds DELETE on it
+		// and the two grant blocks look alike. Asserted on its own so a
+		// copy-paste of appRole's line is caught.
+		_, err = conn.Exec(ctx, `DELETE FROM open_contracts WHERE event_id = $1`, eventID)
+		assertRefusedOnAs(t, uiRoRole, "DELETE", "open_contracts", err)
+	})
+
+	// AIM control, UPDATE. Rolled back so the row survives for the DELETE aim.
+	tx, err := pool.Begin(ctx)
+	if err != nil {
+		t.Fatalf("begin owner update control: %v", err)
+	}
+	tag, err := tx.Exec(ctx, `UPDATE events SET payload = '{"owner_control":true}'::jsonb WHERE id = $1`, eventID)
+	if err != nil {
+		_ = tx.Rollback(ctx)
+		t.Fatalf("owner UPDATE control failed — the statement itself is wrong, so the refusal above proves nothing: %v", err)
+	}
+	if tag.RowsAffected() != 1 {
+		t.Errorf("owner UPDATE control affected %d rows, want 1 — the read role's UPDATE may have been aimed at a row that does not exist", tag.RowsAffected())
+	}
+	if err := tx.Rollback(ctx); err != nil {
+		t.Fatalf("rollback owner update control: %v", err)
+	}
+
+	// AIM control, DELETE — rolled back, and separate from the UPDATE leg so
+	// that leg does not lend this one its aim.
+	dtx, err := pool.Begin(ctx)
+	if err != nil {
+		t.Fatalf("begin owner delete control: %v", err)
+	}
+	dtag, err := dtx.Exec(ctx, `DELETE FROM events WHERE id = $1`, eventID)
+	if err != nil {
+		_ = dtx.Rollback(ctx)
+		t.Fatalf("owner DELETE control failed — the DELETE statement itself is wrong, so the refusal above proves nothing: %v", err)
+	}
+	if dtag.RowsAffected() != 1 {
+		t.Errorf("owner DELETE control affected %d rows, want 1", dtag.RowsAffected())
+	}
+	if err := dtx.Rollback(ctx); err != nil {
+		t.Fatalf("rollback owner delete control: %v", err)
+	}
+}
+
+// TestUIRoRole_GrantCatalogIsExactlySelectOnEveryTable is the second,
+// mechanically different instrument, for the reason the appRole pairs exist:
+// the behavioural test above cannot see a COLUMN-level grant. Postgres grants
+// INSERT and UPDATE per-column, so `GRANT UPDATE (status) ON agent_sessions TO
+// sprawl_ui_ro` — plausible the moment someone wants the fleet view to mark a
+// session dead — still refuses the statements above with 42501 and leaves that
+// test green while the role is no longer read-only.
+//
+// It loops over m1aTables rather than a list of its own so that the set is
+// asserted once, by TestMigrate_CreatesExactlyTheM1aTables. A second hand-kept
+// list here would be a place for a newly added table to go unchecked while both
+// lists individually looked fine.
+func TestUIRoRole_GrantCatalogIsExactlySelectOnEveryTable(t *testing.T) {
+	_, pool := newTestSchema(t)
+	ctx := context.Background()
+
+	for _, table := range m1aTables {
+		if got := strings.Join(tablePrivileges(t, pool, uiRoRole, table), ","); got != "SELECT" {
+			t.Errorf("%s holds table privileges [%s] on %s, want exactly [SELECT] — this role is browser-reachable and must not be able to write anything",
+				uiRoRole, got, table)
+		}
+
+		var colWrites int
+		if err := pool.QueryRow(ctx,
+			`SELECT count(*) FROM information_schema.column_privileges
+			 WHERE grantee = $1 AND table_schema = current_schema() AND table_name = $2
+			   AND privilege_type IN ('INSERT','UPDATE','DELETE','TRUNCATE')`,
+			uiRoRole, table).Scan(&colWrites); err != nil {
+			t.Fatalf("query column_privileges for %s: %v", table, err)
+		}
+		if colWrites != 0 {
+			t.Errorf("%s holds %d column-level writing privilege(s) on %s, want 0 — a column grant defeats read-only while the behavioural test stays green",
+				uiRoRole, colWrites, table)
+		}
+		// The want-0 above is the classic "the instrument could not have
+		// observed it" zero: column_privileges returns no rows for a misspelled
+		// table, a misspelled grantee or the wrong schema. Controlled per table
+		// rather than once, because it is the per-table grant that makes the
+		// SELECT rows appear at all.
+		assertColumnPrivilegesAreVisible(t, uiRoRole, table)
+	}
+}
+
+// TestUIRoRole_DefaultPrivilegesCoverATableAddedLater asserts the effect of
+// 00006's ALTER DEFAULT PRIVILEGES line.
+//
+// This is the one hazard the per-table enumeration creates and cannot fix: a
+// table added by a LATER migration would be unreadable, and the symptom is a
+// 42501 raised from a UI handler, at which point nobody goes looking at a
+// grants migration. 00002's own header records that default privileges are not
+// asserted for appRole at all; asserting the effect here rather than the text
+// means a future `ALTER DEFAULT PRIVILEGES ... REVOKE` elsewhere is caught too.
+//
+// The NEGATIVE CONTROL is the load-bearing half and it points the other way:
+// appRole, which has no default privileges, must NOT be able to read the same
+// new table. Without it, a probe that read a table the role happened to reach
+// for some unrelated reason — a stray PUBLIC grant, an owner-side connection —
+// would pass while proving nothing about default privileges.
+func TestUIRoRole_DefaultPrivilegesCoverATableAddedLater(t *testing.T) {
+	_, pool := newTestSchema(t)
+	ctx := context.Background()
+
+	// Created by the schema owner, which is who runs migrations — default
+	// privileges apply to objects created by the role that executed the ALTER.
+	if _, err := pool.Exec(ctx, `CREATE TABLE later_migration_table (id int PRIMARY KEY)`); err != nil {
+		t.Fatalf("create the stand-in for a later migration's table: %v", err)
+	}
+	if _, err := pool.Exec(ctx, `INSERT INTO later_migration_table (id) VALUES (1)`); err != nil {
+		t.Fatalf("seed the new table — a SELECT returning no rows would not distinguish empty from refused: %v", err)
+	}
+
+	asRole(t, pool, uiRoRole, func(ctx context.Context, conn *pgx.Conn) {
+		var id int
+		if err := conn.QueryRow(ctx, `SELECT id FROM later_migration_table`).Scan(&id); err != nil {
+			t.Errorf("%s cannot SELECT a table created after the migration ran — ALTER DEFAULT PRIVILEGES is missing or was revoked, and a future migration's table will be invisible to the UI with only a handler-level 42501 to show for it: %v", uiRoRole, err)
+			return
+		}
+		if id != 1 {
+			t.Errorf("read id=%d from the new table, want 1", id)
+		}
+	})
+
+	// NEGATIVE CONTROL, opposite direction: a role WITHOUT default privileges
+	// must be refused on the very same table.
+	asAppRole(t, pool, func(ctx context.Context, conn *pgx.Conn) {
+		var id int
+		err := conn.QueryRow(ctx, `SELECT id FROM later_migration_table`).Scan(&id)
+		assertRefusedOnAs(t, appRole, "SELECT", "later_migration_table", err)
 	})
 }
