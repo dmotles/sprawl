@@ -294,8 +294,13 @@ func prepareSpawn(deps *SpawnDeps, pinnedName, family, agentType, prompt, branch
 	// The prompt file is still written in both modes, so the on-disk shape is
 	// uniform for an operator and promptPath is never empty; in frame mode it
 	// carries a pointer note rather than a second copy of the goal.
+	// Computed ONCE. This predicate is the security boundary that decides
+	// verbatim-vs-prompt-file delivery, and two independent calls a few lines
+	// apart are two things that can drift.
+	isFrame := sysframe.IsGoalFrame(prompt)
+
 	fileBody := prompt
-	if sysframe.IsFrame(prompt) {
+	if isFrame {
 		fileBody = "This agent's task was delivered as an injected system frame at launch,\n" +
 			"not through this file. The task itself lives in the event log — call\n" +
 			"`reread_my_goal` to get it back.\n"
@@ -305,7 +310,7 @@ func prepareSpawn(deps *SpawnDeps, pinnedName, family, agentType, prompt, branch
 		return nil, fmt.Errorf("writing initial prompt file: %w", err)
 	}
 	initialPrompt := prompt
-	if !sysframe.IsFrame(prompt) {
+	if !isFrame {
 		initialPrompt = fmt.Sprintf("Your task is in @%s — read it and begin working.", promptPath)
 	}
 

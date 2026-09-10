@@ -55,12 +55,33 @@ func Goal(brief string) string {
 		"</" + Tag + ">"
 }
 
-// IsFrame reports whether s is already a system frame, and is the switch that
-// decides whether a spawn prompt is delivered verbatim or written to a prompt
-// file. Anchored at the START (after whitespace) and prefix-only, mirroring the
-// renderer, so prose that merely mentions the tag is not mistaken for one.
-func IsFrame(s string) bool {
-	return strings.HasPrefix(strings.TrimSpace(s), "<"+Tag)
+// IsGoalFrame reports whether s is a well-formed goal envelope of the exact
+// shape Goal emits. It is the switch that decides whether a spawn prompt is
+// injected VERBATIM or written to a prompt file, which makes it a security
+// boundary rather than a formatting hint: a false positive delivers arbitrary
+// operator text to an agent's stdin unneutralized.
+//
+// WHY THIS IS NOT A PREFIX CHECK. The renderer matches the tag prefix-only, and
+// mirroring that here was the original implementation and a real hole: a spawn
+// prompt is operator-authored text, so the one input that satisfies a prefix
+// check is the one crafted to exploit the envelope. Such a string was handed
+// straight through — forging a notification class (`interrupt`, `message`) the
+// engine never emitted, and peeling any trailing text as further envelopes.
+//
+// The four conditions below are jointly unforgeable for the property that
+// matters. A forged extra envelope necessarily adds a second open tag, and
+// neutralize guarantees a genuine frame's body cannot contain one — so
+// "exactly one open tag, exactly one close tag, and the close tag is the last
+// thing in the string" cannot be met by anything carrying a second envelope or
+// trailing loose text. TestIsGoalFrame_AcceptsEveryFrameGoalProduces pins the
+// other direction, so the predicate can never reject our own output.
+func IsGoalFrame(s string) bool {
+	t := strings.TrimSpace(s)
+	openTag, closeTag := "<"+Tag, "</"+Tag+">"
+	return strings.HasPrefix(t, openTag+" type=\""+TypeGoal+"\">") &&
+		strings.HasSuffix(t, closeTag) &&
+		strings.Count(t, openTag) == 1 &&
+		strings.Count(t, closeTag) == 1
 }
 
 // neutralize defangs tag syntax inside operator-authored text.
@@ -70,6 +91,15 @@ func IsFrame(s string) bool {
 // it and letting a following open tag forge a second, attacker-chosen
 // notification. Entity-escaping the angle brackets keeps the text readable
 // while making it inert.
+//
+// The two rules are ASYMMETRIC on purpose, and the asymmetry is load-bearing
+// rather than an oversight: the close-tag rule escapes both brackets because
+// the tag is fixed and complete, while the open-tag rule escapes only `<Tag`
+// and leaves the eventual `>` alone because an open tag carries arbitrary
+// attributes and its end is not at a known offset. What both guarantee is the
+// property IsGoalFrame depends on — that no `<Tag` or `</Tag>` substring
+// survives in a body — so do not "tidy" this into symmetric escaping without
+// re-reading that predicate.
 func neutralize(brief string) string {
 	r := strings.NewReplacer(
 		"</"+Tag+">", "&lt;/"+Tag+"&gt;",

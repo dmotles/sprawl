@@ -344,7 +344,14 @@ test_run() {
     # THE LOG STAYS PROSE (QUM-1348). The delivery envelope is built at the
     # spawn seam, never stored: the log is append-only, so a tag name written
     # into a payload pins the renderer's vocabulary permanently.
-    if printf '%s' "$LOG_PROMPT" | grep -q '<system-notification'; then
+    # The -n guard is load-bearing, not defensive: this is an ABSENCE assertion,
+    # so an empty $LOG_PROMPT (a psql failure, a renamed column, a schema change
+    # that makes the query return nothing) satisfies it and buys an unearned
+    # pass line. Absence of markup only means something once we know we read a
+    # brief at all.
+    if [ -z "$LOG_PROMPT" ]; then
+        fail "read no spawn_requested prompt out of the log at all, so the prose-not-markup check would have passed vacuously"
+    elif printf '%s' "$LOG_PROMPT" | grep -q '<system-notification'; then
         fail "the logged brief carries renderer markup; the envelope belongs at the delivery seam, and a tag stored in an append-only payload can never be changed (got: $LOG_PROMPT)"
     else
         pass "the logged brief is prose, with no renderer markup pinned into the payload"

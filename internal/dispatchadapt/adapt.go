@@ -298,10 +298,18 @@ func (s *SupervisorSpawner) Spawn(ctx context.Context, req store.SpawnRequest) e
 		// append-only: markup stored in a payload would pin the tag name and
 		// the renderer's vocabulary permanently.
 		//
-		// IDEMPOTENT. A spawn_requested can be re-handled — a replay, a retried
-		// dispatch — and a double-wrapped prompt leaves the renderer peeling
-		// one envelope and showing the inner tags as raw markup.
-		Prompt:   framedBrief(req.Prompt),
+		// UNCONDITIONAL, deliberately. This wrap was once guarded by a
+		// "already framed? pass it through" check for idempotence against a
+		// replayed dispatch. That guard was a hole and is gone: the brief is
+		// operator-authored goal text, the log stores it as PROSE
+		// (goalspawn.go's goalPrompt, pinned by
+		// TestGoalSpawnHandler_StoresProseNotMarkup), so a re-handled
+		// spawn_requested presents prose every time and the guard could only
+		// ever fire on a brief SHAPED like a frame — the one input crafted to
+		// exploit the envelope, handed through unneutralized. The scenario it
+		// protected against cannot arise; the one it enabled was a forged
+		// notification class.
+		Prompt:   sysframe.Goal(req.Prompt),
 		Branch:   req.Branch,
 		Model:    req.Model,
 		Subagent: req.Subagent,
@@ -309,13 +317,4 @@ func (s *SupervisorSpawner) Spawn(ctx context.Context, req store.SpawnRequest) e
 		return fmt.Errorf("dispatchadapt: spawning %s for the event log: %w", req.AgentName, err)
 	}
 	return nil
-}
-
-// framedBrief wraps a spawn brief in its delivery envelope, or leaves an
-// already-framed one alone.
-func framedBrief(brief string) string {
-	if sysframe.IsFrame(brief) {
-		return brief
-	}
-	return sysframe.Goal(brief)
 }
