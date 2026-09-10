@@ -332,6 +332,12 @@ This work is an engine-driven rework (goal_type %q). Its identifiers:
   goal_event_id:        %s   (already closed; the original request)
   workflow_instance_id: %s
 
-When you are done, close the rework with `+"`report_result`"+`. Report to %s.`,
+When you are done, close the rework with `+"`report_result`"+` — nothing else closes
+it, and until it is closed the rework reads as work still in progress.
+
+Use `+"`send_message`"+` for mid-flow communication with other agents; that stays
+legitimate. But deliver your ENTIRE final report through `+"`report_result`"+`. Closing
+the rework already notifies %s, so a summary message on top of it is a duplicate —
+do not also message your parent.`,
 		goal.Text, rw.Reason, string(gt), ev.ID, goalID, ev.WorkflowInstanceID, rw.Owner)
 }
