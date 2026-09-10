@@ -259,7 +259,7 @@ test_run() {
     echo ""
     echo "=== weave opens a RESEARCH goal ==="
     e2e_send_user_prompt "$SESSION" \
-        "Use the create_goal tool to open one goal with goal_type RESEARCH and the text 'Read README.md and summarize in one sentence what this project is. Then build a long report file in your worktree by running: { for i in 1 2 3 4 5; do cat README.md; done; echo YOUR_SUMMARY; } > result.md  — replacing YOUR_SUMMARY with your one-sentence summary. Then call report_result with summary_file set to result.md, and do NOT pass summary.'. Do not spawn anything yourself and do not do anything else."
+        "Use the create_goal tool to open one goal with goal_type RESEARCH and the text 'Read README.md and summarize in one sentence what this project is. Then build a long report file in your worktree by running: { for i in \$(seq 400); do cat README.md; done; echo YOUR_SUMMARY; } > result.md  — replacing YOUR_SUMMARY with your one-sentence summary. Then call report_result with summary_file set to result.md, and do NOT pass summary.'. Do not spawn anything yourself and do not do anything else."
     if wait_for_pattern "$SESSION" "Completed in" 240; then
         pass "weave completed the create_goal turn"
     else
@@ -323,7 +323,12 @@ test_run() {
         return 1
     fi
 
-    # THE FILE-BACKED RESULT (QUM-1347). The researcher was told to write its
+    # THE FILE-BACKED RESULT (QUM-1347). The 400 repetitions in the prompt are
+    # sized against THE SANDBOX's README (~70 bytes), not this repo's: a first
+    # run with 5 repetitions produced ~350 bytes, stayed inline, and failed
+    # here — which is the assertion's own positive control, and the run that
+    # proved the file's CONTENT does reach the log (the sibling assertion below
+    # passed on that same run). The researcher was told to write its
     # report to a file and pass `summary_file`, and the file is deliberately
     # larger than the 8KiB events_payload_thin_ck budget. Two things can only be
     # observed here: that the tool read the file at all (a path stored instead
@@ -333,7 +338,13 @@ test_run() {
     local SUMMARY_ARTIFACT_BYTES
     SUMMARY_ARTIFACT_BYTES=$(psql_q "SELECT COALESCE(octet_length(a.content), 0) FROM events e JOIN event_type_schemas s ON s.id = e.schema_id LEFT JOIN artifacts a ON a.id = e.artifact_id WHERE s.name = 'goal_closed' ORDER BY e.seq LIMIT 1;")
     echo "    the close's artifact holds: ${SUMMARY_ARTIFACT_BYTES} bytes"
-    if [ "${SUMMARY_ARTIFACT_BYTES:-0}" -gt 8192 ]; then
+    # Matched as a numeral first: psql_q returns an empty string (or an error
+    # message) when the query fails, and `[ "" -gt 8192 ]` is a shell error that
+    # aborts the row instead of failing this assertion.
+    case "$SUMMARY_ARTIFACT_BYTES" in
+    '' | *[!0-9]*) SUMMARY_ARTIFACT_BYTES=0 ;;
+    esac
+    if [ "$SUMMARY_ARTIFACT_BYTES" -gt 8192 ]; then
         pass "the file's CONTENT (${SUMMARY_ARTIFACT_BYTES} bytes, over the 8KiB payload cap) reached the log as an artifact"
     else
         fail "the close references ${SUMMARY_ARTIFACT_BYTES:-0} artifact bytes — a file-backed result over the payload cap must be stored whole; either report_result kept the path instead of the content, or the researcher ignored summary_file"
@@ -344,10 +355,13 @@ test_run() {
     # satisfy nothing above but would still look like a summary here.
     local SUMMARY_INLINE
     SUMMARY_INLINE=$(psql_q "SELECT left(COALESCE(e.payload->>'summary', ''), 200) FROM events e JOIN event_type_schemas s ON s.id = e.schema_id WHERE s.name = 'goal_closed' ORDER BY e.seq LIMIT 1;")
-    if [ -n "$SUMMARY_INLINE" ] && [ "$SUMMARY_INLINE" != "result.md" ]; then
+    # Matched on a fragment of what the file was BUILT FROM (the sandbox
+    # README's first line) rather than on "not the string result.md": a tool
+    # that stored an absolute path would pass the negative form.
+    if printf '%s' "$SUMMARY_INLINE" | grep -q "sandbox-project"; then
         pass "the payload carries the result's text, not the path it came from"
     else
-        fail "the close's summary payload is '$SUMMARY_INLINE' — the PATH was persisted instead of the content, so the log's record of this goal dies with the worktree"
+        fail "the close's summary payload is '$SUMMARY_INLINE', which carries nothing from the file it was built from (line 230's README text) — the PATH was persisted instead of the content, so the log's record of this goal dies with the worktree"
     fi
 
     # WHAT THIS IS *NOT*. It was written first as an ATTRIBUTION assertion — the

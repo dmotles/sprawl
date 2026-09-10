@@ -198,3 +198,47 @@ func assertEventCarriesArtifact(t *testing.T, eventArgs []any, want uuid.UUID) {
 		t.Errorf("the event's artifact_id is %#v, want %s — without the reference the content is unreachable", eventArgs[artifactArg], want)
 	}
 }
+
+// TestPutTextField_SizesOnTheEncodedLengthNotTheRawBytes.
+//
+// The spill decision has to be made in the units the CHECK measures. `payload`
+// is stored as JSON, and encoding/json writes a control byte as `\u00XX` — six
+// bytes for one. A file of control bytes (an agent redirecting a binary or a
+// terminal capture into its result file is the realistic shape) is therefore
+// small by len() and enormous by the time it reaches the column, and sizing on
+// len() puts it inline and lets the insert die on events_payload_thin_ck: a
+// close that cannot be recorded, which is the exact failure this file exists to
+// prevent.
+func TestPutTextField_SizesOnTheEncodedLengthNotTheRawBytes(t *testing.T) {
+	l, pool := newTextLedger(t)
+	payload := map[string]any{}
+	// Under the threshold by len(), six times over it once encoded.
+	dense := strings.Repeat("\x01", spillTextThreshold-100)
+
+	id, err := l.putTextField(context.Background(), payload, "summary", artifactKindGoalResult, dense)
+	if err != nil {
+		t.Fatalf("putTextField: %v", err)
+	}
+	if id == nil {
+		t.Fatalf("a %d-byte field that encodes to %d bytes of JSON was left in the payload; the insert would be refused by events_payload_thin_ck",
+			len(dense), len(mustMarshalString(t, dense)))
+	}
+	if _, ok := artifactInsertArgs(pool); !ok {
+		t.Errorf("no artifact was written; statements were %v", pool.log())
+	}
+	// The remnant is what the CHECK will actually measure, so it is measured the
+	// same way here.
+	remnant, _ := payload["summary"].(string)
+	if n := len(mustMarshalString(t, remnant)); n > eventPayloadMaxBytes {
+		t.Errorf("the inline remnant encodes to %d bytes, over the %d-byte payload cap", n, eventPayloadMaxBytes)
+	}
+}
+
+func mustMarshalString(t *testing.T, s string) []byte {
+	t.Helper()
+	b, err := json.Marshal(s)
+	if err != nil {
+		t.Fatalf("json.Marshal: %v", err)
+	}
+	return b
+}

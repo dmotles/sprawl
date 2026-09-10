@@ -114,6 +114,42 @@ func TestReadInputFile_Refusals(t *testing.T) {
 	}
 }
 
+// TestReadInputFile_RefusesASymlinkOutOfTheWorktree.
+//
+// Containment is the whole safety story, and a prefix check on the unresolved
+// path is not containment: `ln -s /etc/shadow result.md` sits inside the
+// worktree by every string test and reads a file the agent could not otherwise
+// open. Resolution happens after the stat, so a merely MISSING file still
+// reports as missing rather than as an escape.
+func TestReadInputFile_RefusesASymlinkOutOfTheWorktree(t *testing.T) {
+	e := newFileInputEnv(t)
+	outside := filepath.Join(t.TempDir(), "secret.md")
+	if err := os.WriteFile(outside, []byte("someone else's file"), 0o600); err != nil {
+		t.Fatalf("write outside file: %v", err)
+	}
+	if err := os.Symlink(outside, filepath.Join(e.worktree, "result.md")); err != nil {
+		t.Fatalf("symlink: %v", err)
+	}
+
+	got, err := e.server.readInputFile(callerCtx("finn"), "summary_file", "result.md")
+	if err == nil {
+		t.Fatalf("a symlink out of the worktree was read: %q", got)
+	}
+	if !strings.Contains(err.Error(), "outside") {
+		t.Errorf("the error should say the target is outside the worktree; got: %v", err)
+	}
+
+	// Control: a symlink to a file INSIDE the worktree is still fine, so this is
+	// containment and not a blanket refusal of symlinks.
+	e.write(t, "real.md", "the real result\n")
+	if err := os.Symlink(filepath.Join(e.worktree, "real.md"), filepath.Join(e.worktree, "link.md")); err != nil {
+		t.Fatalf("symlink: %v", err)
+	}
+	if got, err := e.server.readInputFile(callerCtx("finn"), "summary_file", "link.md"); err != nil || got != "the real result\n" {
+		t.Errorf("a symlink inside the worktree was refused: %q, %v", got, err)
+	}
+}
+
 // TestReadInputFile_RefusesAFileTooBigToStore. The boundary is an arbitrary
 // file on disk, so the bound is enforced here rather than discovered as a
 // database error after the agent believes it has reported.

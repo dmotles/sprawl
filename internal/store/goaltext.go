@@ -22,6 +22,7 @@ import (
 	"context"
 	"crypto/sha256"
 	"encoding/hex"
+	"encoding/json"
 	"fmt"
 	"unicode/utf8"
 
@@ -37,13 +38,29 @@ const eventPayloadMaxBytes = 8192
 // spillTextThreshold is where a text field stops living in the payload.
 //
 // Half the CHECK, deliberately, and not a byte under it: the field is not the
-// only thing in the payload (goal_opened also carries goal_type and owner) and
-// JSON escaping can inflate a string well beyond its byte length — a newline
-// costs two bytes encoded, and a run of them is what a markdown brief is made
-// of. Half leaves room for a pathological 2x escape expansion plus the
-// siblings, so no combination of inputs can produce a payload the database
-// refuses.
+// only thing in the payload (goal_opened also carries goal_type and owner, and
+// a spilled field adds a digest and a byte count), so the remaining half is the
+// siblings' room.
+//
+// It is compared against the field's ENCODED length, not its byte length. The
+// CHECK measures `payload::text`, and encoding/json writes a control byte as
+// `\u00XX` — six bytes for one. Sizing on len() would put a 4KB file of control
+// bytes inline and let the insert die on events_payload_thin_ck, which on
+// report_result is a close that cannot be recorded at all.
 const spillTextThreshold = eventPayloadMaxBytes / 2
+
+// encodedTextLen is the length text occupies once it is JSON, which is the unit
+// events_payload_thin_ck counts in. Marshalling a string cannot fail — invalid
+// UTF-8 is replaced, not rejected — so an error here can only mean the encoder
+// changed under us, and the safe reading of "I cannot tell how big this is" is
+// "too big to carry inline".
+func encodedTextLen(text string) int {
+	b, err := json.Marshal(text)
+	if err != nil {
+		return eventPayloadMaxBytes + 1
+	}
+	return len(b)
+}
 
 // spillTextPrefixBytes is how much of a spilled field stays readable inline.
 //
@@ -67,7 +84,7 @@ const (
 // to append a contract event, and a payload half-populated by a failed spill
 // would be appended by any caller that ignored the error.
 func (l *Ledger) putTextField(ctx context.Context, payload map[string]any, key, kind, text string) (*uuid.UUID, error) {
-	if len(text) <= spillTextThreshold {
+	if encodedTextLen(text) <= spillTextThreshold {
 		payload[key] = text
 		return nil, nil
 	}

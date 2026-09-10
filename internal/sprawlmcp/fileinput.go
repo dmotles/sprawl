@@ -85,9 +85,8 @@ func (s *Server) readInputFile(ctx context.Context, arg, path string) (string, e
 	}
 	// Symlinks are evaluated on the ROOT, so a worktree reached through one
 	// (/tmp on macOS) does not fail its own containment check. The candidate is
-	// deliberately NOT symlink-resolved: EvalSymlinks on a missing path returns
-	// an error that would report "outside the worktree" for a file that is
-	// simply absent, and the honest message for that is "it does not exist".
+	// checked twice: textually here, and again on its resolved target once the
+	// stat below proves it exists.
 	root, err := filepath.EvalSymlinks(worktree)
 	if err != nil {
 		return "", fmt.Errorf("%s: the worktree %s cannot be read, so a path inside it cannot be checked: %w", arg, worktree, err)
@@ -108,6 +107,21 @@ func (s *Server) readInputFile(ctx context.Context, arg, path string) (string, e
 		// the underlying error is kept in the chain for an operator.
 		return "", fmt.Errorf("%s: %s does not exist or cannot be read — write the file first, then call again with the same path: %w", arg, candidate, err)
 	}
+	// Containment is re-checked on the RESOLVED path, now that the file is known
+	// to exist. A symlink inside the worktree pointing at /etc/shadow passes
+	// every string test above and would be read by the host process as itself,
+	// so the prefix check alone is not containment. It is deliberately done
+	// after the stat rather than before: EvalSymlinks on a path that is simply
+	// absent errors, and reporting a missing file as an escape sends the agent
+	// to fix the wrong thing.
+	resolved, err := filepath.EvalSymlinks(candidate)
+	if err != nil {
+		return "", fmt.Errorf("%s: %s cannot be resolved, so it cannot be checked against your worktree: %w", arg, candidate, err)
+	}
+	if resolved != root && !strings.HasPrefix(resolved, root+string(filepath.Separator)) {
+		return "", fmt.Errorf("%s: %s leads to %s, which is outside your worktree (%s) — pass a path inside your own worktree, or the text inline", arg, path, resolved, root)
+	}
+
 	if info.IsDir() {
 		return "", fmt.Errorf("%s: %s is not a file, it is a directory — pass the path of the file holding the text", arg, candidate)
 	}
