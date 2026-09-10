@@ -94,15 +94,18 @@
 # QUM-1029: the number of assertions a COMPLETE, PASSING run of this row makes.
 # Hand-counted, in order: container ready, migrate ok, TUI rendered, create_goal
 # turn completed, goal_opened present, spawn_requested present, the researcher's
-# state file exists at the log's name, goal_closed present, the close discharges
+# state file exists at the log's name, goal_closed present, the file-backed result
+# reached the log as an artifact over the payload cap (QUM-1347), the payload
+# carries the text rather than the path (QUM-1347), the close discharges
 # the goal's own contract, the goal contract is closed, the owner was notified,
 # request_rework turn completed, rework_requested present, the rework follows
 # the closed goal, the rework is on the goal's instance, a rework contract is
 # open, `sprawl goals` lists it (QUM-1336), a second spawn_requested exists, it
 # names a different agent, and nothing spilled.
 #
-# 19 before QUM-1336 added the `sprawl goals` assertion.
-MIN_ASSERTIONS=20
+# 19 before QUM-1336 added the `sprawl goals` assertion; 20 before QUM-1347
+# added the two file-backed-result assertions.
+MIN_ASSERTIONS=22
 
 test_metadata() {
     echo "needs_claude=1 needs_tmux=1"
@@ -256,7 +259,7 @@ test_run() {
     echo ""
     echo "=== weave opens a RESEARCH goal ==="
     e2e_send_user_prompt "$SESSION" \
-        "Use the create_goal tool to open one goal with goal_type RESEARCH and the text 'Read README.md and summarize in one sentence what this project is. Then call report_result with your summary.'. Do not spawn anything yourself and do not do anything else."
+        "Use the create_goal tool to open one goal with goal_type RESEARCH and the text 'Read README.md and summarize in one sentence what this project is. Then build a long report file in your worktree by running: { for i in 1 2 3 4 5; do cat README.md; done; echo YOUR_SUMMARY; } > result.md  — replacing YOUR_SUMMARY with your one-sentence summary. Then call report_result with summary_file set to result.md, and do NOT pass summary.'. Do not spawn anything yourself and do not do anything else."
     if wait_for_pattern "$SESSION" "Completed in" 240; then
         pass "weave completed the create_goal turn"
     else
@@ -318,6 +321,33 @@ test_run() {
         capture_pane "$SESSION" | tail -30 >&2
         e2e_print_results
         return 1
+    fi
+
+    # THE FILE-BACKED RESULT (QUM-1347). The researcher was told to write its
+    # report to a file and pass `summary_file`, and the file is deliberately
+    # larger than the 8KiB events_payload_thin_ck budget. Two things can only be
+    # observed here: that the tool read the file at all (a path stored instead
+    # of its content would leave no artifact), and that a result too big for a
+    # payload still lands instead of being refused by the CHECK. The unit suite
+    # cannot see either — it has no CHECK and no real agent.
+    local SUMMARY_ARTIFACT_BYTES
+    SUMMARY_ARTIFACT_BYTES=$(psql_q "SELECT COALESCE(octet_length(a.content), 0) FROM events e JOIN event_type_schemas s ON s.id = e.schema_id LEFT JOIN artifacts a ON a.id = e.artifact_id WHERE s.name = 'goal_closed' ORDER BY e.seq LIMIT 1;")
+    echo "    the close's artifact holds: ${SUMMARY_ARTIFACT_BYTES} bytes"
+    if [ "${SUMMARY_ARTIFACT_BYTES:-0}" -gt 8192 ]; then
+        pass "the file's CONTENT (${SUMMARY_ARTIFACT_BYTES} bytes, over the 8KiB payload cap) reached the log as an artifact"
+    else
+        fail "the close references ${SUMMARY_ARTIFACT_BYTES:-0} artifact bytes — a file-backed result over the payload cap must be stored whole; either report_result kept the path instead of the content, or the researcher ignored summary_file"
+        psql_q "SELECT left(e.payload->>'summary', 200), e.artifact_id FROM events e JOIN event_type_schemas s ON s.id = e.schema_id WHERE s.name = 'goal_closed' ORDER BY e.seq LIMIT 1;" >&2 || true
+    fi
+
+    # The inline remnant is not the path: a tool that stored `result.md` would
+    # satisfy nothing above but would still look like a summary here.
+    local SUMMARY_INLINE
+    SUMMARY_INLINE=$(psql_q "SELECT left(COALESCE(e.payload->>'summary', ''), 200) FROM events e JOIN event_type_schemas s ON s.id = e.schema_id WHERE s.name = 'goal_closed' ORDER BY e.seq LIMIT 1;")
+    if [ -n "$SUMMARY_INLINE" ] && [ "$SUMMARY_INLINE" != "result.md" ]; then
+        pass "the payload carries the result's text, not the path it came from"
+    else
+        fail "the close's summary payload is '$SUMMARY_INLINE' — the PATH was persisted instead of the content, so the log's record of this goal dies with the worktree"
     fi
 
     # WHAT THIS IS *NOT*. It was written first as an ATTRIBUTION assertion — the
