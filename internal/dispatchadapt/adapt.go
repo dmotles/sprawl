@@ -53,6 +53,7 @@ import (
 	"github.com/dmotles/sprawl/internal/state"
 	"github.com/dmotles/sprawl/internal/store"
 	"github.com/dmotles/sprawl/internal/supervisor"
+	"github.com/dmotles/sprawl/internal/sysframe"
 )
 
 // DiskAgents is a store.LocalAgents backed by the on-disk agent state.
@@ -286,10 +287,21 @@ func (s *SupervisorSpawner) Spawn(ctx context.Context, req store.SpawnRequest) e
 	if _, err := s.Sup.Spawn(ctx, supervisor.SpawnRequest{
 		// Name, not an allocation: the log named this agent before anything
 		// existed locally and the reconciler matches spawn_intent BY NAME.
-		Name:     req.AgentName,
-		Type:     req.AgentType,
-		Family:   req.Family,
-		Prompt:   req.Prompt,
+		Name:   req.AgentName,
+		Type:   req.AgentType,
+		Family: req.Family,
+		// FRAMED HERE, AT THE DELIVERY SEAM (QUM-1348). Every event-log spawn
+		// delivers its brief as a marked first message rather than as a prompt
+		// file, because the log is the durable copy of the task and a prompt
+		// file is a per-host second copy that no replay can reconstruct. The
+		// envelope is built here and not in the emitter because the log is
+		// append-only: markup stored in a payload would pin the tag name and
+		// the renderer's vocabulary permanently.
+		//
+		// IDEMPOTENT. A spawn_requested can be re-handled — a replay, a retried
+		// dispatch — and a double-wrapped prompt leaves the renderer peeling
+		// one envelope and showing the inner tags as raw markup.
+		Prompt:   framedBrief(req.Prompt),
 		Branch:   req.Branch,
 		Model:    req.Model,
 		Subagent: req.Subagent,
@@ -297,4 +309,13 @@ func (s *SupervisorSpawner) Spawn(ctx context.Context, req store.SpawnRequest) e
 		return fmt.Errorf("dispatchadapt: spawning %s for the event log: %w", req.AgentName, err)
 	}
 	return nil
+}
+
+// framedBrief wraps a spawn brief in its delivery envelope, or leaves an
+// already-framed one alone.
+func framedBrief(brief string) string {
+	if sysframe.IsFrame(brief) {
+		return brief
+	}
+	return sysframe.Goal(brief)
 }

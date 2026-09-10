@@ -1,0 +1,79 @@
+// Package sysframe builds the marked `<system-notification>` envelopes that
+// deliver engine-authored content to an agent's stdin (QUM-1348).
+//
+// WHY THE MARKUP IS BUILT HERE AND NOT STORED IN THE EVENT LOG. The obvious
+// alternative is for the dispatcher to write the framed string straight into
+// the `spawn_requested` payload. It was rejected: the log is append-only, so a
+// tag name recorded in a payload is pinned forever, and the renderer's
+// vocabulary would become part of the durable wire format. Framing at the
+// delivery seam keeps the log prose and lets the tag evolve.
+//
+// A leaf package on purpose. It imports only the standard library, so both
+// internal/store's dependency direction and internal/dispatchadapt's reason for
+// existing (keeping diffs out of internal/supervisor) survive intact.
+//
+// The tag vocabulary is duplicated in internal/tui/messages.go rather than
+// imported from here — folding the existing emitters (internal/inboxprompt,
+// internal/runtime) into this package would pull a large e2e bill for a
+// cosmetic win. A cross-package constant-equality test pins the two together.
+package sysframe
+
+import "strings"
+
+// Tag is the element name every system frame uses. Matched PREFIX-ONLY by the
+// renderer (internal/tui/messages.go), which is why attributes are safe to add.
+const Tag = "system-notification"
+
+// TypeGoal is the `type` attribute for an engine-driven goal brief. Unknown
+// types fall back to the message class in the renderer, so emitting this is
+// safe against a TUI that has not learned it yet.
+const TypeGoal = "goal"
+
+// Preamble is the fixed first line of every goal envelope.
+//
+// It is LOAD-BEARING, not decoration. The renderer treats a body starting with
+// the literal `[interrupt]` as an interrupt for back-compat with pre-attribute
+// transcripts, so a goal whose text happened to begin that way would render
+// with the interrupt glyph. A constant first line makes operator text
+// structurally unable to occupy byte 0.
+const Preamble = "You have been spawned with a goal. Complete it, then close it with report_result."
+
+// Goal wraps a goal brief in a marked envelope for delivery as an agent's
+// first message.
+//
+// The result must NEVER be routed through UnifiedRuntime.WriteSystemMessage.
+// That path applies boundSystemFrame, whose line dedup is lossless for
+// notification citations but LOSSY for prose (a goal with two identical lines
+// would silently lose one), and whose 8192-byte truncation cuts on a line
+// boundary — dropping the closing tag, which makes the renderer fail to peel
+// the envelope and show raw markup instead. The initial-prompt seam this frame
+// travels on already bypasses it.
+func Goal(brief string) string {
+	return "<" + Tag + " type=\"" + TypeGoal + "\">\n" +
+		Preamble + "\n\n" +
+		neutralize(brief) + "\n" +
+		"</" + Tag + ">"
+}
+
+// IsFrame reports whether s is already a system frame, and is the switch that
+// decides whether a spawn prompt is delivered verbatim or written to a prompt
+// file. Anchored at the START (after whitespace) and prefix-only, mirroring the
+// renderer, so prose that merely mentions the tag is not mistaken for one.
+func IsFrame(s string) bool {
+	return strings.HasPrefix(strings.TrimSpace(s), "<"+Tag)
+}
+
+// neutralize defangs tag syntax inside operator-authored text.
+//
+// A brief is arbitrary text. An embedded close tag would end the envelope early
+// at the renderer's first-close anchor, stranding the rest of the brief outside
+// it and letting a following open tag forge a second, attacker-chosen
+// notification. Entity-escaping the angle brackets keeps the text readable
+// while making it inert.
+func neutralize(brief string) string {
+	r := strings.NewReplacer(
+		"</"+Tag+">", "&lt;/"+Tag+"&gt;",
+		"<"+Tag, "&lt;"+Tag,
+	)
+	return r.Replace(brief)
+}

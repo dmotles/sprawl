@@ -81,7 +81,14 @@
 # (QUM-1337), the goal contract is still open, and nothing spilled.
 #
 # 17 before QUM-1337 added the model assertion.
-MIN_ASSERTIONS=18
+#
+# +3 for QUM-1348/QUM-1346: the logged brief carries the reporting directive,
+# the logged brief is still prose (no renderer markup pinned into an
+# append-only payload), and the delivery pair — the state file's first message
+# IS the marked goal frame, while prompts/initial.md carries no copy of the
+# goal (the second is one assertion: a single elif chain with exactly one
+# outcome).
+MIN_ASSERTIONS=21
 
 test_metadata() {
     echo "needs_claude=1 needs_tmux=1"
@@ -316,6 +323,33 @@ test_run() {
             ;;
     esac
 
+    # THE REPORTING DIRECTIVE (QUM-1346).
+    #
+    # Asserted against the LOG's payload rather than the agent's stdin, because
+    # the log is where the brief is authored and it is the one copy that
+    # survives the run. Its control is a mutation of goalPrompt rather than a
+    # re-run of this row (goalspawn_test.go carries the same assertion with a
+    # recorded watched failure) — an 8-minute row is the wrong instrument for a
+    # string check, but the row is the only place that proves the string
+    # actually reaches the payload the dispatcher writes.
+    local LOG_PROMPT
+    LOG_PROMPT=$(psql_q "SELECT e.payload->>'prompt' FROM events e JOIN event_type_schemas s ON s.id = e.schema_id WHERE s.name = 'spawn_requested' ORDER BY e.seq LIMIT 1;")
+    if printf '%s' "$LOG_PROMPT" | grep -q 'ENTIRE final report through' \
+        && printf '%s' "$LOG_PROMPT" | grep -q 'send_message'; then
+        pass "the brief tells the agent to deliver its whole result through report_result and keeps send_message for mid-flow"
+    else
+        fail "the brief does not carry the QUM-1346 reporting directive — an agent will close the goal AND send its owner a duplicate summary, which is what this directive exists to stop (got: $LOG_PROMPT)"
+    fi
+
+    # THE LOG STAYS PROSE (QUM-1348). The delivery envelope is built at the
+    # spawn seam, never stored: the log is append-only, so a tag name written
+    # into a payload pins the renderer's vocabulary permanently.
+    if printf '%s' "$LOG_PROMPT" | grep -q '<system-notification'; then
+        fail "the logged brief carries renderer markup; the envelope belongs at the delivery seam, and a tag stored in an append-only payload can never be changed (got: $LOG_PROMPT)"
+    else
+        pass "the logged brief is prose, with no renderer markup pinned into the payload"
+    fi
+
     # The write-ahead. Its ORDER is the mechanism (intent -> resource ->
     # committed), and its presence is what makes a crashed spawn reconcilable.
     local INTENTS
@@ -381,6 +415,39 @@ test_run() {
         ls -la "$SPRAWL_ROOT/.sprawl/agents" >&2 2>/dev/null || true
         e2e_print_results
         return 1
+    fi
+
+    # THE GOAL IS DELIVERED AS A MARKED INJECTED MESSAGE (QUM-1348).
+    #
+    # AgentState.Prompt is what the runtime writes to the agent's stdin as its
+    # first message. Before QUM-1348 it was the "Your task is in @..." pointer
+    # and the goal lived in prompts/initial.md; now the frame IS the message.
+    # grep -F on the JSON-ESCAPED form, which is not the string you would
+    # guess: Go's encoding/json HTML-escapes `<` and `>`, so the on-disk bytes
+    # are `\u003csystem-notification type=\"goal\"\u003e`, not the literal tag.
+    # The unescaped pattern was written first and matched nothing — it would
+    # have failed this row for a reason that has nothing to do with delivery.
+    if grep -qF '\u003csystem-notification type=\"goal\"\u003e' "$STATE_FILE"; then
+        pass "the agent's first message is a marked goal frame, not a pointer to a prompt file"
+    else
+        fail "the state file's prompt is not a marked goal frame — the goal is being delivered as a prompt-file pointer again, and the TUI cannot render it distinctly from a user message"
+        grep -o '"prompt".\{0,120\}' "$STATE_FILE" >&2 || true
+    fi
+
+    # ...AND THE GOAL TEXT IS NOT DUPLICATED ON DISK. The negative half: the
+    # frame could be present while initial.md still carried a second copy,
+    # which is the exact duplication QUM-1348 exists to remove.
+    local INITIAL_MD="$SPRAWL_ROOT/.sprawl/agents/$LOG_NAME/prompts/initial.md"
+    if [ ! -f "$INITIAL_MD" ]; then
+        fail "no prompt file at $INITIAL_MD — it is still written (with a pointer note) so the on-disk shape stays uniform for an operator"
+    elif grep -qi 'Summarize what the README' "$INITIAL_MD"; then
+        fail "prompts/initial.md still carries a copy of the goal text; the whole point of QUM-1348 is that the ledger is the one source and the frame is the delivery"
+        cat "$INITIAL_MD" >&2
+    elif grep -q 'reread_my_goal' "$INITIAL_MD"; then
+        pass "prompts/initial.md carries no goal text, only the pointer at reread_my_goal"
+    else
+        fail "prompts/initial.md carries neither the goal nor a pointer at the recovery path, so an operator reading it learns nothing"
+        cat "$INITIAL_MD" >&2
     fi
 
     # jq is not assumed: these are flat scalar fields and grep -o is enough,

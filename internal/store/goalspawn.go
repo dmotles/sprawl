@@ -198,6 +198,21 @@ func (h *GoalSpawnHandler) Handle(ctx context.Context, ev DispatchedEvent) error
 // It carries the two ids because an agent that cannot name its own workflow
 // cannot read its log or close its goal — and a goal that is never closed is the
 // engine's characteristic failure: it looks like work in progress forever.
+//
+// PROSE, NOT MARKUP (QUM-1348). This text is delivered to the agent as a marked
+// `<system-notification type="goal">` first message, but the envelope is built
+// at the delivery seam (internal/dispatchadapt), NOT here. The log is
+// append-only, so a tag name written into a payload is pinned forever and the
+// renderer's vocabulary becomes part of the durable wire format.
+//
+// THE REPORTING DIRECTIVE LIVES HERE RATHER THAN IN AN AGENT CARD (QUM-1346).
+// Cards are keyed by agent_type, so putting it on the researcher/engineer cards
+// would apply it to every researcher and engineer — prose-spawned ones
+// included, for whom send_message to their manager is the ONLY reporting
+// channel and for whom report_result is not merely unnecessary but unusable
+// (it requires a goal_event_id and closes a goal contract). The directive is a
+// property of the DELIVERY MODE, not of the role, so it belongs with the other
+// mode-specific facts: the ids, reread_my_goal, get_workflow_log.
 func goalPrompt(gt GoalType, goal goalOpenedPayload, ev DispatchedEvent) string {
 	var deliverable string
 	switch gt {
@@ -218,7 +233,12 @@ This work is an engine-driven goal (goal_type %q). Its identifiers:
 Use `+"`reread_my_goal`"+` if you lose track of what you were asked, and `+"`get_workflow_log`"+`
 to see what has already happened on it. When you are done, close the goal with
 `+"`report_result`"+` — nothing else closes it, and until it is closed the goal reads
-as work still in progress. Report to %s.`,
+as work still in progress.
+
+Use `+"`send_message`"+` for mid-flow communication with other agents; that stays
+legitimate. But deliver your ENTIRE final report through `+"`report_result`"+`. Closing
+the goal already notifies %s, so a summary message on top of it is a duplicate —
+do not also message your parent.`,
 		goal.Text, deliverable, string(gt), ev.ID, ev.WorkflowInstanceID, goal.Owner)
 }
 

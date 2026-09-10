@@ -16,6 +16,7 @@ import (
 	"github.com/dmotles/sprawl/internal/state"
 	"github.com/dmotles/sprawl/internal/store"
 	"github.com/dmotles/sprawl/internal/supervisor"
+	"github.com/dmotles/sprawl/internal/sysframe"
 )
 
 // The dispatch layer's local seams.
@@ -449,8 +450,15 @@ func TestSupervisorSpawner_PassesTheLogsNameAndParentThrough(t *testing.T) {
 	if sup.req.Type != "researcher" || sup.req.Family != "engineering" {
 		t.Errorf("type/family are %q/%q, want researcher/engineering", sup.req.Type, sup.req.Family)
 	}
-	if sup.req.Branch != "goal/vector-deadbeef" || sup.req.Prompt != "find out" {
-		t.Errorf("branch/prompt are %q/%q, want goal/vector-deadbeef/find out", sup.req.Branch, sup.req.Prompt)
+	if sup.req.Branch != "goal/vector-deadbeef" {
+		t.Errorf("branch is %q, want goal/vector-deadbeef", sup.req.Branch)
+	}
+	// CONTAINMENT, not equality: QUM-1348 wraps the brief in a delivery
+	// envelope here. Equality would have to be re-pinned to the envelope's
+	// exact bytes and would stop failing for the thing that matters — the
+	// brief going missing.
+	if !strings.Contains(sup.req.Prompt, "find out") {
+		t.Errorf("prompt is %q, want it to carry the log's brief \"find out\"", sup.req.Prompt)
 	}
 	// The goal's OWNER becomes the spawned agent's parent, and the supervisor
 	// derives the parent from the caller identity — not from any field on the
@@ -514,5 +522,59 @@ func TestSupervisorSpawner_RefusesAnUnsafeParentName(t *testing.T) {
 	}
 	if rec.calls != 0 {
 		t.Errorf("the supervisor was called %d times despite the refusal", rec.calls)
+	}
+}
+
+// TestSupervisorSpawner_DeliversTheBriefAsAMarkedFirstMessage (QUM-1348).
+//
+// This is the seam where an event-log spawn's brief becomes a marked system
+// frame instead of a prompt file. Asserted HERE rather than in internal/store
+// because the log deliberately carries prose: see goalPrompt's comment.
+func TestSupervisorSpawner_DeliversTheBriefAsAMarkedFirstMessage(t *testing.T) {
+	sup := &recordingSpawner{}
+	s := &SupervisorSpawner{Sup: sup}
+
+	err := s.Spawn(context.Background(), store.SpawnRequest{
+		AgentName: "vector", AgentType: "researcher", Family: "engineering",
+		Parent: "weave", Branch: "goal/vector-deadbeef", Prompt: "find out why",
+	})
+	if err != nil {
+		t.Fatalf("Spawn() error: %v", err)
+	}
+	if !sysframe.IsFrame(sup.req.Prompt) {
+		t.Errorf("the supervisor was handed an unframed prompt, so it will be written to prompts/initial.md instead of injected: %q", sup.req.Prompt)
+	}
+	if !strings.Contains(sup.req.Prompt, "type=\"goal\"") {
+		t.Errorf("the frame is not marked as a goal, so the renderer cannot distinguish it: %q", sup.req.Prompt)
+	}
+	if !strings.Contains(sup.req.Prompt, "find out why") {
+		t.Errorf("the frame lost the brief: %q", sup.req.Prompt)
+	}
+}
+
+// TestSupervisorSpawner_WrapsExactlyOnce.
+//
+// A spawn_requested can be re-handled (replay, a retried dispatch), and an
+// already-framed prompt double-wrapped would leave the renderer peeling one
+// envelope and showing the inner tags as raw markup.
+func TestSupervisorSpawner_WrapsExactlyOnce(t *testing.T) {
+	sup := &recordingSpawner{}
+	s := &SupervisorSpawner{Sup: sup}
+
+	framed := sysframe.Goal("find out why")
+	err := s.Spawn(context.Background(), store.SpawnRequest{
+		AgentName: "vector", AgentType: "researcher", Family: "engineering",
+		Parent: "weave", Branch: "goal/vector-deadbeef",
+		Prompt: framed,
+	})
+	if err != nil {
+		t.Fatalf("Spawn() error: %v", err)
+	}
+	// EQUALITY, and not a tag count: re-wrapping does not produce two visible
+	// envelopes, because the outer wrap entity-escapes the inner one's tags. It
+	// produces one envelope whose body is a mangled, escaped copy of the first
+	// — which a tag count reads as perfectly healthy.
+	if sup.req.Prompt != framed {
+		t.Errorf("an already-framed prompt was re-wrapped:\n got %q\nwant %q", sup.req.Prompt, framed)
 	}
 }

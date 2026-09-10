@@ -10,6 +10,7 @@ import (
 	"github.com/dmotles/sprawl/internal/config"
 	"github.com/dmotles/sprawl/internal/runtimecfg"
 	"github.com/dmotles/sprawl/internal/state"
+	"github.com/dmotles/sprawl/internal/sysframe"
 	"github.com/dmotles/sprawl/internal/worktree"
 )
 
@@ -281,10 +282,31 @@ func prepareSpawn(deps *SpawnDeps, pinnedName, family, agentType, prompt, branch
 		return nil, fmt.Errorf("generating session ID: %w", err)
 	}
 
-	// Write initial prompt to file and use @file reference
-	promptPath, err := state.WritePromptFile(sprawlRoot, agentName, "initial", prompt)
+	// TWO DELIVERY MODES (QUM-1348).
+	//
+	// A prose spawn's task goes to a file and AgentState.Prompt becomes an
+	// @-reference to it. An event-log spawn arrives ALREADY WRAPPED in a
+	// `<system-notification>` envelope by internal/dispatchadapt, and that frame
+	// is the first message itself: AgentState.Prompt is what the runtime writes
+	// to the agent's stdin at launch, so putting a pointer there instead would
+	// put the goal back in a prompt file — the duplication QUM-1348 removes.
+	//
+	// The prompt file is still written in both modes, so the on-disk shape is
+	// uniform for an operator and promptPath is never empty; in frame mode it
+	// carries a pointer note rather than a second copy of the goal.
+	fileBody := prompt
+	if sysframe.IsFrame(prompt) {
+		fileBody = "This agent's task was delivered as an injected system frame at launch,\n" +
+			"not through this file. The task itself lives in the event log — call\n" +
+			"`reread_my_goal` to get it back.\n"
+	}
+	promptPath, err := state.WritePromptFile(sprawlRoot, agentName, "initial", fileBody)
 	if err != nil {
 		return nil, fmt.Errorf("writing initial prompt file: %w", err)
+	}
+	initialPrompt := prompt
+	if !sysframe.IsFrame(prompt) {
+		initialPrompt = fmt.Sprintf("Your task is in @%s — read it and begin working.", promptPath)
 	}
 
 	// Persist state before the supervisor starts the in-process runtime so the
@@ -294,7 +316,7 @@ func prepareSpawn(deps *SpawnDeps, pinnedName, family, agentType, prompt, branch
 		Type:      agentType,
 		Family:    family,
 		Parent:    parentName,
-		Prompt:    fmt.Sprintf("Your task is in @%s — read it and begin working.", promptPath),
+		Prompt:    initialPrompt,
 		Branch:    branchName,
 		Worktree:  worktreePath,
 		Status:    "active",

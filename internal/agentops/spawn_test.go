@@ -11,6 +11,7 @@ import (
 	"github.com/dmotles/sprawl/internal/config"
 	"github.com/dmotles/sprawl/internal/runtimecfg"
 	"github.com/dmotles/sprawl/internal/state"
+	"github.com/dmotles/sprawl/internal/sysframe"
 )
 
 // fakeWorktreeCreator records the requested worktree and creates the directory
@@ -599,5 +600,63 @@ func TestPrepareSpawnAs_RefusesAnUnsafeName(t *testing.T) {
 	// with the validation deleted as long as something else downstream fails.
 	if !strings.Contains(err.Error(), "invalid agent name") {
 		t.Errorf("error should mention 'invalid agent name', got: %v", err)
+	}
+}
+
+// TestPrepareSpawn_AFrameIsDeliveredVerbatim pins the QUM-1348 delivery seam.
+//
+// An event-log spawn arrives with its brief ALREADY wrapped in a
+// `<system-notification>` envelope by internal/dispatchadapt. AgentState.Prompt
+// is what the runtime writes to the agent's stdin as its first message, so a
+// frame must land there byte-for-byte: replacing it with the usual
+// "Your task is in @..." pointer would put the goal back in a prompt file and
+// undo the whole change.
+func TestPrepareSpawn_AFrameIsDeliveredVerbatim(t *testing.T) {
+	tmpDir := t.TempDir()
+	deps, _ := newBaseRefSpawnDeps(t, tmpDir)
+	frame := sysframe.Goal("find out why the cursor stalls")
+
+	got, err := agentops.PrepareSpawn(deps, "engineering", "researcher", frame, "goal/ada-deadbeef", false)
+	if err != nil {
+		t.Fatalf("PrepareSpawn: %v", err)
+	}
+	if got.Prompt != frame {
+		t.Errorf("AgentState.Prompt is %q, want the frame verbatim %q", got.Prompt, frame)
+	}
+
+	// ...and the goal text must NOT be duplicated into the prompt file.
+	body, err := os.ReadFile(filepath.Join(tmpDir, ".sprawl", "agents", got.Name, "prompts", "initial.md"))
+	if err != nil {
+		t.Fatalf("reading the prompt file: %v", err)
+	}
+	if strings.Contains(string(body), "find out why the cursor stalls") {
+		t.Errorf("prompts/initial.md duplicates the goal text, which QUM-1348 exists to remove:\n%s", body)
+	}
+	if !strings.Contains(string(body), "reread_my_goal") {
+		t.Errorf("prompts/initial.md does not point an operator or agent at the recovery path:\n%s", body)
+	}
+}
+
+// TestPrepareSpawn_ProsePromptStillGoesThroughThePromptFile is the NEGATIVE
+// CONTROL for the assertion above, and the scope boundary QUM-1348 declares:
+// the prose `spawn` path is unchanged. A frame check that matched everything
+// would satisfy the test above perfectly and silently break every prose spawn.
+func TestPrepareSpawn_ProsePromptStillGoesThroughThePromptFile(t *testing.T) {
+	tmpDir := t.TempDir()
+	deps, _ := newBaseRefSpawnDeps(t, tmpDir)
+
+	got, err := agentops.PrepareSpawn(deps, "engineering", "engineer", "fix the flaky test", "dmotles/fix", false)
+	if err != nil {
+		t.Fatalf("PrepareSpawn: %v", err)
+	}
+	if !strings.HasPrefix(got.Prompt, "Your task is in @") {
+		t.Errorf("AgentState.Prompt is %q, want the prose path's @-pointer", got.Prompt)
+	}
+	body, err := os.ReadFile(filepath.Join(tmpDir, ".sprawl", "agents", got.Name, "prompts", "initial.md"))
+	if err != nil {
+		t.Fatalf("reading the prompt file: %v", err)
+	}
+	if !strings.Contains(string(body), "fix the flaky test") {
+		t.Errorf("prompts/initial.md lost the prose task:\n%s", body)
 	}
 }

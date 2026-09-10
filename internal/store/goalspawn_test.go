@@ -345,3 +345,56 @@ func TestGoalSpawnHandler_PinsNoModelSoTheCardStillWins(t *testing.T) {
 		t.Errorf("the request pins model %v; leave it unset so the researcher's card resolves the model at launch", got)
 	}
 }
+
+// TestGoalPrompt_CarriesTheReportingDirective (QUM-1346).
+//
+// The first real engine goal produced a duplicate report: the agent closed the
+// goal with report_result AND sent its owner a near-identical send_message,
+// even though goal_closed already notifies the owner. The brief has to say
+// which channel carries the result — and equally that send_message stays
+// legitimate mid-flow, or the fix trades one wrong behaviour for another.
+func TestGoalPrompt_CarriesTheReportingDirective(t *testing.T) {
+	em := &recordingEmitter{}
+	h := newGoalSpawnHandler(t, em, &fixedNamer{name: "ada"})
+	ev := goalSpawnEvent(t, map[string]any{
+		"goal_type": "research", "text": "how is the cursor derived?", "owner": "boss",
+	})
+
+	if err := h.Handle(context.Background(), ev); err != nil {
+		t.Fatalf("Handle: %v", err)
+	}
+	prompt, _ := decodePayload(t, em.events[0].Payload)["prompt"].(string)
+
+	if !strings.Contains(prompt, "send_message") {
+		t.Errorf("the brief never names send_message, so an agent cannot tell that mid-flow agent-to-agent contact is still allowed: %q", prompt)
+	}
+	if !strings.Contains(prompt, "ENTIRE") {
+		t.Errorf("the brief does not say the ENTIRE report goes through report_result, which is the whole point of QUM-1346: %q", prompt)
+	}
+	if !strings.Contains(prompt, "duplicate") {
+		t.Errorf("the brief does not say why a summary message on top of report_result is wrong (it duplicates the close notification): %q", prompt)
+	}
+}
+
+// TestGoalSpawnHandler_StoresProseNotMarkup pins the QUM-1348 design decision.
+//
+// The frame is built at the DELIVERY seam (internal/dispatchadapt), never
+// stored here. The log is append-only: markup written into a payload pins the
+// tag name and the renderer's vocabulary permanently. This assertion is the
+// only thing standing between that decision and a well-meaning future edit
+// that moves the wrapping one layer earlier.
+func TestGoalSpawnHandler_StoresProseNotMarkup(t *testing.T) {
+	em := &recordingEmitter{}
+	h := newGoalSpawnHandler(t, em, &fixedNamer{name: "ada"})
+	ev := goalSpawnEvent(t, map[string]any{
+		"goal_type": "research", "text": "how is the cursor derived?", "owner": "boss",
+	})
+
+	if err := h.Handle(context.Background(), ev); err != nil {
+		t.Fatalf("Handle: %v", err)
+	}
+	prompt, _ := decodePayload(t, em.events[0].Payload)["prompt"].(string)
+	if strings.Contains(prompt, "<system-notification") {
+		t.Errorf("the logged prompt carries renderer markup; the envelope belongs at the delivery seam so the tag is not pinned into an append-only payload: %q", prompt)
+	}
+}
