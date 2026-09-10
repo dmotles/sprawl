@@ -119,6 +119,14 @@ const DefaultPauseTimeoutSeconds = 30
 // TUI validate-output popup auto-opens for a running merge validate (QUM-588).
 const DefaultValidatePopupAfterSeconds = 10
 
+// SprawlRoot returns the root this config was loaded from.
+//
+// Exposed for callers that hold a Config and need to reach other state under
+// the same root — the MCP file-path input (QUM-1347) resolves an agent's
+// worktree that way. It is deliberately read-only: the root is set by Load and
+// nothing else may change where a process writes.
+func (c *Config) SprawlRoot() string { return c.sprawlRoot }
+
 // PauseTimeout returns the configured pause timeout, or the default when
 // unset/non-positive.
 func (c *Config) PauseTimeout() time.Duration {

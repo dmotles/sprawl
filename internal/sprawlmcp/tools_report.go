@@ -41,6 +41,7 @@ func (s *Server) toolReportResult(ctx context.Context, args json.RawMessage) (st
 		GoalEventID string `json:"goal_event_id"`
 		Outcome     string `json:"outcome"`
 		Summary     string `json:"summary"`
+		SummaryFile string `json:"summary_file"`
 	}
 	if err := json.Unmarshal(args, &p); err != nil {
 		return "", fmt.Errorf("invalid arguments: %w", err)
@@ -52,11 +53,20 @@ func (s *Server) toolReportResult(ctx context.Context, args json.RawMessage) (st
 	// A summary is required, and emptiness is refused rather than defaulted.
 	// The close is the last thing anyone reads about this goal; a blank summary
 	// makes the outcome unauditable at exactly the moment it becomes permanent.
-	if p.Summary == "" {
-		return "", fmt.Errorf("report_result needs a summary: the close is final and is the last thing anyone reads about this goal")
+	// It may arrive inline or as a file the agent wrote first (QUM-1347) — and
+	// on the file form the CONTENT is read here, before the append, so an
+	// unreadable path refuses the call rather than closing the goal blank.
+	if err := exactlyOneTextInput("summary", "summary_file", p.Summary, p.SummaryFile); err != nil {
+		return "", fmt.Errorf("report_result: %w — the close is final and is the last thing anyone reads about this goal", err)
+	}
+	summary := p.Summary
+	if p.SummaryFile != "" {
+		if summary, err = s.readInputFile(ctx, "summary_file", p.SummaryFile); err != nil {
+			return "", fmt.Errorf("report_result: %w", err)
+		}
 	}
 
-	closeID, err := src.CloseGoalForAgent(ctx, caller, goal, store.GoalOutcome(p.Outcome), p.Summary)
+	closeID, err := src.CloseGoalForAgent(ctx, caller, goal, store.GoalOutcome(p.Outcome), summary)
 	if err != nil {
 		return "", err
 	}

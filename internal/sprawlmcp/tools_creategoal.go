@@ -62,6 +62,7 @@ func (s *Server) toolCreateGoal(ctx context.Context, args json.RawMessage) (stri
 	var p struct {
 		GoalType string `json:"goal_type"`
 		Text     string `json:"text"`
+		TextFile string `json:"text_file"`
 	}
 	if err := json.Unmarshal(args, &p); err != nil {
 		return "", fmt.Errorf("invalid arguments: %w", err)
@@ -69,11 +70,21 @@ func (s *Server) toolCreateGoal(ctx context.Context, args json.RawMessage) (stri
 	if p.GoalType == "" {
 		return "", fmt.Errorf("create_goal needs a goal_type; the engine-driven types are %v, and everything else goes through `spawn`", store.MigratedGoalTypes)
 	}
-	if p.Text == "" {
-		return "", fmt.Errorf("create_goal needs text; it is the entire task the spawned agent will be given, and it is all they will get")
+	// The brief may arrive inline or as a file the caller wrote first
+	// (QUM-1347). On the file form the CONTENT is read here, before the append:
+	// the log has to answer for this goal long after the worktree is gone, and
+	// an unreadable path must refuse rather than open an empty goal.
+	if err := exactlyOneTextInput("text", "text_file", p.Text, p.TextFile); err != nil {
+		return "", fmt.Errorf("create_goal needs text: %w — it is the entire task the spawned agent will be given, and it is all they will get", err)
+	}
+	text := p.Text
+	if p.TextFile != "" {
+		if text, err = s.readInputFile(ctx, "text_file", p.TextFile); err != nil {
+			return "", fmt.Errorf("create_goal: %w", err)
+		}
 	}
 
-	g, err := src.OpenGoal(ctx, store.GoalType(p.GoalType), p.Text, owner)
+	g, err := src.OpenGoal(ctx, store.GoalType(p.GoalType), text, owner)
 	if err != nil {
 		return "", err
 	}

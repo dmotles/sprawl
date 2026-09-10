@@ -391,10 +391,14 @@ func baseToolDefinitions() []map[string]any {
 					},
 					"text": map[string]any{
 						"type":        "string",
-						"description": "The task, in prose. This is the ENTIRE brief the spawned agent receives — it cannot see this conversation, so state the question, the context it needs, and what a good answer looks like.",
+						"description": "The task, in prose. This is the ENTIRE brief the spawned agent receives — it cannot see this conversation, so state the question, the context it needs, and what a good answer looks like. Pass this OR text_file, never both.",
+					},
+					"text_file": map[string]any{
+						"type":        "string",
+						"description": "Alternative to `text` for a long brief: the path of a file you already wrote, relative to your own worktree (an absolute path inside it also works). Its CONTENT is read now and recorded; the path itself is not kept, so later edits to the file change nothing. The file must exist, be non-empty, and be inside your worktree — otherwise the call is refused and NO goal is opened, so write the file first, then call again.",
 					},
 				},
-				"required": []string{"goal_type", "text"},
+				"required": []string{"goal_type"},
 			},
 		},
 		{
@@ -432,10 +436,14 @@ func baseToolDefinitions() []map[string]any {
 					},
 					"summary": map[string]any{
 						"type":        "string",
-						"description": "What happened, in prose. Required — this is the last thing anyone reads about this goal.",
+						"description": "What happened, in prose. This is the last thing anyone reads about this goal. Pass this OR summary_file, never both.",
+					},
+					"summary_file": map[string]any{
+						"type":        "string",
+						"description": "Alternative to `summary` for a long result: the path of a file you already wrote, relative to your own worktree (an absolute path inside it also works). Its CONTENT is read now and recorded; the path itself is not kept, so later edits to the file change nothing. The file must exist, be non-empty, and be inside your worktree — otherwise the call is refused and the goal stays OPEN, so write the file first, then call again.",
 					},
 				},
-				"required": []string{"goal_event_id", "outcome", "summary"},
+				"required": []string{"goal_event_id", "outcome"},
 			},
 		},
 		{

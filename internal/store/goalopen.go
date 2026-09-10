@@ -116,12 +116,22 @@ func (l *Ledger) OpenGoal(ctx context.Context, goalType GoalType, text, owner st
 	}
 
 	g := OpenedGoal{GoalEventID: uuid.New(), WorkflowID: uuid.New(), GoalType: goalType}
+	// The brief may be a whole file's contents (QUM-1347), so it goes through
+	// the spill: short text inline, long text to an artifact the event
+	// references. The artifact is written FIRST — an event referencing a row
+	// that does not exist reads exactly like a lost one.
+	payload := map[string]any{"goal_type": string(goalType), "owner": owner}
+	artifactID, err := l.putTextField(ctx, payload, "text", artifactKindGoalText, text)
+	if err != nil {
+		return OpenedGoal{}, fmt.Errorf("store: opening a %s goal: %w", goalType, err)
+	}
 	if _, err := l.Emit(ctx, EmitRequest{
 		TypeName:           "goal_opened",
 		TypeVersion:        1,
 		EventID:            g.GoalEventID,
 		WorkflowInstanceID: g.WorkflowID,
-		Payload:            map[string]any{"goal_type": string(goalType), "text": text, "owner": owner},
+		ArtifactID:         artifactID,
+		Payload:            payload,
 	}); err != nil {
 		// Deliberately not wrapped in a friendlier message: a degraded store
 		// returns a HintError with the operator's next action attached, and

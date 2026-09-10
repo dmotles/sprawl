@@ -271,6 +271,15 @@ func (l *Ledger) CloseGoalForAgent(ctx context.Context, agent string, goalEventI
 	}
 
 	closeID := uuid.New()
+	// The summary may be a whole file's contents (QUM-1347); see goaltext.go.
+	// It is spilled BEFORE the append, and a spill failure refuses the close
+	// rather than recording a result whose body was dropped — the close is
+	// permanent, so a lossy one can never be corrected.
+	payload := map[string]any{"outcome": string(outcome)}
+	artifactID, err := l.putTextField(ctx, payload, "summary", artifactKindGoalResult, summary)
+	if err != nil {
+		return uuid.Nil, fmt.Errorf("store: closing goal %s: %w", goalEventID, err)
+	}
 	// PROVISIONAL, and the only in-code record of that (QUM-1340). One generic
 	// `goal_closed` closes every goal type, rather than a per-type closer such
 	// as report_research_result. It is a working default pending dmotles's
@@ -282,7 +291,8 @@ func (l *Ledger) CloseGoalForAgent(ctx context.Context, agent string, goalEventI
 		EventID:            closeID,
 		WorkflowInstanceID: goal.WorkflowID,
 		ClosesEventID:      &goalEventID,
-		Payload:            map[string]any{"outcome": string(outcome), "summary": summary},
+		ArtifactID:         artifactID,
+		Payload:            payload,
 	}); err != nil {
 		return uuid.Nil, fmt.Errorf("store: closing goal %s: %w", goalEventID, err)
 	}
