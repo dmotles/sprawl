@@ -28,7 +28,17 @@ server {
     location ~ ^/api(/|$) {
         proxy_pass ${SPRAWL_UIAPI_UPSTREAM};
         proxy_http_version 1.1;
-        proxy_set_header Host $host;
+        # ⚠️ $proxy_host (the host in proxy_pass), NOT $host (the browser's).
+        # This was `$host` and it broke the deployed stack: Azure Container Apps
+        # fronts every app with an envoy that ROUTES BY HOST, so forwarding the
+        # browser's Host — the frontend's own FQDN — matched no route and every
+        # /api/* call came back "upstream connect error ... unavailable" while
+        # the API itself was healthy. Any Host-routing upstream (a shared
+        # ingress, a CDN origin, a virtual-hosted server) fails the same way.
+        # Nothing catches it locally: the Go API ignores Host entirely, so the
+        # compose stack is green either way. Assertion A22 in
+        # scripts/e2e-tests/uiapi-compose.sh is what catches it.
+        proxy_set_header Host $proxy_host;
         proxy_set_header X-Forwarded-For $proxy_add_x_forwarded_for;
         proxy_set_header X-Forwarded-Proto $scheme;
     }

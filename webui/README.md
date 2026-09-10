@@ -74,8 +74,18 @@ entrypoint renders `nginx.conf.template`) — nothing about a deployment is bake
 into the image, and there is deliberately no default, so a deployment that
 forgets to inject it fails to start instead of 502-ing at a user. `envsubst` is
 pinned to `SPRAWL_*` via `NGINX_ENVSUBST_FILTER`; without it the entrypoint
-substitutes every env var, and an env var named `host` blanks nginx's own
-`$host` (watched: `proxy_set_header Host SHOULD_NOT_LEAK`).
+substitutes every env var, and one named after an nginx variable blanks it —
+`proxy_host`, `uri`, `scheme` are all reachable this way (watched at the time
+with `proxy_set_header Host SHOULD_NOT_LEAK`, then an env var named `host`).
+
+⚠️ **The proxy forwards `$proxy_host`, not `$host`.** Azure Container Apps puts
+an envoy in front of every app that **routes by Host**, so sending the browser's
+Host (the frontend's own FQDN) matches no route and every `/api/*` call returns
+`upstream connect error ... unavailable` while the API is perfectly healthy —
+measured on the deployed stack, 2026-09-10. **Nothing local catches this**: the
+Go API ignores Host, so the compose stack is green either way. Assertion A22 in
+`scripts/e2e-tests/uiapi-compose.sh` asserts the directive on the rendered
+config inside the running container, which is the only place it is visible.
 
 That proxy is **architecture, not a dev convenience**: per QUM-1350 the read API
 is never exposed directly, so this container is the only route a browser has to

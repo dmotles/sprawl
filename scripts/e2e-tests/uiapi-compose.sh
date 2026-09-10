@@ -105,10 +105,15 @@
 #   A20 /usage renders the run-total spend                   <- QUM-1247, in the UI
 #   A21 /inbox renders the seeded question text
 #
+# And one config assertion on the live container, which is neither an API nor a
+# browser check because the defect it catches is invisible to both:
+#
+#   A22 the proxy forwards the UPSTREAM's Host, not the browser's
+#
 # Update this number in the same commit as any change to that list. It does not
 # self-adjust, and a floor above what a passing run asserts turns an honest run
 # red.
-MIN_ASSERTIONS=21
+MIN_ASSERTIONS=22
 
 # Deadline for the API to answer /healthz, covering `docker compose up --build`
 # on a cold cache (the Go build plus a Postgres first-boot). Generous on purpose:
@@ -707,6 +712,35 @@ YAML
         pass "/api/events names both projects through nginx (sprawl,widget) — a ledger row is attributable"
     else
         fail "/api/events through nginx gave project_name set [$proxied_names], want 'sprawl,widget' — the ledger's PROJECT column renders an em dash without it"
+    fi
+
+    # A22. THE HOST HEADER THE PROXY FORWARDS (the deployed-stack regression).
+    #
+    # Asserted on the RENDERED config inside the running container, not on the
+    # tracked template, so it also proves envsubst produced what we think.
+    #
+    # ⚠️ THIS IS A CONFIG ASSERTION AND IT IS DELIBERATELY NOT BEHAVIOURAL,
+    # because a behavioural one is IMPOSSIBLE HERE: the Go API ignores the Host
+    # header completely, so this whole stack serves every request identically
+    # whether nginx forwards `$proxy_host` or `$host`. That is exactly why the
+    # defect reached deployment green. Azure Container Apps fronts each app with
+    # an envoy that ROUTES BY HOST: with `$host`, nginx forwarded the frontend's
+    # own FQDN, envoy matched no route, and every /api/* call returned "upstream
+    # connect error ... unavailable" while /healthz on the API was fine.
+    #
+    # Proving it behaviourally would need a Host-routing upstream in this
+    # fixture — a second server whose only job is to 404 a wrong Host. That is a
+    # real option if this bites again; it is not worth a permanent service for a
+    # one-line directive whose failure mode is now written down in both files.
+    local rendered_conf host_directive
+    rendered_conf=$(uiapi_compose exec -T web cat /etc/nginx/conf.d/default.conf 2>/dev/null || true)
+    host_directive=$(printf '%s\n' "$rendered_conf" | sed -n 's/^[[:space:]]*proxy_set_header[[:space:]]\{1,\}Host[[:space:]]\{1,\}\(.*\);[[:space:]]*$/\1/p')
+    if [ -z "$rendered_conf" ]; then
+        fail "could not read the rendered nginx config out of the web container — A22 was NOT measured"
+    elif [ "$host_directive" = "\$proxy_host" ]; then
+        pass "the proxy forwards the UPSTREAM's Host (\$proxy_host), so a Host-routing ingress can route it"
+    else
+        fail "the proxy forwards Host as '${host_directive:-<unset>}', want \$proxy_host — a Host-routing upstream (ACA's envoy) answers 'unavailable' for every /api call while the API is healthy, and NOTHING ELSE IN THIS ROW CAN SEE IT"
     fi
 
     # A16-A21. Each needle is seeded data or a rendered cell, so none can be
