@@ -310,6 +310,7 @@ func TestSystemNotificationItem_PendingRendersDimNotBright(t *testing.T) {
 		// pending treatment is total over that arm too rather than assuming it.
 		{"status_change_interrupt", NotificationKindStatusChange, true},
 		{"liveness_check", NotificationKindLivenessCheck, false},
+		{"goal", NotificationKindGoal, false},
 		{"message_interrupt", NotificationKindMessage, true},
 		{"message_async", NotificationKindMessage, false},
 	}

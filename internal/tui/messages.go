@@ -103,6 +103,14 @@ type MessageEntry struct {
 // the message class.
 func notificationGlyphAndStyle(theme *Theme, msg MessageEntry) (glyph string, style lipgloss.Style) {
 	switch msg.NotificationType {
+	case NotificationKindGoal:
+		// QUM-1348: its own glyph, sharing status_change's style. A goal frame
+		// carries an agent's entire task, so it must not read as routine mail —
+		// but a STRUCTURAL cue (the glyph) is what survives a colour-blind
+		// operator and a monochrome terminal, and reusing an existing style
+		// keeps theme.go out of this diff. Same KISS trade the liveness_check
+		// arm below records.
+		return "◎", theme.StatusChangeText
 	case NotificationKindStatusChange, NotificationKindLivenessCheck:
 		// QUM-730: liveness_check shares the status_change visual treatment
 		// (KISS — distinct from the mail glyph but no bespoke styling).
@@ -232,6 +240,13 @@ const (
 	// liveness-check class. Same glyph/style as status_change for KISS —
 	// distinct from "message" so the operator can see the heartbeat fired.
 	NotificationKindLivenessCheck = "liveness_check"
+	// NotificationKindGoal is the QUM-1348 engine-driven goal brief: the frame
+	// an engine-spawned agent receives as its first message, in place of the
+	// prompt-file pointer it used to get. Emitted by internal/sysframe, whose
+	// TypeGoal this must equal — a cross-package test pins the pair, because
+	// nothing else connects the emitter to this renderer and a rename on
+	// either side would silently downgrade every goal to the message glyph.
+	NotificationKindGoal = "goal"
 )
 
 // stripSystemNotificationTag peels ONE `<system-notification [attrs]>...
@@ -295,7 +310,7 @@ func stripSystemNotificationTag(s string) (body, notifType string, isInterrupt b
 
 	attrs := parseTagAttributes(attrSegment)
 	notifType = attrs["type"]
-	if notifType != NotificationKindMessage && notifType != NotificationKindStatusChange && notifType != NotificationKindLivenessCheck {
+	if notifType != NotificationKindMessage && notifType != NotificationKindStatusChange && notifType != NotificationKindLivenessCheck && notifType != NotificationKindGoal {
 		// Unknown or missing type → fall back to message per the QUM-562
 		// back-compat contract.
 		notifType = NotificationKindMessage

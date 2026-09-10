@@ -4,6 +4,8 @@ import (
 	"errors"
 	"strings"
 	"testing"
+
+	"github.com/dmotles/sprawl/internal/sysframe"
 )
 
 func TestTurnState_String(t *testing.T) {
@@ -492,4 +494,91 @@ func equalStrSlice(a, b []string) bool {
 		}
 	}
 	return true
+}
+
+// TestStripSystemNotificationTag_GoalPreserved — QUM-1348: an engine-driven
+// goal is delivered as `type="goal"`. It must NOT be coerced to "message" by
+// the YAGNI fallback: the frame carries an agent's entire task, and the only
+// cue distinguishing it from a routine mail citation is the kind.
+func TestStripSystemNotificationTag_GoalPreserved(t *testing.T) {
+	body, notifType, isInterrupt, remaining, ok := stripSystemNotificationTag(
+		`<system-notification type="goal">find out why</system-notification>`)
+	if !ok {
+		t.Fatalf("ok = false, want true")
+	}
+	if notifType != NotificationKindGoal {
+		t.Errorf("notifType = %q, want %q (must NOT fall back to message)", notifType, NotificationKindGoal)
+	}
+	// The cross-package pin. internal/sysframe emits the attribute and this
+	// package consumes it; nothing else connects the two, so a rename on
+	// either side would silently downgrade every goal to the message glyph.
+	if NotificationKindGoal != sysframe.TypeGoal {
+		t.Errorf("NotificationKindGoal = %q but sysframe.TypeGoal = %q; the emitter and the renderer disagree", NotificationKindGoal, sysframe.TypeGoal)
+	}
+	if isInterrupt {
+		t.Errorf("isInterrupt = true, want false")
+	}
+	if body != "find out why" {
+		t.Errorf("body = %q", body)
+	}
+	if remaining != "" {
+		t.Errorf("remaining = %q, want empty", remaining)
+	}
+}
+
+// TestNotificationGlyph_GoalIsVisuallyDistinct — QUM-1348 AC: the TUI renders
+// the marked message distinctly. Asserted against BOTH neighbouring classes:
+// matching either would leave a goal indistinguishable from routine mail or
+// from a heartbeat, which is the failure this exists to prevent.
+func TestNotificationGlyph_GoalIsVisuallyDistinct(t *testing.T) {
+	th := NewTheme("62")
+	goalGlyph, _ := notificationGlyphAndStyle(&th, MessageEntry{NotificationType: NotificationKindGoal})
+	msgGlyph, _ := notificationGlyphAndStyle(&th, MessageEntry{NotificationType: NotificationKindMessage})
+	statusGlyph, _ := notificationGlyphAndStyle(&th, MessageEntry{NotificationType: NotificationKindStatusChange})
+
+	if goalGlyph == msgGlyph {
+		t.Errorf("a goal renders with the mail glyph %q; an agent's entire task looks like a routine message citation", goalGlyph)
+	}
+	if goalGlyph == statusGlyph {
+		t.Errorf("a goal renders with the status/heartbeat glyph %q", goalGlyph)
+	}
+}
+
+// TestPeelNotificationEntries_GoalFrameRendersAsANotification — QUM-1348, the
+// path an operator actually sees.
+//
+// A child agent's plain-string user echoes are dropped from the live stream,
+// so the goal frame reaches the viewport through the transcript-reload path,
+// of which peelNotificationEntries is the entry point. Exercised against a
+// real sysframe.Goal() output rather than a hand-written tag, so the emitter
+// and the renderer are checked against each other end to end: before QUM-1348
+// this same content arrived as a plain user bubble with the markup visible.
+func TestPeelNotificationEntries_GoalFrameRendersAsANotification(t *testing.T) {
+	frame := sysframe.Goal("Summarize the README.\n\nSecond paragraph of the brief.")
+
+	entries, ok := peelNotificationEntries(frame)
+	if !ok {
+		t.Fatalf("a real goal frame did not peel at all; the raw markup would be shown to the operator verbatim")
+	}
+	if len(entries) != 1 {
+		t.Fatalf("got %d entries, want exactly 1", len(entries))
+	}
+	e := entries[0]
+	if e.Type != MessageSystemNotification {
+		t.Errorf("entry type is %v, want MessageSystemNotification", e.Type)
+	}
+	if e.NotificationType != NotificationKindGoal {
+		t.Errorf("entry kind is %q, want %q", e.NotificationType, NotificationKindGoal)
+	}
+	if e.Interrupt {
+		t.Error("a goal frame peeled as an interrupt")
+	}
+	// The brief must survive intact, both paragraphs — a peel that anchored
+	// greedily or truncated would still satisfy every assertion above.
+	if !strings.Contains(e.Content, "Summarize the README.") || !strings.Contains(e.Content, "Second paragraph of the brief.") {
+		t.Errorf("the peeled body lost part of the brief: %q", e.Content)
+	}
+	if strings.Contains(e.Content, "<system-notification") {
+		t.Errorf("raw markup leaked into the rendered body: %q", e.Content)
+	}
 }
