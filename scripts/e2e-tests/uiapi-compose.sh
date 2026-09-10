@@ -59,9 +59,9 @@
 # argument against; that a cross-slice break has nowhere else to be caught is
 # the argument for, and it is the stronger one.
 #
-# The browser is the host chromium driven with --dump-dom, not a new npm
+# The browser is a host binary driven with --dump-dom, not a new npm
 # dependency: the assertion needs a rendered DOM, not a test framework, and
-# adding playwright to slice B'"'"'s package.json to get one would be a large,
+# adding playwright to slice B's package.json to get one would be a large,
 # permanent cost for a single gate.
 #
 # The override publishes a loopback port on BOTH uiapi (so the API assertions
@@ -69,7 +69,8 @@
 # (ports: !override, because the tracked file binds a fixed 8080 that would
 # collide between concurrent agents).
 #
-# Needs Docker, `docker compose`, curl, jq, python3 and chromium. No claude and
+# Needs Docker, `docker compose`, curl, jq, python3 and a headless browser
+# (probed, not assumed — see uiapi_pick_browser). No claude and
 # no tmux.
 
 # QUM-1029: the number of assertions a COMPLETE, PASSING run makes. Counted by
@@ -117,15 +118,30 @@ UIAPI_READY_TIMEOUT=${SPRAWL_E2E_UIAPI_READY_TIMEOUT:-300}
 # Deadline for a single view to render its seeded data in the browser.
 UIAPI_RENDER_TIMEOUT=${SPRAWL_E2E_UIAPI_RENDER_TIMEOUT:-60}
 
-# The browser binary. `chromium` by default; overridable because a full Chrome
-# build can wedge on a host where a headless one is fine — measured on this host
-# 2026-09-09, when every `chromium --dump-dom` (including `data:text/html,<p>hi`,
-# a fresh profile, an isolated HOME, --no-zygote and --single-process) blocked in
-# futex_do_wait until its 300s timeout, while playwright's headless_shell
-# rendered the same page, JS included, in under a second. The override is an
-# escape hatch for that, not a way to skip the browser half: an unset or
-# unusable value still fails the precondition and skips the whole row.
-UIAPI_CHROMIUM=${SPRAWL_E2E_CHROMIUM:-chromium}
+# Per-attempt cap on one browser invocation. A successful render of these views
+# measures ~1s warm, so 25s is not a latency budget: it is how long a WEDGED
+# browser is allowed to cost before the retry loop moves on.
+UIAPI_RENDER_ATTEMPT_TIMEOUT=${SPRAWL_E2E_UIAPI_ATTEMPT_TIMEOUT:-25}
+
+# The browser binary, chosen by PROBING candidates rather than by assuming one
+# works — see uiapi_pick_browser. SPRAWL_E2E_CHROMIUM overrides the candidate
+# list with a single binary, which is still probed.
+#
+# Why a probe rather than `command -v chromium`: on this host (measured
+# 2026-09-10) a full `chromium --dump-dom` hangs at STARTUP in futex_do_wait
+# roughly half the time, on any URL including `data:text/html,<p>hi</p>`, with a
+# fresh profile, an isolated HOME, --no-zygote or --single-process. It is not a
+# race with the app's fetch: when the browser starts at all it renders the
+# seeded data in ~1s, 30 out of 30 across all six views. But an unlucky
+# invocation returns an EMPTY dump after its timeout, which the assertions read
+# as "the view did not render" — the same tree then fails different views on
+# different runs, which is exactly the flake tower measured (run A: /goals,
+# /fleet; run B: /goals, /fleet, /ledger, /usage).
+#
+# So the instrument is verified before anything is measured with it, and a
+# browser that produces no DOM at all is reported as an instrument fault rather
+# than as a UI defect.
+UIAPI_CHROMIUM=""
 
 test_metadata() {
     echo "needs_jq=1"
@@ -183,31 +199,92 @@ uiapi_json() {
 # to run as root in CI containers.
 UIAPI_DOM=""
 uiapi_render() {
-    UIAPI_DOM=$(timeout 90 "$UIAPI_CHROMIUM" --headless --no-sandbox --disable-gpu \
-        --disable-dev-shm-usage --dump-dom --virtual-time-budget=15000 \
-        --user-data-dir="$UIAPI_TMPDIR/chrome" \
-        "http://127.0.0.1:$WEB_PORT$1" 2>/dev/null || true)
+    UIAPI_DOM=$(uiapi_dump_dom "$UIAPI_CHROMIUM" "http://127.0.0.1:$WEB_PORT$1")
+}
+
+# uiapi_dump_dom BIN URL -> the rendered DOM on stdout, empty when the browser
+# produced nothing. Unlike uiapi_render this DOES write to stdout, because it
+# takes its target as an argument and so has no state to lose to a subshell.
+uiapi_dump_dom() {
+    timeout "$UIAPI_RENDER_ATTEMPT_TIMEOUT" "$1" --headless --no-sandbox \
+        --disable-gpu --disable-dev-shm-usage --dump-dom \
+        --virtual-time-budget=15000 \
+        --user-data-dir="$UIAPI_TMPDIR/chrome" "$2" 2>/dev/null || true
+}
+
+# uiapi_pick_browser -> 0 when it set UIAPI_CHROMIUM to a binary that PROVABLY
+# renders, 1 when no candidate does.
+#
+# The probe is a page whose text is written by JS, so a candidate that starts
+# but cannot run scripts fails it too — the DOM these assertions read is a
+# post-script DOM, and a browser that only serves the shell would turn every
+# view assertion into a false red.
+#
+# The candidate order prefers a headless-only build: playwright ships one beside
+# the full browser, and on this host it rendered 30/30 while the full build hung
+# on half its invocations. The glob is playwright's standard layout, and a host
+# without it simply falls through to `chromium`.
+uiapi_pick_browser() {
+    local candidates=() c probe marker="SPRAWL-BROWSER-PROBE-OK"
+    if [ -n "${SPRAWL_E2E_CHROMIUM:-}" ]; then
+        candidates=("$SPRAWL_E2E_CHROMIUM")
+    else
+        candidates=(headless_shell)
+        for c in /opt/playwright/chromium_headless_shell-*/chrome-linux/headless_shell; do
+            [ -x "$c" ] && candidates+=("$c")
+        done
+        candidates+=(chromium chromium-browser google-chrome)
+    fi
+    for c in "${candidates[@]}"; do
+        command -v "$c" >/dev/null 2>&1 || continue
+        probe=$(uiapi_dump_dom "$c" \
+            "data:text/html,<div id=p>NO</div><script>document.getElementById('p').textContent='$marker'</script>")
+        case "$probe" in
+            *"$marker"*) UIAPI_CHROMIUM="$c"; echo "-- browser: $c (probe rendered JS-written DOM)"; return 0 ;;
+            *) echo "-- browser candidate '$c' rejected: probe returned ${#probe} bytes without the JS-written marker" >&2 ;;
+        esac
+    done
+    return 1
 }
 
 # uiapi_view_renders PATH NEEDLE [NEEDLE...] — 0 when every needle is present in
-# the rendered DOM, 1 otherwise. Retries until UIAPI_RENDER_TIMEOUT, because a
-# first paint has to fetch its data over the network and a fixed budget that is
-# generous enough never to flake is also generous enough to make the row slow.
+# the rendered DOM, 1 otherwise.
 #
-# On failure it prints the DOM's size and its <main> text, which is what
-# distinguishes the two failures that matter: a SHELL-ONLY dump (React threw and
-# unmounted the application — the F1 signature, ~450 bytes with no nav) from a
-# rendered view that is missing the data.
+# Two failure classes, deliberately kept apart, because conflating them is what
+# made this gate flaky:
+#
+#   1. The browser produced NO DOM (an empty dump). That says nothing about the
+#      view — on this host a wedged chromium does it about half the time. Such
+#      an attempt is retried immediately, and if EVERY attempt inside the
+#      deadline was empty the failure names the instrument, so a reader cannot
+#      misread it as a contract break.
+#   2. The browser rendered a page that lacks the needle. That is the defect
+#      this row exists for, and it is retried only to allow for a first paint
+#      that has not yet fetched — measured 30/30 present on the first attempt
+#      across all six views, so a retry here is insurance, not the mechanism.
+#
+# On failure it prints the DOM's size and its <main> text, which distinguishes a
+# SHELL-ONLY dump (React threw and unmounted the app — the F1 signature, ~450
+# bytes with no nav) from a rendered view that is missing the data.
 uiapi_view_renders() {
     local path="$1"; shift
-    local needle missing
-    # A WALL-CLOCK deadline, not a count of sleeps: chromium itself can take up
-    # to its own `timeout 90`, so budgeting only the sleeps made
-    # UIAPI_RENDER_TIMEOUT=60 read like a 60s cap while permitting ~30 minutes
-    # per failing view, and ~3 hours across six.
+    local needle missing attempts=0 empty=0
+    # A WALL-CLOCK deadline, not a count of sleeps: a wedged browser can cost
+    # its whole per-attempt timeout, so budgeting only the sleeps made
+    # UIAPI_RENDER_TIMEOUT read like a cap it was not.
     local deadline=$((SECONDS + UIAPI_RENDER_TIMEOUT))
     while :; do
         uiapi_render "$path"
+        attempts=$((attempts + 1))
+        if [ -z "$UIAPI_DOM" ]; then
+            empty=$((empty + 1))
+            [ "$SECONDS" -ge "$deadline" ] && break
+            # A short sleep, not a spin: a browser that returns instantly with
+            # nothing (rather than hanging to its timeout) would otherwise burn
+            # the whole deadline in a busy loop.
+            sleep 1
+            continue
+        fi
         missing=""
         for needle in "$@"; do
             case "$UIAPI_DOM" in
@@ -221,7 +298,11 @@ uiapi_view_renders() {
         [ "$SECONDS" -ge "$deadline" ] && break
         sleep 3
     done
-    echo "  (GET $path rendered ${#UIAPI_DOM} bytes without $missing)" >&2
+    if [ "$empty" = "$attempts" ]; then
+        echo "  (GET $path: the browser returned an EMPTY dump on all $attempts attempts in ${UIAPI_RENDER_TIMEOUT}s — this is an INSTRUMENT failure, not evidence about the view; the probe passed at start-up, so '$UIAPI_CHROMIUM' wedged mid-row)" >&2
+        return 1
+    fi
+    echo "  (GET $path rendered ${#UIAPI_DOM} bytes without $missing, after $attempts attempt(s), $empty of them empty)" >&2
     echo "  (a dump of only a few hundred bytes with no nav means React threw and unmounted the app)" >&2
     printf '%s' "$UIAPI_DOM" | tr -d '\n' | grep -o '<main.*</main>' | head -c 600 >&2 || true
     echo >&2
@@ -350,13 +431,6 @@ test_run() {
             e2e_skip_row "$tool not found on PATH — this row stands up the compose stack and queries it over HTTP"
         fi
     done
-    # chromium is a hard precondition, not an optional extra: without it the
-    # browser half is exactly the coverage whose absence let QA F1 ship, and a
-    # row that quietly drops it would report a green that means less than it did
-    # before. Skipping the whole row (77) is the honest outcome.
-    if ! command -v "$UIAPI_CHROMIUM" >/dev/null 2>&1; then
-        e2e_skip_row "chromium not found on PATH — this row renders each view in a real browser, and the API half alone cannot see a UI/API contract break. NOTE: this skips the WHOLE row, so its 14 API assertions are dropped too and NOTHING here is discharged"
-    fi
     if ! docker info >/dev/null 2>&1; then
         e2e_skip_row "docker is installed but the daemon is unreachable — cannot start the compose stack"
     fi
@@ -369,6 +443,16 @@ test_run() {
     }
     UIAPI_PROJECT="sprawl-uiapi-e2e-$$"
     trap uiapi_teardown EXIT
+
+    # The browser is a hard precondition, and a PROBED one: a binary that exists
+    # is not a binary that renders. Without it the row cannot see a UI/API
+    # contract break, which is the whole reason the browser half exists, and a
+    # row that quietly dropped it would report a green that means less than it
+    # did before. Skipping the WHOLE row (77) is the honest outcome — note that
+    # this drops the 14 API assertions too, so nothing here is discharged.
+    if ! uiapi_pick_browser; then
+        e2e_skip_row "no usable browser: every candidate either was not on PATH or failed a JS-rendering probe (set SPRAWL_E2E_CHROMIUM to name one). This row renders each view in a real browser, and the API half alone cannot see a UI/API contract break. NOTE: this skips the WHOLE row, so its 14 API assertions are dropped too and NOTHING here is discharged"
+    fi
 
     # A free ephemeral port, asked of the kernel rather than guessed: a
     # hard-coded one collides with a co-tenant row and fails for a reason that
