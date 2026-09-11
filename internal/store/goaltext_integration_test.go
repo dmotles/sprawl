@@ -4,6 +4,7 @@ package store
 
 import (
 	"context"
+	"encoding/json"
 	"strings"
 	"testing"
 
@@ -190,4 +191,57 @@ func TestGoalTextPg_ACloseRefusesWhenTheSummaryCannotBeStored(t *testing.T) {
 	if len(open) != 1 {
 		t.Errorf("finn has %d open goals after a refused close, want 1 — the goal was closed without its summary", len(open))
 	}
+}
+
+// TestGoalTextPg_ASummaryAtTheEXACTGoMeasuredCapStillAppends.
+//
+// The column is jsonb, and `jsonb::text` renders a space after every `:` and
+// every `,` while encoding/json emits none — so Postgres measures ~2 bytes per
+// key MORE than Go does. A spill decision taken at exactly the Go-measured
+// 8192 therefore admits a payload the CHECK refuses, and on a close that is a
+// result that cannot be recorded at all. The window is a few bytes wide, which
+// is why it needs a fixture tuned to sit in it rather than a big round number.
+func TestGoalTextPg_ASummaryAtTheEXACTGoMeasuredCapStillAppends(t *testing.T) {
+	e := newGoalReaderEnv(t)
+	ctx := context.Background()
+
+	// ASCII only, so one byte of summary is one byte of JSON: pad until the
+	// payload the store will build encodes to exactly the cap.
+	base := len(mustMarshalPayload(t, map[string]any{"outcome": string(GoalSucceeded), "summary": ""}))
+	summary := strings.Repeat("z", eventPayloadMaxBytes-base)
+	if n := len(mustMarshalPayload(t, map[string]any{"outcome": string(GoalSucceeded), "summary": summary})); n != eventPayloadMaxBytes {
+		t.Fatalf("the fixture encodes to %d bytes, not the %d-byte cap it is supposed to sit exactly on", n, eventPayloadMaxBytes)
+	}
+
+	goal := e.openGoalFor(t, "finn", "research", uuid.New())
+	closeID, err := e.ledger.CloseGoalForAgent(ctx, "finn", goal, GoalSucceeded, summary)
+	if err != nil {
+		t.Fatalf("closing with a summary at exactly the Go-measured cap: %v", err)
+	}
+
+	// However it was stored — inline or spilled — the full text must be
+	// recoverable, because the close is permanent.
+	var inline string
+	var artifactID *uuid.UUID
+	if err := e.pool.QueryRow(ctx,
+		`SELECT payload->>'summary', artifact_id FROM events WHERE id = $1`, closeID).Scan(&inline, &artifactID); err != nil {
+		t.Fatalf("reading the close back: %v", err)
+	}
+	if inline != summary {
+		if artifactID == nil {
+			t.Fatalf("the summary came back as %d of its %d bytes and no artifact holds the rest", len(inline), len(summary))
+		}
+		if got := e.artifactContentFor(t, closeID); got != summary {
+			t.Errorf("the artifact holds %d bytes, want the %d passed in", len(got), len(summary))
+		}
+	}
+}
+
+func mustMarshalPayload(t *testing.T, payload map[string]any) []byte {
+	t.Helper()
+	b, err := json.Marshal(payload)
+	if err != nil {
+		t.Fatalf("json.Marshal: %v", err)
+	}
+	return b
 }

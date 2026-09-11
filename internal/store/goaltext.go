@@ -35,32 +35,40 @@ import (
 // schema_shape_integration_test.go pins the database side.
 const eventPayloadMaxBytes = 8192
 
-// encodedPayloadLen is what events_payload_thin_ck will measure: the whole
-// payload, encoded, siblings included.
+// jsonbSeparatorBytesPerKey is how much LONGER `payload::text` is than Go's
+// encoding of the same map.
 //
-// Sizing on the payload rather than on the field is the only rule that leaves
+// The column is jsonb, and `jsonb::text` renders a space after every `:` and
+// every `,` — `{"a": 1, "b": 2}` — while encoding/json emits none. That is
+// 2k-1 bytes for k keys; rounded up to 2k so the estimate never runs short.
+// Go escaping runs the other way (it writes `<`, `>`, `&` as six bytes where
+// jsonb writes one), so the total estimate is conservative in both directions
+// only if this term is included: without it, a payload measured at exactly the
+// cap is refused by the CHECK, which on a close is a result that cannot be
+// recorded at all.
+const jsonbSeparatorBytesPerKey = 2
+
+// payloadFitsTheCHECK reports whether payload will satisfy
+// events_payload_thin_ck once Postgres renders it.
+//
+// Deciding on the payload rather than on one field is what leaves
 // previously-working input alone. A brief of a few thousand bytes typed inline
 // has always been appended whole, and `GoalSpawnHandler` reads it straight out
-// of `payload.text` with no artifact read path — so a threshold set below the
-// CHECK does not merely add an artifact row, it truncates a path that worked
-// before. Spilling exactly when the payload would not fit means every input the
-// database used to accept is still stored inline, and everything else — which
-// used to be an append the database refused — now has somewhere to go.
-//
-// It is an ENCODED length, not a byte count: the CHECK measures `payload::text`
-// and encoding/json writes a control byte as `\u00XX`, six bytes for one.
-// Postgres escapes a strict subset of what Go's encoder does, so this
-// over-estimates the column and errs toward spilling — the safe direction.
+// of `payload.text` with no artifact read path — so a threshold below the CHECK
+// does not merely add an artifact row, it truncates a path that worked before.
+// Spilling exactly when the payload would not fit keeps every input the
+// database used to accept inline, and gives everything else — which used to be
+// an append the database refused — somewhere to go.
 //
 // Marshalling cannot fail for the shapes used here (invalid UTF-8 is replaced,
 // not rejected), so an error can only mean the encoder changed under us, and
-// the safe reading of "I cannot tell how big this is" is "too big for inline".
-func encodedPayloadLen(payload map[string]any) int {
+// the safe reading of "I cannot tell how big this is" is "it does not fit".
+func payloadFitsTheCHECK(payload map[string]any) bool {
 	b, err := json.Marshal(payload)
 	if err != nil {
-		return eventPayloadMaxBytes + 1
+		return false
 	}
-	return len(b)
+	return len(b)+len(payload)*jsonbSeparatorBytesPerKey <= eventPayloadMaxBytes
 }
 
 // spillTextPrefixBytes is how much of a spilled field stays readable inline.
@@ -81,12 +89,11 @@ const (
 // is too long to carry inline.
 //
 // Returns the artifact id to put on the event, or nil when the text stayed in
-// the payload. On failure the payload is left UNTOUCHED — the caller is about
-// to append a contract event, and a payload half-populated by a failed spill
-// would be appended by any caller that ignored the error.
+// the payload. On failure the payload is left UNTOUCHED, and on success it is
+// guaranteed to satisfy the CHECK.
 func (l *Ledger) putTextField(ctx context.Context, payload map[string]any, key, kind, text string) (*uuid.UUID, error) {
 	payload[key] = text
-	if encodedPayloadLen(payload) <= eventPayloadMaxBytes {
+	if payloadFitsTheCHECK(payload) {
 		return nil, nil
 	}
 	// Too big for the payload. Take it back out first: on every path from here
@@ -97,7 +104,7 @@ func (l *Ledger) putTextField(ctx context.Context, payload map[string]any, key, 
 
 	pool := l.appender.pgPool()
 	if l.DegradedError() != nil || pool == nil {
-		return nil, fmt.Errorf("store: %s is %d bytes, too long for an event payload, and has to be stored as an artifact — but the event log has no usable connection right now; retry when the store is reachable, or pass a shorter %s", key, len(text), key)
+		return nil, fmt.Errorf("store: %s is %d bytes, too long for an event payload (the whole payload must encode to under %d bytes), and has to be stored as an artifact — but the event log has no usable connection right now; retry when the store is reachable, or pass a shorter %s", key, len(text), eventPayloadMaxBytes, key)
 	}
 	id, err := PutArtifact(ctx, pool, kind, text, "")
 	if err != nil {
@@ -109,6 +116,18 @@ func (l *Ledger) putTextField(ctx context.Context, payload map[string]any, key, 
 		truncateAtRuneBoundary(text, spillTextPrefixBytes), key, len(text), id)
 	payload[key+"_sha256"] = hex.EncodeToString(digest[:])
 	payload[key+"_bytes"] = len(text)
+	// The remnant, the digest and the byte count are ~700 bytes added AFTER the
+	// only size decision above, so the spill has to answer for its own output:
+	// if the siblings were already that close to the cap, spilling produced a
+	// payload the CHECK still refuses and there is no second lever to pull.
+	// Refusing here names the cause; letting it through makes the caller read a
+	// bare constraint violation on an append it thought it had made safe.
+	if !payloadFitsTheCHECK(payload) {
+		delete(payload, key)
+		delete(payload, key+"_sha256")
+		delete(payload, key+"_bytes")
+		return nil, fmt.Errorf("store: %s was stored as artifact %s, but the event payload is still over the %d-byte limit with the rest of its fields; this event carries too much besides %s", key, id, eventPayloadMaxBytes, key)
+	}
 	return &id, nil
 }
 

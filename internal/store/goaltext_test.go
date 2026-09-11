@@ -299,6 +299,34 @@ func TestPutTextField_SpillsOnTheWHOLEPayload(t *testing.T) {
 	}
 }
 
+// TestPutTextField_RefusesWhenEvenTheSpilledRemnantDoesNotFit.
+//
+// The spill writes a ~700-byte remnant (prefix, digest, byte count) AFTER the
+// size decision, so a payload whose siblings are already that close to the cap
+// is still over it once the spill is done — and there is no second lever. The
+// function's contract is "make this payload appendable"; when it cannot, it
+// has to say so rather than hand back a payload the CHECK will refuse.
+//
+// Latent from today's two callers (goal_opened/goal_closed siblings are tens
+// of bytes), and pinned anyway: the failure mode is a contract event that
+// cannot be appended at all, discovered as a raw constraint violation.
+func TestPutTextField_RefusesWhenEvenTheSpilledRemnantDoesNotFit(t *testing.T) {
+	l, _ := newTextLedger(t)
+	payload := map[string]any{"filler": strings.Repeat("f", eventPayloadMaxBytes-200)}
+	summary := strings.Repeat("s", 20_000)
+
+	_, err := l.putTextField(context.Background(), payload, "summary", artifactKindGoalResult, summary)
+	if err == nil {
+		encoded, _ := json.Marshal(payload)
+		t.Fatalf("a %d-byte payload was reported as a successful spill; the append would be refused by events_payload_thin_ck", len(encoded))
+	}
+	for _, key := range []string{"summary", "summary_sha256", "summary_bytes"} {
+		if _, set := payload[key]; set {
+			t.Errorf("%s was left on a payload that cannot be appended; a caller ignoring the error would append it", key)
+		}
+	}
+}
+
 // TestOpenGoal_RefusesWhenTheBriefCannotBeSpilled.
 //
 // The caller half of TestPutTextField_RefusesWhenTheArtifactCannotBeStored,
