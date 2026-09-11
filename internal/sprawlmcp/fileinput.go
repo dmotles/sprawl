@@ -12,10 +12,16 @@
 // the worktree is gone.
 //
 // The path is resolved against the CALLER'S OWN WORKTREE and refused if it
-// escapes. That containment is the entire safety story, which is why a caller
-// whose worktree cannot be resolved is refused rather than defaulted: without a
-// root, "reject escapes" has nothing to reject against and the tool becomes
-// "read any file on this host, as the host process".
+// escapes. That containment is the safety story, which is why a caller whose
+// worktree cannot be resolved is refused rather than defaulted: without a root,
+// "reject escapes" has nothing to reject against and the tool becomes "read any
+// file on this host, as the host process".
+//
+// One residual, stated rather than claimed away: a HARD link inside the
+// worktree to a file outside it is read. EvalSymlinks cannot see a hard link —
+// the resolved path is the one inside the worktree. Accepted: making the link
+// requires write access to the worktree, and an agent with that already has a
+// Read tool for anything it can name, so this grants no reach it lacked.
 package sprawlmcp
 
 import (

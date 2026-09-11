@@ -19,8 +19,8 @@ import (
 // The read-back half matters just as much: an artifact nothing can reach is a
 // result that was recorded and lost.
 
-// bigText is comfortably over both the 4KiB spill threshold and the 8KiB
-// payload CHECK, with newlines because a markdown brief is mostly newlines and
+// bigText is comfortably over the 8KiB payload CHECK, which is where the spill
+// begins, with newlines because a markdown brief is mostly newlines and
 // each one costs two bytes once JSON-escaped.
 func bigText(t *testing.T) string {
 	t.Helper()
@@ -120,5 +120,74 @@ func TestGoalTextPg_AnOrdinarySummaryStaysInThePayload(t *testing.T) {
 	}
 	if artifactID != nil {
 		t.Errorf("a short summary was spilled to artifact %s", artifactID)
+	}
+}
+
+// TestGoalTextPg_AMidSizedSummaryTheCHECKAcceptsStaysInline.
+//
+// The regression guard for "inline input unchanged". A few-thousand-byte
+// summary is over half the payload cap but well inside it, and the database
+// has always accepted it whole; a spill keyed on the field rather than on the
+// payload silently replaced it with a 617-byte remnant, which the spawn and
+// rework prompts read as the entire text. Only a real server can say what the
+// CHECK actually accepts, so the claim is settled here.
+func TestGoalTextPg_AMidSizedSummaryTheCHECKAcceptsStaysInline(t *testing.T) {
+	e := newGoalReaderEnv(t)
+	ctx := context.Background()
+	summary := strings.Repeat("a line of an ordinary but not short result.\n", 110) // ~4.8KB
+	if len(summary) <= eventPayloadMaxBytes/2 {
+		t.Fatalf("the fixture is %d bytes, under the old half-the-cap threshold, so it would not have spilled and asserts nothing", len(summary))
+	}
+	if len(summary) >= eventPayloadMaxBytes {
+		t.Fatalf("the fixture is %d bytes, over the payload cap, so staying inline would be the wrong answer", len(summary))
+	}
+
+	goal := e.openGoalFor(t, "finn", "research", uuid.New())
+	closeID, err := e.ledger.CloseGoalForAgent(ctx, "finn", goal, GoalSucceeded, summary)
+	if err != nil {
+		t.Fatalf("closing with a %d-byte summary the payload CHECK accepts: %v", len(summary), err)
+	}
+
+	var got string
+	var artifactID *uuid.UUID
+	if err := e.pool.QueryRow(ctx,
+		`SELECT payload->>'summary', artifact_id FROM events WHERE id = $1`, closeID).Scan(&got, &artifactID); err != nil {
+		t.Fatalf("reading the close back: %v", err)
+	}
+	if got != summary {
+		t.Errorf("the summary came back as %d of its %d bytes — a reader of payload.summary sees a truncated result", len(got), len(summary))
+	}
+	if artifactID != nil {
+		t.Errorf("a summary that fits the payload was spilled to artifact %s", artifactID)
+	}
+}
+
+// TestGoalTextPg_ACloseRefusesWhenTheSummaryCannotBeStored.
+//
+// The caller half of the spill-failure contract. `putTextField` returning an
+// error is pinned by the unit suite; that `CloseGoalForAgent` PROPAGATES it is
+// not, and a close is irreversible — ignoring the error records a permanent
+// result whose body was dropped and leaves nobody able to tell.
+//
+// The failure is injected with a real one rather than a fake: Postgres refuses
+// a NUL byte in a text column, and a file an agent redirected a binary into is
+// exactly how a NUL reaches this path.
+func TestGoalTextPg_ACloseRefusesWhenTheSummaryCannotBeStored(t *testing.T) {
+	e := newGoalReaderEnv(t)
+	ctx := context.Background()
+	unstorable := bigText(t) + "\x00"
+
+	goal := e.openGoalFor(t, "finn", "research", uuid.New())
+	if _, err := e.ledger.CloseGoalForAgent(ctx, "finn", goal, GoalSucceeded, unstorable); err == nil {
+		t.Fatal("a goal was closed although its summary could not be stored; the result is permanently lost")
+	}
+	// The close must not have happened AT ALL: an agent that sees an error can
+	// retry, but only if the goal is still open.
+	open, err := e.goals.OpenGoalsForAgent(ctx, e.projectID, "finn")
+	if err != nil {
+		t.Fatalf("re-reading finn's goals: %v", err)
+	}
+	if len(open) != 1 {
+		t.Errorf("finn has %d open goals after a refused close, want 1 — the goal was closed without its summary", len(open))
 	}
 }

@@ -30,32 +30,33 @@ import (
 )
 
 // eventPayloadMaxBytes mirrors events_payload_thin_ck in
-// migrations/00001_m1a_event_log.sql. Duplicated as a constant so the threshold
-// below is derived from the real bound rather than from a number in prose;
+// migrations/00001_m1a_event_log.sql. Duplicated as a constant so the spill
+// below fires at the real bound rather than at a number in prose;
 // schema_shape_integration_test.go pins the database side.
 const eventPayloadMaxBytes = 8192
 
-// spillTextThreshold is where a text field stops living in the payload.
+// encodedPayloadLen is what events_payload_thin_ck will measure: the whole
+// payload, encoded, siblings included.
 //
-// Half the CHECK, deliberately, and not a byte under it: the field is not the
-// only thing in the payload (goal_opened also carries goal_type and owner, and
-// a spilled field adds a digest and a byte count), so the remaining half is the
-// siblings' room.
+// Sizing on the payload rather than on the field is the only rule that leaves
+// previously-working input alone. A brief of a few thousand bytes typed inline
+// has always been appended whole, and `GoalSpawnHandler` reads it straight out
+// of `payload.text` with no artifact read path — so a threshold set below the
+// CHECK does not merely add an artifact row, it truncates a path that worked
+// before. Spilling exactly when the payload would not fit means every input the
+// database used to accept is still stored inline, and everything else — which
+// used to be an append the database refused — now has somewhere to go.
 //
-// It is compared against the field's ENCODED length, not its byte length. The
-// CHECK measures `payload::text`, and encoding/json writes a control byte as
-// `\u00XX` — six bytes for one. Sizing on len() would put a 4KB file of control
-// bytes inline and let the insert die on events_payload_thin_ck, which on
-// report_result is a close that cannot be recorded at all.
-const spillTextThreshold = eventPayloadMaxBytes / 2
-
-// encodedTextLen is the length text occupies once it is JSON, which is the unit
-// events_payload_thin_ck counts in. Marshalling a string cannot fail — invalid
-// UTF-8 is replaced, not rejected — so an error here can only mean the encoder
-// changed under us, and the safe reading of "I cannot tell how big this is" is
-// "too big to carry inline".
-func encodedTextLen(text string) int {
-	b, err := json.Marshal(text)
+// It is an ENCODED length, not a byte count: the CHECK measures `payload::text`
+// and encoding/json writes a control byte as `\u00XX`, six bytes for one.
+// Postgres escapes a strict subset of what Go's encoder does, so this
+// over-estimates the column and errs toward spilling — the safe direction.
+//
+// Marshalling cannot fail for the shapes used here (invalid UTF-8 is replaced,
+// not rejected), so an error can only mean the encoder changed under us, and
+// the safe reading of "I cannot tell how big this is" is "too big for inline".
+func encodedPayloadLen(payload map[string]any) int {
+	b, err := json.Marshal(payload)
 	if err != nil {
 		return eventPayloadMaxBytes + 1
 	}
@@ -84,14 +85,19 @@ const (
 // to append a contract event, and a payload half-populated by a failed spill
 // would be appended by any caller that ignored the error.
 func (l *Ledger) putTextField(ctx context.Context, payload map[string]any, key, kind, text string) (*uuid.UUID, error) {
-	if encodedTextLen(text) <= spillTextThreshold {
-		payload[key] = text
+	payload[key] = text
+	if encodedPayloadLen(payload) <= eventPayloadMaxBytes {
 		return nil, nil
 	}
+	// Too big for the payload. Take it back out first: on every path from here
+	// the caller is about to append a contract event, and a payload left
+	// half-populated by a failed spill would be appended by any caller that
+	// ignored the error.
+	delete(payload, key)
 
 	pool := l.appender.pgPool()
 	if l.DegradedError() != nil || pool == nil {
-		return nil, fmt.Errorf("store: %s is %d bytes and has to be stored as an artifact, but the event log has no usable connection right now; retry when the store is reachable, or pass a %s under %d bytes", key, len(text), key, spillTextThreshold)
+		return nil, fmt.Errorf("store: %s is %d bytes, too long for an event payload, and has to be stored as an artifact — but the event log has no usable connection right now; retry when the store is reachable, or pass a shorter %s", key, len(text), key)
 	}
 	id, err := PutArtifact(ctx, pool, kind, text, "")
 	if err != nil {

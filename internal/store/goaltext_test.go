@@ -136,9 +136,12 @@ func TestPutTextField_RefusesWhenTheArtifactCannotBeStored(t *testing.T) {
 func TestPutTextField_PrefixNeverSplitsARune(t *testing.T) {
 	l, _ := newTextLedger(t)
 	payload := map[string]any{}
-	// A 3-byte rune straddling spillTextPrefixBytes: 510 ASCII bytes then 'é'
-	// puts the boundary inside the multi-byte sequence.
-	long := strings.Repeat("x", spillTextPrefixBytes-2) + "é" + strings.Repeat("y", spillTextThreshold)
+	// A 2-byte rune STRADDLING spillTextPrefixBytes: 511 ASCII bytes then 'é'
+	// puts byte 512 on the rune's continuation byte. One fewer lead byte and
+	// the boundary lands on a rune START, where a bare slice is also valid
+	// UTF-8 and the assertion cannot fail — measured: lead=510 -> valid,
+	// lead=511 -> invalid.
+	long := strings.Repeat("x", spillTextPrefixBytes-1) + "é" + strings.Repeat("y", eventPayloadMaxBytes)
 
 	if _, err := l.putTextField(context.Background(), payload, "summary", artifactKindGoalResult, long); err != nil {
 		t.Fatalf("putTextField: %v", err)
@@ -212,8 +215,8 @@ func assertEventCarriesArtifact(t *testing.T, eventArgs []any, want uuid.UUID) {
 func TestPutTextField_SizesOnTheEncodedLengthNotTheRawBytes(t *testing.T) {
 	l, pool := newTextLedger(t)
 	payload := map[string]any{}
-	// Under the threshold by len(), six times over it once encoded.
-	dense := strings.Repeat("\x01", spillTextThreshold-100)
+	// Under the cap by len(), six times over it once encoded.
+	dense := strings.Repeat("\x01", eventPayloadMaxBytes-100)
 
 	id, err := l.putTextField(context.Background(), payload, "summary", artifactKindGoalResult, dense)
 	if err != nil {
@@ -231,6 +234,90 @@ func TestPutTextField_SizesOnTheEncodedLengthNotTheRawBytes(t *testing.T) {
 	remnant, _ := payload["summary"].(string)
 	if n := len(mustMarshalString(t, remnant)); n > eventPayloadMaxBytes {
 		t.Errorf("the inline remnant encodes to %d bytes, over the %d-byte payload cap", n, eventPayloadMaxBytes)
+	}
+}
+
+// TestPutTextField_AFieldThatFitsThePayloadStaysInline.
+//
+// The spill is keyed on the PAYLOAD, not on the field, and not on where the
+// text came from. A brief of a few thousand bytes typed inline has always been
+// appended whole — it fits events_payload_thin_ck — and it is read straight out
+// of `payload.text` by the spawn handler, which has no artifact read path. So a
+// threshold set below the CHECK does not merely add an artifact row: it
+// truncates, silently, on a path that worked before this change.
+func TestPutTextField_AFieldThatFitsThePayloadStaysInline(t *testing.T) {
+	l, pool := newTextLedger(t)
+	payload := map[string]any{"goal_type": "research", "owner": "weave"}
+	brief := strings.Repeat("b", 5000) // over half the CHECK, well under it
+
+	id, err := l.putTextField(context.Background(), payload, "text", artifactKindGoalText, brief)
+	if err != nil {
+		t.Fatalf("putTextField: %v", err)
+	}
+	if id != nil {
+		t.Errorf("a %d-byte brief that fits the payload was spilled to artifact %s; the spawn handler reads payload.text and would get the truncated remnant", len(brief), id)
+	}
+	if payload["text"] != brief {
+		remnant, _ := payload["text"].(string)
+		t.Errorf("the brief reaches the log as %d of its %d bytes: %q", len(remnant), len(brief), truncateAtRuneBoundary(remnant, 120))
+	}
+	if _, ok := artifactInsertArgs(pool); ok {
+		t.Error("an artifact row was written for a brief that fits the payload")
+	}
+	// The other half of the claim: "fits" has to be true of the whole payload,
+	// or this test is asserting an append the database would refuse.
+	encoded, err := json.Marshal(payload)
+	if err != nil {
+		t.Fatalf("marshal payload: %v", err)
+	}
+	if len(encoded) > eventPayloadMaxBytes {
+		t.Errorf("the inline payload is %d bytes, over the %d-byte CHECK", len(encoded), eventPayloadMaxBytes)
+	}
+}
+
+// TestPutTextField_SpillsOnTheWHOLEPayload, the boundary partner of the test
+// above: a field that would fit on its own still has to spill when its siblings
+// push the payload over the CHECK, because the CHECK measures the payload.
+func TestPutTextField_SpillsOnTheWHOLEPayload(t *testing.T) {
+	l, _ := newTextLedger(t)
+	payload := map[string]any{"outcome": "success", "filler": strings.Repeat("f", eventPayloadMaxBytes-1000)}
+	summary := strings.Repeat("s", 2000)
+
+	id, err := l.putTextField(context.Background(), payload, "summary", artifactKindGoalResult, summary)
+	if err != nil {
+		t.Fatalf("putTextField: %v", err)
+	}
+	if id == nil {
+		t.Fatal("a field small enough alone was left inline in a payload already near the cap; the append would be refused by events_payload_thin_ck")
+	}
+	encoded, err := json.Marshal(payload)
+	if err != nil {
+		t.Fatalf("marshal payload: %v", err)
+	}
+	if len(encoded) > eventPayloadMaxBytes {
+		t.Errorf("the payload is still %d bytes after the spill, over the %d-byte CHECK", len(encoded), eventPayloadMaxBytes)
+	}
+}
+
+// TestOpenGoal_RefusesWhenTheBriefCannotBeSpilled.
+//
+// The caller half of TestPutTextField_RefusesWhenTheArtifactCannotBeStored,
+// which pins only the helper. `OpenGoal` ignoring that error opens a goal whose
+// brief was dropped — the spawned agent is then handed an empty task — and no
+// assertion anywhere else notices.
+func TestOpenGoal_RefusesWhenTheBriefCannotBeSpilled(t *testing.T) {
+	l, pool := newTextLedger(t)
+	pool.queryRowErr = errors.New("dial tcp: connection refused")
+
+	_, err := l.OpenGoal(context.Background(), GoalResearch, strings.Repeat("brief. ", 3000), "weave")
+	if err == nil {
+		t.Fatal("a goal was opened although its brief could not be stored")
+	}
+	if !strings.Contains(err.Error(), "artifact") {
+		t.Errorf("the error does not say the brief could not be stored: %v", err)
+	}
+	if _, appended := pool.argsFor("insert_event"); appended {
+		t.Error("goal_opened was appended without its brief; the agent would be spawned with an empty task")
 	}
 }
 
